@@ -53,7 +53,20 @@ export default `
 
 ---
 
+### Llama.cpp Integration (Local models)
 
+1.  **Download and Build Llama.cpp:**
+    *   Clone the repository: \`git clone https://github.com/ggerganov/llama.cpp.git\`.
+    *   Build it following the instructions for your platform.
+    *   **Run the Server:** Start the server with a model: \`./server -m models/your-model.gguf -c 8192\`.
+2.  **Configure Llama.cpp in the AI Panel:**
+    *   Open the AI Panel (AI icon in sidebar, or \`Alt+A\` / \`Option+A\`).
+    *   Click the **Settings** (gear) icon.
+    *   Select **Llamacpp** from the "AI Provider" dropdown.
+    *   Ensure the "Llama.cpp Server" address is correct (default is \`http://localhost:8080\`).
+    *   Click **Save Settings**.
+
+---
 ## Using the AI Panel
 
 Once set up, use the AI panel for your coding needs:

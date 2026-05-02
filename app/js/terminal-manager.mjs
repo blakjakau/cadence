@@ -418,7 +418,17 @@ class TerminalManager {
 		this.terminalContainersWrapper.style.display = 'block'; // Show parent wrapper
 		this._sessions.forEach(session => session.containerElement.style.display = 'none'); // Hide instances
 		this.sessionTabBar.style.display = 'flex';
-		if (this._sessions.size === 0) this._emptyStateElement.style.display = 'flex';
+		
+		if (this._sessions.size === 0) {
+			this._emptyStateElement.style.display = 'flex';
+		} else if (this._activeSessionId) {
+			const session = this._sessions.get(this._activeSessionId);
+			if (session) {
+				session.containerElement.style.display = 'block';
+				this.fit();
+				session.term.focus();
+			}
+		}
 	}
 
 	/**

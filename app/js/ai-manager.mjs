@@ -4,6 +4,7 @@ import { Block, Button, Icon, TabBar, TabItem, FileBar } from "./elements.mjs"
 import Ollama from "./ai-ollama.mjs"
 import Claude from "./ai-claude.mjs"
 import Gemini from "./ai-gemini.mjs"
+import LlamaCpp from "./ai-llamacpp.mjs"
 import AIManagerHistory, { MAX_RECENT_MESSAGES_TO_PRESERVE } from "./ai-manager-history.mjs"
 import AIManagerSettings from "./ai-manager-settings.mjs" // NEW: Settings manager
 import { get, set, del } from "https://cdn.jsdelivr.net/npm/idb-keyval@6/+esm"
@@ -39,6 +40,7 @@ class AIManager {
 			ollama: Ollama,
 			claude: Claude,
 			gemini: Gemini,
+			llamacpp: LlamaCpp,
 		}
 		// NEW: Settings logic is moved to AIManagerSettings
 		this.settingsManager = new AIManagerSettings(this);
