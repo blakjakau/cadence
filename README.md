@@ -1,62 +1,37 @@
 # Cadence
-**The High-Performance, Agent-First Web Editor**
 
-Cadence is a modern, lightweight, and extensible web-based code editor designed for seamless integration with AI agents and remote environments. Built on top of the Ace editor and powered by a high-performance Go backend, Cadence provides a premium development experience directly in your browser.
+*A bit of an experiment in building a web editor that doesn't suck.*
 
-Cadence has been completely re-architected to use the **Conduit WebSocket API**, providing a robust, real-time bridge between the web interface and the host file system.
+Cadence is a passion project where I'm messing around with a few different ideas: 
+- Building a code editor that lives in the browser but feels like it belongs on the desktop.
+- Deeply integrating with **Conduit** to handle the file system over WebSockets (because the File System Access API is a bit of a headache).
+- Throwing in some AI agent "toys" to see how they change the way I code.
 
-## ✨ Key Features
+It's essentially a custom UI system wrapped around the Ace editor, backed by a Go server. I'm using it as a playground to explore how web-based dev tools can be faster, more resilient, and more friendly to AI-driven workflows.
 
-- **🚀 Conduit Integration**: Low-latency file system operations via WebSockets, bypassing the limitations and permission hurdles of the legacy File System Access API.
-- **🤖 Agent-First Design**: Native integration with AI-driven development workflows, featuring dedicated panels for AI session management and context-aware prompting.
-- **📁 Smart Workspace**: Automatically restores your folders, open tabs, and UI state across sessions, ensuring you can pick up exactly where you left off.
-- **🔀 Multi-Pane Productivity**: Flexible dual-pane editor layout for efficient cross-file editing and complex refactoring tasks.
-- **🎨 Premium UI System**: A custom-built, lightweight UI component library that provides a sleek, responsive, and high-performance interface.
-- **🌓 Dark Mode**: Built-in support for light and dark themes with automatic system detection.
+## What's in here?
 
-## 🛠️ Architecture
+- **The Conduit Bridge**: Instead of constant permission popups, it uses a solid WebSocket connection to my Conduit backend to handle all the heavy lifting for files.
+- **Persistent Workspace**: It tries its best to remember your open folders, active tabs, and UI layout so you don't have to set it up every time you reload.
+- **Dual-Pane Layout**: Side-by-side editors for when you're refactoring or comparing stuff.
+- **AI Manager**: A dedicated spot to plug in LLMs (Gemini, Ollama, etc.) and experiment with agentic coding patterns.
+- **Custom UI**: No heavy frameworks here—just some vanilla JS and a lot of experiments with a custom component system (`Block`, `Button`, `Element`, etc.).
 
-Cadence consists of two main components:
-1. **Frontend**: A custom vanilla JavaScript application using a bespoke component system and the Ace editor.
-2. **Backend (Conduit)**: A robust Go server that handles file system operations, terminal PTY sessions, and secure communication via WebSockets.
+## Poking around
 
-## 🚀 Getting Started
+If you want to run it yourself, you'll need Go installed:
 
-### Prerequisites
-- [Go](https://golang.org/doc/install) (1.20 or later)
+```bash
+# Just run it
+go run .
 
-### Installation & Running
+# If you're messing with the frontend code and want it to serve live:
+go run . -serve ./app
+```
 
-1. **Clone the repository**:
-   ```bash
-   git clone git@github.com:blakjakau/cadence.git
-   cd cadence
-   ```
+## Status
 
-2. **Run the server**:
-   ```bash
-   go run .
-   ```
-   By default, Cadence will start a local server and open your default browser.
-
-3. **Development Mode**:
-   To serve the frontend files directly (instead of using the embedded versions), use the `-serve` flag:
-   ```bash
-   go run . -serve ./app
-   ```
-
-## 📜 Commands & Options
-
-Cadence supports several command-line flags for advanced configuration:
-- `-debug`: Enable detailed debug logging.
-- `-root <path>`: Set the root directory for the file API (defaults to the user's home directory).
-- `-key`: Manage and print the API key for secure no-origin requests.
-- `-install-user`: Install Cadence as a user-level application and protocol handler.
-- `-no-idle-shutdown`: Disable automatic shutdown during inactivity.
-
-## 🤝 Contributing
-
-Cadence is under active development. Contributions, issues, and feature requests are welcome!
+This is very much a "work in progress" and a bit of a mess in places. I'm mostly building it for myself to see what sticks. Feel free to use it, break it, or take bits of it.
 
 ---
-*Created with ❤️ by blakjakau*
+*Built for the fun of it by blakjakau*
