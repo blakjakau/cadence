@@ -1,48 +1,62 @@
-# dev.jakbox.conduit
-(experimental) proxy for xterm integration in cadence
+# Cadence
+**The High-Performance, Agent-First Web Editor**
 
-After failing to complile a standalone executable in nodejs using `pkg` or `SEA`, and an unecessarily long jaunt in Dart (which refused to hand off the pty session with BASH properly) I've landed on Go as the language for Conduit (for now).
+Cadence is a modern, lightweight, and extensible web-based code editor designed for seamless integration with AI agents and remote environments. Built on top of the Ace editor and powered by a high-performance Go backend, Cadence provides a premium development experience directly in your browser.
 
-Precompiled binaries for major platform come in at ~5mb each (compared to 8mb for Dart and 120mb for Node SEA). It's fast and stable. 
+Cadence has been completely re-architected to use the **Conduit WebSocket API**, providing a robust, real-time bridge between the web interface and the host file system.
 
-The node and dart code is still in this repo for future reference, and possible work.
+## ✨ Key Features
 
-## working with Dart
-```bash
-# fetch dependancies
-dart pub get
+- **🚀 Conduit Integration**: Low-latency file system operations via WebSockets, bypassing the limitations and permission hurdles of the legacy File System Access API.
+- **🤖 Agent-First Design**: Native integration with AI-driven development workflows, featuring dedicated panels for AI session management and context-aware prompting.
+- **📁 Smart Workspace**: Automatically restores your folders, open tabs, and UI state across sessions, ensuring you can pick up exactly where you left off.
+- **🔀 Multi-Pane Productivity**: Flexible dual-pane editor layout for efficient cross-file editing and complex refactoring tasks.
+- **🎨 Premium UI System**: A custom-built, lightweight UI component library that provides a sleek, responsive, and high-performance interface.
+- **🌓 Dark Mode**: Built-in support for light and dark themes with automatic system detection.
 
-# run the server
-dart run server.dart
+## 🛠️ Architecture
 
-# compile the sever
-dart compile exe server.dart -o conduit-linux
-```
+Cadence consists of two main components:
+1. **Frontend**: A custom vanilla JavaScript application using a bespoke component system and the Ace editor.
+2. **Backend (Conduit)**: A robust Go server that handles file system operations, terminal PTY sessions, and secure communication via WebSockets.
 
-## working with go
-```bash
-# fetch dependancies
-go get
+## 🚀 Getting Started
 
-# run the server
-go run .
+### Prerequisites
+- [Go](https://golang.org/doc/install) (1.20 or later)
 
-#compile the server
-# For standard 64-bit Linux (most common)
-GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o conduit-linux-x64 .
+### Installation & Running
 
-# For 64-bit ARM Linux (like Raspberry Pi 4, some servers)
-GOOS=linux GOARCH=arm64 go build -ldflags="-s -w" -o conduit-linux-arm64 .
+1. **Clone the repository**:
+   ```bash
+   git clone git@github.com:blakjakau/cadence.git
+   cd cadence
+   ```
 
-# For Intel Macs
-GOOS=darwin GOARCH=amd64 go build -ldflags="-s -w" -o conduit-macos-x64 .
+2. **Run the server**:
+   ```bash
+   go run .
+   ```
+   By default, Cadence will start a local server and open your default browser.
 
-# For Apple Silicon (M1/M2/M3) Macs
-GOOS=darwin GOARCH=arm64 go build -ldflags="-s -w" -o conduit-macos-arm64 .
+3. **Development Mode**:
+   To serve the frontend files directly (instead of using the embedded versions), use the `-serve` flag:
+   ```bash
+   go run . -serve ./app
+   ```
 
-# For 64-bit Windows
-GOOS=windows GOARCH=amd64 go build -ldflags="-s -w" -o conduit-windows-x64.exe .
+## 📜 Commands & Options
 
-# one shot the all of the above? why not
-GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o conduit-linux-x64 .; GOOS=linux GOARCH=arm64 go build -ldflags="-s -w" -o conduit-linux-arm64 .; GOOS=darwin GOARCH=amd64 go build -ldflags="-s -w" -o conduit-macos-x64 .; GOOS=darwin GOARCH=arm64 go build -ldflags="-s -w" -o conduit-macos-arm64 .; GOOS=windows GOARCH=amd64 go build -ldflags="-s -w" -o conduit-windows-x64.exe .;
-```
+Cadence supports several command-line flags for advanced configuration:
+- `-debug`: Enable detailed debug logging.
+- `-root <path>`: Set the root directory for the file API (defaults to the user's home directory).
+- `-key`: Manage and print the API key for secure no-origin requests.
+- `-install-user`: Install Cadence as a user-level application and protocol handler.
+- `-no-idle-shutdown`: Disable automatic shutdown during inactivity.
+
+## 🤝 Contributing
+
+Cadence is under active development. Contributions, issues, and feature requests are welcome!
+
+---
+*Created with ❤️ by blakjakau*
