@@ -1159,8 +1159,8 @@ class AIManager {
 		const callbacks = {
 			onUpdate: (fullResponse) => { // Update the responseBlock directly
 				if (spinner.parentNode) spinner.remove(); // Remove spinner on first stream chunk
-                // NEW: _addCodeBlockButtons will now also handle diff rendering for streaming updates
-                responseBlock.innerHTML = this.md.render(fullResponse);
+                // NEW: _renderResponseContent handles <think> blocks
+                responseBlock.innerHTML = this._renderResponseContent(fullResponse);
                 this._addCodeBlockButtons(responseBlock) 
 			},
 			onDone: async (fullResponse, contextRatioPercent) => { // Mark async to await set
@@ -1175,7 +1175,7 @@ class AIManager {
 
 				// Now, render the final response in the UI.
 				// DEV: For visual debugging, let's pop a loader bar on top of every model response.
-				responseBlock.innerHTML = this.md.render(fullResponse);
+				responseBlock.innerHTML = this._renderResponseContent(fullResponse);
 				
 				this._addCodeBlockButtons(responseBlock, modelMessage); // Pass the message object here to read/write persistent state
 				
@@ -1470,7 +1470,43 @@ class AIManager {
 	 * '+++' line and matching the file extension against the global window.ace_modes.
 	 * @param {string} diffContent - The full text content of the diff.
 	 * @returns {string|null} The inferred language name (e.g., "javascript") or null if not found.
-	 */
+	 */    /**
+     * Renders response content, specifically handling <think> blocks as collapsible prefaces.
+     * @param {string} content The raw content from the AI model.
+     * @returns {string} HTML string representing the rendered content.
+     */
+    _renderResponseContent(content) {
+        if (!content) return "";
+
+        const thinkRegex = /<think>([\s\S]*?)(?:<\/think>|$)/;
+        const match = content.match(thinkRegex);
+
+        if (match) {
+            const thinkContent = match[1].trim();
+            const responsePart = content.replace(thinkRegex, "").trim();
+            const isClosed = content.includes("</think>");
+
+            let html = `
+                <div class="thought-block" ${isClosed ? "" : "expanded"}>
+                    <div class="thought-header" onclick="this.parentElement.hasAttribute('expanded') ? this.parentElement.removeAttribute('expanded') : this.parentElement.setAttribute('expanded', '')">
+                        <span class="icon">chevron_right</span>
+                        <span>${isClosed ? "Thought Process" : "Thinking..."}</span>
+                    </div>
+                    <div class="thought-content">
+                        ${this.md.render(thinkContent)}
+                    </div>
+                </div>
+            `;
+
+            if (responsePart) {
+                html += this.md.render(responsePart);
+            }
+            return html;
+        }
+
+        return this.md.render(content);
+    }
+
 	_inferLanguageFromDiff(diffContent) {
 		if (!window.ace_modes) {
 			console.warn("AIManager: window.ace_modes is not available. Cannot infer language for diff highlighting.");

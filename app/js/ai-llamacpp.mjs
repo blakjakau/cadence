@@ -7,6 +7,8 @@ class LlamaCpp extends AI {
         super();
         this.config = {
             server: "http://localhost:8080",
+            model: "unknown",
+            n_ctx: 0,
             system: "",
             temperature: 0.7,
             top_k: 40,
@@ -18,6 +20,8 @@ class LlamaCpp extends AI {
 
         this._settingsSchema = {
             server: { type: "string", label: "Llama.cpp Server", default: "http://localhost:8080" },
+            model: { type: "string", label: "Current Model", default: "unknown", readonly: true },
+            n_ctx: { type: "number", label: "Context Window (Detected)", default: 0, readonly: true },
             temperature: { type: "number", label: "Temperature", default: 0.7 },
             n_predict: { type: "number", label: "Max Tokens (n_predict)", default: 4096 },
             system: { type: "textarea", label: "System Prompt Override", default: "", multiline: true }
@@ -36,12 +40,15 @@ class LlamaCpp extends AI {
     async _queryModelInfo() {
         if (!this.config.server) return;
         try {
-            // llama.cpp server provides some info at /props or /health
             const response = await fetch(`${this.config.server}/props`);
             if (response.ok) {
                 const data = await response.json();
                 if (data.default_generation_settings && data.default_generation_settings.n_ctx) {
                     this.MAX_CONTEXT_TOKENS = data.default_generation_settings.n_ctx;
+                    this.config.n_ctx = data.default_generation_settings.n_ctx;
+                }
+                if (data.model_path) {
+                    this.config.model = data.model_path.split('/').pop();
                 }
             }
         } catch (e) {
@@ -162,6 +169,9 @@ class LlamaCpp extends AI {
             this.config[name] = newConfig[name];
         }
         this._settingsSource = source;
+
+        // Try to update model info immediately
+        await this._queryModelInfo();
 
         // Try to verify connection
         try {

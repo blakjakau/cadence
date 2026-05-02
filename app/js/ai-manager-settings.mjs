@@ -126,16 +126,29 @@ class AIManagerSettings {
                     label: setting.label,
                     options: (setting.enum || []).map((opt) => ({ value: opt.value, text: opt.label || opt.value })),
                 })
-                if (key === "model") {
-                    schema.push({
-                        type: "button",
-                        id: "refresh-models-btn",
-                        label: "Refresh Models",
-                        icon: "refresh",
-                        className: "theme-button",
-                        onClickEvent: "refresh-models",
-                    })
-                }
+                schema.push({
+                    type: "button",
+                    id: "refresh-models-btn",
+                    label: "Refresh Models",
+                    icon: "refresh",
+                    className: "theme-button",
+                    onClickEvent: "refresh-models",
+                })
+            } else if (key === "model" && aiManager.aiProvider === "llamacpp") {
+                schema.push({
+                    type: "text",
+                    id: id,
+                    label: setting.label,
+                    readonly: true
+                })
+                schema.push({
+                    type: "button",
+                    id: "refresh-models-btn",
+                    label: "Refresh Models",
+                    icon: "refresh",
+                    className: "theme-button",
+                    onClickEvent: "refresh-models",
+                })
             } else if (setting.type === 'boolean' || setting.type === 'checkbox') {
                 schema.push({
                     type: setting.type,

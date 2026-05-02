@@ -42,6 +42,7 @@ export class SettingsPanel extends ContentFill {
                     input.name = item.id;
                     input.value = values[item.id] || '';
                     if (item.placeholder) input.placeholder = item.placeholder;
+                    if (item.readonly) input.disabled = true;
                     if(label) container.append(label);
                     container.append(input);
                     break;
@@ -51,6 +52,7 @@ export class SettingsPanel extends ContentFill {
                     input.name = item.id;
                     input.value = values[item.id] || '';
                     if (item.rows) input.rows = item.rows;
+                    if (item.readonly) input.disabled = true;
                     if(label) container.append(label);
                     container.append(input);
                     break;

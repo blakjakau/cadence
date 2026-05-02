@@ -656,3 +656,50 @@ button:disabled,
 .conversation-area .response-block pre .hljs-tag {
     color: var(--hljs-tag, #e06c75);
 }
+/* Thinking Block Styles */
+.thought-block {
+    background-color: color-mix(in srgb, var(--text-primary) 5%, transparent);
+    border-left: 3px solid var(--theme);
+    margin: 8px 0;
+    border-radius: 4px;
+    overflow: hidden;
+}
+
+.thought-header {
+    padding: 6px 12px;
+    background-color: color-mix(in srgb, var(--text-primary) 3%, transparent);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 0.8em;
+    color: var(--text-secondary);
+    user-select: none;
+    font-weight: 500;
+}
+
+.thought-header:hover {
+    background-color: color-mix(in srgb, var(--text-primary) 8%, transparent);
+}
+
+.thought-content {
+    padding: 8px 16px;
+    font-size: 0.9em;
+    font-style: italic;
+    color: var(--text-secondary);
+    display: none; /* Collapsed by default */
+    border-top: 1px solid color-mix(in srgb, var(--text-primary) 5%, transparent);
+}
+
+.thought-block[expanded] .thought-content {
+    display: block;
+}
+
+.thought-header .icon {
+    font-size: 14px;
+    transition: transform 0.2s ease;
+}
+
+.thought-block[expanded] .thought-header .icon {
+    transform: rotate(90deg);
+}

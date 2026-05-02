@@ -826,7 +826,7 @@ const uiManager = {
 		mainContent.appendChild(rightHolder)
 		
 		document.body.appendChild(sidebar)
-		// document.body.appendChild(drawer)
+		document.body.appendChild(drawer)
 		document.body.appendChild(omni)
 
 		let cursorpos = new Inline()
