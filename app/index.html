@@ -1,0 +1,235 @@
+<!--<!DOCTYPE html>-->
+<html>
+<head>
+	<title></title>
+    <meta charset="utf-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+	<link id="manifest_link" rel="manifest" href="/manifest.json">
+	<link rel="shortcut icon" type="image/png" href="/favicon.png"/>
+
+	<link rel="image_src" href="images/preview-image.png" />
+	<meta property="og:url"   content="https://code.jakbox.dev" />
+	<meta property="og:title" content="Cadence, in your browser" />
+	<meta property="og:description" content="Simple, fast, lightweight code editing. Edit your local code files straight from your web browser, or install the web app for that sweet 'native app' experience." />
+	<meta property="og:image" content="images/preview-image.png" />
+	
+    
+    
+    <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet">
+    
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200" />
+    
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Roboto+Mono&family=Roboto:wght@300;400&display=swap" rel="stylesheet">
+    
+    <link href="css/elements.css" rel="stylesheet">
+	<link href="css/main.css" rel="stylesheet" />
+	<link href="css/ai-manager.css" rel="stylesheet" />
+
+    <!-- Highlight.js CSS theme - Loaded directly for reliability -->
+    <link rel="stylesheet" href="https://unpkg.com/@highlightjs/cdn-assets@11.9.0/styles/atom-one-dark.min.css">
+	
+	<script src="ace/ace.js" type="text/javascript" charset="utf-8"></script>
+	<script src="ace/ext-language_tools.js"></script>
+	<script src="https://cdn.jsdelivr.net/npm/markdown-it@14.0.0/dist/markdown-it.min.js"></script>
+    <!--<script src="https://unpkg.com/@highlightjs/cdn-assets@11.9.0/highlight.min.js"></script>-->
+    
+    
+    <script type="module" src="js/elements.mjs" ></script>
+    <script type="text/javascript">window.elements=window.__ui</script>
+	<script type="text/javascript">
+		const notSupported = []
+		
+		/* Only show the page if we have support for File System Access API */
+		if(!('showDirectoryPicker' in window)) { notSupported.push("FilesAPI"); }
+		// if(!('serviceWorker' in navigator)) { notSupported.push("ServiceWorker"); }
+		
+		if(notSupported.length > 0) {
+			console.log(notSupported)
+			sessionStorage.setItem("notSupported", JSON.stringify(notSupported));
+			// window.location.href = "./notSupported.html"
+			setTimeout(()=>{
+				const unsup = document.querySelector("#unsupported");
+				// This is now just a template.
+				const title = unsup.querySelector('h1').innerHTML;
+				unsup.querySelector('h1').remove();
+				unsup.querySelector('center').remove(); // remove the image too
+				const content = unsup.innerHTML;
+				unsup.remove(); // remove template from DOM.
+				new ui.Modal().notice(content, title);
+			}, 100)
+		} else {
+			/* Only register a service worker if it's supported */
+			if ('serviceWorker' in navigator) { navigator.serviceWorker.register('/service-worker.js', {scope: "/" }); }
+		}
+		
+	</script>
+	<script>
+        const bc = window.filesReceiver = new BroadcastChannel("file_open_request")
+        window.activeFileReceiver = true
+        window.onfocus=()=>{ bc.postMessage("connected"); window.activeFileReceiver = true }
+        bc.addEventListener("message", e=>{  if(e.data == "connected") { window.activeFileReceiver = false }  })
+        bc.postMessage("connected")
+	</script>
+	<style id="rootCSS"></style>
+	<script>
+		const isDev = document.cookie.includes("cadence_dev=true") || window.location.hostname.includes("-beta");
+		if (isDev) {
+			document.getElementById("manifest_link").href = "/manifest_dev.json";
+		}
+
+		themeCSS = isDev
+		?":root { --theme: #00AABB!important; --themeDark: #007788!important; }"
+		:":root { --theme: #0077bb!important; --themeDark: #005599!important; }"
+		const css = document.getElementById("rootCSS")
+		css.innerText = themeCSS;
+	</script>
+</head>
+<body class="light">
+	<script>
+		// Apply system dark mode immediately if no preference is set yet (prevents white flash)
+		if (window.matchMedia('(prefers-color-scheme: dark)').matches) {
+			document.body.classList.add('darkmode');
+		}
+	</script>
+	
+	
+	<ui-actionbar id="menu" hook="top" slim style="top: 0px; bottom: auto;">
+	    <ui-inline id="logo"><img src="images/code-192-simple.svg" style="color: #fff" height="32px"> Cadence </ui-inline>
+ 
+	    <ui-button id="menu_file">File</ui-button>
+	    <ui-button id="menu_edit">Edit</ui-button>
+	    <ui-button id="menu_project">Workspace</ui-button>
+	    <ui-button id="menu_settings">Settings</ui-button>
+	</ui-actionbar>
+
+	
+	<ui-block id="mainContent"></ui-block>
+
+
+	<ui-actionbar id="statusbar" slim hook="bottom">
+		<ui-button id="settings" icon="settings" hook=right onclick="window.ui.execCommand('app:showEditorSettings')"></ui-button>
+		<ui-button id="darkmode_select" hook=right></ui-button>
+		
+		<ui-button id="theme_select" hook=right></ui-button>
+		<ui-button  id="mode_select" hook=right></ui-button>
+		<ui-button id="prettier" onclick="editor.execCommand('prettify')" hook=right disabled>{&nbsp;}</ui-button>
+	</ui-actionbar>
+	
+	<ui-menu id="theme_menu" attachTo="#theme_select" slim onclick="(e)=>{ window.ui.execCommand(e) }">
+	</ui-menu>
+
+	<ui-menu id="mode_menu" attachTo="#mode_select" slim onclick="(e)=>{ window.ui.execCommand(e) }">
+	</ui-menu>
+
+	<ui-menu id="darkmode_menu" attachTo="#darkmode_select" slim onclick="(e)=>{ window.ui.execCommand(e) }">
+		<ui-menu-item command="app:setDarkMode:light" args="light">Light Mode</ui-menu-item>
+		<ui-menu-item command="app:setDarkMode:dark" args="dark">Dark Mode</ui-menu-item>
+		<ui-menu-item command="app:setDarkMode:system" args="system">System</ui-menu-item>
+	</ui-menu>
+
+	<ui-menu attachTo="#menu_file" onclick="(e)=>{ window.ui.execCommand(e) }">
+		<ui-menu-item command="app:newFile" icon="note_add" keyTag="Ctrl-N">New File</ui-menu-item>
+		<ui-menu-item command="app:openFile" keyTag="Ctrl-O">Open File</ui-menu-item>
+		<ui-menu-split></ui-menu-split>
+		<ui-menu-item command="app:saveFile" icon="save" keyTag="Ctrl-S">Save File</ui-menu-item>
+		<ui-menu-item command="app:saveFileAs" keyTag="Ctrl-Shift-S">Save File As ...</ui-menu-item>
+		<ui-menu-split></ui-menu-split>
+		<!--<ui-menu-item>Save All</ui-menu-item>-->
+		<ui-menu-item command="app:closeFile" icon="close" keyTag="Ctrl-W">Close File</ui-menu-item>
+		<!--<ui-menu-item command="app:close" keyTag="Ctrl-Q">Exit</ui-menu-item>-->
+	</ui-menu>
+
+	<ui-menu attachTo="#menu_edit" onclick="(e)=>{ window.ui.execCommand(e) }">
+		<ui-menu-item command="editor:undo" icon="undo" keyTag="Ctrl-Z">Undo</ui-menu-item>
+		<ui-menu-item command="editor:redo" icon="redo" keyTag="Ctrl-Y">Redo</ui-menu-item>
+		<ui-menu-split></ui-menu-split>
+		<ui-menu-item command="app:find" icon="search" keyTag="Ctrl-F">Find</ui-menu-item>
+		<ui-menu-item command="app:find-next" keyTag="F3">Find Next</ui-menu-item>
+		<ui-menu-item command="app:find-regex" keyTag="Ctrl-Shift-F">Find (Regex)</ui-menu-item>
+		<ui-menu-item command="app:find-regex-multiline" keyTag="Ctrl-Shift-Alt-F">Find (Regex Multiline)</ui-menu-item>
+		<ui-menu-split></ui-menu-split>
+		<ui-menu-item command="editor-ex:goto" keyTag="Ctrl-G">Goto Line</ui-menu-item>
+		<ui-menu-split></ui-menu-split>
+		<ui-menu-item command="splitIntoLines" keyTag="Ctrl-Shift-L">Cursor per line of selection</ui-menu-item>
+		<ui-menu-split></ui-menu-split>
+		<ui-menu-item command="editor:indent" icon="format_indent_increase" keyTag="Ctrl-]">Indent Selection</ui-menu-item>
+		<ui-menu-item command="editor:outdent" icon="format_indent_decrease" keyTag="Ctrl-[">Outdent Selection</ui-menu-item>
+		<ui-menu-split></ui-menu-split>
+		<ui-menu-item command="app:prettify" icon="format_align_right" keyTag="">Prettify Code (JS/JSON/HTML/CSS)</ui-menu-item>
+		<ui-menu-split></ui-menu-split>
+		<ui-menu-item command="editor:togglecomment" icon="short_text" keyTag="Ctrl-/">Toggle Comment</ui-menu-item>
+		<ui-menu-item command="editor:toggleBlockComment" icon="notes" keyTag="Ctrl-Shift-/">Toggle Block Comment</ui-menu-item>
+    </ui-menu>
+
+	<ui-menu attachTo="#menu_project" onclick="(e)=>{ window.ui.execCommand(e) }">
+	    <ui-menu-item command="app:toggleFolders" icon="menu_open" keyTag="Alt+F">Toggle File List</ui-menu-item>
+	    <ui-menu-item command="app:show-ai" icon="developer_board" keyTag="Alt+A">Toggle AI Panel</ui-menu-item>
+	    <ui-menu-item command="app:show-terminal" icon="terminal" keyTag="Alt+T">Toggle Terminal Panel</ui-menu-item>
+	    <ui-menu-item command="app:show-scratchpad" icon="edit_note" keyTag="Alt+N">Toggle Notes Panel</ui-menu-item>
+	    <ui-menu-split></ui-menu-split>
+	    <ui-menu-item command="app:toggleSplitView" icon="vertical_split" keyTag="Alt+S">Toggle Split View</ui-menu-item>
+	    <ui-menu-split></ui-menu-split>
+	    <ui-menu-item command="app:addFolder" icon="create_new_folder">Add Folder</ui-menu-item>
+	    <ui-menu-item command="app:refreshFolders" icon="refresh">Refresh Folders</ui-menu-item>
+	    <ui-menu-item command="app:removeAllFolders" icon="remove">Remove All Folders</ui-menu-item>
+	    <ui-menu-split></ui-menu-split>
+	    <ui-menu-item command="app:workspaceNew" icon="add">Create New Workspace</ui-menu-item>
+	    <ui-menu-split></ui-menu-split>
+	    <div id="workspaceSelectors"></div>
+	    <ui-menu-split></ui-menu-split>
+	    <div id="workspaceActions">
+	    	<ui-menu-item id="workspaceClose" command="app:workspaceOpen:default" icon="close"></ui-menu-item>
+	    	<ui-menu-item id="workspaceRename" command="app:workspaceRename" icon="edit"></ui-menu-item>
+	    	<ui-menu-item id="workspaceDelete" command="app:workspaceDelete" icon="delete"></ui-menu-item>
+	    </div>
+	    <!--<ui-menu-item command="app:workspaceOpen:default" icon="workspaces">default</ui-menu-item>-->
+    </ui-menu>
+
+	<ui-menu attachTo="#menu_settings" onclick="(e)=>{ window.ui.execCommand(e) }">
+		<ui-menu-item command="app:showEditorSettings" icon="settings">Editor Settings</ui-menu-item>
+		<ui-menu-split></ui-menu-split>
+		<ui-menu-item command="app:showAbout" icon="info">About Cadence</ui-menu-item>
+	</ui-menu>
+	
+	<ui-menu id="top_folder_context" onclick="(e)=>{ console.log(e) }">
+		<ui-menu-item command="refresh" icon="refresh">Refresh Folder</ui-menu-item>
+		<ui-menu-item command="remove" icon="remove">Remove Folder</ui-menu-item>
+	</ui-menu>
+
+	<ui-menu id="folder_context" onclick="(e)=>{ console.log(e) }">
+	<ui-menu-item command="refresh" icon="refresh">Refresh Folder</ui-menu-item>
+	<!--<ui-menu-item command="rename" icon="edit">Rename file</ui-menu-item>-->
+	<!--<ui-menu-split></ui-menu-split>-->
+	<!--<ui-menu-item command="delete" icon="delete">Delete file</ui-menu-item>-->
+	</ui-menu>
+	
+	<ui-menu id="file_context" onclick="(e)=>console.log(e)">
+		<ui-menu-item command="rename" icon="edit">Rename File</ui-menu-item>
+		<ui-menu-split></ui-menu-split>
+		<ui-menu-item command="delete" icon="delete">Delete File</ui-menu-item>
+	</ui-menu>
+
+	
+	<ui-panel id="unsupported" type=modal blank class="slideDown" style="left:25%; width:50%; top:25%; height:50%; padding:16px;">
+		<center>
+			<img  width="100" src="images/sadpanda.png" width="150">
+			<h1>Not Supported</h1>
+		</center>
+		
+		<p>Oh noes! Your browser doesn't support <b>File System Access API</b> required for reading and writing your files in the editor.</p>
+		
+		<p>Blocking access to an app based on a missing feature is somewhat antithetical to the premise of Web Applications,
+		and even moreso Progressive Web Applications. The unfortunate reality is that this app literally will not work without it.</p>
+		
+		<p>The <b>Files System Access API</b> gives <b>you</b> complete control over what files the app can and can't read and write and disables access to
+		the files once you close the app. Even when you come back, the app can't access your files until you explicitly grant access again.</p> 
+		
+		<p>If you would like to try the app, open this site in Chrome(88+), Edge(88+) or Opera(74+) (non mobile).</p>
+	</ui-panel>
+
+	<script type="module" src="js/main.mjs"></script>
+</body>
+</html>

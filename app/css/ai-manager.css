@@ -1,0 +1,658 @@
+/* ai-manager.css */
+@import "diff-output.css";
+@import "settings-panel.css";
+
+/* AI Manager specific layout for the settings panel */
+.settings-panel.active {
+    display: flex;
+    flex: 1;
+}
+
+#ai-panel[active] {
+    display: flex; /* Ensure flexbox is used */
+    flex-direction: column;
+    position: relative;
+    height: 100%;
+}
+
+.ai-chat-container {
+	flex: 1;
+	display: flex;
+	flex-direction: column;
+	overflow: hidden; /* Prevent scrollbars on the container itself */
+	position: relative; /* For positioning the floating spinner */
+}
+
+.ai-chat-container.hidden {
+    display: none;
+}
+
+.conversation-area {
+    flex: 1;
+    overflow-y: auto;
+    padding: 8px;
+    display: flex;
+    flex-direction: column;
+    scroll-behavior: smooth;
+    margin-bottom: 4px;
+}
+.conversation-area>h1, .conversation-area>h2, .conversation-area>h3,
+.conversation-area>h4, .conversation-area>h5, .conversation-area>h6, 
+.conversation-area>p, .conversation-area>ol, .conversation-area>ul {
+    margin-top: 8px;
+    margin-bottom: 4px;
+}
+
+.conversation-area li { margin-bottom: 2px; }
+
+.conversation-area>hr {
+	margin-top: 4px;
+    margin-bottom: 4px;
+    border: none;
+    border-top: 1px solid var(--themeDark);
+    height: 3px;
+    width: 100%;
+}
+
+
+
+/* Add to css/ai-manager.css */
+
+/* Overall container for rendered diffs */
+.conversation-area .response-block .diff-output {
+    background-color: var(--bg-code); /* A neutral background, maybe slightly darker than main chat area */
+    padding: 8px;
+    border-radius: var(--borderRadius);
+    font-size: var(--font-size-sm);
+    overflow-x: auto; /* Allow horizontal scrolling for wide diff lines */
+    white-space: pre; /* Preserve whitespace for diff format */
+    margin-top: 8px;
+    margin-bottom: 8px;
+    border: 1px solid var(--border-primary);
+    line-height: 1.4; /* Improve readability */
+    color: var(--text-primary); /* Default text color */
+    font-family: var(--font-mono);
+}
+
+
+
+/* Improve button placement and visibility */
+.conversation-area .response-block .code-buttons {
+    position: sticky; /* make the buttons show when the code is scrolled*/
+    top: 4px;
+    right: 4px;
+    display: flex;
+    gap: 4px;
+    z-index: 1; /* Ensure buttons are above code content */
+    opacity: 0; /* Hidden by default */
+    transition: opacity 0.2s ease-in-out;
+}
+
+.conversation-area .response-block pre:hover .code-buttons {
+    opacity: 1; /* Show on hover */
+}
+
+.conversation-area .response-block .code-button {
+    background-color: var(--bg-secondary);
+    border: 1px solid var(--border-primary);
+    color: var(--text-primary);
+    padding: 4px 8px;
+    border-radius: var(--borderRadius);
+    font-size: var(--font-size-xs);
+    cursor: pointer;
+}
+
+.conversation-area .response-block .code-button:hover {
+    background-color: var(--bg-tertiary);
+    color: var(--theme);
+}
+/* Ensure the pre element is positioned relatively for absolute button positioning */
+.conversation-area .response-block pre {
+    position: relative;
+}
+
+
+
+.prompt-container {
+    padding: 0px 0;
+    background-color: transparent;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    flex-shrink: 0; /* Prevents the container from being shrunk by the parent flexbox, allowing it to grow with its content. */
+}
+
+.prompt-area { /* This now targets the container DIV for ACE */
+    box-sizing: border-box;
+    width: 100%;
+    border: none;
+    outline: none;
+    border-radius: var(--borderRadius);
+    /*padding: 8px; */
+    /* The following are managed by ACE's internal rendering and options */
+    /* resize: none; */
+    /* overflow-y: auto; */
+    /*max-height: 50%; */
+}
+
+/* Specific styles for the ACE editor instance inside the prompt area */
+.prompt-area .ace_editor {
+    height: auto !important; /* Allow ACE to calculate height based on minLines/maxLines */
+    min-height: 24px; /* Ensure at least one line height */
+}
+.prompt-area .ace_print-margin,
+.prompt-area .ace_gutter {
+    display: none !important; /* Hide print margin and gutter for the prompt editor */
+}
+
+.prompt-area:disabled {
+    opacity: 0.7;
+    cursor: not-allowed;
+    background-color: var(--bg-secondary);
+}
+
+
+.settings-button {
+	flex-grow:0;
+}
+
+.spacer {
+    flex-grow: 1;
+}
+
+.theme-button {
+    background-color: var(--theme);
+    color: var(--text-inverted);
+    border: 1px solid var(--theme);
+    cursor: pointer;
+}
+
+.theme-button:hover {
+    background-color: var(--theme-dark);
+    border-color: var(--theme-dark);
+}
+
+.submit-button {
+    align-self: flex-end;
+}
+
+.clear-button, .summarize-button { 
+    align-self: flex-end; /* The clear and summarize buttons should be aligned to the end of the flex container. */
+    background-color: var(--bg-secondary);
+    color: var(--text-primary);
+    border: 1px solid var(--border-primary);
+    cursor: pointer;
+}
+
+.clear-button:hover, .summarize-button:hover {
+    background-color: var(--theme-dark);
+    border-color: var(--border-primary);
+}
+
+/* Spinner specifically for use inside buttons */
+.button-spinner {
+    width: 16px; /* Smaller for button context */
+    height: 16px;
+    border: 2px solid color-mix(in srgb, var(--text-inverted) 50%, transparent); /* Use a color that works on the button background */
+    border-radius: 50%;
+    border-top-color: var(--text-inverted); /* Spinner color */
+    animation: spin 1s linear infinite;
+    /* This will help center it as our Button class uses flexbox */
+    margin: auto;
+}
+
+/* Optional: Add styling to the button itself while loading */
+.summarize-button.loading { }
+
+
+.response-block {
+    margin-bottom: 16px;
+    background: linear-gradient(to bottom, color-mix(in srgb, var(--text-primary) 10%, transparent), transparent);
+    border-radius: 16px;
+    padding: 0px 16px;
+    /*border: 2px solid rgba(0,0,0,0.125);*/
+    position: relative;
+}
+
+.response-block pre {
+    position: relative;
+    padding-top: 24px;
+    max-height: 30em; /* Default max-height */
+    overflow-y: auto; 
+    margin-top: 8px;
+    margin-bottom: 8px;
+}
+
+.response-block pre[collapsed] {
+    max-height: 10em; /* Collapsed state */
+    overflow-y: auto;
+}
+
+.response-block pre[expanded] {
+    max-height: initial !important; 
+    overflow-y: hidden; 
+}
+
+
+.code-buttons {
+    position: sticky;
+    top: 0px;
+    right: 0px;
+    display: flex;
+    flex-direction: row-reverse;
+    gap: 4px;
+    opacity: 0;
+    transition: opacity 0.2s ease-in-out;
+    z-index: 1; /* Ensure buttons are on top of code content */
+}
+
+
+.response-block pre:hover .code-buttons,
+.response-block pre[collapsed] .code-buttons {
+    opacity: 1;
+}
+
+.code-button {
+    background-color: var(--bg-tertiary);
+    color: var(--text-primary);
+    border: none;
+    border-radius: 50%;
+    padding: 0px 4px;
+    cursor: pointer;
+    font-size: 14px;
+    line-height: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.code-button:hover {
+    filter: brightness(0.9);
+}
+
+/* Styles for successful diff application */
+.code-button.diff-apply-success {
+    background-color: var(--diff-green-soft)!important;
+    border-color: var(--diff-green);
+}
+
+/* Styles for failed diff application */
+.code-button.diff-apply-failed {
+    background-color: var(--diff-red-soft)!important;
+    border-color: var(--diff-red);
+}
+
+.prompt-pill-wrapper {
+    position: relative; 
+    align-self: flex-end;
+    max-width: 80%;
+    margin-bottom: 8px; 
+    display: flex; 
+}
+
+.prompt-pill {
+    background-color: var(--theme-dark);
+    color: var(--text-inverted);
+    padding: 0px 12px; 
+    border-radius: 16px;
+    word-wrap: break-word;
+}
+
+.delete-history-button {
+    background-color: var(--theme-dark);
+    color: var(--text-inverted);
+    border: none;
+    border-radius: 50%; 
+    width: 24px;
+    height: 24px;
+    min-width: 24px;
+    min-height: 24px;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    cursor: pointer;
+    padding: 0;
+    position: absolute;
+    top: -4px; 
+    right: -4px;
+    opacity: 0; 
+    transition: opacity 0.2s ease-in-out, background-color 0.2s ease-in-out;
+    box-shadow: 0 1px 3px var(--shadow-color);
+    z-index: 1;
+}
+
+/* ACE Editor read-only state, specifically for the prompt editor */
+.prompt-area .ace_editor.ace_read-only {
+    opacity: 0.7;
+    cursor: not-allowed;
+    background-color: var(--bg-secondary);
+}
+
+.delete-history-button:hover {
+    background-color: var(--color-error);
+}
+
+.prompt-pill-wrapper:hover .delete-history-button,
+.context-file-wrapper:hover .delete-history-button {
+    opacity: 1;
+}
+
+.spinner {
+    /* This class is now deprecated as ui-loader-bar is used */
+
+}
+
+.spinner-container {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    min-height: 100px; /* Give the spinner some vertical space */
+}
+
+.loading-spinner {
+    width: 32px;
+    height: 32px;
+    border: 4px solid var(--border-secondary);
+    border-top-color: var(--theme); /* The top border of the loading spinner should be the theme color. */
+    border-radius: 50%;
+    animation: spin-simple 1s linear infinite;
+}
+
+@keyframes spin-simple {
+    from { transform: rotate(0deg); }
+    to   { transform: rotate(360deg); }
+}
+
+.progress-bar-inner {
+  height: 100%;
+  width: 0%;
+  background-color: var(--theme);
+  border-radius: 5px;
+  transition: width 0.5s ease-in-out, background-color 0.3s ease-in-out;
+}
+
+.progress-bar-inner.threshold-yellow {
+    background-color: var(--color-warning);
+}
+
+.progress-bar-inner.threshold-orange {
+    background-color: var(--color-warning-dark);
+}
+
+.progress-bar-inner.threshold-red {
+    background-color: var(--color-error);
+}
+
+
+@keyframes spin {
+    0% { transform: translate(-50%, -50%) rotate(0deg); }
+    100% { transform: translate(-50%, -50%) rotate(360deg); }
+
+}
+
+.context-file-wrapper {
+    display: flex;
+    align-items: center;
+    margin-bottom: 8px;
+    align-self: flex-end;
+    max-width: 80%;
+    gap: 4px;
+    position: relative; 
+}
+
+.context-file-pill {
+    background-color: var(--bg-secondary);
+    border: 1px solid var(--theme);
+    color: var(--theme);
+    padding: 0px 12px; /* A pill for a context file should have 0px top and bottom padding, and 12px left and right padding. */
+    border-radius: 16px;
+    flex-grow: 1;
+    flex-shrink: 1;
+}
+
+.file-size {
+    font-size: 0.8em;
+    color: var(--text-secondary);
+}
+
+.system-message-block {
+    margin-bottom: 8px;
+    padding: 8px 16px; /* A system message block should have 8px top and bottom padding, and 16px left and right padding. */
+    background: rgba(var(--text-color-rgb), 0.05);
+    border-radius: var(--borderRadius);
+    color: var(--text-color-secondary);
+    font-style: italic;
+    font-size: 0.9em;
+    text-align: center;
+}
+
+/* Collapse vertical space between adjacent system message blocks */
+.system-message-block + .system-message-block {
+    margin-top: -42px; /* completely squash the gap on stacked system prompts*/
+}
+
+button:disabled,
+.theme-button:disabled,
+.clear-button:disabled,
+.settings-button:disabled,
+.delete-history-button:disabled,
+.new-session-button:disabled { 
+    opacity: 0.6;
+    cursor: not-allowed;
+    pointer-events: none;
+}
+
+.ai-info-display {
+    font-size: 0.85em;
+    color: var(--text-secondary);
+    align-self: center; 
+    padding-left: 8px;
+    white-space: nowrap; 
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 150px; 
+}
+
+.ai-file-context-bar {
+	flex-wrap: wrap;
+	gap: 6px;
+	padding: 6px 8px;
+	max-height: 150px; /* Limit height and allow scrolling if needed */
+	overflow-y: auto;
+}
+
+.ai-filebar-container {
+	position: sticky; /* Now it's sticky within the conversation-area */
+	top: 0;
+	background-color: var(--bg-primary);
+	z-index: 2;
+	border-bottom: 1px solid var(--theme-dark);
+	display: flex;
+	flex-direction: column;
+}
+
+.ai-filebar-container > .progress-bar {
+	width: calc(100% - 16px); /* Match padding of file-context-bar, which is 8px on each side. */
+	margin: 0 8px 6px 8px; /* Give it some space */
+	height: 6px;
+	background-color: var(--theme-dark);
+	border-radius: 4px;
+}
+
+.button-container {
+    display: flex;
+    justify-content: space-between;
+    align-items: center; 
+    padding-bottom:4px;
+}
+
+.settings-button {
+    order: -1; 
+}
+
+/* --- SESSION TABBAR STYLES (MODIFIED) --- */
+.ai-session-tab-container {
+    display: flex;
+    align-items: flex-end; 
+    background-color: var(--bg-primary);
+    padding: 0px 4px 0 4px; 
+    gap: 4px;
+    border-top: 3px solid var(--theme-dark); /* Swapped from border-bottom */
+    flex-shrink: 0;
+}
+
+.ai-session-tab-container > ui-tabbar {
+    flex-grow: 1; 
+}
+
+.ai-session-tab-container .new-session-button {
+    flex-shrink: 0;
+    margin-bottom: 0; /* Remove bottom margin */
+    height: 32px;
+    min-height: 32px;
+    line-height: 32px;
+}
+
+.ai-session-tab-container .new-session-button:hover {
+    background-color: var(--bg-tertiary);
+}
+
+/* ... (rest of CSS) ... */
+
+@keyframes sticky-fade-out {
+  0%, 90% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
+.system-message-sticky-fade {
+	position: absolute;
+	bottom: 0; /* Stick to the top of the conversation-area, below the file bar */
+	z-index: 3; /* Ensure it's above other chat content */
+	border: 1px solid var(--theme); /* The border should be the theme color. */
+	background: var(--theme-dark);
+	color: var(--text-inverted);
+	animation: sticky-fade-out 5s linear forwards;
+	box-shadow: 0 5px 5px var(--shadow-color); /* Add a subtle shadow to lift it off the content */
+	padding:0px;
+
+	padding: 0px;
+	left: 8px;
+	right: 8px;
+}
+
+/*.system-message-sticky-fade {*/
+/*    position: sticky;*/
+/*    bottom: 130px;*/
+/*    border: 1px solid var(--theme);*/
+/*    background: var(--theme-dark);*/
+/*    color: var(--text-inverted);*/
+    /* animation: sticky-fade-out 10s linear forwards; */
+/*    box-shadow: 0 5px 5px rgba(0, 0, 0, 0.15);*/
+/*}*/
+
+/* Styles for the new in-thread context stale notice */
+.context-stale-notice {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px; /* Space between message and button group */
+    border: 1px solid var(--theme); /* Highlight it */
+    font-style: normal; /* Override system-message-block italic */
+    text-align: center;
+    /* New styles for sticky behavior */
+    position: sticky;
+    bottom: 0;
+    z-index: 4; /* Above other messages */
+    background-color: var(--bg-primary); /* Solid background to obscure content behind it */
+    box-shadow: 0 -5px 10px var(--shadow-color); /* Shadow on top to lift it from the content */
+    padding: 8px 16px; /* Ensure consistent padding */
+}
+
+.system-message-block + .system-message-block.context-stale-notice {
+	margin-top:0px;
+}
+
+.context-stale-notice .button-group {
+    display: flex;
+    gap: 8px;
+}
+
+/* Style the buttons to look consistent */
+.context-stale-notice button {
+    padding: 6px 12px;
+    border-radius: var(--borderRadius);
+    cursor: pointer; /* The cursor should be a pointer when hovering over a button. */
+    border: 1px solid var(--border-primary);
+    background-color: var(--bg-secondary);
+    color: var(--text-primary);
+    font-size: 0.9em;
+}
+.context-stale-notice .update-button {
+    background-color: var(--theme); /* The background color for the update button should be the theme color. */
+    border-color: var(--theme); /* The border color for the update button should be the theme color. */
+    color: var(--text-inverted);
+}
+.context-stale-notice button:hover { filter: brightness(1.2); }
+
+/* Overrides for highlight.js to match the current ACE editor theme */
+.conversation-area .response-block pre .hljs-comment,
+.conversation-area .response-block pre .hljs-quote {
+    color: var(--hljs-comment, #7F848E); /* Default from atom-one-dark */
+}
+
+.conversation-area .response-block pre .hljs-built_in,
+.conversation-area .response-block pre .hljs-keyword,
+.conversation-area .response-block pre .hljs-selector-tag,
+.conversation-area .response-block pre .hljs-subst {
+    color: var(--hljs-keyword, #C678DD);
+}
+
+.conversation-area .response-block pre .hljs-number,
+.conversation-area .response-block pre .hljs-literal,
+.conversation-area .response-block pre .hljs-template-variable,
+.conversation-area .response-block pre .hljs-tag {
+    color: var(--hljs-number, #D19A66);
+}
+
+
+.conversation-area .response-block pre .hljs-string,
+.conversation-area .response-block pre .hljs-doctag {
+    color: var(--hljs-string, #98C379);
+}
+
+.conversation-area .response-block pre .hljs-title,
+.conversation-area .response-block pre .hljs-section,
+.conversation-area .response-block pre .hljs-selector-id,
+.conversation-area .response-block pre .hljs-title.class_, 
+.conversation-area .response-block pre .hljs-class,
+.conversation-area .response-block pre .hljs-title {
+    color: var(--hljs-class, #E5C07B);
+}
+
+.conversation-area .response-block pre .hljs-selector-attr,
+.conversation-area .response-block pre .hljs-attribute {
+	color: var(--hljs-attribute, #0089cd)
+}
+
+.conversation-area .response-block pre .hljs-selector-pseudo,
+.conversation-area .response-block pre .hljs-selector-class,
+.conversation-area .response-block pre .hljs-attr {
+    color: var(--hljs-selector, #9aaff2);
+}
+
+.conversation-area .response-block pre .hljs-title.function_ {
+    color: var(--hljs-function, #61AFEF);
+}
+
+.conversation-area .response-block pre .hljs-variable {
+	color: var(--hljs-variable, #e06c75);
+}
+
+.conversation-area .response-block pre .hljs-meta,
+.conversation-area .response-block pre .hljs-tag {
+    color: var(--hljs-tag, #e06c75);
+}
