@@ -51,8 +51,8 @@ func main() {
 	var startServerOnce sync.Once
 	setURLHandler(func(url *url.URL) {
 		log.Printf("Received URL via macOS protocol handler: %s", url.String())
-		startServerOnce.Do(func() { go runConduitServer() })
+		startServerOnce.Do(func() { go runCadenceServer(true) })
 	})
-	startServerOnce.Do(func() { go runConduitServer() })
+	startServerOnce.Do(func() { go runCadenceServer(true) })
 	registerAndRunURLHandler()
 }

@@ -74,7 +74,7 @@ class ConduitClient {
         const url = new URL(`${this.baseUrl}/files`);
         url.searchParams.set('path', path);
         const headers = {};
-        if (this.apiKey) headers['X-Conduit-Key'] = this.apiKey;
+        if (this.apiKey) headers['X-Cadence-Key'] = this.apiKey;
 
         const response = await fetch(url, { headers });
         if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
@@ -87,7 +87,7 @@ class ConduitClient {
         const url = new URL(`${this.baseUrl}/files`);
         url.searchParams.set('path', path);
         const headers = {};
-        if (this.apiKey) headers['X-Conduit-Key'] = this.apiKey;
+        if (this.apiKey) headers['X-Cadence-Key'] = this.apiKey;
 
         const response = await fetch(url, { headers });
         if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
@@ -102,7 +102,7 @@ class ConduitClient {
         const url = new URL(`${this.baseUrl}/files`);
         url.searchParams.set('path', path);
         const headers = {};
-        if (this.apiKey) headers['X-Conduit-Key'] = this.apiKey;
+        if (this.apiKey) headers['X-Cadence-Key'] = this.apiKey;
         headers['Content-Type'] = 'application/octet-stream';
 
         const response = await fetch(url, { method: 'POST', headers, body: content });

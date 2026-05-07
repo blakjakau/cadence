@@ -95,6 +95,14 @@ export class ActionBar extends Block {
 		}, 1000)
 		return this
 	}
+	empty() {
+		super.empty()
+		if (this.pnlOverflow) {
+			this.pnlOverflow.empty()
+		}
+		return this
+	}
+
 	update(resize = false) {
 		// keep the overflow elements always at the end of the bar
 
@@ -102,11 +110,15 @@ export class ActionBar extends Block {
 		if (this._overflow) {
 			if (resize) {
 				// this.btnOverflow.style.opacity=0
-				if (this.childElementCount <= 2) return
+				
 				// first attach all the elements to the bar!
 				while (this.pnlOverflow.childElementCount > 0) {
 					super.append.apply(this, [this.pnlOverflow.firstElementChild])
 				}
+				
+				if (this.childElementCount <= 2) return
+				if (this.offsetWidth === 0) return
+
 				// then get the current width of the bar and add elements until it's full
 				let t = 0,
 					w = this.offsetWidth - (48 + 8)

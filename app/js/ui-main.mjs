@@ -34,6 +34,7 @@ var darkmodeMenu, darkmodeSelect
 var openDir, themeModeToggle, toggleSplitViewBtn, scratchEditor, iconTabBar;
 var fileListBackground
 var currentEditor, currentTabs, currentMediaView
+var drawerLastHeight = window.innerHeight * 0.3;
 
 const toggleBodyClass = (className) => {
 	if (document.body.classList.contains(className)) {
@@ -49,74 +50,172 @@ var saveSidepanelWidth
 
 let isResizingSidebar = false; // Flag to hide panel content during manual resize to prevent jank
 const uiManager = {
-	
+	isDrawerOpen: () => {
+		return drawer && drawer.offsetHeight > 40;
+	},
+
+	toggleDrawer: (forceState) => {
+		const isOpen = uiManager.isDrawerOpen();
+		const targetState = forceState !== undefined ? forceState : !isOpen;
+
+		if (targetState) {
+			// Opening
+			drawer.style.height = drawerLastHeight + "px";
+			const drawerToggle = document.querySelector("#drawerToggle");
+			if (drawerToggle) drawerToggle.icon = "expand_more";
+			
+			if (window.terminalManager) {
+				setTimeout(() => window.terminalManager.fit(), animRate + 50);
+			}
+		} else {
+			// Closing
+			if (isOpen) {
+				drawerLastHeight = drawer.offsetHeight - 4; // Subtract border/handle visual
+			}
+			drawer.style.height = "34px";
+			const drawerToggle = document.querySelector("#drawerToggle");
+			if (drawerToggle) drawerToggle.icon = "expand_less";
+		}
+		if (typeof debounceConstrainHolders === "function") {
+			// debounceConstrainHolders();
+			drawer.removeEventListener("transitionend", debounceConstrainHolders);
+			drawer.addEventListener("transitionend", debounceConstrainHolders, { once: true });
+		}
+	},
+
 	create: (options = {}) => {
-		
+
 		document.documentElement.style.setProperty('--animRate', `${animRate}ms`);
-		
+
 		const defaults = {
 			theme: "ace/theme/code",
 			mode: "ace/mode/javascript",
 			keyboard: "ace/keyboard/sublime",
 		}
-		
-		window.addEventListener("resize", ()=>{
+
+		window.addEventListener("resize", () => {
 			debounceConstrainHolders()
 		})
-		
-		debounceConstrainHolders = ()=>{
-			clearTimeout(constrainHoldersTimeout); 
-			constrainHoldersTimeout = setTimeout(constrainHolders, 100); 
+
+		debounceConstrainHolders = () => {
+			clearTimeout(constrainHoldersTimeout);
+			constrainHoldersTimeout = setTimeout(constrainHolders, 100);
 		}
-		constrainHolders = ()=>{
+			// const vh = window.innerHeight;
+			// const minH = vh * 0.2;
+			// const maxH = vh * 0.8;
+			// let currentH = drawer.offsetHeight;
+
+			// if (currentH < minH) {
+			// 	drawer.style.height = minH + "px";
+			// } else if (currentH > maxH) {
+			// 	drawer.style.height = maxH + "px";
+			// }
+			// mainContent.style.bottom = drawer.offsetHeight + "px";
+
+
+		const getDrawerConstraints = () => {
+			const vh = window.innerHeight;
+			return { min: 34, max: vh * 0.66, default: 34 };
+		};
+
+		const constrainDrawer = ()=>{
+
+			const constraints = getDrawerConstraints();
+			drawer.minSize = constraints.min;
+			drawer.maxSize = constraints.max;
+			
+			if(drawer.offsetHeight < constraints.default) {
+				drawer.style.height = constraints.default + "px";
+			}
+
+			if (document.body.classList.contains("showSidebar")) {
+				drawer.style.left = (sidebar.offsetLeft + sidebar.offsetWidth) + "px";
+				drawer.style.width = `calc(100% - ${sidebar.offsetWidth}px)`;
+			} else {
+				drawer.style.left = "0px";
+				drawer.style.width = "100%";
+			}
+			
+			// Handle Height Snap-back
+			const vh = window.innerHeight;
+			const minH = vh * 0.2;
+			const maxH = vh * 0.9;
+			let currentH = drawer.offsetHeight;
+
+			if (currentH < minH) {
+				drawer.style.height = minH + "px";
+			} else if (currentH > maxH) {
+				drawer.style.height = maxH + "px";
+			}
+			
+			// Handle Width sync
+			const sidebarWidth = sidebar.offsetWidth;
+			drawer.style.width = `calc(100% - ${sidebarWidth}px)`;
+			drawer.style.left = `${sidebarWidth}px`;
+
+			setTimeout(()=>{
+				mainContent.style.bottom = drawer.offsetHeight + "px";
+			})
+
+			
+			// if (window.terminalManager) window.terminalManager.fit();
+		}
+		constrainHolders = () => {
 			void sidebar.offsetWidth
 			const minWidth = 350
 			const maxWidth = window.innerWidth - 300; // 50% of window width
-			
-			if(document.body.classList.contains("showSidebar")) {
-				if(sidebar.offsetWidth > maxWidth) {
+
+
+			sidebar.removeEventListener("transitionend", constrainDrawer)
+			sidebar.addEventListener("transitionend", constrainDrawer, { once: true })
+		
+			if (document.body.classList.contains("showSidebar")) {
+				if (sidebar.offsetWidth > maxWidth) {
+					sidebarWidth = maxWidth;
 					sidebar.style.width = maxWidth + "px"
 					mainContent.style.left = maxWidth + "px";
-				} else if(sidebar.offsetWidth < minWidth) {
+				} else if (sidebar.offsetWidth < minWidth) {
+					sidebarWidth = minWidth;
 					sidebar.style.width = minWidth + "px"
 					mainContent.style.left = minWidth + "px";
+				} else {
+					sidebarWidth = sidebar.offsetWidth;
 				}
+		
 				drawer.style.left = (sidebar.offsetLeft + sidebarWidth) + "px";
-			
-				// Call fit on the terminal manager's instance
-				if (window.terminalManager) {
-					window.terminalManager.fit();
-					// Ensure fit after sidebar transition
-					sidebar.removeEventListener("transitionend", uiManager._sidebarFitTerminalAfterTransition); // Prevent duplicate listeners
-					uiManager._sidebarFitTerminalAfterTransition = () => window.terminalManager.fit();
-					sidebar.addEventListener("transitionend", uiManager._sidebarFitTerminalAfterTransition, { once: true });
-				}
+				drawer.style.width = `calc(100% - ${sidebarWidth}px)`;
 			}
+			
+			mainContent.style.bottom = drawer.offsetHeight + "px"
 			saveSidepanelWidth()
-			if(!document.body.classList.contains("showSplitView")) {
-				leftEdit.resize()
-				rightEdit.resize()
-				scratchEditor.resize();
-				return
+			if (window.terminalManager && uiManager.isDrawerOpen()) {
+				window.terminalManager.fit();
+				// Ensure fit after sidebar transition
+				sidebar.removeEventListener("transitionend", uiManager._sidebarFitTerminalAfterTransition); // Prevent duplicate listeners
+				uiManager._sidebarFitTerminalAfterTransition = () => {
+					if (uiManager.isDrawerOpen()) window.terminalManager.fit();
+				};
+				sidebar.addEventListener("transitionend", uiManager._sidebarFitTerminalAfterTransition, { once: true });
 			}
-			
-			
-			const w = mainContent.offsetWidth
-			let l = leftHolder.offsetWidth/w
-			let r = rightHolder.offsetWidth/w
-			l = Math.max(0.25, Math.min(0.75, l))
-			r = 1 - l
-			leftHolder.style.width = ((l)*100)+"%"
-			rightHolder.style.width = ((r)*100)+"%"
-			
-			
-			
-			setTimeout(()=>{
-				leftEdit.resize()
-				rightEdit.resize()
-				scratchEditor.resize();
-			}, animRate)
 
+			if (!document.body.classList.contains("showSplitView")) {
+
+			} else {
+				const w = mainContent.offsetWidth
+				let l = leftHolder.offsetWidth / w
+				let r = rightHolder.offsetWidth / w
+				l = Math.max(0.25, Math.min(0.75, l))
+				r = 1 - l
+				leftHolder.style.width = ((l) * 100) + "%"
+				rightHolder.style.width = ((r) * 100) + "%"
+			}
+
+			setTimeout(() => {
+				window.editors.forEach(e=>{
+					e.resize()
+				})
+			}, animRate)
 		}
 
 		options = { ...defaults, ...options }
@@ -144,13 +243,11 @@ const uiManager = {
 		const conduitTab = new IconTab('public');
 		const aiTab = new IconTab('developer_board');
 		const scratchTab = new IconTab('edit_note');
-		const terminalTab = new IconTab('terminal');
 		iconTabBar.addTab(filesTab);
 		// iconTabBar.addTab(conduitTab);
 		iconTabBar.addTab(aiTab);
-		iconTabBar.addTab(terminalTab);
 		iconTabBar.addTab(scratchTab);
-		
+
 		const filesPanel = new SidebarPanel();
 		filesPanel.append(fileActions);
 		filesPanel.append(fileList);
@@ -165,12 +262,12 @@ const uiManager = {
 		conduitPanel.append(conduitFileList);
 
 		// The AI Panel creation is delegated to aiManager.init(aiManagerPanel)
-        // Ensure aiManagerPanel exists for aiManager to append its UI
+		// Ensure aiManagerPanel exists for aiManager to append its UI
 		// aiManager.panel is set here for the first time
 		const aiManagerPanel = new SidebarPanel();
-		aiManager.init(aiManagerPanel) 
-        // as we need global app/workspace config loaded before aiManager fully initializes.
-        // So this append happens here, but init() is external.
+		aiManager.init(aiManagerPanel)
+		// as we need global app/workspace config loaded before aiManager fully initializes.
+		// So this append happens here, but init() is external.
 
 		const scratchPanel = new SidebarPanel();
 		const scratchEditorElement = new Block();
@@ -180,7 +277,11 @@ const uiManager = {
 
 		const terminalPanel = new SidebarPanel(); // Create a SidebarPanel to host the terminal
 		terminalPanel.setAttribute("id", "terminal-panel");
-		
+		terminalPanel.style.top = "0"; // Leave 8px for the drawer resize handle
+		terminalPanel.style.bottom = "34px"; // Leave 34px for the bottom action bar overlap
+		terminalPanel.style.paddingBottom="34px"
+		terminalPanel.active = true;
+
 		window.terminalManager = TerminalManager; // Create the manager instance
 		window.terminalManager.init(terminalPanel); // Initialize the manager with its panel
 		window.terminalManager._checkConduitStatus()
@@ -191,7 +292,6 @@ const uiManager = {
 		sidebarPanelsContainer.append(aiManagerPanel);
 		sidebarPanelsContainer.append(conduitPanel);
 		sidebarPanelsContainer.append(scratchPanel);
-		sidebarPanelsContainer.append(terminalPanel);
 
 		sidebar = new Panel()
 		sidebar.setAttribute("id", "sidebar")
@@ -199,10 +299,10 @@ const uiManager = {
 		sidebar.append(sidebarPanelsContainer);
 		sidebar.minSize = 240
 		sidebar.maxSize = 2440
-		
-		
+
+
 		let currentTab
-		saveSidepanelWidth = ()=>{
+		saveSidepanelWidth = () => {
 			const activeTabId = iconTabBar.activeTab?.iconId;
 			if (activeTabId && window.workspace) {
 				window.workspace.sidebarPanelWidths = window.workspace.sidebarPanelWidths || {};
@@ -213,11 +313,11 @@ const uiManager = {
 			}
 		}
 
-		
+
 		iconTabBar.on('tabs-updated', ({ detail }) => {
 			const tab = detail.tab;
 			const panels = sidebar.querySelectorAll('ui-sidebar-panel');
-			
+
 			let nextActivePanel;
 			if (tab === filesTab) {
 				nextActivePanel = filesPanel;
@@ -227,10 +327,8 @@ const uiManager = {
 				nextActivePanel = aiManagerPanel;
 			} else if (tab === scratchTab) {
 				nextActivePanel = scratchPanel
-			} else if (tab === terminalTab) {
-				nextActivePanel = terminalPanel
 			}
-			
+
 			const currentlyVisiblePanel = sidebar.querySelector('ui-sidebar-panel[active]');
 			const isSwitchingPanel = currentlyVisiblePanel !== nextActivePanel;
 			if (isSwitchingPanel) {
@@ -250,7 +348,7 @@ const uiManager = {
 					if (nextActivePanel) nextActivePanel.active = true; // Reveal the correct panel after animation
 					debounceConstrainHolders(); // Re-constrain holders after sidebar resize
 					saveSidepanelWidth()
-					
+
 				}, animRate);
 			} else {
 				// No animation needed, or it's the same width, just ensure the correct panel is active
@@ -267,7 +365,7 @@ const uiManager = {
 
 		menu = document.querySelector("#menu")
 		if (menu == null) {
-						menu = new ActionBar()
+			menu = new ActionBar()
 			menu.setAttribute("id", "menu")
 			menu.addClass("slim")
 			menu.append(new Inline('<img src="images/code-192.png"/> Cadence'))
@@ -287,9 +385,9 @@ const uiManager = {
 				openDir.setAttribute("title", "show sidebar")
 				mainContent.style.left = ""
 			}
-			setTimeout(()=>{
+			setTimeout(() => {
 				debounceConstrainHolders()
-			},animRate)
+			}, animRate)
 		})
 
 		toggleSplitViewBtn = new Button()
@@ -305,16 +403,16 @@ const uiManager = {
 		leftTabs.setAttribute("id", "leftTabs")
 		leftTabs.setAttribute("slim", "true")
 		leftTabs.splitViewDragEnabled = true;
-		
+
 		leftTabs.append(openDir)
 		leftTabs.append(toggleSplitViewBtn)
-		
+
 		rightTabs = new TabBar()
 		rightTabs.type = "tabs"
 		rightTabs.setAttribute("id", "rightTabs")
 		rightTabs.setAttribute("slim", "true")
-		
-		
+
+
 		statusbar = document.querySelector("#statusbar")
 		if (statusbar == null) {
 			statusbar = new ActionBar()
@@ -324,7 +422,7 @@ const uiManager = {
 		}
 
 		toggleSplitViewBtn.setAttribute("hook", "right")
-		
+
 		statusTheme = document.querySelector("#theme_select")
 		statusMode = document.querySelector("#mode_select")
 
@@ -335,21 +433,21 @@ const uiManager = {
 		darkmodeSelect = document.querySelector("#darkmode_select");
 		darkmodeMenu = document.querySelector("#darkmode_menu");
 
-		themeMenu.on( "show", (e) => {
+		themeMenu.on("show", (e) => {
 			e.stopPropagation()
 			setTimeout(() => {
 				const active = themeMenu.querySelector("[icon='done']")
 				themeMenu.scrollTop = active.offsetTop - themeMenu.offsetHeight / 2 + 12
 			})
-		}, true )
-		
-		modeMenu.on( "show", (e) => {
+		}, true)
+
+		modeMenu.on("show", (e) => {
 			e.stopPropagation()
 			setTimeout(() => {
 				const active = modeMenu.querySelector("[icon='done']")
 				modeMenu.scrollTop = active.offsetTop - modeMenu.offsetHeight / 2 + 12
 			})
-		}, true )
+		}, true)
 
 		// Query darkmode elements directly within the function
 		darkmodeSelect = document.querySelector("#darkmode_select");
@@ -359,12 +457,12 @@ const uiManager = {
 		leftHolder.setAttribute("id", "leftHolder")
 		leftHolder.classList.add("current")
 		leftHolder.mediaView.id = "leftMedia"
-		
+
 		rightHolder = new EditorHolder()
 		rightHolder.mediaView.id = "rightMedia"
-		
+
 		window.rightHolder = rightHolder
-		
+
 		rightHolder.setAttribute("id", "rightHolder")
 		// rightHolder.querySelector(".notice-bar").setAttribute("id", "rightFileModifiedNotice")
 		rightHolder.style.width = "0px"
@@ -372,52 +470,58 @@ const uiManager = {
 		rightHolder.resizable = "left"
 		rightHolder.minSize = 0
 		rightHolder.maxSize = 2440
-		
-	
+
+
 		leftTabs.exclusiveDropType = "editor-tab"
 		rightTabs.exclusiveDropType = "editor-tab"
 		leftHolder.exclusiveDropType = "editor-tab"
 		rightHolder.exclusiveDropType = "editor-tab"
 
-		
+
 		sidebar.resizeListener((width) => {
 			const maxWidth = window.innerWidth * 0.8; // 50% of window width
 			// sidebar.style.transition = "none";
 			sidebarWidth = Math.min(width, maxWidth); // Constrain width
 			mainContent.style.transition = "none";
+			drawer.style.transition = "none";
+			
 			mainContent.style.left = sidebarWidth + "px";
 			drawer.style.left = (sidebar.offsetLeft + sidebarWidth) + "px";
 		});
-		
-		sidebar.resizeEndListener(()=>{
-			// if (!isResizingSidebar && sidebarPanelsContainer) {
-			// 	isResizingSidebar = true;
-			// 	sidebarPanelsContainer.style.visibility = 'hidden';
-			// }
+
+		sidebar.resizeEndListener(() => {
 			if (isResizingSidebar && sidebarPanelsContainer) {
 				isResizingSidebar = false;
 				sidebarPanelsContainer.style.visibility = 'hidden';
 			}
 			sidebar.style.transition = ""
 			mainContent.style.transition = ""
+			drawer.style.transition = ""
 
 			debounceConstrainHolders()
-			
-			sidebar.on("transitionend", ()=>{
+
+			sidebar.on("transitionend", () => {
 				console.debug("save sidepanel resize event")
 				saveSidepanelWidth()
+				if (document.body.classList.contains("showSidebar")) {
+					drawer.style.left = (sidebar.offsetLeft + sidebarWidth) + "px";
+					drawer.style.width = `calc(100% - ${sidebarWidth}px)`;
+				} else {
+					drawer.style.left = "0px";
+					drawer.style.width = "100%";
+				}
 				// sidebarPanelsContainer.style.visibility = 'hidden';
-			}, {once:true})
+			}, { once: true })
 		})
 
-		rightHolder.resizeListener((width)=>{
+		rightHolder.resizeListener((width) => {
 			const w = mainContent.offsetWidth
-			const l = w-width
+			const l = w - width
 			const r = width
 			leftHolder.style.transition = "none";
-			leftHolder.style.width = l+"px"
+			leftHolder.style.width = l + "px"
 		})
-		rightHolder.resizeEndListener(()=>{
+		rightHolder.resizeEndListener(() => {
 			leftHolder.style.transition = ""
 			debounceConstrainHolders()
 		})
@@ -425,23 +529,43 @@ const uiManager = {
 		drawer = new Panel()
 		drawer.setAttribute("id", "drawer")
 		drawer.resizable = "top"
-		let drawerHeight = 34
-		drawer.minSize = drawerHeight
-		drawer.maxSize = 1440
-		drawer.style.height = drawerHeight + "px"
-		mainContent.style.bottom = drawerHeight + "px"
 
-		drawer.resizeListener((height)=>{
+		const drawerToggle = new Button();
+		drawerToggle.icon = "expand_more";
+		drawerToggle.setAttribute("id", "drawerToggle");
+		drawerToggle.on("click", () => {
+			uiManager.toggleDrawer();
+		});
+		drawer.prepend(drawerToggle);
+		drawer.append(terminalPanel)
+
+		drawer.resizeListener((height) => {
 			mainContent.style.transition = "none"
+			drawer.style.transition = "none"
 			mainContent.style.bottom = height + "px"
-			// drawer.style.left = sidebar.offsetWidth
 		})
 
-		drawer.resizeEndListener(()=>{
+		drawer.resizeEndListener((height) => {
+			mainContent.style.bottom = height + "px"
 			mainContent.style.transition = ""
+			drawer.style.transition = ""
 			debounceConstrainHolders()
 		})
-		
+
+		window.addEventListener('resize', () => {
+			const newConstraints = getDrawerConstraints();
+			drawer.minSize = newConstraints.min;
+			drawer.maxSize = newConstraints.max;
+		});
+
+		// Sync drawer width when sidebar resizes
+		sidebar.resizeListener((width) => {
+			const sidebarWidth = width;
+			drawer.style.width = `calc(100% - ${sidebarWidth}px)`;
+			drawer.style.left = `${sidebarWidth}px`;
+			mainContent.style.left = `${sidebarWidth}px`;
+		});
+
 
 		installer = new Panel()
 		installer.setAttribute("type", "modal")
@@ -496,6 +620,7 @@ const uiManager = {
 		installer.append(installer.deny, installer.later, installer.confirm)
 
 		installer.hide()
+		document.body.append(drawer)
 
 		omni = new Panel()
 		omni.results = new Panel()
@@ -576,7 +701,7 @@ const uiManager = {
 							currentEditor.find(reg)
 						} else {
 							const match = reg.exec(currentEditor.getValue())
-							
+
 							if (match && match.length > 0) {
 								currentEditor.selection.setRange({
 									start: currentEditor.session.doc.indexToPosition(match.index),
@@ -603,7 +728,7 @@ const uiManager = {
 							} else {
 								omni.results.hide()
 							}
-							
+
 							let counter = 0
 							for (let item of matches) {
 								// if(counter>10) continue
@@ -805,10 +930,10 @@ const uiManager = {
 		leftHolder.on("click", () => { uiManager.currentEditor = leftEdit })
 		rightHolder.on("click", () => { uiManager.currentEditor = rightEdit })
 
-		leftHolder.on("empty", () => { 
+		leftHolder.on("empty", () => {
 			leftEdit.setSession(ace.createEditSession("", ""))
 		})
-		rightHolder.on("empty", () => { 
+		rightHolder.on("empty", () => {
 			rightEdit.setSession(ace.createEditSession("", ""))
 		})
 
@@ -819,12 +944,12 @@ const uiManager = {
 
 		document.body.appendChild(menu)
 		document.body.appendChild(statusbar)
-		
-		
-		
+
+
+
 		mainContent.appendChild(leftHolder)
 		mainContent.appendChild(rightHolder)
-		
+
 		document.body.appendChild(sidebar)
 		document.body.appendChild(drawer)
 		document.body.appendChild(omni)
@@ -833,19 +958,26 @@ const uiManager = {
 		cursorpos.setAttribute("id", "cursor_pos")
 		statusbar.append(cursorpos)
 
+		const terminalToggleBtn = document.querySelector("#terminalToggleBtn");
+		if (terminalToggleBtn) {
+			terminalToggleBtn.on("click", () => {
+				uiManager.toggleDrawer();
+			});
+		}
+
 		window.leftEdit = leftEdit = ace.edit(leftHolder.editorElement)
 		window.rightEdit = rightEdit = ace.edit(rightHolder.editorElement)
-		
+
 		leftEdit.id = "left-editor"
 		rightEdit.id = "right-editor"
-		
+
 		leftHolder.editor = leftEdit
 		rightHolder.editor = rightEdit
-		
+
 		window.editors = [leftEdit, rightEdit]
 		leftEdit.tabs = leftTabs
 		rightEdit.tabs = rightTabs
-		
+
 		uiManager.currentEditor = leftEdit;
 		window.omni = omni
 		ace.require("ace/keyboard/sublime")
@@ -853,7 +985,7 @@ const uiManager = {
 
 		scratchEditor = ace.edit(scratchEditorElement);
 		scratchEditor.id = "scratch-editor"
-		
+
 		window.editors.push(scratchEditor);
 
 		const updateCursorPositionStatus = (editor) => {
@@ -872,22 +1004,22 @@ const uiManager = {
 			cursorpos.innerHTML = displayText;
 		};
 
-		for(const editor of editors) {
+		for (const editor of editors) {
 			const thisTabs = editor.tabs
 			editor.setKeyboardHandler(options.keyboard)
 			editor.setTheme(options.theme)
-	
+
 			editor.commands.removeCommand("find")
 			editor.commands.removeCommand("removetolineendhard")
 			editor.commands.removeCommand("removetolinestarthard")
-	
+
 			editor.setOptions(defaultSettings)
-	
+
 			editor.execCommand("loadSettingsMenu", () => {
 				editor._signal("ready")
 			})
-	
-	
+
+
 			editor.on("focus", () => {
 				// if (editor === scratchEditor) return;
 				uiManager.currentEditor = editor
@@ -896,16 +1028,16 @@ const uiManager = {
 			editor.on("changeSelection", () => {
 				updateCursorPositionStatus(editor);
 			})
-			
+
 		}
 
 
 		return
 	},
 
-	updateWorkspace:(appConfig) =>{ 
+	updateWorkspace: (appConfig) => {
 		window.workspaceMenu = workspaceMenu
-		
+
 	},
 
 	updateThemeAndMode: () => {
@@ -934,7 +1066,7 @@ const uiManager = {
 				for (const n in ace_themes) {
 					if (ace_themes[n].theme == c_theme) {
 						statusTheme.text = ace_themes[n].caption
-						
+
 						themeMenu.querySelector(`[rel-data='${ace_themes[n].theme}']`).icon = "done"
 					}
 				}
@@ -957,7 +1089,7 @@ const uiManager = {
 				for (const n in ace_modes) {
 					if (ace_modes[n].mode == c_mode) {
 						statusMode.text = ace_modes[n].caption
-						
+
 						modeMenu.querySelector(`[rel-data='${ace_modes[n].mode}']`).icon = "done"
 					}
 				}
@@ -989,30 +1121,30 @@ const uiManager = {
 		});
 	},
 
-	showSidebar: async (expandLevels=1) => {
+	showSidebar: async (expandLevels = 1) => {
 		fileList.autoExpand = expandLevels
-        const tree = (workspace.folders || []).map(path => {
-            return {
-                name: path.split('/').pop() || path,
-                path: path,
-                isDir: true
-            };
-        });
+		const tree = (workspace.folders || []).map(path => {
+			return {
+				name: path.split('/').pop() || path,
+				path: path,
+				isDir: true
+			};
+		});
 		fileList.files = tree;
 	},
 
 	toggleSidebar: () => {
 		return openDir.click()
 	},
-	
-	toggleSplitView: (ext = {})=>{
-		if(ext?.targetState == "closed") {
-			if(!document.body.classList.contains("showSplitView")) {
+
+	toggleSplitView: (ext = {}) => {
+		if (ext?.targetState == "closed") {
+			if (!document.body.classList.contains("showSplitView")) {
 				uiManager.currentEditor = leftEdit
 				return
 			}
 		}
-		const targetWidth = (window.innerWidth - leftHolder.offsetLeft)/2
+		const targetWidth = (window.innerWidth - leftHolder.offsetLeft) / 2
 		if (toggleBodyClass("showSplitView")) {
 			toggleSplitViewBtn.icon = "view_column"
 			toggleSplitViewBtn.setAttribute("title", "Hide split view")
@@ -1027,9 +1159,9 @@ const uiManager = {
 			rightTabs.moveAllTabsTo(leftTabs, "rightTabs", true);
 		}
 
-		setTimeout(()=>{
+		setTimeout(() => {
 			debounceConstrainHolders()
-		},animRate)
+		}, animRate)
 	},
 
 	omnibox: (mode) => {
@@ -1084,9 +1216,9 @@ const uiManager = {
 		settingsPanel.show()
 	},
 
-	
+
 	get installer() { return installer },
-	
+
 	get mainContent() { return mainContent },
 	get fileActions() { return fileActions },
 	get sidebar() { return sidebar },
@@ -1105,10 +1237,10 @@ const uiManager = {
 	get rightTabs() { return rightTabs },
 	get scratchEditor() { return scratchEditor },
 	get iconTabBar() { return iconTabBar },
-	
+
 	get terminalManager() { return terminalManager }, // Export the terminal's SidebarPanel
 	get aiManager() { return aiManager },
-	
+
 	fileListBackground: fileListBackground, // Expose the new element
 	_sidebarFitTerminalAfterTransition: null, // To hold the bound function for removal
 	constrainHolders: debounceConstrainHolders,
@@ -1138,40 +1270,40 @@ const uiManager = {
 	set currentMediaView(v) { currentMediaView = v },
 
 	set reloadFile(v) {
-		if("function" == typeof v) {
+		if ("function" == typeof v) {
 			uiManager._reloadFile = v
 		}
 	},
 
-    showFileModifiedNotice: (tab, side) => {
-    	
-        const noticeBarId = (side === 'left') ? "leftHolderFileModifiedNotice" : "rightHolderFileModifiedNotice";
-        const noticeBar = document.getElementById(noticeBarId);
-        const reloadBtn = noticeBar.querySelector("button[rel=reload]");
-        const dismissBtn = noticeBar.querySelector("button[rel=dismiss]");
+	showFileModifiedNotice: (tab, side) => {
 
-        // Store the tab reference on the notice bar for event handlers
-        noticeBar.currentTab = tab;
+		const noticeBarId = (side === 'left') ? "leftHolderFileModifiedNotice" : "rightHolderFileModifiedNotice";
+		const noticeBar = document.getElementById(noticeBarId);
+		const reloadBtn = noticeBar.querySelector("button[rel=reload]");
+		const dismissBtn = noticeBar.querySelector("button[rel=dismiss]");
 
-        reloadBtn.onclick = () => {
-            console.debug("Reload button clicked for tab:", tab.config.name);
-            uiManager._reloadFile(tab)
-            uiManager.hideFileModifiedNotice(side); // Pass side
-        };
-        dismissBtn.onclick = () => {
-            tab.config.fileModified = false; // Clear the flag
-            uiManager.hideFileModifiedNotice(side); // Pass side
-        };
+		// Store the tab reference on the notice bar for event handlers
+		noticeBar.currentTab = tab;
 
-        noticeBar.style.display = "flex"; // Show the notice bar
-    },
+		reloadBtn.onclick = () => {
+			console.debug("Reload button clicked for tab:", tab.config.name);
+			uiManager._reloadFile(tab)
+			uiManager.hideFileModifiedNotice(side); // Pass side
+		};
+		dismissBtn.onclick = () => {
+			tab.config.fileModified = false; // Clear the flag
+			uiManager.hideFileModifiedNotice(side); // Pass side
+		};
 
-    hideFileModifiedNotice: (side) => {
-        const noticeBarId = (side === 'left') ? "leftHolderFileModifiedNotice" : "rightHolderFileModifiedNotice";
-        const noticeBar = document.getElementById(noticeBarId);
-        noticeBar.style.display = "none"; // Hide the notice bar
-        noticeBar.currentTab = null; // Clear the tab reference
-    },
+		noticeBar.style.display = "flex"; // Show the notice bar
+	},
+
+	hideFileModifiedNotice: (side) => {
+		const noticeBarId = (side === 'left') ? "leftHolderFileModifiedNotice" : "rightHolderFileModifiedNotice";
+		const noticeBar = document.getElementById(noticeBarId);
+		noticeBar.style.display = "none"; // Hide the notice bar
+		noticeBar.currentTab = null; // Clear the tab reference
+	},
 }
 
 setTimeout(() => {

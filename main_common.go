@@ -19,17 +19,18 @@ import (
 )
 
 // This function now contains the core server logic, moved from main().
-func runConduitServer() {
+func runCadenceServer(block bool) {
 	getIsCompiled()
 	
 	flag.BoolVar(&debugLogging, "debug", false, "Enable debug logging")
 	flag.BoolVar(&keyFlag, "key", false, "Manage and print the API key for no-origin requests, then exit.")
-	flag.BoolVar(&installUserFlag, "install-user", false, "Install Conduit as a user-level application and protocol handler.")
-	flag.BoolVar(&installServiceFlag, "install-service", false, "Install Conduit as a systemd service (requires root).")
-	flag.BoolVar(&uninstallFlag, "uninstall", false, "Uninstall user and/or system Conduit installations.")
+	flag.BoolVar(&installUserFlag, "install-user", false, "Install Cadence as a user-level application and protocol handler.")
+	flag.BoolVar(&installServiceFlag, "install-service", false, "Install Cadence as a systemd service (requires root).")
+	flag.BoolVar(&uninstallFlag, "uninstall", false, "Uninstall user and/or system Cadence installations.")
 	flag.StringVar(&rootFlag, "root", "", "Set the root directory for the file API (defaults to user's home directory).")
-	flag.BoolVar(&noIdleShutdownFlag, "no-idle-shutdown", false, "Disable automatic shutdown due to inactivity. Recommended for services.")
+	flag.BoolVar(&noIdleShutdownFlag, "no-idle-shutdown", true, "Disable automatic shutdown due to inactivity. Recommended for services.")
 	flag.StringVar(&serveFlag, "serve", "", "Serve live static files from this directory instead of embedded assets.")
+	flag.BoolVar(&browserFlag, "browser", false, "Open in the default browser instead of a native window.")
 	flag.Parse()
 	
 	manageAPIKey(keyFlag)
@@ -56,7 +57,7 @@ func runConduitServer() {
 		if err != nil { os.Exit(1) }
 		os.Exit(0)
 	} else if len(flag.Args()) > 0 && flag.Args()[0] == "kill" {
-		log.Println("Shutting down Conduit via command line kill command.")
+		log.Println("Shutting down Cadence via command line kill command.")
 		os.Exit(0)
 	}
 
@@ -121,18 +122,28 @@ func runConduitServer() {
 	}
 
 	log.Printf("File API Root: %s", fileAPIRoot)
-	log.Printf("Conduit v%s - listening for WS connections (localhost:%s)", version, port)
+	log.Printf("Cadence v%s - listening for WS connections (localhost:%s)", version, port)
 	log.Println("------------------------------------------------------------")
 
-	go func() {
-		time.Sleep(500 * time.Millisecond)
-		openBrowser("http://localhost:" + port + "/launch")
-	}()
+	if browserFlag {
+		go func() {
+			time.Sleep(500 * time.Millisecond)
+			openBrowser("http://localhost:" + port + "/launch")
+		}()
+	}
 
-	err := http.ListenAndServe(":"+port, activityMiddleware(corsMiddleware(mux)))
-
-	if err != nil {
-		log.Fatal("ListenAndServe: ", err)
+	if block {
+		err := http.ListenAndServe(":"+port, activityMiddleware(corsMiddleware(mux)))
+		if err != nil {
+			log.Fatal("ListenAndServe: ", err)
+		}
+	} else {
+		go func() {
+			err := http.ListenAndServe(":"+port, activityMiddleware(corsMiddleware(mux)))
+			if err != nil {
+				log.Fatal("ListenAndServe (async): ", err)
+			}
+		}()
 	}
 }
 
@@ -151,6 +162,7 @@ var allowedOrigins = map[string]bool{
 }
 var rootFlag string
 var serveFlag string
+var browserFlag bool
 var keyFlag bool
 var installUserFlag bool
 var installServiceFlag bool
@@ -169,7 +181,7 @@ func getIsCompiled() {
 		log.Printf("Warning: Could not determine executable path: %v", err)
 	} else {
 		exeName := filepath.Base(exePath)
-		isCompiledBuild = strings.HasPrefix(exeName, "conduit-") || exeName == "conduit" || exeName == "conduit.exe"
+		isCompiledBuild = strings.HasPrefix(exeName, "cadence-") || exeName == "cadence" || exeName == "cadence.exe"
 	}
 }
 func updateLastActivity() {
@@ -188,7 +200,7 @@ func corsMiddleware(next http.Handler) http.Handler {
 		if allowedOrigins[origin] {
 			w.Header().Set("Access-Control-Allow-Origin", origin)
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-Conduit-Key")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-Cadence-Key")
 		}
 		// Handle preflight requests by immediately returning.
 		if r.Method == "OPTIONS" {
@@ -240,7 +252,7 @@ func killHandler() (string, error) {
 	}
 	log.Println("Received /kill request. Shutting down application.")
 	go func() { time.Sleep(100 * time.Millisecond); os.Exit(0) }()
-	return "Conduit server is shutting down.", nil
+	return "Cadence server is shutting down.", nil
 }
 
 func openBrowser(url string) {

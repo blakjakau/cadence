@@ -81,7 +81,7 @@ func checkRequestAuthorization(r *http.Request) bool {
 
 	// No Origin header: check for required API key.
 	if requiredAPIKey != "" {
-		providedKey := r.Header.Get("X-Conduit-Key") // Check header first
+		providedKey := r.Header.Get("X-Cadence-Key") // Check header first
 		if providedKey == "" {
 			providedKey = r.URL.Query().Get("key") // Then check query parameter
 		}

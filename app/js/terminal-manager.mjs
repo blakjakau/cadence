@@ -376,8 +376,8 @@ class TerminalManager {
 		if (this._activeSessionId && this._sessions.has(this._activeSessionId)) {
 			const activeSession = this._sessions.get(this._activeSessionId);
 			// Only attempt to fit if the terminal instance and fit addon exist,
-			// and its container is actually rendered (has an offsetParent).
-			if (activeSession.term && activeSession.fitAddon && activeSession.containerElement.offsetParent !== null) {
+			// and its container is actually rendered (has an offsetParent and non-zero height).
+			if (activeSession.term && activeSession.fitAddon && activeSession.containerElement.offsetParent !== null && activeSession.containerElement.clientHeight > 0) {
 				activeSession.fitAddon.fit();
 			}
 		}

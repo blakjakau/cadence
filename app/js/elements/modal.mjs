@@ -50,7 +50,7 @@ class Modal {
 
     notice(content, title = 'Notice') {
         this.inner.innerHTML = `<h1>${title}</h1>${content}`;
-        this.actionBar.innerHTML = ''; // Clear previous buttons
+        this.actionBar.empty(); // Clear previous buttons
 
         const okButton = new Button('Ok');
         okButton.classList.add('themed');
@@ -62,7 +62,7 @@ class Modal {
 
     confirm(content, title = 'Confirm', buttons = ['Ok', 'Cancel']) {
         this.inner.innerHTML = `<h1>${title}</h1>${content}`;
-        this.actionBar.innerHTML = '';
+        this.actionBar.empty();
 
         const okButton = new Button(buttons[0]);
         okButton.classList.add('themed');
@@ -80,7 +80,7 @@ class Modal {
     prompt(content, title = 'Prompt', defaultValue = '') {
         // Clear previous content
         this.inner.innerHTML = '';
-        this.actionBar.innerHTML = '';
+        this.actionBar.empty();
 
         // Create and append title
         const titleElement = document.createElement('h1');

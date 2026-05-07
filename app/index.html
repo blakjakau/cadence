@@ -82,7 +82,7 @@
 
 		themeCSS = isDev
 		?":root { --theme: #00AABB!important; --themeDark: #007788!important; }"
-		:":root { --theme: #0077bb!important; --themeDark: #005599!important; }"
+		:":root { --theme: #3f51b5!important; --themeDark: #303f9f!important; }"
 		const css = document.getElementById("rootCSS")
 		css.innerText = themeCSS;
 	</script>
@@ -112,6 +112,7 @@
 	<ui-actionbar id="statusbar" slim hook="bottom">
 		<ui-button id="settings" icon="settings" hook=right onclick="window.ui.execCommand('app:showEditorSettings')"></ui-button>
 		<ui-button id="darkmode_select" hook=right></ui-button>
+		<ui-button id="terminalToggleBtn" icon="terminal" hook=right title="Toggle Terminal"></ui-button>
 		
 		<ui-button id="theme_select" hook=right></ui-button>
 		<ui-button  id="mode_select" hook=right></ui-button>

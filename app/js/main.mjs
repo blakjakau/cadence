@@ -1718,7 +1718,7 @@ const keyBinds = [
 		name: "show-terminal",
 		bindKey: { win: "Alt+T", mac: "Option+T" },
 		exec: () => {
-			execCommandToggleSidebarPanel('terminal');
+			ui.toggleDrawer();
 		},
 	},
 	{
@@ -1975,7 +1975,7 @@ setTimeout(async () => {
     	}
 		if(e.detail?.tab?._iconId == "terminal") {
 			window.terminalManager.connect(); // call intial connect
-			window.terminalManager.fit(); // Fit active terminal when its tab is focused
+			if (ui.isDrawerOpen()) window.terminalManager.fit(); // Fit active terminal when its tab is focused
 		}
     })
 
