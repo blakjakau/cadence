@@ -522,7 +522,9 @@ ui-file-list {
 	display: block;
 	background: var(--bg-secondary);
 	z-index: 0;
-	height: calc(100vh - 108px);
+	flex: 1;
+	height: auto;
+	min-height: 0;
 	padding: 0px;
 }
 
@@ -927,12 +929,13 @@ ui-sidebar-panel {
 	top: 0;
 	left: 0;
 	width: 100%;
-	height: calc(100%);
+	height: 100%;
 	display: none;
+	flex-direction: column;
 }
 
 ui-sidebar-panel[active] {
-	display: block;
+	display: flex;
 }
 
 ui-filechip {

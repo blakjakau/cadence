@@ -183,7 +183,7 @@ export class FileList extends ContentFill {
 		if (!folderHandle) return;
 		const path = buildPath(folderHandle);
 		const folderItem = this.querySelector(`ui-file-item[title="${path}"]`);
-		if (folderItem && folderItem.item.kind === 'directory') {
+		if (folderItem && folderItem.item.isDir) {
 			folderItem.setAttribute("loading", "true");
 			folderItem.item.tree = await readAndOrderDirectory(folderItem.item);
 			if (folderItem.item.open) {
@@ -314,7 +314,7 @@ export class FileList extends ContentFill {
 				e.item = item
 				
 				e.setAttribute("title", itemPath)
-				// e.setAttribute("title", buildPath(item));
+				e.setAttribute("path", itemPath)
 				base.append(e, e.holder)
 
 				e.on("contextmenu", this.itemContextMenu)

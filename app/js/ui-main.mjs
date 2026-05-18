@@ -1,5 +1,6 @@
 import { FileList, Panel, Inline, Block, Button, TabBar, MediaView, Input, MenuItem, ActionBar, EditorHolder, IconTabBar, IconTab, SidebarPanel } from './elements.mjs';
 import TerminalManager from './terminal-manager.mjs'; // Import the new TerminalManager
+import { NativeTitleBar } from './elements/native-titlebar.mjs';
 import { ConduitFileList } from './elements/conduit-filelist.mjs';
 import aiManager from './ai-manager.mjs';
 import ollama from './ai-ollama.mjs';
@@ -65,7 +66,7 @@ const uiManager = {
 			if (drawerToggle) drawerToggle.icon = "expand_more";
 			
 			if (window.terminalManager) {
-				setTimeout(() => window.terminalManager.fit(), animRate + 50);
+				window.terminalManager.connect();
 			}
 		} else {
 			// Closing
@@ -116,7 +117,7 @@ const uiManager = {
 
 		const getDrawerConstraints = () => {
 			const vh = window.innerHeight;
-			return { min: 34, max: vh * 0.66, default: 34 };
+			return { min: 34, max: vh * 0.8, default: 34 };
 		};
 
 		const constrainDrawer = ()=>{
@@ -137,29 +138,29 @@ const uiManager = {
 				drawer.style.width = "100%";
 			}
 			
-			// Handle Height Snap-back
-			const vh = window.innerHeight;
-			const minH = vh * 0.2;
-			const maxH = vh * 0.9;
-			let currentH = drawer.offsetHeight;
-
-			if (currentH < minH) {
-				drawer.style.height = minH + "px";
-			} else if (currentH > maxH) {
-				drawer.style.height = maxH + "px";
+			if(uiManager.isDrawerOpen()) {
+				// Handle Height Snap-back
+				const vh = window.innerHeight;
+				const minH = vh * 0.2;
+				const maxH = vh * 0.9;
+				let currentH = drawer.offsetHeight;
+	
+				if (currentH < minH) {
+					drawer.style.height = minH + "px";
+				} else if (currentH > maxH) {
+					drawer.style.height = maxH + "px";
+				}
 			}
 			
+			
 			// Handle Width sync
-			const sidebarWidth = sidebar.offsetWidth;
+			const sidebarWidth = document.body.classList.contains("showSidebar") ? sidebar.offsetWidth : 0;
 			drawer.style.width = `calc(100% - ${sidebarWidth}px)`;
 			drawer.style.left = `${sidebarWidth}px`;
 
 			setTimeout(()=>{
 				mainContent.style.bottom = drawer.offsetHeight + "px";
 			})
-
-			
-			// if (window.terminalManager) window.terminalManager.fit();
 		}
 		constrainHolders = () => {
 			void sidebar.offsetWidth
@@ -231,11 +232,12 @@ const uiManager = {
 		fileSettingsBtn.setAttribute("title", "File list settings");
 		fileSettingsBtn.setAttribute("hook", "right");
 		fileSettingsBtn.on('click', () => {
-			ui.fileList.toggleSettingsPanel();
+			uiManager.fileList.toggleSettingsPanel();
 		});
 		fileActions.append(fileSettingsBtn);
 
-		fileList = new FileList()
+		fileList = new FileList();
+		uiManager.fileList = fileList;
 
 		iconTabBar = new IconTabBar();
 
@@ -249,17 +251,12 @@ const uiManager = {
 		iconTabBar.addTab(scratchTab);
 
 		const filesPanel = new SidebarPanel();
-		filesPanel.append(fileActions);
-		filesPanel.append(fileList);
-
+		filesPanel.append(fileActions); 
+		filesPanel.append(fileList); 
 		fileListBackground = document.createElement("div");
 		fileListBackground.classList.add("file-list-background-element");
 		fileListBackground.innerHTML = `<ui-icon icon="folder_open" style="font-size: 48px; opacity: 0.5;"></ui-icon><div class="caption">No folders in workspace<br/>Add a folder to begin.</div>`;
 		filesPanel.append(fileListBackground);
-
-		const conduitPanel = new SidebarPanel();
-		conduitFileList = new ConduitFileList();
-		conduitPanel.append(conduitFileList);
 
 		// The AI Panel creation is delegated to aiManager.init(aiManagerPanel)
 		// Ensure aiManagerPanel exists for aiManager to append its UI
@@ -290,7 +287,6 @@ const uiManager = {
 		sidebarPanelsContainer.setAttribute("id", "sidebar-panels-container");
 		sidebarPanelsContainer.append(filesPanel);
 		sidebarPanelsContainer.append(aiManagerPanel);
-		sidebarPanelsContainer.append(conduitPanel);
 		sidebarPanelsContainer.append(scratchPanel);
 
 		sidebar = new Panel()
@@ -379,7 +375,7 @@ const uiManager = {
 			if (toggleBodyClass("showSidebar")) {
 				openDir.icon = "menu_open"
 				openDir.setAttribute("title", "hide sidebar")
-				mainContent.style.left = ui.sidebar.offsetWidth + "px"
+				mainContent.style.left = uiManager.sidebar.offsetWidth + "px"
 			} else {
 				openDir.icon = "menu"
 				openDir.setAttribute("title", "show sidebar")
@@ -397,6 +393,26 @@ const uiManager = {
 		toggleSplitViewBtn.on("click", () => {
 			uiManager.toggleSplitView()
 		})
+
+		// Progressive Enhancement: Wails Detection
+		if (window.runtime) {
+			document.body.classList.add("is-native");
+			const logo = document.getElementById("logo");
+			if(logo) {
+				logo.classList.add("is-draggable")
+			}
+			
+			const menuBar = document.getElementById("menu");
+			if (menuBar) {
+				const titlebar = new NativeTitleBar();
+				const controls = titlebar.getControls();
+				const inlineControls = new Inline(controls);
+				inlineControls.style.marginLeft = "auto";
+				inlineControls.style.display = "flex";
+				menuBar.append(inlineControls);
+				menuBar.classList.add("is-draggable");
+			}
+		}
 
 		leftTabs = new TabBar()
 		leftTabs.type = "tabs"
@@ -449,9 +465,15 @@ const uiManager = {
 			})
 		}, true)
 
-		// Query darkmode elements directly within the function
-		darkmodeSelect = document.querySelector("#darkmode_select");
-		darkmodeMenu = document.querySelector("#darkmode_menu");
+		const inspectBtn = document.querySelector("#inspect_btn");
+		if (inspectBtn) {
+			if (window.runtime) {
+				inspectBtn.style.display = "flex";
+				inspectBtn.on("click", () => {
+					window.runtime.WindowReload();
+				});
+			}
+		}
 
 		leftHolder = new EditorHolder()
 		leftHolder.setAttribute("id", "leftHolder")
@@ -1134,6 +1156,7 @@ const uiManager = {
 	},
 
 	toggleSidebar: () => {
+		setTimeout(	debounceConstrainHolders, 300)
 		return openDir.click()
 	},
 
@@ -1159,9 +1182,7 @@ const uiManager = {
 			rightTabs.moveAllTabsTo(leftTabs, "rightTabs", true);
 		}
 
-		setTimeout(() => {
-			debounceConstrainHolders()
-		}, animRate)
+		debounceConstrainHolders()
 	},
 
 	omnibox: (mode) => {
@@ -1223,6 +1244,7 @@ const uiManager = {
 	get fileActions() { return fileActions },
 	get sidebar() { return sidebar },
 	get fileList() { return fileList },
+	set fileList(v) { fileList = v },
 	get leftTabs() { return leftTabs },
 	get darkmodeSelect() { return darkmodeSelect },
 	get darkmodeMenu() { return darkmodeMenu },
@@ -1292,6 +1314,12 @@ const uiManager = {
 		};
 		dismissBtn.onclick = () => {
 			tab.config.fileModified = false; // Clear the flag
+			const isDirty = tab.config.session.getValue() !== tab.config.session.baseValue;
+			tab.changed = isDirty; // Update the UI to reset the sync icon back to close
+			const fileItem = fileList.find(tab.config.handle);
+			if (fileItem && fileItem.length > 0) {
+				fileItem[0].changed = isDirty;
+			}
 			uiManager.hideFileModifiedNotice(side); // Pass side
 		};
 

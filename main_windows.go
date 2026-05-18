@@ -31,5 +31,7 @@ func init() {
 
 func main() {
 	// On Windows, after potentially attaching to a console, we run the server directly.
+	getIsCompiled()
+	parseFlags()
 	runCadenceServer(true)
 }

@@ -20,24 +20,7 @@ import (
 
 // This function now contains the core server logic, moved from main().
 func runCadenceServer(block bool) {
-	getIsCompiled()
-	
-	flag.BoolVar(&debugLogging, "debug", false, "Enable debug logging")
-	flag.BoolVar(&keyFlag, "key", false, "Manage and print the API key for no-origin requests, then exit.")
-	flag.BoolVar(&installUserFlag, "install-user", false, "Install Cadence as a user-level application and protocol handler.")
-	flag.BoolVar(&installServiceFlag, "install-service", false, "Install Cadence as a systemd service (requires root).")
-	flag.BoolVar(&uninstallFlag, "uninstall", false, "Uninstall user and/or system Cadence installations.")
-	flag.StringVar(&rootFlag, "root", "", "Set the root directory for the file API (defaults to user's home directory).")
-	flag.BoolVar(&noIdleShutdownFlag, "no-idle-shutdown", true, "Disable automatic shutdown due to inactivity. Recommended for services.")
-	flag.StringVar(&serveFlag, "serve", "", "Serve live static files from this directory instead of embedded assets.")
-	flag.BoolVar(&browserFlag, "browser", false, "Open in the default browser instead of a native window.")
-	flag.Parse()
-	
 	manageAPIKey(keyFlag)
-
-	if keyFlag {
-		os.Exit(0)
-	}
 
 	if installUserFlag {
 		msg, err := InstallUser()
@@ -73,8 +56,41 @@ func runCadenceServer(block bool) {
 		go startIdleShutdownManager(60 * time.Minute)
 	}
 	startTime = time.Now()
+	mux := createServerMux()
+
+	if serveFlag != "" {
+		port = "3023"
+	}
+
+	log.Printf("File API Root: %s", fileAPIRoot)
+	log.Printf("Cadence v%s - listening for WS connections (localhost:%s)", version, port)
+	log.Println("------------------------------------------------------------")
+
+	if browserFlag {
+		go func() {
+			time.Sleep(500 * time.Millisecond)
+			openBrowser("http://localhost:" + port + "/")
+		}()
+	}
+
+	if block {
+		err := http.ListenAndServe(":"+port, activityMiddleware(corsMiddleware(mux)))
+		if err != nil {
+			log.Fatal("ListenAndServe: ", err)
+		}
+	} else {
+		// Start background server (needed for WebSockets in Native mode)
+		go func() {
+			err := http.ListenAndServe(":"+port, activityMiddleware(corsMiddleware(mux)))
+			if err != nil {
+				log.Println("ListenAndServe (async) Error: ", err)
+			}
+		}()
+	}
+}
+
+func createServerMux() *http.ServeMux {
 	mux := http.NewServeMux()
-	log.Printf("Running as compiled build: %t", isCompiledBuild)
 	mux.HandleFunc("/terminal", terminalServer)
 	mux.HandleFunc("/up", upcheckHandler)
 	mux.HandleFunc("/files", filesApiHandler)
@@ -107,43 +123,56 @@ func runCadenceServer(block bool) {
 	})
 
 	if serveFlag != "" {
-		port = "3023"
 		log.Printf("Serving live frontend from: %s", serveFlag)
 		mux.Handle("/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			http.SetCookie(w, &http.Cookie{Name: "cadence_dev", Value: "true", Path: "/"})
 			http.FileServer(http.Dir(serveFlag)).ServeHTTP(w, r)
 		}))
 	} else {
-		log.Println("Serving embedded frontend")
 		mux.Handle("/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			http.SetCookie(w, &http.Cookie{Name: "cadence_dev", Value: "false", Path: "/", MaxAge: -1})
 			http.FileServer(http.FS(getAppFS())).ServeHTTP(w, r)
 		}))
 	}
+	return mux
+}
 
-	log.Printf("File API Root: %s", fileAPIRoot)
-	log.Printf("Cadence v%s - listening for WS connections (localhost:%s)", version, port)
-	log.Println("------------------------------------------------------------")
+func parseFlags() {
+	flag.BoolVar(&debugLogging, "debug", true, "Enable debug logging")
+	flag.BoolVar(&keyFlag, "key", false, "Manage and print the API key for no-origin requests, then exit.")
+	flag.BoolVar(&installUserFlag, "install-user", false, "Install Cadence as a user-level application and protocol handler.")
+	flag.BoolVar(&installServiceFlag, "install-service", false, "Install Cadence as a systemd service (requires root).")
+	flag.BoolVar(&uninstallFlag, "uninstall", false, "Uninstall user and/or system Cadence installations.")
+	flag.StringVar(&rootFlag, "root", "", "Set the root directory for the file API (defaults to user's home directory).")
+	flag.BoolVar(&noIdleShutdownFlag, "no-idle-shutdown", true, "Disable automatic shutdown due to inactivity. Recommended for services.")
+	flag.StringVar(&serveFlag, "serve", "", "Serve live static files from this directory instead of embedded assets.")
+	flag.BoolVar(&browserFlag, "browser", false, "Open in the default browser instead of a native window.")
+	flag.BoolVar(&webviewFlag, "webview", false, "Open using the lightweight webview_go renderer instead of Wails.")
+	flag.BoolVar(&wailsFlag, "wails", false, "Force opening using the Wails rendering engine (if compiled).")
+	flag.Parse()
 
-	if browserFlag {
-		go func() {
-			time.Sleep(500 * time.Millisecond)
-			openBrowser("http://localhost:" + port + "/launch")
-		}()
+	if keyFlag {
+		manageAPIKey(keyFlag)
+		os.Exit(0)
 	}
 
-	if block {
-		err := http.ListenAndServe(":"+port, activityMiddleware(corsMiddleware(mux)))
-		if err != nil {
-			log.Fatal("ListenAndServe: ", err)
+	initLogging()
+}
+
+func initLogging() {
+	configDir, err := os.UserConfigDir()
+	if err == nil {
+		appConfigDir := filepath.Join(configDir, "cadence")
+		os.MkdirAll(appConfigDir, 0700)
+		logPath := filepath.Join(appConfigDir, "debug.log")
+		// Open the file with O_TRUNC to wipe it fresh on each launch
+		file, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0666)
+		if err == nil {
+			log.SetOutput(file)
+			log.Println("--- Cadence Session Started ---")
+		} else {
+			log.Printf("Failed to open debug.log: %v", err)
 		}
-	} else {
-		go func() {
-			err := http.ListenAndServe(":"+port, activityMiddleware(corsMiddleware(mux)))
-			if err != nil {
-				log.Fatal("ListenAndServe (async): ", err)
-			}
-		}()
 	}
 }
 
@@ -159,16 +188,25 @@ var allowedOrigins = map[string]bool{
 	"http://localhost:3022":  true,
 	"http://localhost:3023":  true,
 	"http://localhost":       true,
+	"http://wails.localhost": true,
+	"wails://wails.localhost": true,
+	"wails://wails": true,
+	"wails://": true,
+	"http://127.0.0.1:3022": true,
+	"http://127.0.0.1:3023": true,
 }
 var rootFlag string
 var serveFlag string
 var browserFlag bool
+var webviewFlag bool
+var wailsFlag bool
+var RendererMode string = "unknown"
 var keyFlag bool
 var installUserFlag bool
 var installServiceFlag bool
 var uninstallFlag bool
 var noIdleShutdownFlag bool
-var debugLogging bool
+var debugLogging bool = true
 var requiredAPIKey string
 var isCompiledBuild bool
 var fileAPIRoot string

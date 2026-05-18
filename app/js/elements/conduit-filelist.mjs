@@ -97,6 +97,22 @@ export class ConduitFileList extends ContentFill {
     }
 
 
+    set openFolders(folders) {
+        this._openFolders = folders || [];
+        this.render();
+    }
+
+    get openFolders() {
+        return this._openFolders || [];
+    }
+
+    async refreshAll() {
+        // For Conduit, we might just re-render from the root if we have one
+        if (this._rootPath) {
+            await this.render();
+        }
+    }
+
     set inactive(path) {
         if (!path) return;
         
@@ -114,16 +130,53 @@ export class ConduitFileList extends ContentFill {
 
     
     // The `files` property in this component will take a root path string.
+    // If an array is passed (from legacy BrowserFileList logic in uiManager), ignore it to render workspace roots.
     set files(rootPath) {
-        this._rootPath = rootPath;
+        if (Array.isArray(rootPath)) {
+            this._rootPath = null;
+        } else {
+            this._rootPath = rootPath;
+        }
         this.render();
     }
     
     async render(base = this._inner, path = this._rootPath) {
-        if (!path) return;
         if (base === this._inner) {
             base.empty(); // Clear only on root render
         }
+
+        // If no path is provided, we render the workspace folders
+        if (!path && base === this._inner) {
+            const folders = window.workspace?.folders || [];
+            for (const folder of folders) {
+                const e = new FileItem();
+                e.text = " " + folder.split(/[\\/]/).pop();
+                e.setAttribute("title", folder);
+                e.icon = "folder";
+                e.item = { name: folder.split(/[\\/]/).pop(), isDir: true, path: folder, kind: 'directory', open: false };
+                
+                const holder = new Block();
+                holder.setAttribute("slim", "true");
+                holder.style.paddingLeft = "12px";
+                base.append(e, holder);
+
+                e.on("click", async () => {
+                    e.item.open = !e.item.open;
+                    if (e.item.open) {
+                        e.icon = "folder_open";
+                        e.setAttribute("loading", "true");
+                        await this.render(holder, folder);
+                        e.removeAttribute("loading");
+                    } else {
+                        e.icon = "folder";
+                        holder.empty();
+                    }
+                });
+            }
+            return;
+        }
+
+        if (!path) return;
         
         try {
             // Use wsList for directory listing

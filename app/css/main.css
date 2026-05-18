@@ -95,10 +95,11 @@ button { border:0; }
 body {
 	font-family: var(--font-sans);
 	font-size:13px;
-    overflow: hidden;
+	overflow: hidden;
 	background:var(--bg-primary);
 	margin:0; padding:0;
 }
+
 
 /*ui-tab-item:not([active])::after { 
     display:inline-block;
@@ -157,7 +158,7 @@ ui-tab-item.drop-highlight {
 }
 
 #mainContent {
-    position: fixed;
+    position: absolute;
 	opacity:1;
 	transition:opacity 333ms;
     margin: 0;
@@ -797,6 +798,85 @@ body.showSplitView #leftTabs {
 .background-element img {
 	opacity:0.25;
     filter: grayscale(100%);
+}
+
+/* --- Native Titlebar & Wails Support --- */
+#native-titlebar {
+    display: none;
+    height: 32px;
+    background: var(--theme);
+    color: var(--text-inverted);
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 8px 0 12px;
+    z-index: 1000;
+    user-select: none;
+    -webkit-user-select: none;
+    -webkit-app-region: drag;
+    --wails-draggable: drag;
+}
+
+#native-titlebar .window-title {
+    font-weight: bold;
+    font-size: 12px;
+    opacity: 0.8;
+}
+
+#native-titlebar .window-controls {
+    display: flex;
+    gap: 4px;
+    -webkit-app-region: no-drag;
+}
+
+#native-titlebar .window-controls ui-button {
+    background: transparent;
+    color: var(--text-inverted);
+    width: 32px;
+    height: 28px;
+    min-height: 28px;
+    border-radius: 4px;
+}
+
+#native-titlebar .window-controls ui-button:hover {
+    background: rgba(255,255,255,0.1);
+}
+
+#native-titlebar .window-controls ui-button.close-btn:hover {
+    background: #e81123;
+}
+
+/* Combined Header/Menu for Native Mode */
+ui-actionbar#menu * {
+    --wails-draggable: none;
+}
+
+body.is-native #native-titlebar {
+    display: none !important;
+}
+
+body.is-native #menu {
+    top: 0px;
+}
+
+body.is-native #mainContent {
+    top: var(--menuHeight) !important;
+}
+
+/* Adjust all top-anchored elements when in native mode */
+body.is-native #sidebar,
+body.is-native #toggleSplitView,
+body.is-native #ace_settingsmenu,
+body.is-native #kbshortcutmenu,
+body.is-native #mainContent {
+    top: var(--menuHeight) !important;
+}
+
+body.is-native #menu .window-controls {
+    margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding-right: 8px;
 }
 
 .background-element .caption {

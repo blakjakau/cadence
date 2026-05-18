@@ -1,0 +1,87 @@
+#!/bin/bash
+
+# Define build functions for clarity
+build_for_linux() {
+  echo "build for ... linux amd64 (Native via Wails)"
+  # Ensure the fake pkg-config path is used for the build
+  export PKG_CONFIG_PATH=$PWD/.pkgconfig
+  
+  # Use Wails CLI if available, otherwise fallback to standard go build
+  WAILS_CMD=$(which wails || echo "$HOME/go/bin/wails")
+  
+  if [ -f "$WAILS_CMD" ]; then
+    CGO_ENABLED=1 $WAILS_CMD build -clean -debug -platform linux/amd64 -tags wails
+    mkdir -p dist
+    # Wails v2 usually puts the output in build/bin/
+    if [ -f "build/bin/cadence-linux-x64" ]; then
+        mv build/bin/cadence-linux-x64 dist/
+        echo "Success: dist/cadence-linux-x64 created."
+    else
+        echo "Error: Could not find build/bin/cadence-linux-x64. Check the build/bin folder."
+    fi
+  else
+    echo "Wails CLI not found. Building standard server-only binary..."
+    GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o dist/cadence-linux-x64 .
+  fi
+}
+
+build_for_mac() {
+  echo "--- Delegating macOS build and sign process to build-osx script ---"
+  # Pass along any extra flags, like --no-recompile
+  ./build-osx "$1"
+  if [ $? -ne 0 ]; then
+    echo "Error: macOS remote build failed. Aborting."
+    exit 1
+  fi
+}
+
+build_for_windows() {
+  echo "build for ... windows amd64"
+  # The "-H windowsgui" flag builds the executable as a GUI application, preventing the console window from appearing.
+  GOOS=windows GOARCH=amd64 CGO_ENABLED=1 go build -ldflags="-s -w -H windowsgui" -o dist/cadence-windows-x64.exe .;
+}
+
+# Initialize flags
+BUILD_LINUX=0
+BUILD_MAC=0
+BUILD_WIN=0
+NO_RECOMPILE_FLAG=""
+
+# Default behavior: If no flags, detect current OS
+if [ $# -eq 0 ]; then
+  echo "No flags provided. Detecting current OS for default build..."
+  case "$(uname -s)" in
+    Linux)
+      echo "Detected Linux. Building for Linux."
+      BUILD_LINUX=1
+      ;;
+    Darwin)
+      echo "Detected macOS. Building for macOS."
+      BUILD_MAC=1
+      ;;
+    *)
+      echo "Could not detect a default OS. Building for all platforms."
+      BUILD_LINUX=1; BUILD_MAC=1; BUILD_WIN=1
+      ;;
+  esac
+else
+  # Parse command-line flags
+  for arg in "$@"
+  do
+    case $arg in
+      --all)   BUILD_LINUX=1; BUILD_MAC=1; BUILD_WIN=1 ;;
+      --linux) BUILD_LINUX=1 ;;
+      --mac)   BUILD_MAC=1 ;;
+      --win)   BUILD_WIN=1 ;;
+      --no-recompile) NO_RECOMPILE_FLAG="--no-recompile" ;;
+      *)       echo "Unknown option: $arg"; echo "Usage: $0 [--all] [--linux] [--mac] [--win] [--no-recompile]"; exit 1 ;;
+    esac
+  done
+fi
+
+# Execute builds based on flags
+if [ $BUILD_LINUX -eq 1 ]; then build_for_linux; fi
+if [ $BUILD_WIN -eq 1 ]; then build_for_windows; fi
+if [ $BUILD_MAC -eq 1 ]; then build_for_mac "$NO_RECOMPILE_FLAG"; fi
+
+echo "Build process complete."

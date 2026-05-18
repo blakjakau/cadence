@@ -32,6 +32,7 @@ type wsMessage struct {
 type statusResponse struct {
 	Status            string  `json:"status"`
 	Version           string  `json:"version"`
+	Mode              string  `json:"mode"`
 	UptimeSeconds     float64 `json:"uptime_seconds"`
 	ActiveConnections int32   `json:"active_connections"`
 	IsInstalled       bool    `json:"is_installed"`
@@ -185,21 +186,39 @@ func terminalServer(w http.ResponseWriter, r *http.Request) {
 	sessionID := atomic.AddInt32(&sessionIdCounter, 1)
 	defer atomic.AddInt32(&activeConnections, -1)
 
+	// Get settings from query parameters
+	query := r.URL.Query()
+	customDir := query.Get("dir")
+	customPrompt := query.Get("prompt")
+
 	shell := "bash"
 	if os.Getenv("OS") == "Windows_NT" {
 		shell = "powershell.exe"
 	}
 
-	// Set the working directory for the shell to the user's home directory
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		log.Printf("ERROR: Could not get user home directory: %v, using current directory.", err)
-		homeDir = "." // Fallback to current dir if home is not found
+	// Determine starting directory
+	startDir := customDir
+	if startDir == "" {
+		homeDir, err := os.UserHomeDir()
+		if err != nil {
+			log.Printf("ERROR: Could not get user home directory: %v, using current directory.", err)
+			startDir = "."
+		} else {
+			startDir = homeDir
+		}
 	}
+	
+	// Check if startDir exists, fallback to home if not
+	if _, err := os.Stat(startDir); os.IsNotExist(err) {
+		log.Printf("WARNING: Directory %s does not exist, falling back to home.", startDir)
+		homeDir, _ := os.UserHomeDir()
+		startDir = homeDir
+	}
+
 	// Use our new platform-agnostic function to start the PTY.
 	// This call now handles all OS-specific logic and command creation. It also returns a resize function.
 	var resizeFunc func(cols, rows int)
-	ptmx, ptyCmd, resizeFunc, err := startPty(shell, homeDir)
+	ptmx, ptyCmd, resizeFunc, err := startPty(shell, startDir, customPrompt)
 	if err != nil {
 		log.Printf("ERROR: Failed to start PTY for session #%d: %v", sessionID, err)
 		return
@@ -215,8 +234,8 @@ func terminalServer(w http.ResponseWriter, r *http.Request) {
 		hostname = "unknown"
 	}
 
-	// The initial working directory of the PTY process (which was set to homeDir)
-	initialCwd := homeDir
+	// The initial working directory of the PTY process (which was set to startDir)
+	initialCwd := startDir
 
 	// Send initial terminal info to the client
 	infoMsg := wsMessage{
@@ -253,6 +272,7 @@ func upcheckHandler(w http.ResponseWriter, r *http.Request) {
 	resp := statusResponse{
 		Status:            "running",
 		Version:           version,
+		Mode:              RendererMode,
 		UptimeSeconds:     uptime,
 		ActiveConnections: connections,
 		IsInstalled:       checkIfInstalled(),

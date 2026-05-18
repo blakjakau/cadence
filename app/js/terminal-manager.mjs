@@ -1,3 +1,4 @@
+
 import { Button, Icon } from "./elements.mjs";
 import { loadScript, addStylesheet } from "./elements/utils.mjs";
 import { TabBar } from "./elements/tabbar.mjs";
@@ -7,8 +8,8 @@ import { Modal } from './elements/modal.mjs'; // Import Modal
 
 // The URL for the backend WebSocket server
 const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-const wsHost = window.location.host || 'localhost:3022';
-const baseUrl = window.location.origin || 'http://localhost:3022';
+const wsHost = (window.runtime) ? 'localhost:3022' : (window.location.host || 'localhost:3022');
+const baseUrl = (window.runtime) ? 'http://localhost:3022' : (window.location.origin || 'http://localhost:3022');
 
 const TERMINAL_WEBSOCKET_URL = `${wsProtocol}//${wsHost}/terminal`;
 const CONDUIT_RELEASE_TAG = "v0.0.11";
@@ -24,10 +25,16 @@ class TerminalManager {
 		this._initialized = false;
 		this.settingsPanel = null;
 		this.settingsButton = null;
-		this.conduitStatus = { isRunning: false, isInstalled: false, version: 'N/A' };
-		this.config = { autoLaunch: true, keepAlive: false }; // Let's default to true, it's a better experience
+		this.conduitStatus = { isRunning: false, isInstalled: false, version: 'N/A', mode: 'unknown' };
+		this.config = {
+			prompt: "$ ",
+			backgroundColor: "#1e1e1e",
+			fontSize: 13,
+			defaultDir: "home" // "home", "current", "restore"
+		};
 		this.isPolling = false;
 		this.keepAliveIntervalId = null;
+		this._fitDebounce = null
 
 		this._sessions = new Map(); // Map: sessionId -> { term, fitAddon, ws, containerElement, tabItem }
 		this._activeSessionId = null;
@@ -114,10 +121,10 @@ class TerminalManager {
 		const term = new window.Terminal({
 			cursorBlink: true,
 			fontFamily: "monospace",
-			fontSize: 13,
+			fontSize: this.config.fontSize || 13,
 			cursorStyle: 'bar', // Set cursor style to thin bar
 			theme: {
-				background: '#1e1e1e',
+				background: this.config.backgroundColor || '#1e1e1e',
 				foreground: '#d4d4d4',
 				selectionBackground: '#5c5c5c',
 			},
@@ -143,7 +150,25 @@ class TerminalManager {
 	 * @returns {WebSocket} The established WebSocket instance.
 	 */
 	_connectWebSocket(sessionId, term) {
-		const ws = new WebSocket(TERMINAL_WEBSOCKET_URL);
+		let url = TERMINAL_WEBSOCKET_URL + `?sessionId=${sessionId}`;
+		if (this.config.prompt) url += `&prompt=${encodeURIComponent(this.config.prompt)}`;
+		
+		let dir = "";
+		if (this.config.defaultDir === "home") {
+			// Backend defaults to home if empty
+		} else if (this.config.defaultDir === "current") {
+			const currentFile = window.ui && window.ui.currentFile;
+			if (currentFile && currentFile.path) {
+				const parts = currentFile.path.split("/");
+				parts.pop(); // Remove filename
+				dir = parts.join("/");
+			}
+		} else if (this.config.defaultDir === "restore") {
+			dir = localStorage.getItem('terminalLastDir') || "";
+		}
+		if (dir) url += `&dir=${encodeURIComponent(dir)}`;
+
+		const ws = new WebSocket(url);
 		ws.binaryType = 'arraybuffer';
 		ws.onopen = () => {
 			term.clear();
@@ -187,6 +212,7 @@ class TerminalManager {
 					const session = this._sessions.get(sessionId);
 					if (session) {
 						session.cwd = newCwd;
+						localStorage.setItem('terminalLastDir', newCwd);
 						this._updateTerminalTabName(sessionId);
 					}
 					text = text.replace(match[0], '');
@@ -373,14 +399,18 @@ class TerminalManager {
 	 * Should be called when the container size changes or visibility changes.
 	 */
 	fit() {
-		if (this._activeSessionId && this._sessions.has(this._activeSessionId)) {
-			const activeSession = this._sessions.get(this._activeSessionId);
-			// Only attempt to fit if the terminal instance and fit addon exist,
-			// and its container is actually rendered (has an offsetParent and non-zero height).
-			if (activeSession.term && activeSession.fitAddon && activeSession.containerElement.offsetParent !== null && activeSession.containerElement.clientHeight > 0) {
-				activeSession.fitAddon.fit();
+		// debounce this action
+		clearTimeout(this._fitDebounce)
+		this._fitDebounce = setTimeout(()=>{
+			if (this._activeSessionId && this._sessions.has(this._activeSessionId)) {
+				const activeSession = this._sessions.get(this._activeSessionId);
+				// Only attempt to fit if the terminal instance and fit addon exist,
+				// and its container is actually rendered (has an offsetParent and non-zero height).
+				if (activeSession.term && activeSession.fitAddon && activeSession.containerElement.offsetParent !== null && activeSession.containerElement.clientHeight > 0) {
+					activeSession.fitAddon.fit();
+				}
 			}
-		}
+		}, 100)
 	}
 
 	/**
@@ -420,10 +450,23 @@ class TerminalManager {
 		this.sessionTabBar.style.display = 'flex';
 		
 		if (this._sessions.size === 0) {
-			this._emptyStateElement.style.display = 'flex';
-		} else if (this._activeSessionId) {
+			if (this.conduitStatus.isRunning) {
+				this.createNewTerminalSession();
+			} else {
+				this._emptyStateElement.style.display = 'flex';
+			}
+		} else {
+			// Ensure an active session is selected if sessions exist
+			if (!this._activeSessionId || !this._sessions.has(this._activeSessionId)) {
+				this._activeSessionId = this._sessions.keys().next().value;
+			}
+			
 			const session = this._sessions.get(this._activeSessionId);
 			if (session) {
+				// Activate the tab in the UI if it's not already active
+				if (session.tabItem && !session.tabItem.hasAttribute("active")) {
+					session.tabItem.click();
+				}
 				session.containerElement.style.display = 'block';
 				this.fit();
 				session.term.focus();
@@ -435,24 +478,27 @@ class TerminalManager {
 	 * Loads settings from localStorage.
 	 */
 	_loadSettings() {
-		const storedAutoLaunch = localStorage.getItem('conduitAutoLaunch');
-		// Only override the default if a value is explicitly stored.
-		if (storedAutoLaunch !== null) {
-			this.config.autoLaunch = storedAutoLaunch === 'true';
-		}
-		const storedKeepAlive = localStorage.getItem('conduitKeepAlive');
-		if (storedKeepAlive !== null) {
-			this.config.keepAlive = storedKeepAlive === 'true';
-		}
+		const storedPrompt = localStorage.getItem('terminalPrompt');
+		if (storedPrompt !== null) this.config.prompt = storedPrompt;
+		
+		const storedBgColor = localStorage.getItem('terminalBgColor');
+		if (storedBgColor !== null) this.config.backgroundColor = storedBgColor;
+
+		const storedFontSize = localStorage.getItem('terminalFontSize');
+		if (storedFontSize !== null) this.config.fontSize = parseInt(storedFontSize);
+
+		const storedDefaultDir = localStorage.getItem('terminalDefaultDir');
+		if (storedDefaultDir !== null) this.config.defaultDir = storedDefaultDir;
 	}
 
 	/**
 	 * Saves settings to localStorage.
 	 */
 	_saveSettings() {
-		localStorage.setItem('conduitAutoLaunch', this.config.autoLaunch);
-		localStorage.setItem('conduitKeepAlive', this.config.keepAlive);
-		this._updateKeepAlive();
+		localStorage.setItem('terminalPrompt', this.config.prompt);
+		localStorage.setItem('terminalBgColor', this.config.backgroundColor);
+		localStorage.setItem('terminalFontSize', this.config.fontSize);
+		localStorage.setItem('terminalDefaultDir', this.config.defaultDir);
 	}
 
 	_updateKeepAlive() {
@@ -494,6 +540,7 @@ class TerminalManager {
 				this.conduitStatus.isRunning = true;
 				this.conduitStatus.isInstalled = data.is_installed || false;
 				this.conduitStatus.version = data.version || 'N/A';
+				this.conduitStatus.mode = data.mode || 'unknown';
 			} else { // Server is up but returned an error. Treat as not running.
 				this.conduitStatus.isRunning = false;
 			}
@@ -621,8 +668,10 @@ class TerminalManager {
 		panel.append(settingsContent)
 
 		settingsContent.on("settings-saved", (e) => {
-			this.config.autoLaunch = e.detail["conduit-auto-launch"]
-			this.config.keepAlive = e.detail["conduit-keep-alive"];
+			this.config.prompt = e.detail["terminal-prompt"];
+			this.config.backgroundColor = e.detail["terminal-bg-color"];
+			this.config.fontSize = parseInt(e.detail["terminal-font-size"]);
+			this.config.defaultDir = e.detail["terminal-default-dir"];
 			this._saveSettings()
 			this.toggleSettingsPanel(false); // Close the settings panel after saving
 		})
@@ -645,14 +694,19 @@ class TerminalManager {
 		await this._checkConduitStatus(); // Get latest status
 
 		const schema = [
+			{ type: "text", id: "terminal-prompt", label: "Custom Prompt", text: "Custom PS1 prompt to forward to the server" },
+			{ type: "text", id: "terminal-bg-color", label: "Background Color", text: "CSS color for the terminal background" },
+			{ type: "number", id: "terminal-font-size", label: "Font Size", text: "Font size in pixels" },
 			{
-				type: "info",
-				content: `Conduit Status: <strong class="${this.conduitStatus.isRunning ? "success" : "error"}">${
-					this.conduitStatus.isRunning ? "Running" : "Not Running"
-				}</strong> (v${this.conduitStatus.version})`,
-			},
-			{ type: "checkbox", id: "conduit-auto-launch", label: "Auto-launch", text: "Automatically try to launch Conduit helper on startup" },
-			{ type: "checkbox", id: "conduit-keep-alive", label: "Keep-alive", text: "Send periodic pings to prevent Conduit from closing" },
+				type: "select",
+				id: "terminal-default-dir",
+				label: "Default Directory",
+				options: [
+					{ value: "home", text: "User Home" },
+					{ value: "current", text: "Current File Directory" },
+					{ value: "restore", text: "Last Used Directory" }
+				]
+			}
 		]
 
 		if (this.conduitStatus.isInstalled) {
@@ -670,8 +724,10 @@ class TerminalManager {
 		}
 
 		const values = {
-			"conduit-auto-launch": this.config.autoLaunch,
-			"conduit-keep-alive": this.config.keepAlive
+			"terminal-prompt": this.config.prompt,
+			"terminal-bg-color": this.config.backgroundColor,
+			"terminal-font-size": this.config.fontSize,
+			"terminal-default-dir": this.config.defaultDir
 		}
 
 		const panelContent = this.settingsPanel.querySelector("ui-settings-panel")

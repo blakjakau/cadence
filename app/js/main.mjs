@@ -4,11 +4,18 @@ import parserHtml from "https://unpkg.com/prettier@2.4.1/esm/parser-html.mjs"
 import parserCss from "https://unpkg.com/prettier@2.4.1/esm/parser-postcss.mjs"
 import { get, set, del } from "https://cdn.jsdelivr.net/npm/idb-keyval@6/+esm" // Keep these imports
 
-import { getIconForFileName, addStylesheet, buildPath, clone, isElement, isFunction, isNotNull, isset, readAndOrderDirectory, readAndOrderDirectoryRecursive, sortOnName } from './elements/utils.mjs';
-import ui from './ui-main.mjs'; // Assuming ui-main.mjs handles its own import of Modal via elements.mjs
-import { Modal, ActionBar, Block, Button, ContentFill, CounterButton, Element, Effects, Effect, FileItem, FileList, Icon, Inline, Input, Inner, MediaView, Panel, Ripple, TabBar, TabItem, View, Menu, MenuItem, FileUploadList, actionBars } from './elements.mjs';
+import {
+	getIconForFileName, addStylesheet, buildPath, clone, isElement, isFunction, isNotNull,
+	isset, readAndOrderDirectory, readAndOrderDirectoryRecursive, sortOnName,
+} from "./elements/utils.mjs"
+import ui from "./ui-main.mjs" // Assuming ui-main.mjs handles its own import of Modal via elements.mjs
+import {
+	Modal, ActionBar, Block, Button, ContentFill, CounterButton, Element, Effects, Effect,
+	FileItem, FileList, Icon, Inline, Input, Inner, MediaView, Panel, Ripple, TabBar, TabItem,
+	View, Menu, MenuItem, FileUploadList, actionBars, promptSaveFile, promptAddFolder,
+} from "./elements.mjs"
 import { observeFile, unobserveFile } from "./fileSystemObserver.mjs"
-import conduitClient from './conduit-client.mjs';
+import conduitClient from "./conduit-client.mjs?v=1778190000000"
 
 const canPrettify = {
 	"ace/mode/javascript": { name: "babel", plugins: [parserBabel] },
@@ -16,8 +23,6 @@ const canPrettify = {
 	"ace/mode/html": { name: "html", plugins: [parserHtml] },
 	"ace/mode/css": { name: "css", plugins: [parserCss] },
 }
-
-
 
 function sleep(ms) {
 	return new Promise((accept, reject) => {
@@ -28,21 +33,22 @@ function safeString(string) {
 	return string.replace(/\ /g, "-").replace(/[^A-Za-z0-9\-]/g, "")
 }
 
-
 ui.create()
 window.ui = ui
 window.modal = Modal // Assign the singleton instance
 window.code = {
-	version: (()=>{
-		const last="0.4.2"
-		 fetch("/version.json").then(async response=>{
-			if(response.ok) {
-				const version = await response.json()
-				if(version.appName && version.version) {
-					window.code = {...window.code, ...version}
+	version: (() => {
+		const last = "0.4.2"
+		fetch("/version.json")
+			.then(async (response) => {
+				if (response.ok) {
+					const version = await response.json()
+					if (version.appName && version.version) {
+						window.code = { ...window.code, ...version }
+					}
 				}
-			}
-		}).catch(e => console.warn("Failed to fetch version.json", e))
+			})
+			.catch((e) => console.warn("Failed to fetch version.json", e))
 		return last
 	})(),
 }
@@ -66,25 +72,25 @@ const app = {
 	sessionOptions: null,
 	rendererOptions: null,
 	enableLiveAutocompletion: null,
-	darkmode: 'system',
-    aiConfig: {},
-    systemPromptConfig: {}, // NEW: For generic system prompt settings
+	darkmode: "system",
+	aiConfig: {},
+	systemPromptConfig: {}, // NEW: For generic system prompt settings
 }
 
 const workspace = {
 	id: "default",
 	name: "default",
 	folders: [],
-	ignorePaths: ['.git', 'node_modules', 'dist', 'build'],
+	ignorePaths: [".git", "node_modules", "dist", "build"],
 	files: [],
 	sidebarPanelWidths: {},
-	scratchpad: '',
+	scratchpad: "",
 	// REMOVED: promptHistory: [], // This will be stored per AI session now
-    aiConfig: {},
-    systemPromptConfig: {}, // NEW: For generic system prompt settings
-    // NEW: AI session metadata and active session ID
-    aiSessionsMetadata: [], // Array of {id, name, createdAt, lastModified}
-    activeAiSessionId: null, // The ID of the currently active AI session
+	aiConfig: {},
+	systemPromptConfig: {}, // NEW: For generic system prompt settings
+	// NEW: AI session metadata and active session ID
+	aiSessionsMetadata: [], // Array of {id, name, createdAt, lastModified}
+	activeAiSessionId: null, // The ID of the currently active AI session
 }
 
 // window.showSettings = ui.showSettings
@@ -93,9 +99,6 @@ window.workspace = workspace
 
 const fileOpen = new Button("Add Folder to Workspace")
 // Removed manual fileAccess/Restore buttons for Conduit migration
-
-
-
 
 window.ui.commands = {
 	byKeys: {},
@@ -214,59 +217,70 @@ window.ui.commands = {
 			{ capture: true }
 		)
 		this.boundToDocument = true
-	}
+	},
 }
 
 window.ui.commands.bindToDocument()
 
 const getSuggestedStartDirectory = async () => {
-    const activeTab = currentTabs?.activeTab;
+	const activeTab = currentTabs?.activeTab
 
-    // 1. From active tab's folder
-    if (activeTab?.config?.folder) {
-        return activeTab.config.folder;
-    }
+	// 1. From active tab's project folder (for existing files like Save As)
+	if (activeTab?.config?.folder) {
+		return activeTab.config.folder
+	}
 
-    // 2. From a sibling tab's folder
-    for (const tab of currentTabs?.tabs || []) {
-        if (tab.config?.folder) {
-            return tab.config.folder;
-        }
-    }
-    
-    // 3. From a tab in the other panel
-    const otherTabs = (currentTabs === leftTabs) ? rightTabs : leftTabs;
-    for (const tab of otherTabs?.tabs || []) {
-        if (tab.config?.folder) {
-            return tab.config.folder;
-        }
-    }
+	// 2. From last used project folder (for new files)
+	const lastUsed = localStorage.getItem('lastUsedProjectFolder');
+	if (lastUsed && workspace.folders?.includes(lastUsed)) {
+		return lastUsed;
+	}
 
-    // 4. From any open folder in the workspace
-    if (workspace.folders?.length > 0) {
-        return workspace.folders[0];
-    }
-    
-    return null; // Fallback to default behavior
-};
+	// 3. From a sibling tab's folder
+	for (const tab of currentTabs?.tabs || []) {
+		if (tab.config?.folder) {
+			return tab.config.folder
+		}
+	}
+
+	// 4. From a tab in the other panel
+	const otherTabs = currentTabs === leftTabs ? rightTabs : leftTabs
+	for (const tab of otherTabs?.tabs || []) {
+		if (tab.config?.folder) {
+			return tab.config.folder
+		}
+	}
+
+	// 5. From any open folder in the workspace
+	if (workspace.folders?.length > 0) {
+		return workspace.folders[0]
+	}
+
+	return null // Fallback to default behavior
+}
 
 const saveFile = async (tab) => {
-    const path = tab.config.handle;
-    if (!path || tab.config.mode?.mode === "media") return; 
-    const text = tab.config.session.getValue();
+	const path = tab.config.handle
+	if (!path || tab.config.mode?.mode === "media") return
+	const text = tab.config.session.getValue()
 
-    unobserveFile(path); // Stop listening to prevent self-triggering modification events
-    try {
-        const base64Content = btoa(unescape(encodeURIComponent(text)));
-        await conduitClient.wsWrite(path, base64Content);
-        tab.changed = false;
-    } catch (error) {
-        console.error("Error saving file:", error);
-        window.modal.notice(`Failed to save ${path}:<br><small>${error.message}</small>`, 'Save Error');
-    } finally {
-        observeFile(path, onFileModified); // Always resume listening
-    }
-};
+	unobserveFile(path) // Stop listening to prevent self-triggering modification events
+	tab.config.ignoreNextNotify = true
+	try {
+		const base64Content = btoa(unescape(encodeURIComponent(text)))
+		await conduitClient.wsWrite(path, base64Content)
+		tab.config.fileModified = false
+		tab.changed = false
+	} catch (error) {
+		console.error("Error saving file:", error)
+		window.modal.notice(`Failed to save ${path}:<br><small>${error.message}</small>`, "Save Error")
+	} finally {
+		observeFile(path, onFileModified) // Always resume listening
+		setTimeout(() => {
+			tab.config.ignoreNextNotify = false
+		}, 2000)
+	}
+}
 
 const saveAppConfig = async () => {
 	app.sessionOptions = ui.leftEdit.session.getOptions()
@@ -286,57 +300,68 @@ const saveAppConfig = async () => {
 	await set("appConfig", app)
 	console.debug("saved", app)
 }
-window.saveAppConfig = saveAppConfig;
+window.saveAppConfig = saveAppConfig
 
 // New function to handle file modifications from FileSystemObserver
 const onFileModified = (path) => {
-    // Find the tab associated with the modified file path
-    let foundTab = null;
-    for (const tab of leftTabs.tabs) {
-        if (tab.config.handle === path) {
-            foundTab = tab;
-            break;
-        }
-    }
-    if (!foundTab) {
-        for (const tab of rightTabs.tabs) {
-            if (tab.config.handle === path) {
-                foundTab = tab;
-                break;
-            }
-        }
-    }
+	// Find the tab associated with the modified file path
+	let foundTab = null
+	for (const tab of leftTabs.tabs) {
+		if (tab.config.handle === path) {
+			foundTab = tab
+			break
+		}
+	}
+	if (!foundTab) {
+		for (const tab of rightTabs.tabs) {
+			if (tab.config.handle === path) {
+				foundTab = tab
+				break
+			}
+		}
+	}
 
-    if (foundTab) {
-        foundTab.config.fileModified = true;
-        // If the modified tab is the active tab, show the notice bar
-        if (foundTab === currentTabs.activeTab) {
-            ui.showFileModifiedNotice(foundTab, foundTab.config.side);
-        }
-    }
-};
+	if (foundTab) {
+		if (foundTab.config.ignoreNextNotify) {
+			foundTab.config.ignoreNextNotify = false
+			return
+		}
+
+		foundTab.config.fileModified = true
+		foundTab.changed = true // Trigger setter to update tab UI icons
+
+		const fileItem = fileList.find(path)
+		if (fileItem && fileItem.length > 0) {
+			fileItem[0].changed = true
+		}
+
+		// If the modified tab is the active tab, show the notice bar
+		if (foundTab === currentTabs.activeTab) {
+			ui.showFileModifiedNotice(foundTab, foundTab.config.side)
+		}
+	}
+}
 
 let workspaceUnloading = false
 const saveWorkspace = async () => {
 	if (workspaceUnloading) return
-	workspace.openFolders = fileList.openFolders;
-	workspace.activeSidebarTab = ui.iconTabBar?.activeTab?.iconId;
+	workspace.openFolders = fileList.openFolders
+	workspace.activeSidebarTab = ui.iconTabBar?.activeTab?.iconId
 	// REMOVED: workspace.promptHistory = ui.aiManager.promptHistory; // No longer here
-    // AI sessions metadata is now stored directly in workspace (small footprint)
-	set(`workspace_${workspace.id}`, workspace); // This will save workspace.aiSessionsMetadata and workspace.activeAiSessionId
+	// AI sessions metadata is now stored directly in workspace (small footprint)
+	set(`workspace_${workspace.id}`, workspace) // This will save workspace.aiSessionsMetadata and workspace.activeAiSessionId
 }
-window.saveWorkspace = saveWorkspace;
+window.saveWorkspace = saveWorkspace
 
 const updateFileListBackground = () => {
-    if (ui.fileListBackground) {
-        if (workspace.folders?.length > 0) {
-            ui.fileListBackground.style.display = 'none';
-        } else {
-            ui.fileListBackground.style.display = 'flex';
-        }
-    }
-};
-
+	if (ui.fileListBackground) {
+		if (workspace.folders?.length > 0) {
+			ui.fileListBackground.style.display = "none"
+		} else {
+			ui.fileListBackground.style.display = "flex"
+		}
+	}
+}
 
 const updateWorkspaceSelectors = (() => {
 	const close = document.querySelector("#workspaceClose")
@@ -385,9 +410,8 @@ const openWorkspace = (() => {
 	rename.remove()
 
 	return async (name, triggered = false) => {
-		console.debug(`openWorkspace: Opening workspace ${name}.`);
+		console.debug(`openWorkspace: Opening workspace ${name}.`)
 		let load = await get(`workspace_${name}`)
-
 
 		const hideActions = () => {
 			close.remove()
@@ -408,77 +432,80 @@ const openWorkspace = (() => {
 			workspace.name = load.name || "default"
 			workspace.folders = load.folders || []
 			workspace.files = load.files || []
-            try {
-                const cadenceResp = await conduitClient.wsRead('.cadence');
-                if (!cadenceResp.error && cadenceResp.content) {
-                    const cadenceConfig = JSON.parse(cadenceResp.content);
-                    if (cadenceConfig.folders) workspace.folders = cadenceConfig.folders;
-                    if (cadenceConfig.files) workspace.files = cadenceConfig.files;
-                }
-            } catch (e) {
-                // Ignore if .cadence doesn't exist
-            }
-			workspace.ignorePaths = load.ignorePaths || ['.git', 'node_modules', 'dist', 'build'];
-			workspace.openFolders = load.openFolders || [];
-			workspace.scratchpad = load.scratchpad || '';
-			ui.scratchEditor.setValue(workspace.scratchpad || '');
-			workspace.sidebarPanelWidths = load.sidebarPanelWidths || {};
-			// Backward compatibility
-            workspace.systemPromptConfig = load.systemPromptConfig || {}; // NEW
-			if (load.sidebarWidth && Object.keys(workspace.sidebarPanelWidths).length === 0) {
-				workspace.sidebarPanelWidths['folder'] = load.sidebarWidth;
+			try {
+				const cadenceResp = await conduitClient.wsRead(".cadence")
+				if (!cadenceResp.error && cadenceResp.content) {
+					const cadenceConfig = JSON.parse(cadenceResp.content)
+					if (cadenceConfig.folders) workspace.folders = cadenceConfig.folders
+					if (cadenceConfig.files) workspace.files = cadenceConfig.files
+				}
+			} catch (e) {
+				// Ignore if .cadence doesn't exist
 			}
-			workspace.activeSidebarTab = load.activeSidebarTab || null;
+			workspace.ignorePaths = load.ignorePaths || [".git", "node_modules", "dist", "build"]
+			workspace.openFolders = load.openFolders || []
+			workspace.scratchpad = load.scratchpad || ""
+			ui.scratchEditor.setValue(workspace.scratchpad || "")
+			workspace.sidebarPanelWidths = load.sidebarPanelWidths || {}
+			// Backward compatibility
+			workspace.systemPromptConfig = load.systemPromptConfig || {} // NEW
+			if (load.sidebarWidth && Object.keys(workspace.sidebarPanelWidths).length === 0) {
+				workspace.sidebarPanelWidths["folder"] = load.sidebarWidth
+			}
+			workspace.activeSidebarTab = load.activeSidebarTab || null
 			workspace.id = load.id || safeString(workspace.name)
 
-			fileList.ignorePaths = workspace.ignorePaths;
+			fileList.ignorePaths = workspace.ignorePaths
 			// REMOVED: workspace.promptHistory = load.promptHistory || []; // Removed
 			// REMOVED: ui.aiManager.promptHistory = workspace.promptHistory; // Removed
-            workspace.aiConfig = load.aiConfig || {};
-            // REMOVED: workspace.chatHistory = load.chatHistory || []; // Removed
-            // if (ui.aiManager.historyManager) {
-            //     ui.aiManager.historyManager.loadHistory(workspace.chatHistory, true);
-            // }
+			workspace.aiConfig = load.aiConfig || {}
+			// REMOVED: workspace.chatHistory = load.chatHistory || []; // Removed
+			// if (ui.aiManager.historyManager) {
+			//     ui.aiManager.historyManager.loadHistory(workspace.chatHistory, true);
+			// }
 
-            // NEW: Load system prompt settings into the AI Manager
-            if (ui.aiManager) {
-                const useWorkspaceSettings = !!window.workspace?.systemPromptConfig && Object.keys(window.workspace.systemPromptConfig).length > 0;
-                ui.aiManager.systemPromptConfig = useWorkspaceSettings ? workspace.systemPromptConfig : app.systemPromptConfig;
-            }
+			// NEW: Load system prompt settings into the AI Manager
+			if (ui.aiManager) {
+				const useWorkspaceSettings =
+					!!window.workspace?.systemPromptConfig &&
+					Object.keys(window.workspace.systemPromptConfig).length > 0
+				ui.aiManager.systemPromptConfig = useWorkspaceSettings
+					? workspace.systemPromptConfig
+					: app.systemPromptConfig
+			}
 
-            // NEW: Load AI session metadata and active session ID
-            workspace.aiSessionsMetadata = load.aiSessionsMetadata || [];
-            workspace.activeAiSessionId = load.activeAiSessionId || null;
-            if (ui.aiManager) {
-                // Pass the AI session metadata and active ID to the manager
-                ui.aiManager.loadSessions(workspace.aiSessionsMetadata, workspace.activeAiSessionId);
-            }
+			// NEW: Load AI session metadata and active session ID
+			workspace.aiSessionsMetadata = load.aiSessionsMetadata || []
+			workspace.activeAiSessionId = load.activeAiSessionId || null
+			if (ui.aiManager) {
+				// Pass the AI session metadata and active ID to the manager
+				ui.aiManager.loadSessions(workspace.aiSessionsMetadata, workspace.activeAiSessionId)
+			}
 
-            // After loading workspace, ensure aiManager is initialized with the correct provider's config
-            // This assumes ui.aiManager.aiProvider is already set by ui.aiManager.loadSettings() in its init
-            const currentProvider = ui.aiManager.aiProvider;
-            updateFileListBackground();
-            if (workspace.aiConfig[currentProvider]) {
-                ui.aiManager.ai.setOptions(workspace.aiConfig[currentProvider], null, null, true, 'workspace');
-            } else if (app.aiConfig[currentProvider]) {
-                ui.aiManager.ai.setOptions(app.aiConfig[currentProvider], null, null, false, 'global');
-            } else {
-                // If no specific config for the current provider, reset to default for that provider
-                ui.aiManager.ai.setOptions({}, null, null, false, 'global');
-            }
-			
-			setTimeout(()=>{
+			// After loading workspace, ensure aiManager is initialized with the correct provider's config
+			// This assumes ui.aiManager.aiProvider is already set by ui.aiManager.loadSettings() in its init
+			const currentProvider = ui.aiManager.aiProvider
+			updateFileListBackground()
+			if (workspace.aiConfig[currentProvider]) {
+				ui.aiManager.ai.setOptions(workspace.aiConfig[currentProvider], null, null, true, "workspace")
+			} else if (app.aiConfig[currentProvider]) {
+				ui.aiManager.ai.setOptions(app.aiConfig[currentProvider], null, null, false, "global")
+			} else {
+				// If no specific config for the current provider, reset to default for that provider
+				ui.aiManager.ai.setOptions({}, null, null, false, "global")
+			}
+
+			setTimeout(() => {
 				ui.scratchEditor.session.setOption("wrap", "free")
 				ui.scratchEditor.session.setOption("indentedSoftWrap", false)
 				ui.scratchEditor.session.setMode("ace/mode/markdown")
 			})
 
-
 			fileOpen.text = "Add Folder"
 			app.workspace = workspace.id
 
 			// Trigger automatic restoration of folders and files
-			restoreWorkspaceContent();
+			restoreWorkspaceContent()
 
 			if (name === "default") {
 				hideActions()
@@ -486,19 +513,19 @@ const openWorkspace = (() => {
 
 			saveAppConfig()
 			ui.showSidebar()
-			fileList.openFolders = workspace.openFolders || [];
-			updateWorkspaceSelectors();
+			fileList.openFolders = workspace.openFolders || []
+			updateWorkspaceSelectors()
 
 			if (ui.iconTabBar) {
 				if (workspace.activeSidebarTab) {
-					ui.iconTabBar.activeTabById = workspace.activeSidebarTab;
+					ui.iconTabBar.activeTabById = workspace.activeSidebarTab
 				}
-				const activeTabId = ui.iconTabBar.activeTab?.iconId || 'folder';
-				const savedWidth = workspace.sidebarPanelWidths?.[activeTabId];
+				const activeTabId = ui.iconTabBar.activeTab?.iconId || "folder"
+				const savedWidth = workspace.sidebarPanelWidths?.[activeTabId]
 
 				if (savedWidth) {
-					ui.sidebar.style.width = `${savedWidth}px`;
-					ui.mainContent.style.left = `${savedWidth}px`;
+					ui.sidebar.style.width = `${savedWidth}px`
+					ui.mainContent.style.left = `${savedWidth}px`
 				}
 			}
 		} else {
@@ -507,14 +534,14 @@ const openWorkspace = (() => {
 				workspace.id = "default"
 				workspace.files = []
 				workspace.folders = []
-				workspace.ignorePaths = ['.git', 'node_modules', 'dist', 'build'];
+				workspace.ignorePaths = [".git", "node_modules", "dist", "build"]
 				// NEW: Initialize empty AI session metadata
-                workspace.aiSessionsMetadata = [];
-                // NEW: Initialize empty system prompt config
-                workspace.systemPromptConfig = {};
-                workspace.activeAiSessionId = null;
-                updateFileListBackground();
-                // AIManager will handle creating the first session when it gets loadSessions call
+				workspace.aiSessionsMetadata = []
+				// NEW: Initialize empty system prompt config
+				workspace.systemPromptConfig = {}
+				workspace.activeAiSessionId = null
+				updateFileListBackground()
+				// AIManager will handle creating the first session when it gets loadSessions call
 				hideActions()
 				let item = document.createElement("ui-menu-item")
 				item.setAttribute("command", `app:workspaceOpen:default`)
@@ -526,7 +553,10 @@ const openWorkspace = (() => {
 
 				saveWorkspace()
 			} else {
-				window.modal.notice(`Couldn't load workspace "${name}". It may have been deleted or corrupted.`, "Workspace Error");
+				window.modal.notice(
+					`Couldn't load workspace "${name}". It may have been deleted or corrupted.`,
+					"Workspace Error"
+				)
 				app.workspaces.splice(app.workspaces.indexOf(name), 1)
 				saveAppConfig()
 				openWorkspace("default")
@@ -535,40 +565,41 @@ const openWorkspace = (() => {
 	}
 })()
 
-const prefersDarkMode = window.matchMedia('(prefers-color-scheme: dark)');
+const prefersDarkMode = window.matchMedia("(prefers-color-scheme: dark)")
 
 const clearInjectedTheme = () => {
-    // This function is no longer needed as we're not dynamically injecting editor colors
-    // Instead, CSS handles light/dark mode with pre-defined variables.
-};
+	// This function is no longer needed as we're not dynamically injecting editor colors
+	// Instead, CSS handles light/dark mode with pre-defined variables.
+}
 
 const execCommandSetDarkMode = (mode) => {
-    app.darkmode = mode;
+	app.darkmode = mode
 
-    switch (mode) {
-        case 'light':
-            document.body.classList.remove("darkmode");
-            break;
-        case 'dark':
-            document.body.classList.add("darkmode");
-            break;
-        case 'system':
-            if (prefersDarkMode.matches) { // This only updates on initial load and system preference change
-                document.body.classList.add("darkmode");
-            } else {
-                document.body.classList.remove("darkmode");
-            }
-            break;
-    }
-    saveAppConfig();
-    updateThemeAndMode(false); // Update menus, but don't save again
-};
+	switch (mode) {
+		case "light":
+			document.body.classList.remove("darkmode")
+			break
+		case "dark":
+			document.body.classList.add("darkmode")
+			break
+		case "system":
+			if (prefersDarkMode.matches) {
+				// This only updates on initial load and system preference change
+				document.body.classList.add("darkmode")
+			} else {
+				document.body.classList.remove("darkmode")
+			}
+			break
+	}
+	saveAppConfig()
+	updateThemeAndMode(false) // Update menus, but don't save again
+}
 
-prefersDarkMode.addEventListener('change', () => {
-    if (app.darkmode === 'system') {
-        execCommandSetDarkMode('system');
-    }
-});
+prefersDarkMode.addEventListener("change", () => {
+	if (app.darkmode === "system") {
+		execCommandSetDarkMode("system")
+	}
+})
 
 const updateThemeAndMode = (doSave = false) => {
 	ui.updateThemeAndMode()
@@ -628,38 +659,56 @@ const execCommandPrettify = () => {
 const execCommandEditorOptions = () => {
 	for (const editor of window.editors) {
 		// Exclude special editors from global session/renderer options
-		if (app.sessionOptions && !['scratch-editor', 'ai-prompt-editor'].includes(editor.id)) {
-			editor.session.setOptions(app.sessionOptions);
+		if (app.sessionOptions && !["scratch-editor", "ai-prompt-editor"].includes(editor.id)) {
+			editor.session.setOptions(app.sessionOptions)
 		}
-		if (app.rendererOptions && !['scratch-editor', 'ai-prompt-editor'].includes(editor.id)) {
- 			editor.renderer.setOptions(app.rendererOptions);
+		if (app.rendererOptions && !["scratch-editor", "ai-prompt-editor"].includes(editor.id)) {
+			editor.renderer.setOptions(app.rendererOptions)
 		}
 		if (app.enableLiveAutocompletion) {
-			editor.$enableLiveAutocompletion = app.enableLiveAutocompletion;
+			editor.$enableLiveAutocompletion = app.enableLiveAutocompletion
 		}
 
 		if (editor.getOption("mode") === "ace/mode/javascript") {
-			editor.setOption("useWorker", false);
+			editor.setOption("useWorker", false)
 		} else {
-			editor.setOption("useWorker", true);
+			editor.setOption("useWorker", true)
 		}
 	}
 }
 
 const execCommandAbout = () => {
-	const versionInfo = `Version ${window.code.version} - Copyright &copy; ${new Date().getFullYear()} jakbox.dev`;
+	const modeStr = terminalManager?.conduitStatus?.mode || "unknown"
+	const versionInfo = `Version ${
+		window.code.version
+	} (${modeStr}) - Copyright &copy; ${new Date().getFullYear()} jakbox.dev`
 	const content = `<p>Simple, fast, lightweight code editing. Edit your local code files straight from your web browser, 
 			or install the web app for that sweet "native app" experience.</p>
 
 			<p>For issues &amp; bugs please see the <a href="https://github.com/blakjakau/dev.jakbox.code/issues" target="_blank">issue tracker</a></p>
 			
 			<p>Cadence is open source and uses other open source projects see <a href="https://github.com/blakjakau/dev.jakbox.code/blob/master/licence.md" target="_blank">here</a> for licence information</a>.</p>
-			<br/><small>${versionInfo}</small>`;
-	const title = `<img src="images/code-192-blue.svg" width="32px" style="vertical-align: middle;">&nbsp;Cadence`;
-	Modal.notice(content, title);
+			<br/><small>${versionInfo}</small>`
+	const title = `<img src="images/code-192-blue.svg" width="32px" style="vertical-align: middle;">&nbsp;Cadence`
+	Modal.notice(content, title)
 }
-const execCommandAddFolder = () => {
-	fileOpen.click()
+const execCommandAddFolder = async () => {
+	if (window.runtime) {
+		const folder = await window.runtime.OpenDirectoryDialog({
+			Title: "Add Folder to Workspace",
+			DefaultDirectory: workspace.folders?.[0] || "",
+		})
+		if (folder) {
+			if (!workspace.folders.includes(folder)) {
+				workspace.folders.push(folder)
+				updateFileListBackground()
+				saveWorkspace()
+				await fileList.refreshAll()
+			}
+		}
+	} else {
+		fileOpen.click()
+	}
 }
 const execCommandToggleFolders = () => {
 	ui.toggleSidebar()
@@ -671,44 +720,46 @@ const execCommandSplitView = () => {
 
 const execCommandToggleSidebarPanel = (panelId) => {
 	const isSidebarVisible = document.body.classList.contains("showSidebar")
-	const currentPanel = ui.iconTabBar.activeTab?.iconId;
+	const currentPanel = ui.iconTabBar.activeTab?.iconId
 
 	if (isSidebarVisible && currentPanel === panelId) {
-		if(panelId == 'developer_board') {
-			if(!document.activeElement.classList.contains("ace_text-input")) {
+		if (panelId == "developer_board") {
+			if (!document.activeElement.classList.contains("ace_text-input")) {
 				// just focus the tab
-				ui.iconTabBar.activeTabById = panelId;
+				ui.iconTabBar.activeTabById = panelId
 				return
 			}
 		}
-		if(panelId == 'terminal') {
-			if(!document.activeElement.classList.contains("xterm-helper-textarea")) {
+		if (panelId == "terminal") {
+			if (!document.activeElement.classList.contains("xterm-helper-textarea")) {
 				// just focus the tab
-				ui.iconTabBar.activeTabById = panelId;
+				ui.iconTabBar.activeTabById = panelId
 				return
 			}
 		}
-		ui.toggleSidebar(); // Close the sidebar
+		ui.toggleSidebar() // Close the sidebar
 	} else if (!isSidebarVisible) {
-		ui.toggleSidebar(); // Open the sidebar
-		ui.iconTabBar.activeTabById = panelId;
+		ui.toggleSidebar() // Open the sidebar
+		ui.iconTabBar.activeTabById = panelId
 	} else {
-		ui.iconTabBar.activeTabById = panelId; // Switch to the new panel
+		ui.iconTabBar.activeTabById = panelId // Switch to the new panel
 	}
-};
+}
 
 const execCommandRemoveAllFolders = () => {
 	setTimeout(async () => {
 		const l = workspace.folders.length
 		if (l == 0) {
-			window.modal.notice("You don't have any folders in your workspace.", "No Folders");
+			window.modal.notice("You don't have any folders in your workspace.", "No Folders")
 		} else {
-			const confirmed = await window.modal.confirm(`Are you sure you want to remove ${l} folder${l > 1 ? "s" : ""} from your workspace?`);
+			const confirmed = await window.modal.confirm(
+				`Are you sure you want to remove ${l} folder${l > 1 ? "s" : ""} from your workspace?`
+			)
 			if (confirmed) {
 				while (workspace.folders.length > 0) {
 					workspace.folders.pop()
 				}
-				updateFileListBackground();
+				updateFileListBackground()
 				ui.showSidebar()
 				// saveAppConfig()
 				saveWorkspace()
@@ -719,149 +770,163 @@ const execCommandRemoveAllFolders = () => {
 
 const execCommandRefreshFolders = () => {}
 
+const execCommandRefreshOpenFiles = async () => {
+	const tabsToReload = []
+	for (const tab of leftTabs.tabs) {
+		if (!tab.changed && tab.config.handle && typeof tab.config.handle === "string") {
+			tabsToReload.push(tab)
+		}
+	}
+	for (const tab of rightTabs.tabs) {
+		if (!tab.changed && tab.config.handle && typeof tab.config.handle === "string") {
+			tabsToReload.push(tab)
+		}
+	}
+	for (const tab of tabsToReload) {
+		await reloadFile(tab)
+	}
+}
+
 const execCommandRestoreFolders = () => {
-	restoreWorkspaceContent();
+	restoreWorkspaceContent()
 }
 
 const execCommandCloseActiveTab = async () => {
-	const activeEl = document.activeElement;
+	const activeEl = document.activeElement
 
 	// If the active element is within a terminal instance
-	if (activeEl && activeEl.closest('.terminal-instance-container')) {
+	if (activeEl && activeEl.closest(".terminal-instance-container")) {
 		if (window.terminalManager && window.terminalManager._activeSessionId) {
-			const session = window.terminalManager._sessions.get(window.terminalManager._activeSessionId);
+			const session = window.terminalManager._sessions.get(window.terminalManager._activeSessionId)
 			if (session && session.tabItem) {
-				window.terminalManager.deleteTerminalSession(session.tabItem.config.id, session.tabItem);
-	            window.terminalManager.sessionTabBar.activeTab?.click(); // Re-clicking the new active tab ensures focus
+				window.terminalManager.deleteTerminalSession(session.tabItem.config.id, session.tabItem)
+				window.terminalManager.sessionTabBar.activeTab?.click() // Re-clicking the new active tab ensures focus
 			}
 		}
-		return;
+		return
 	}
 	// If the active element is within the AI prompt editor
-	if (activeEl && activeEl.closest('#ai-prompt-editor-container')) {
+	if (activeEl && activeEl.closest("#ai-prompt-editor-container")) {
 		if (ui.aiManager && ui.aiManager.activeSession) {
-			ui.aiManager.deleteSession(ui.aiManager.activeSession.id, ui.aiManager.sessionTabBar.activeTab);
+			ui.aiManager.deleteSession(ui.aiManager.activeSession.id, ui.aiManager.sessionTabBar.activeTab)
 		}
-		return;
+		return
 	}
 
 	// Fallback to closing the current editor file if neither terminal nor AI is focused
-	const tab = ui.currentTabs.activeTab;
+	const tab = ui.currentTabs.activeTab
 	if (tab) {
-		tab.close.click();
+		tab.close.click()
 	}
 }
 const execCommandNextBuffer = () => {
-    const activeEl = document.activeElement;
-    // Check if focus is within the Terminal panel
-    if (activeEl && activeEl.closest('.terminal-instance-container')) {
-        if (window.terminalManager?.sessionTabBar) {
-	        window.terminalManager.sessionTabBar.next(); // Switches the tab
-            window.terminalManager.sessionTabBar.activeTab?.click(); // Re-clicking the new active tab ensures focus
- 
-        }
-        return;
-    }
-    // Check if focus is within the AI panel
-    if (activeEl && activeEl.closest('#ai-panel')) {
-        if (ui.aiManager?.sessionTabBar) {
-            ui.aiManager.sessionTabBar.next();
-        }
-        return;
-    }
-    // Default to the current editor's tabs
-    if (ui.currentTabs) {
-        ui.currentTabs.next();
-    }
-};
-const execCommandPrevBuffer = () => {
-    const activeEl = document.activeElement;
-    if (activeEl && activeEl.closest('.terminal-instance-container')) {
-        if (window.terminalManager?.sessionTabBar) {
-            window.terminalManager.sessionTabBar.prev(); // Switches the tab
-            window.terminalManager.sessionTabBar.activeTab?.click(); // Re-clicking the new active tab ensures focus
-        }
-    } else if (activeEl && activeEl.closest('#ai-panel')) {
-        if (ui.aiManager?.sessionTabBar) {
-            ui.aiManager.sessionTabBar.prev();
-        }
-    } else if (ui.currentTabs) {
-        ui.currentTabs.prev();
-    }
+	const activeEl = document.activeElement
+	// Check if focus is within the Terminal panel
+	if (activeEl && activeEl.closest(".terminal-instance-container")) {
+		if (window.terminalManager?.sessionTabBar) {
+			window.terminalManager.sessionTabBar.next() // Switches the tab
+			window.terminalManager.sessionTabBar.activeTab?.click() // Re-clicking the new active tab ensures focus
+		}
+		return
+	}
+	// Check if focus is within the AI panel
+	if (activeEl && activeEl.closest("#ai-panel")) {
+		if (ui.aiManager?.sessionTabBar) {
+			ui.aiManager.sessionTabBar.next()
+		}
+		return
+	}
+	// Default to the current editor's tabs
+	if (ui.currentTabs) {
+		ui.currentTabs.next()
+	}
 }
-const execCommandSave = async () => {
-	const tab = currentTabs.activeTab;
-	const config = tab.config;
-	if (config.handle) {
-		await saveFile(tab);
-		config.session.baseValue = config.session.getValue();
-	} else {
-		const startIn = await getSuggestedStartDirectory();
-		const options = {};
-		if (startIn) {
-			options.startIn = startIn;
+const execCommandPrevBuffer = () => {
+	const activeEl = document.activeElement
+	if (activeEl && activeEl.closest(".terminal-instance-container")) {
+		if (window.terminalManager?.sessionTabBar) {
+			window.terminalManager.sessionTabBar.prev() // Switches the tab
+			window.terminalManager.sessionTabBar.activeTab?.click() // Re-clicking the new active tab ensures focus
 		}
-		const newHandle = await window.showSaveFilePicker(options).catch(console.warn);
-		if (!newHandle) {
-			window.modal.notice("File save operation was cancelled.", "Not Saved");
-			return;
+	} else if (activeEl && activeEl.closest("#ai-panel")) {
+		if (ui.aiManager?.sessionTabBar) {
+			ui.aiManager.sessionTabBar.prev()
 		}
-		config.handle = newHandle;
-		config.name = newHandle.name;
-		config.path = buildPath(newHandle);
-		config.folder = newHandle.container;
-		tab.name = config.name;
-		tab.setAttribute("title", config.path);
+	} else if (ui.currentTabs) {
+		ui.currentTabs.prev()
+	}
+}
 
-		await saveFile(tab);
-		config.session.baseValue = config.session.getValue();
-		
+const execCommandSave = async () => {
+	const tab = currentTabs.activeTab
+	const config = tab.config
+	if (config.handle) {
+		await saveFile(tab)
+		config.session.baseValue = config.session.getValue()
+	} else {
+		const startIn = await getSuggestedStartDirectory()
+		const expandPath = tab.config?.path ? tab.config.path.substring(0, tab.config.path.lastIndexOf('/')) : startIn;
+		const newFile = await promptSaveFile(tab.name || "Untitled", startIn, workspace.folders, expandPath)
+		if (!newFile) {
+			// window.modal.notice("File save operation was cancelled.", "Not Saved")
+			return
+		}
+
+		config.handle = newFile.path
+		config.name = newFile.name
+		config.path = newFile.path
+		config.folder = newFile.folder
+		tab.name = config.name
+		tab.setAttribute("title", config.path)
+
+		await saveFile(tab)
+		config.session.baseValue = config.session.getValue()
+
 		// This is a new file, add it to the workspace
-		syncWorkspaceFile(tab);
+		syncWorkspaceFile(tab)
 
 		// Refresh the folder in the file list to show the new file
-		await fileList.refreshFolder(newHandle.container);
+		await fileList.refreshFolder(config.folder)
 	}
-};
+}
 
 const execCommandSaveAs = async () => {
-	const tab = currentTabs.activeTab;
-	const config = tab.config;
-	const oldHandle = config.handle;
-	const oldFolderHandle = oldHandle?.container;
+	const tab = currentTabs.activeTab
+	const config = tab.config
+	const oldHandle = config.handle
+	const oldFolderHandle = config.folder
 
-	const startIn = await getSuggestedStartDirectory();
-	const options = {};
-	if (startIn) {
-		options.startIn = startIn;
-	}
-	const newHandle = await window.showSaveFilePicker(options).catch(console.warn)
-	if (!newHandle) {
-		window.modal.notice("File save operation was cancelled.", "Not Saved");
+	const startIn = await getSuggestedStartDirectory()
+	const expandPath = tab.config?.path ? tab.config.path.substring(0, tab.config.path.lastIndexOf('/')) : startIn;
+	const newFile = await promptSaveFile(config.name || "Untitled", startIn, workspace.folders, expandPath)
+
+	if (!newFile) {
+		// window.modal.notice("File save operation was cancelled.", "Not Saved")
 		return
 	}
 
 	if (oldHandle) {
-		workspace.files = workspace.files.filter(f => f.handle !== oldHandle);
+		workspace.files = workspace.files.filter((f) => f.handle !== oldHandle)
 	}
 
-	config.handle = newHandle
-	config.name = newHandle.name
-	config.path = buildPath(newHandle);
-	config.folder = newHandle.container;
-	tab.name = config.name;
-	tab.setAttribute("title", config.path);
-	await saveFile(tab);
-	syncWorkspaceFile(tab);
+	config.handle = newFile.path
+	config.name = newFile.name
+	config.path = newFile.path
+	config.folder = newFile.folder
+	tab.name = config.name
+	tab.setAttribute("title", config.path)
 
-	await fileList.refreshFolder(newHandle.container);
-	if (oldFolderHandle && oldFolderHandle !== newHandle.container) {
-		await fileList.refreshFolder(oldFolderHandle);
+	await saveFile(tab)
+	syncWorkspaceFile(tab)
+
+	await fileList.refreshFolder(config.folder)
+	if (oldFolderHandle && oldFolderHandle !== config.folder) {
+		await fileList.refreshFolder(oldFolderHandle)
 	}
 }
 
 const execCommandOpen = async () => {
-	const startIn = await getSuggestedStartDirectory();
+	const startIn = await getSuggestedStartDirectory()
 	const newHandle = await window.showOpenFilePicker({ startIn }).catch(console.warn)
 	if (!newHandle) {
 		return
@@ -870,53 +935,59 @@ const execCommandOpen = async () => {
 }
 
 const execCommandNewFile = async () => {
-	const activeEl = document.activeElement;
-	let context = 'editor'; // Default context
+	const activeEl = document.activeElement
+	let context = "editor" // Default context
 	// 1. Check for specific focused elements first
-	if (activeEl && activeEl.closest('.terminal-instance-container')) {
-		context = 'terminal';
-	} else if (activeEl && activeEl.closest('#ai-prompt-editor-container')) {
-		context = 'ai';
-	} else if (activeEl && (activeEl.closest('.ace_editor') || activeEl.classList.contains('ace_text-input'))) {
-		context = 'editor';
+	if (activeEl && activeEl.closest(".terminal-instance-container")) {
+		context = "terminal"
+	} else if (activeEl && activeEl.closest("#ai-prompt-editor-container")) {
+		context = "ai"
+	} else if (activeEl && (activeEl.closest(".ace_editor") || activeEl.classList.contains("ace_text-input"))) {
+		context = "editor"
 	} else {
 		// 2. If no editor is focused, use the active sidebar panel as the context
-		const activeSidebarTabId = ui.iconTabBar?.activeTab?.iconId;
+		const activeSidebarTabId = ui.iconTabBar?.activeTab?.iconId
 		switch (activeSidebarTabId) {
-			case 'developer_board':
-				context = 'ai';
-				break;
-			case 'terminal':
-				context = 'terminal';
-				break;
+			case "developer_board":
+				context = "ai"
+				break
+			case "terminal":
+				context = "terminal"
+				break
 			default:
-				context = 'editor';
-				break;
+				context = "editor"
+				break
 		}
 	}
 	// Execute the 'new' action based on the determined context
 	switch (context) {
-		case 'ai':
-			return ui.aiManager.createNewSession();
-		case 'terminal':
-			return window.terminalManager.createNewTerminalSession();
-		case 'editor':
+		case "ai":
+			return ui.aiManager.createNewSession()
+		case "terminal":
+			return window.terminalManager.createNewTerminalSession()
+		case "editor":
 		default:
-			const srcTab = ui.currentTabs.activeTab;
-			const mode = srcTab?.config?.mode?.mode || "";
-			const folder = srcTab?.config?.folder || undefined;
-			const newSession = ace.createEditSession("", mode);
-			if (app.sessionOptions) newSession.setOptions(app.sessionOptions);
-			newSession.baseValue = "";
-			const targetTabs = ui.currentTabs;
-			const tab = targetTabs.add({ name: "untitled", mode: { mode: mode }, session: newSession, folder: folder, side: (targetTabs === leftTabs) ? "left" : "right" });
-			return tab.click();
+			const srcTab = ui.currentTabs.activeTab
+			const mode = srcTab?.config?.mode?.mode || ""
+			const folder = srcTab?.config?.folder || undefined
+			const newSession = ace.createEditSession("", mode)
+			if (app.sessionOptions) newSession.setOptions(app.sessionOptions)
+			newSession.baseValue = ""
+			const targetTabs = ui.currentTabs
+			const tab = targetTabs.add({
+				name: "untitled",
+				mode: { mode: mode },
+				session: newSession,
+				folder: folder,
+				side: targetTabs === leftTabs ? "left" : "right",
+			})
+			return tab.click()
 	}
-	
+
 	// const srcTab = ui.currentTabs.activeTab
 	// const mode = srcTab?.config?.mode?.mode || "";
 	// const folder = srcTab?.config?.folder || undefined;
-	// const newSession = ace.createEditSession("", mode);	
+	// const newSession = ace.createEditSession("", mode);
 
 	// // Check for active element focus to determine context
 	// const activeEl = document.activeElement;
@@ -947,9 +1018,15 @@ const execCommandNewFile = async () => {
 
 	// const tab = targetTabs.add({ name: "untitled", mode: { mode: mode }, session: newSession, folder: folder, side: (targetTabs === leftTabs) ? "left" : "right" });
 
-	const tab = targetTabs.add({ name: "untitled", mode: { mode: mode }, session: newSession, folder: folder, side: (targetTabs === leftTabs) ? "left" : "right" });
+	const tab = targetTabs.add({
+		name: "untitled",
+		mode: { mode: mode },
+		session: newSession,
+		folder: folder,
+		side: targetTabs === leftTabs ? "left" : "right",
+	})
 	// Set a default icon for new untitled tabs
-	tab.defaultStatusIcon = 'description';
+	tab.defaultStatusIcon = "description"
 
 	// tab.click();
 }
@@ -960,35 +1037,46 @@ const execCommandNewWindow = async () => {
 
 // Function to reload a file from disk
 const reloadFile = async (tab) => {
-    const handle = tab.config.handle;
-    if (!handle) {
-        console.warn("No file handle found for tab:", tab.config.name);
-        return;
-    }
+	const handle = tab.config.handle
+	if (!handle || typeof handle !== "string") {
+		console.warn("No valid file handle found for tab:", tab.config.name)
+		return
+	}
 
-    try {
-        const file = await handle.getFile();
-        const text = await file.text();
+	try {
+		const response = await conduitClient.wsRead(handle)
+		let text = response.content
+		if (text === undefined && response.data) {
+			try {
+				// Decode UTF-8 base64
+				text = decodeURIComponent(escape(atob(response.data)))
+			} catch (e) {
+				text = atob(response.data)
+			}
+		}
 
-        // Update the session with the new content
-        tab.config.session.setValue(text);
-        tab.config.session.baseValue = text; // Reset baseValue to current content
-        tab.config.fileModified = false; // Clear the file modified flag
-        tab.changed = false; // Clear unsaved changes flag
+		// Update the session with the new content
+		tab.config.session.setValue(text)
+		tab.config.session.baseValue = text // Reset baseValue to current content
+		tab.config.fileModified = false // Clear the file modified flag
+		tab.changed = false // Clear unsaved changes flag
 
-        // If the reloaded tab is the active tab, ensure the editor updates
-        if (tab === currentTabs.activeTab) {
-            currentEditor.setSession(tab.config.session);
-            currentEditor.focus();
-        }
-    } catch (error) {
-        console.error("Error reloading file:", tab.config.name, error);
-        window.modal.notice(`Error reloading file ${tab.config.name}:<br><small>${error.message}</small>`, "Reload Error");
-    }
-};
+		// If the reloaded tab is the active tab, ensure the editor updates
+		if (tab === currentTabs.activeTab) {
+			currentEditor.setSession(tab.config.session)
+			currentEditor.focus()
+		}
+	} catch (error) {
+		console.error("Error reloading file:", tab.config.name, error)
+		window.modal.notice(
+			`Error reloading file ${tab.config.name}:<br><small>${error.message}</small>`,
+			"Reload Error"
+		)
+	}
+}
 
 // Expose it globally for ui-main.mjs to call
-window.ui.reloadFile = reloadFile;
+window.ui.reloadFile = reloadFile
 
 // 	const buildPath = (f) => {
 // 	if (!(f instanceof FileSystemFileHandle || f instanceof FileSystemDirectoryHandle)) {
@@ -1000,16 +1088,16 @@ window.ui.reloadFile = reloadFile;
 // }
 
 const syncWorkspaceFile = (tab) => {
-	const config = tab.config;
-	const handle = config.handle;
-	if (!handle) return;
+	const config = tab.config
+	const handle = config.handle
+	if (!handle) return
 
-	let matched = false;
+	let matched = false
 	for (const file of workspace.files) {
 		if (file.handle === handle) {
-			file.side = config.side;
-			matched = true;
-			break;
+			file.side = config.side
+			matched = true
+			break
 		}
 	}
 
@@ -1018,59 +1106,59 @@ const syncWorkspaceFile = (tab) => {
 			name: config.name,
 			path: config.path,
 			handle: handle,
-			side: config.side
-		});
+			side: config.side,
+		})
 	}
-	saveWorkspace();
-};
+	saveWorkspace()
+}
 const setupSessionChangeListener = (session, tab) => {
-    session.on('change', () => {
-        const isDirty = session.getValue() !== session.baseValue;
-        
-        // Update tab's changed status
-        tab.changed = isDirty;
-        
-        // Update corresponding file list item's changed status
-        const handle = tab.config.handle;
-        if (handle) {
-            const fileItem = fileList.byTitle(buildPath(handle));
-            if (fileItem) {
-                fileItem.changed = isDirty;
-            }
-        }
-    });
-};
-let currentEditor = leftEdit;
-let currentTabs = leftEdit;
-let currentMediaView = ui.leftMedia;
+	session.on("change", () => {
+		const isDirty = session.getValue() !== session.baseValue
 
-const setCurrentEditor = (editor)=>{
+		// Update tab's changed status
+		tab.changed = isDirty
+
+		// Update corresponding file list item's changed status
+		const handle = tab.config.handle
+		if (handle) {
+			const fileItem = fileList.byTitle(buildPath(handle))
+			if (fileItem) {
+				fileItem.changed = isDirty
+			}
+		}
+	})
+}
+let currentEditor = leftEdit
+let currentTabs = leftEdit
+let currentMediaView = ui.leftMedia
+
+const setCurrentEditor = (editor) => {
 	ui.currentEditor = currentEditor = editor
-	ui.currentTabs = currentTabs = (editor === leftEdit ? ui.leftTabs : ui.rightTabs)
-	ui.currentMediaView = currentMediaView = (editor === leftEdit ? ui.leftMedia : ui.rightMedia)
-	ui.aiManager.editor = editor;
-	
+	ui.currentTabs = currentTabs = editor === leftEdit ? ui.leftTabs : ui.rightTabs
+	ui.currentMediaView = currentMediaView = editor === leftEdit ? ui.leftMedia : ui.rightMedia
+	ui.aiManager.editor = editor
+
 	const tab = editor?.tabs?.activeTab
-	if(tab) {
-		fileList.active = tab.config.handle;
-    	tab.scrollIntoViewIfNeeded();
-    	tab.parentElement.scrollTop = 0;
-    	if (tab.changed && fileList.activeItem) {
-	        fileList.activeItem.changed = true;
-	    }
+	if (tab) {
+		fileList.active = tab.config.handle
+		tab.scrollIntoViewIfNeeded()
+		tab.parentElement.scrollTop = 0
+		if (tab.changed && fileList.activeItem) {
+			fileList.activeItem.changed = true
+		}
 
 		// Update the side property in workspace.files when the active editor changes
-		const fileInWorkspace = workspace.files.find(file => file.handle === tab.config.handle);
+		const fileInWorkspace = workspace.files.find((file) => file.handle === tab.config.handle)
 		if (fileInWorkspace) {
-			fileInWorkspace.side = (editor === leftEdit) ? "left" : "right";
-			saveWorkspace();
+			fileInWorkspace.side = editor === leftEdit ? "left" : "right"
+			saveWorkspace()
 		}
 	}
 }
 
 const openFileHandle = async (handle, knownPath = null, targetEditor = currentEditor) => {
-    let path = typeof handle === 'string' ? handle : (handle.path || knownPath);
-    let name = typeof handle === 'string' ? path.split('/').pop() : handle.name;
+	let path = typeof handle === "string" ? handle : handle.path || knownPath
+	let name = typeof handle === "string" ? path.split("/").pop() : handle.name
 
 	// don't add a new tab if the file is already open in a tab
 	{
@@ -1082,36 +1170,36 @@ const openFileHandle = async (handle, knownPath = null, targetEditor = currentEd
 
 	let fileMode = { mode: "" }
 	const images = "png|jpg|jpeg|bmp|tiff|gif|webp|ico".split("|")
-	let isImage = false;
-	for(const i of images) {
-		if(name.toLowerCase().endsWith(i)) {
-			isImage = true;
+	let isImage = false
+	for (const i of images) {
+		if (name.toLowerCase().endsWith(i)) {
+			isImage = true
 			fileMode.mode = "media"
-			break;
+			break
 		}
 	}
 
-    let text = "";
-	let rawData = null;
-    try {
-        const fileData = await conduitClient.wsRead(path);
-        if (fileData.error) throw new Error(fileData.error);
-		rawData = fileData.data;
+	let text = ""
+	let rawData = null
+	try {
+		const fileData = await conduitClient.wsRead(path)
+		if (fileData.error) throw new Error(fileData.error)
+		rawData = fileData.data
 		if (!isImage) {
-        	text = decodeURIComponent(escape(atob(fileData.data)));
+			text = decodeURIComponent(escape(atob(fileData.data)))
 		}
-    } catch (e) {
-        window.modal.notice(`Failed to open file ${path}:<br><small>${e.message}</small>`, "Read Error");
-        return;
-    }
+	} catch (e) {
+		window.modal.notice(`Failed to open file ${path}:<br><small>${e.message}</small>`, "Read Error")
+		return
+	}
 
 	// lookup editor modes
 	for (let n in ace_modes) {
 		const mode = ace_modes[n]
 
 		// HTML should be html, not django
-		if(mode.name == "django") continue
-		
+		if (mode.name == "django") continue
+
 		if (name.match(mode.extRe)) {
 			fileMode = mode
 			break
@@ -1135,17 +1223,20 @@ const openFileHandle = async (handle, knownPath = null, targetEditor = currentEd
 		}
 	}
 
-		if(fileMode.mode == "") {
-			if(name.startsWith(".")) {
-				fileMode.mode = "ace/mode/sh"
-			} else {
-				fileMode.mode = "ace/mode/text"
-			}
+	if (fileMode.mode == "") {
+		if (name.startsWith(".")) {
+			fileMode.mode = "ace/mode/sh"
+		} else {
+			fileMode.mode = "ace/mode/text"
 		}
+	}
 
 	if (fileMode.mode == "") {
-		console.warn("Unsupported File", name);
-		window.modal.notice(`Unsupported or unrecognised file type: <strong>${name.split(".").pop().toUpperCase()}</strong>`, "Unsupported File");
+		console.warn("Unsupported File", name)
+		window.modal.notice(
+			`Unsupported or unrecognised file type: <strong>${name.split(".").pop().toUpperCase()}</strong>`,
+			"Unsupported File"
+		)
 		return
 	}
 
@@ -1163,42 +1254,54 @@ const openFileHandle = async (handle, knownPath = null, targetEditor = currentEd
 	// Check for and remove empty "untitled" tabs before opening a new file.
 	const removeEmptyUntitledTab = (tabGroup) => {
 		if (tabGroup.tabs.length === 1) {
-			const tab = tabGroup.tabs[0];
-            if (tab.config.name === "untitled" && tab.config.session.getValue() === "") {
-				tabGroup.remove(tab, true); // Pass true to suppress defaultTab creation
+			const tab = tabGroup.tabs[0]
+			if (tab.config.name === "untitled" && tab.config.session.getValue() === "") {
+				tabGroup.remove(tab, true) // Pass true to suppress defaultTab creation
 			}
 		}
-	};
+	}
 
-	removeEmptyUntitledTab(leftTabs);
-	removeEmptyUntitledTab(rightTabs);
+	removeEmptyUntitledTab(leftTabs)
+	removeEmptyUntitledTab(rightTabs)
 
-	const tabIcon = getIconForFileName(name);
+	const tabIcon = getIconForFileName(name)
 	const newSession = ace.createEditSession(text, fileMode.mode)
 	newSession.baseValue = text
 
 	targetEditor.setSession(newSession)
 	execCommandEditorOptions()
 
+	let projectFolder = typeof handle === "string" ? "" : handle.container;
+	if (!projectFolder && typeof path === "string") {
+		// Find the longest matching workspace folder
+		const matches = workspace.folders.filter(f => path.startsWith(f));
+		if (matches.length > 0) {
+			projectFolder = matches.sort((a, b) => b.length - a.length)[0];
+		} else {
+			// Fallback to the immediate parent directory
+			projectFolder = path.substring(0, path.lastIndexOf('/')) || '.';
+		}
+	}
+
 	const tab = targetEditor.tabs.add({
 		name: name,
 		path: path,
 		mode: fileMode,
 		session: newSession,
-		side: (targetEditor === leftEdit) ? "left" : "right",
+		side: targetEditor === leftEdit ? "left" : "right",
 		handle: path,
-		folder: typeof handle === 'string' ? '' : handle.container,
+		folder: projectFolder,
 		fileModified: false,
 		defaultStatusIcon: tabIcon, // Pass the determined icon to the new tab.
-		rawData: rawData
-	});
-	setupSessionChangeListener(newSession, tab);
+		rawData: rawData,
+	})
+	setupSessionChangeListener(newSession, tab)
 	tab.click()
-	observeFile(path, onFileModified); // Observe the file for changes
+	observeFile(path, onFileModified) // Observe the file for changes
 
 	// Only add to workspace and save if it's a newly opened file, not from a restore
 	if (knownPath === null) {
-		syncWorkspaceFile(tab);
+		syncWorkspaceFile(tab)
 	}
 }
 
@@ -1206,13 +1309,15 @@ const fileMenu = document.getElementById("file_context")
 const folderMenu = document.getElementById("folder_context")
 const topfolderMenu = document.getElementById("top_folder_context")
 
-folderMenu.click = topfolderMenu.click = (action) => {
+fileMenu.click = folderMenu.click = topfolderMenu.click = async (action) => {
 	const active = fileList.contextElement
 	const file = active.item
+	const filePath = file.path || file.name;
+
 	switch (action) {
 		case "remove":
 			for (let i = 0; i < workspace.folders.length; i++) {
-				if (workspace.folders[i] === (file.path || file)) {
+				if (workspace.folders[i] === filePath) {
 					workspace.folders.splice(i, 1)
 					i--
 				}
@@ -1225,19 +1330,62 @@ folderMenu.click = topfolderMenu.click = (action) => {
 				active.refresh.click()
 			}
 			break
+		case "newfile":
+			const newFileName = await Modal.prompt("", "New File Name", "");
+			if (!newFileName) return;
+			const newFilePath = `${filePath}/${newFileName}`;
+			try {
+				await conduitClient.wsWrite(newFilePath, btoa("")); // Create empty file
+				await fileList.refreshFolder(filePath);
+				await openFileHandle(newFilePath, newFilePath);
+			} catch (e) {
+				Modal.notice(`Failed to create file: ${e.message}`, "Error");
+			}
+			break;
+		case "rename":
+			const newName = await Modal.prompt("", `Rename ${file.isDir ? 'folder' : 'file'}`, file.name);
+			if (!newName || newName === file.name) return;
+			const parentPathRename = filePath.substring(0, filePath.lastIndexOf('/'));
+			const newPath = parentPathRename ? `${parentPathRename}/${newName}` : newName;
+			try {
+				await conduitClient.wsRename(filePath, newPath);
+				await fileList.refreshFolder(parentPathRename || ".");
+			} catch (e) {
+				Modal.notice(`Failed to rename: ${e.message}`, "Error");
+			}
+			break;
+		case "delete":
+			const confirmed = await Modal.confirm(`Are you sure you want to delete ${file.isDir ? 'folder' : 'file'} <strong>${file.name}</strong>?`, "Confirm Deletion");
+			if (confirmed) {
+				try {
+					await conduitClient.wsDelete(filePath);
+					// If this was an open tab, close it
+					if (!file.isDir) {
+						const openTabLeft = leftTabs.byTitle(filePath);
+						if (openTabLeft) leftTabs.remove(openTabLeft);
+						const openTabRight = rightTabs.byTitle(filePath);
+						if (openTabRight) rightTabs.remove(openTabRight);
+					}
+					const parentPathDelete = filePath.substring(0, filePath.lastIndexOf('/'));
+					await fileList.refreshFolder(parentPathDelete || ".");
+				} catch (e) {
+					Modal.notice(`Failed to delete: ${e.message}`, "Error");
+				}
+			}
+			break;
 	}
 }
+
 fileList.context = (e) => {
 	let menu = folderMenu
 
-	const fileItem = e.srcElement.closest('ui-file-item');
-	if (!fileItem) return;
+	const fileItem = e.srcElement.closest("ui-file-item")
+	if (!fileItem) return
 	if (workspace.folders.includes(fileItem.item.path || fileItem.item)) {
 		menu = topfolderMenu
 	} else {
 		if (fileItem?.item?.isDir === false) {
-			// menu = fileMenu
-			return
+			menu = fileMenu
 		} else {
 			menu = folderMenu
 		}
@@ -1256,118 +1404,126 @@ fileList.expand = (item) => {
 }
 
 const updateEditorUI = async (targetEditor, targetMediaView, tab) => {
-    if (tab.config.mode.mode === "media") {
-        targetEditor.container.style.display = 'none';
-        targetMediaView.style.display = 'block';
+	if (tab.config.mode.mode === "media") {
+		targetEditor.container.style.display = "none"
+		targetMediaView.style.display = "block"
 
-		let data = tab.config.rawData;
+		let data = tab.config.rawData
 		if (!data) {
-        	const fileData = await conduitClient.wsRead(tab.config.path);
-			data = fileData.data;
+			const fileData = await conduitClient.wsRead(tab.config.path)
+			data = fileData.data
 		}
-        const imageUrl = `data:image/${tab.config.path.split('.').pop()};base64,${data}`;
-        targetMediaView.setImage(imageUrl);
-    } else {
-        targetEditor.container.style.display = 'block';
-        targetMediaView.style.display = 'none';
-        targetEditor.setSession(tab.config.session);
-        targetEditor.focus();
-    }
-    // setCurrentEditor(targetEditor);
-    fileList.active = tab.config.handle;
-    tab.scrollIntoViewIfNeeded();
-    tab.parentElement.scrollTop = 0;
-    updateThemeAndMode();
-    if (tab.changed && fileList.activeItem) {
-        fileList.activeItem.changed = true;
-    }
+		const imageUrl = `data:image/${tab.config.path.split(".").pop()};base64,${data}`
+		targetMediaView.setImage(imageUrl)
+	} else {
+		targetEditor.container.style.display = "block"
+		targetMediaView.style.display = "none"
+		targetEditor.setSession(tab.config.session)
+		targetEditor.focus()
+	}
+	// setCurrentEditor(targetEditor);
+	fileList.active = tab.config.handle
+	tab.scrollIntoViewIfNeeded()
+	tab.parentElement.scrollTop = 0
+	updateThemeAndMode()
+	if (tab.changed && fileList.activeItem) {
+		fileList.activeItem.changed = true
+	}
 }
 
 leftTabs.click = async (event) => {
-    const tab = event.tab;
-    setCurrentEditor(leftEdit);
-    await updateEditorUI(leftEdit, ui.leftMedia, tab);
-    // Check if the file has been modified externally and show notice
-    if (tab.config.fileModified) {
-        ui.showFileModifiedNotice(tab, 'left');
-    } else {
-        ui.hideFileModifiedNotice('left'); // Hide if not modified
-    }
-};
+	const tab = event.tab
+	setCurrentEditor(leftEdit)
+	await updateEditorUI(leftEdit, ui.leftMedia, tab)
+	// Check if the file has been modified externally and show notice
+	if (tab.config.fileModified) {
+		ui.showFileModifiedNotice(tab, "left")
+	} else {
+		ui.hideFileModifiedNotice("left") // Hide if not modified
+	}
+}
 
 rightTabs.click = async (event) => {
-    const tab = event.tab;
-    setCurrentEditor(rightEdit);
-    await updateEditorUI(rightEdit, ui.rightMedia, tab);
-    // Check if the file has been modified externally and show notice
-    if (tab.config.fileModified) {
-        ui.showFileModifiedNotice(tab, 'right');
-    } else {
-        ui.hideFileModifiedNotice('right'); // Hide if not modified
-    }
-};
+	const tab = event.tab
+	setCurrentEditor(rightEdit)
+	await updateEditorUI(rightEdit, ui.rightMedia, tab)
+	// Check if the file has been modified externally and show notice
+	if (tab.config.fileModified) {
+		ui.showFileModifiedNotice(tab, "right")
+	} else {
+		ui.hideFileModifiedNotice("right") // Hide if not modified
+	}
+}
 
 const closeTab = async (targetTabs, event) => {
-    const tab = event.tab;
-    if (tab.changed) {
-        const confirmed = await window.modal.confirm("This file has unsaved changes. Are you sure you want to close it?", "Unsaved Changes");
-        if (!confirmed) {
-            return;
-        }
-    }
+	const tab = event.tab
+	if (tab.changed) {
+		const confirmed = await window.modal.confirm(
+			"This file has unsaved changes. Are you sure you want to close it?",
+			"Unsaved Changes"
+		)
+		if (!confirmed) {
+			return
+		}
+	}
 
-    // If the tab is a media file, revoke the object URL
-    if (tab.config.mode.mode === "media") {
-        if (targetTabs === leftTabs && ui.leftMedia.style.backgroundImage) {
-            const imageUrl = ui.leftMedia.style.backgroundImage.replace(/url\("|"\)/g, '');
-            URL.revokeObjectURL(imageUrl);
-        } else if (targetTabs === rightTabs && ui.rightMedia.style.backgroundImage) {
-            const imageUrl = ui.rightMedia.style.backgroundImage.replace(/url\("|"\)/g, '');
-            URL.revokeObjectURL(imageUrl);
-        }
-    }
+	// If the tab is a media file, revoke the object URL
+	if (tab.config.mode.mode === "media") {
+		if (targetTabs === leftTabs && ui.leftMedia.style.backgroundImage) {
+			const imageUrl = ui.leftMedia.style.backgroundImage.replace(/url\("|"\)/g, "")
+			URL.revokeObjectURL(imageUrl)
+		} else if (targetTabs === rightTabs && ui.rightMedia.style.backgroundImage) {
+			const imageUrl = ui.rightMedia.style.backgroundImage.replace(/url\("|"\)/g, "")
+			URL.revokeObjectURL(imageUrl)
+		}
+	}
 
-    // remove from workspace recent files
-    for (let i = 0; i < workspace.files.length; i++) {
-        if (workspace.files[i].handle == tab.config.handle) {
-            workspace.files.splice(i, 1);
-            i--;
-        }
-    }
+	// remove from workspace recent files
+	for (let i = 0; i < workspace.files.length; i++) {
+		if (workspace.files[i].handle == tab.config.handle) {
+			workspace.files.splice(i, 1)
+			i--
+		}
+	}
 
-    fileList.inactive = tab.config.handle;
+	fileList.inactive = tab.config.handle
 
-    unobserveFile(tab.config.handle); // Stop observing the file
+	unobserveFile(tab.config.handle) // Stop observing the file
 
 	tab.tabBar.remove(tab)
-    // targetTabs.remove(tab);
-    tab.config.session.destroy();
-    saveWorkspace();
-};
+	// targetTabs.remove(tab);
+	tab.config.session.destroy()
+	saveWorkspace()
+}
 
 leftTabs.close = (event) => {
-    closeTab(leftTabs, event);
-};
+	closeTab(leftTabs, event)
+}
 
 rightTabs.close = (event) => {
-    closeTab(rightTabs, event);
-};
+	closeTab(rightTabs, event)
+}
 
 const defaultTab = (targetTabs) => {
-	if(!targetTabs) {
+	if (!targetTabs) {
 		targetTabs = ui.currentTabs
 	}
 	const defaultSession = ace.createEditSession("", "") // Already defined
-	const tab = targetTabs.add({ name: "untitled", mode: { mode: "" }, session: defaultSession, defaultStatusIcon: 'description' })
-	setupSessionChangeListener(newSession, tab);
+	const tab = targetTabs.add({
+		name: "untitled",
+		mode: { mode: "" },
+		session: defaultSession,
+		defaultStatusIcon: "description",
+	})
+	setupSessionChangeListener(newSession, tab)
 
 	// Determine which editor and media view to use based on the targetTabs
-	let editorToUse = leftEdit;
-	let mediaViewToUse = leftMedia;
-	
+	let editorToUse = leftEdit
+	let mediaViewToUse = leftMedia
+
 	if (targetTabs === rightTabs) {
-		editorToUse = rightEdit;
-		mediaViewToUse = rightMedia;
+		editorToUse = rightEdit
+		mediaViewToUse = rightMedia
 	}
 
 	editorToUse.setSession(defaultSession)
@@ -1376,64 +1532,63 @@ const defaultTab = (targetTabs) => {
 }
 
 // fileActions.hook="bottom";
-let restoreInProgress = false;
+let restoreInProgress = false
 const restoreWorkspaceContent = async () => {
-	if (restoreInProgress) return;
+	if (restoreInProgress) return
 	if (!conduitClient.isConnected) {
-		console.debug("restoreWorkspaceContent: WebSocket not connected, waiting...");
-		return;
+		console.debug("restoreWorkspaceContent: WebSocket not connected, waiting...")
+		return
 	}
-	restoreInProgress = true;
+	restoreInProgress = true
 	try {
-		fileList.openFolders = workspace.openFolders;
+		fileList.openFolders = workspace.openFolders
 
-
-	// Check if split view needs to be enabled
-	let enableSplitView = false;
-	for (const file of workspace.files) {
-		if (file.side === "right") {
-			enableSplitView = true;
-			break;
-		}
-	}
-
-	if (enableSplitView) {
-		if(!document.body.classList.contains("showSplitView")) {
-			ui.toggleSplitView(); // Enable split view if needed
-		}
-	}
-
-	fileOpen.text = "Add Folder to Workspace"
-	await fileList.refreshAll()
-
-	if (workspace.files.length > 0) {
-		const missingFiles = [];
+		// Check if split view needs to be enabled
+		let enableSplitView = false
 		for (const file of workspace.files) {
-			try {
-				await openFileHandle(file.handle, file.path, (file.side === "right" ? rightEdit : leftEdit))
-				fileList.active = file.handle
-			} catch (e) {
-				console.warn(`Failed to open file ${file.path}: ${e.message}`)
-				missingFiles.push(file.path)
+			if (file.side === "right") {
+				enableSplitView = true
+				break
 			}
 		}
-		
-		// Restore the open/edited status icons for all tabs
-		for (const tab of leftTabs.tabs) {
-			fileList.active = tab.config.handle
-			if (tab.changed && fileList.activeItem) {
-				fileList.activeItem.changed = true
+
+		if (enableSplitView) {
+			if (!document.body.classList.contains("showSplitView")) {
+				ui.toggleSplitView() // Enable split view if needed
 			}
 		}
-		fileList.active = currentTabs?.activeTab?.config?.handle
-		
-		// Remove missing files from workspace.files
-		workspace.files = workspace.files.filter(file => !missingFiles.includes(file.path));
-		saveWorkspace(); // Save workspace after removing missing files
-	}
-	ui.showSidebar(1)
+
+		fileOpen.text = "Add Folder to Workspace"
+		await fileList.refreshAll()
+
+		if (workspace.files.length > 0) {
+			const missingFiles = []
+			for (const file of workspace.files) {
+				try {
+					await openFileHandle(file.handle, file.path, file.side === "right" ? rightEdit : leftEdit)
+					fileList.active = file.handle
+				} catch (e) {
+					console.warn(`Failed to open file ${file.path}: ${e.message}`)
+					missingFiles.push(file.path)
+				}
+			}
+
+			// Restore the open/edited status icons for all tabs
+			for (const tab of leftTabs.tabs) {
+				fileList.active = tab.config.handle
+				if (tab.changed && fileList.activeItem) {
+					fileList.activeItem.changed = true
+				}
+			}
+			fileList.active = currentTabs?.activeTab?.config?.handle
+
+			// Remove missing files from workspace.files
+			workspace.files = workspace.files.filter((file) => !missingFiles.includes(file.path))
+			saveWorkspace() // Save workspace after removing missing files
+		}
+		ui.showSidebar(1)
 	} finally {
-		restoreInProgress = false;
+		restoreInProgress = false
 	}
 }
 
@@ -1446,91 +1601,8 @@ if (workspace.folders.length > 0) {
 }
 
 fileOpen.on("click", async () => {
-    const pickerList = new FileList();
-    pickerList.disableIndexing = true;
-    pickerList.style.height = '400px';
-    pickerList.style.overflow = 'auto';
-    pickerList.style.display = 'block';
-    pickerList.style.border = '1px solid var(--border-color)';
-    pickerList.style.borderRadius = 'var(--radius)';
-    pickerList.style.marginTop = '10px';
-    pickerList.style.padding = '10px';
-
-    let selectedPath = null;
-    pickerList.addEventListener("click", (e) => {
-        const fileItem = e.target.closest('ui-file-item');
-        if (fileItem && fileItem.item && fileItem.item.isDir) {
-            const allItems = pickerList.querySelectorAll('ui-file-item');
-            allItems.forEach(i => i.removeAttribute('active'));
-            fileItem.setAttribute('active', '');
-            selectedPath = fileItem.item.path || fileItem.item.name;
-        }
-    });
-
-    pickerList.hideDotFiles = true;
-
-    try {
-        const tree = await readAndOrderDirectory('.');
-        pickerList.files = tree;
-    } catch (e) {
-        console.error("Failed to read root directory for picker", e);
-    }
-
-    const contentContainer = document.createElement('div');
-    contentContainer.innerHTML = '<h1>Select Folder</h1><p>Choose a folder from the backend to add to your workspace.</p>';
-    
-    const checkContainer = document.createElement('label');
-    checkContainer.style.display = 'flex';
-    checkContainer.style.alignItems = 'center';
-    checkContainer.style.gap = '8px';
-    checkContainer.style.marginTop = '10px';
-    checkContainer.style.cursor = 'pointer';
-    
-    const checkbox = document.createElement('input');
-    checkbox.type = 'checkbox';
-    checkbox.checked = false;
-    
-    const labelText = document.createTextNode('Show hidden folders');
-    checkContainer.append(checkbox, labelText);
-
-    checkbox.addEventListener('change', async (e) => {
-        pickerList.hideDotFiles = !e.target.checked;
-        pickerList.setAttribute("loading", "true");
-        try {
-            const tree = await readAndOrderDirectory('.');
-            pickerList.files = tree;
-        } catch (err) {
-            console.error("Failed to read root directory for picker", err);
-        }
-        pickerList.removeAttribute("loading");
-    });
-
-    contentContainer.append(pickerList, checkContainer);
-    window.modal.inner.innerHTML = '';
-    window.modal.inner.append(contentContainer);
-
-    window.modal.actionBar.innerHTML = '';
-    const okButton = new Button('Add Folder');
-    okButton.classList.add('themed');
-    const cancelButton = new Button('Cancel');
-    cancelButton.classList.add('cancel');
-
-    const promise = new Promise((resolve) => {
-        okButton.on('click', () => {
-            window.modal.hide();
-            resolve(selectedPath);
-        });
-        cancelButton.on('click', () => {
-            window.modal.hide();
-            resolve(null);
-        });
-    });
-
-    window.modal.actionBar.append(okButton, cancelButton);
-    window.modal.show();
-
-    const path = await promise;
-    if (!path) return;
+	const path = await promptAddFolder()
+	if (!path) return
 
 	let addToFolders = true
 	workspace.folders.forEach((handle) => {
@@ -1539,7 +1611,7 @@ fileOpen.on("click", async () => {
 		}
 	})
 	if (addToFolders) workspace.folders.push(path)
-	updateFileListBackground();
+	updateFileListBackground()
 	saveWorkspace()
 	ui.showSidebar()
 })
@@ -1690,7 +1762,7 @@ const keyBinds = [
 		name: "toggleFolders",
 		bindKey: { win: "Alt+F", mac: "Option+F" },
 		exec: () => {
-			execCommandToggleSidebarPanel('folder');
+			execCommandToggleSidebarPanel("folder")
 		},
 	},
 	// {
@@ -1710,7 +1782,7 @@ const keyBinds = [
 		name: "show-scratchpad",
 		bindKey: { win: "Alt+N", mac: "Option+N" },
 		exec: () => {
-			execCommandToggleSidebarPanel('edit_note');
+			execCommandToggleSidebarPanel("edit_note")
 		},
 	},
 	{
@@ -1718,7 +1790,7 @@ const keyBinds = [
 		name: "show-terminal",
 		bindKey: { win: "Alt+T", mac: "Option+T" },
 		exec: () => {
-			ui.toggleDrawer();
+			ui.toggleDrawer()
 		},
 	},
 	{
@@ -1739,8 +1811,13 @@ const keyBinds = [
 	{
 		target: "app",
 		name: "restoreFolders",
-		bindKey: { win: "Alt+R", mac: "Option+R" },
 		exec: execCommandRestoreFolders,
+	},
+	{
+		target: "app",
+		name: "refreshOpenFiles",
+		bindKey: { win: "Alt+R", mac: "Option+R" },
+		exec: execCommandRefreshOpenFiles,
 	},
 	{
 		target: "app",
@@ -1751,7 +1828,7 @@ const keyBinds = [
 		target: "app",
 		name: "setTheme",
 		exec: (theme) => {
-			window.editors.forEach(editor=>{
+			window.editors.forEach((editor) => {
 				editor.setOption("theme", theme)
 			})
 			updateThemeAndMode(true)
@@ -1797,18 +1874,21 @@ const keyBinds = [
 		exec: async () => {
 			await sleep(400)
 			if (workspace.name !== "default") {
-				const confirmed = await window.modal.confirm(`Are you sure you want to permanently delete the workspace "<strong>${workspace.name}</strong>"? This action cannot be undone.`, "Delete Workspace");
+				const confirmed = await window.modal.confirm(
+					`Are you sure you want to permanently delete the workspace "<strong>${workspace.name}</strong>"? This action cannot be undone.`,
+					"Delete Workspace"
+				)
 				if (confirmed) {
 					// set(`workspace_${workspace.id}`console.warn("DELETE", workspace)
 					console.warn("DELETE", workspace)
 					del(`workspace_${workspace.id}`)
-                    
-                    // NEW: Also delete all associated AI sessions from IndexedDB
-                    // Note: This assumes `workspace.aiSessionsMetadata` holds all session IDs.
-                    for (const sessionMeta of workspace.aiSessionsMetadata) {
-                        await del(`ai-session-${sessionMeta.id}`);
-                    }
-                    // This is where a more robust orphaned session cleanup could happen if needed for truly lost sessions.
+
+					// NEW: Also delete all associated AI sessions from IndexedDB
+					// Note: This assumes `workspace.aiSessionsMetadata` holds all session IDs.
+					for (const sessionMeta of workspace.aiSessionsMetadata) {
+						await del(`ai-session-${sessionMeta.id}`)
+					}
+					// This is where a more robust orphaned session cleanup could happen if needed for truly lost sessions.
 
 					app.workspaces.splice(app.workspaces.indexOf(workspace.id), 1)
 
@@ -1834,17 +1914,23 @@ const keyBinds = [
 				if (tab._changed) unsaved = true
 			}
 			if (unsaved) {
-			const confirmed = await window.modal.confirm("You have unsaved changes that will be lost. Are you sure you want to create a new workspace?", "Unsaved Changes");
-			if (!confirmed) {
+				const confirmed = await window.modal.confirm(
+					"You have unsaved changes that will be lost. Are you sure you want to create a new workspace?",
+					"Unsaved Changes"
+				)
+				if (!confirmed) {
 					return
 				}
 			}
 
-		let name = await window.modal.prompt("Please enter a name for the new workspace.", "New Workspace");
+			let name = await window.modal.prompt("Please enter a name for the new workspace.", "New Workspace")
 			if (name) {
 				const id = safeString(name)
 				if (app.workspaces.indexOf(id) !== -1) {
-				window.modal.notice(`A workspace with the name "<strong>${name}</strong>" already exists. Please choose a different name.`, "Workspace Exists");
+					window.modal.notice(
+						`A workspace with the name "<strong>${name}</strong>" already exists. Please choose a different name.`,
+						"Workspace Exists"
+					)
 					return
 				}
 				app.workspaces.push(id)
@@ -1854,12 +1940,12 @@ const keyBinds = [
 				workspace.id = id
 				workspace.folders = []
 				workspace.files = []
-				workspace.ignorePaths = ['.git', 'node_modules', 'dist', 'build'];
-				workspace.openFolders = [];
-                // NEW: Initialize empty AI session metadata for new workspace
-                updateFileListBackground();
-                workspace.aiSessionsMetadata = [];
-                workspace.activeAiSessionId = null;
+				workspace.ignorePaths = [".git", "node_modules", "dist", "build"]
+				workspace.openFolders = []
+				// NEW: Initialize empty AI session metadata for new workspace
+				updateFileListBackground()
+				workspace.aiSessionsMetadata = []
+				workspace.activeAiSessionId = null
 
 				// clear the leftTabs
 				while (leftTabs.tabs.length > 1) {
@@ -1881,7 +1967,7 @@ const keyBinds = [
 		target: "app",
 		name: "setDarkMode",
 		exec: (mode) => {
-			execCommandSetDarkMode(mode);
+			execCommandSetDarkMode(mode)
 		},
 	},
 	{
@@ -1889,7 +1975,7 @@ const keyBinds = [
 		name: "show-ai",
 		bindKey: { win: "Alt+A", mac: "Option+A" },
 		exec: () => {
-			execCommandToggleSidebarPanel('developer_board');
+			execCommandToggleSidebarPanel("developer_board")
 		},
 	},
 ]
@@ -1965,68 +2051,68 @@ setTimeout(async () => {
 		}
 	})
 
-    leftEdit.on("focus", () => setCurrentEditor(leftEdit));
-    rightEdit.on("focus", () => setCurrentEditor(rightEdit));
-    
-    ui.iconTabBar.on("tabs-updated", (e)=>{ 
-    	saveWorkspace() 
-    	if(e.detail?.tab?._iconId == "developer_board") {
-    		ui.aiManager.focus()
-    	}
-		if(e.detail?.tab?._iconId == "terminal") {
-			window.terminalManager.connect(); // call intial connect
-			if (ui.isDrawerOpen()) window.terminalManager.fit(); // Fit active terminal when its tab is focused
-		}
-    })
+	leftEdit.on("focus", () => setCurrentEditor(leftEdit))
+	rightEdit.on("focus", () => setCurrentEditor(rightEdit))
 
-    fileList.on('settings-changed', (event) => {
+	ui.iconTabBar.on("tabs-updated", (e) => {
+		saveWorkspace()
+		if (e.detail?.tab?._iconId == "developer_board") {
+			ui.aiManager.focus()
+		}
+		if (e.detail?.tab?._iconId == "terminal") {
+			window.terminalManager.connect() // call intial connect
+			if (ui.isDrawerOpen()) window.terminalManager.fit() // Fit active terminal when its tab is focused
+		}
+	})
+
+	fileList.on("settings-changed", (event) => {
 		if (event.detail.ignorePaths) {
-			workspace.ignorePaths = event.detail.ignorePaths;
-			saveWorkspace();
+			workspace.ignorePaths = event.detail.ignorePaths
+			saveWorkspace()
 		}
-    })
-    // REMOVED: ui.aiManager.panel.addEventListener('new-prompt', (event) => { /* ... */ });
-    // This is now handled within ai-manager for activeSession.promptHistory
+	})
+	// REMOVED: ui.aiManager.panel.addEventListener('new-prompt', (event) => { /* ... */ });
+	// This is now handled within ai-manager for activeSession.promptHistory
 
-    ui.aiManager.panel.addEventListener('context-update', async (event) => {
-        const { aiSessionsMetadata, activeSessionData, type } = event.detail;
+	ui.aiManager.panel.addEventListener("context-update", async (event) => {
+		const { aiSessionsMetadata, activeSessionData, type } = event.detail
 
-        // 1. Update workspace metadata (lightweight save)
-        if (aiSessionsMetadata) {
-            workspace.aiSessionsMetadata = aiSessionsMetadata.sessions;
-            workspace.activeAiSessionId = aiSessionsMetadata.activeSessionId;
-            // Debounce workspace saves, as they can happen on session switch, rename, delete
-            clearTimeout(ui.aiManager.saveWorkspaceTimeout); 
-            ui.aiManager.saveWorkspaceTimeout = setTimeout(saveWorkspace, 1000); 
-        }
+		// 1. Update workspace metadata (lightweight save)
+		if (aiSessionsMetadata) {
+			workspace.aiSessionsMetadata = aiSessionsMetadata.sessions
+			workspace.activeAiSessionId = aiSessionsMetadata.activeSessionId
+			// Debounce workspace saves, as they can happen on session switch, rename, delete
+			clearTimeout(ui.aiManager.saveWorkspaceTimeout)
+			ui.aiManager.saveWorkspaceTimeout = setTimeout(saveWorkspace, 1000)
+		}
 
-        // 2. Save the full active session data to IndexedDB (on demand)
-        // This happens on message append, delete, summarization, or session switch
-        if (activeSessionData && activeSessionData.id) {
-            const sessionKey = `ai-session-${activeSessionData.id}`;
-            await set(sessionKey, activeSessionData);
-            console.debug(`AI session "${activeSessionData.name}" (${activeSessionData.id}) saved to IndexedDB.`);
-        }
-    });
+		// 2. Save the full active session data to IndexedDB (on demand)
+		// This happens on message append, delete, summarization, or session switch
+		if (activeSessionData && activeSessionData.id) {
+			const sessionKey = `ai-session-${activeSessionData.id}`
+			await set(sessionKey, activeSessionData)
+			console.debug(`AI session "${activeSessionData.name}" (${activeSessionData.id}) saved to IndexedDB.`)
+		}
+	})
 
-    window.addEventListener('setting-changed', (event) => {
-        const { settingsName, settings, useWorkspaceSettings } = event.detail;
-        const providerName = settingsName.replace('Config', ''); // e.g., 'ollama' or 'gemini'
+	window.addEventListener("setting-changed", (event) => {
+		const { settingsName, settings, useWorkspaceSettings } = event.detail
+		const providerName = settingsName.replace("Config", "") // e.g., 'ollama' or 'gemini'
 
-        if (useWorkspaceSettings) {
-            workspace.aiConfig[providerName] = { ...settings };
-            if (app.aiConfig && app.aiConfig[providerName]) delete app.aiConfig[providerName]; // Clear global settings for this provider if using workspace specific
-            saveWorkspace();
-        } else {
-            app.aiConfig[providerName] = { ...settings };
-            if (workspace.aiConfig && workspace.aiConfig[providerName]) delete workspace.aiConfig[providerName]; // Clear workspace settings for this provider if using global
-            saveAppConfig();
-        }
-    });
-    ui.sidebar.resizeListener(()=>{
-		clearTimeout(ui.sidebar.saveTimeout);
-		ui.sidebar.saveTimeout = setTimeout(saveWorkspace, 500);
-    })
+		if (useWorkspaceSettings) {
+			workspace.aiConfig[providerName] = { ...settings }
+			if (app.aiConfig && app.aiConfig[providerName]) delete app.aiConfig[providerName] // Clear global settings for this provider if using workspace specific
+			saveWorkspace()
+		} else {
+			app.aiConfig[providerName] = { ...settings }
+			if (workspace.aiConfig && workspace.aiConfig[providerName]) delete workspace.aiConfig[providerName] // Clear workspace settings for this provider if using global
+			saveAppConfig()
+		}
+	})
+	ui.sidebar.resizeListener(() => {
+		clearTimeout(ui.sidebar.saveTimeout)
+		ui.sidebar.saveTimeout = setTimeout(saveWorkspace, 500)
+	})
 
 	leftEdit.on("ready", async () => {
 		// preload stored file and folder handles
@@ -2037,13 +2123,13 @@ setTimeout(async () => {
 		app.rendererOptions = stored?.rendererOptions || null
 		app.enableLiveAutocompletion = stored?.enableLiveAutocompletion || null
 
-        app.systemPromptConfig = stored?.systemPromptConfig || {}; // NEW
+		app.systemPromptConfig = stored?.systemPromptConfig || {} // NEW
 		// Apply any stored editor settings immediately after loading them.
-		execCommandEditorOptions();
+		execCommandEditorOptions()
 
 		app.workspace = stored?.workspace || "default"
 		app.workspaces = stored?.workspaces || [app.workspace]
-        app.aiConfig = stored?.aiConfig || {};
+		app.aiConfig = stored?.aiConfig || {}
 
 		if (app.workspace) {
 			openWorkspace(app.workspace)
@@ -2051,26 +2137,26 @@ setTimeout(async () => {
 			updateWorkspaceSelectors()
 		}
 
-		execCommandSetDarkMode(app.darkmode); 
+		execCommandSetDarkMode(app.darkmode)
 
 		saveAppConfig()
 
 		// Automatically restore workspace content once connected
-		conduitClient.on('connect', () => {
+		conduitClient.on("connect", () => {
 			if (workspace.folders.length > 0 || workspace.files.length > 0) {
-				restoreWorkspaceContent();
+				restoreWorkspaceContent()
 			}
-		});
-		
-        // After appConfig is loaded and aiManager is initialized, apply global AI settings
-        const currentProvider = ui.aiManager.aiProvider;
-        if (app.aiConfig[currentProvider]) {
-            ui.aiManager.ai.setOptions(app.aiConfig[currentProvider], null, null, false, 'global');
-        } else {
-            // If no specific config for the current provider, reset to default for that provider
-            ui.aiManager.ai.setOptions({}, null, null, false, 'global');
-        }
-		
+		})
+
+		// After appConfig is loaded and aiManager is initialized, apply global AI settings
+		const currentProvider = ui.aiManager.aiProvider
+		if (app.aiConfig[currentProvider]) {
+			ui.aiManager.ai.setOptions(app.aiConfig[currentProvider], null, null, false, "global")
+		} else {
+			// If no specific config for the current provider, reset to default for that provider
+			ui.aiManager.ai.setOptions({}, null, null, false, "global")
+		}
+
 		// set supported files in our FileList control
 		let regs = []
 		for (let n in ace_modes) {
@@ -2090,40 +2176,40 @@ setTimeout(async () => {
 		}
 		ui.toggleSidebar()
 		ui.currentTabs = ui.leftTabs
-		
-		//defaultTab()
-		ui.fileList.open = openFileHandle;
-		fileList.unsupported = openFileHandle;
-		leftTabs.dropFileHandle = (handle, knownPath) => openFileHandle(handle, knownPath, leftEdit);
-		rightTabs.dropFileHandle = (handle, knownPath) => openFileHandle(handle, knownPath, rightEdit);
-		leftTabs.defaultTab = () => defaultTab(leftTabs);
-		rightTabs.defaultTab = () => {
-		console.debug("rightTabs.defaultTab: Creating default tab for right tab bar.");
-		return defaultTab(rightTabs);
-};
 
-		const scratchpad = ui.scratchEditor;
-		scratchpad.on('change', () => {
-			workspace.scratchpad = scratchpad.getValue();
+		//defaultTab()
+		ui.fileList.open = openFileHandle
+		fileList.unsupported = openFileHandle
+		leftTabs.dropFileHandle = (handle, knownPath) => openFileHandle(handle, knownPath, leftEdit)
+		rightTabs.dropFileHandle = (handle, knownPath) => openFileHandle(handle, knownPath, rightEdit)
+		leftTabs.defaultTab = () => defaultTab(leftTabs)
+		rightTabs.defaultTab = () => {
+			console.debug("rightTabs.defaultTab: Creating default tab for right tab bar.")
+			return defaultTab(rightTabs)
+		}
+
+		const scratchpad = ui.scratchEditor
+		scratchpad.on("change", () => {
+			workspace.scratchpad = scratchpad.getValue()
 			// Debounced save
-			clearTimeout(scratchpad.saveTimeout);
-			scratchpad.saveTimeout = setTimeout(saveWorkspace, 500);
-		});
+			clearTimeout(scratchpad.saveTimeout)
+			scratchpad.saveTimeout = setTimeout(saveWorkspace, 500)
+		})
 
 		leftTabs.onEmpty = () => {
-			leftEdit.setSession(ace.createEditSession(""));
-			leftEdit.container.style.display = 'none';
-			leftMedia.style.display = 'none';
-			window.ui.hideFileModifiedNotice('left'); // Hide notice bar when empty
-		};
+			leftEdit.setSession(ace.createEditSession(""))
+			leftEdit.container.style.display = "none"
+			leftMedia.style.display = "none"
+			window.ui.hideFileModifiedNotice("left") // Hide notice bar when empty
+		}
 
 		rightTabs.onEmpty = () => {
-			rightEdit.setSession(ace.createEditSession(""));
-			rightEdit.container.style.display = 'none';
-			rightMedia.style.display = 'none';
-		    window.ui.hideFileModifiedNotice('right'); // Hide notice bar when empty
-			ui.toggleSplitView({targetState: "closed"});
-		};
+			rightEdit.setSession(ace.createEditSession(""))
+			rightEdit.container.style.display = "none"
+			rightMedia.style.display = "none"
+			window.ui.hideFileModifiedNotice("right") // Hide notice bar when empty
+			ui.toggleSplitView({ targetState: "closed" })
+		}
 
 		if ("launchQueue" in window) {
 			launchQueue.setConsumer((params) => {
@@ -2136,11 +2222,11 @@ setTimeout(async () => {
 		}
 
 		// Listen for custom event to insert code snippets from AI panel
-		window.addEventListener('insert-snippet', (event) => {
+		window.addEventListener("insert-snippet", (event) => {
 			if (currentEditor) {
-				currentEditor.insert(event.detail);
-				currentEditor.focus();
+				currentEditor.insert(event.detail)
+				currentEditor.focus()
 			}
-		});
+		})
 	})
 })

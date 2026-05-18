@@ -14,8 +14,8 @@
  */
 class ConduitClient {
     constructor() {
-        this.host = window.location.hostname || 'localhost';
-        this.port = window.location.port || 3022;
+        this.host = (window.runtime) ? '127.0.0.1' : (window.location.hostname || '127.0.0.1');
+        this.port = (window.runtime) ? 3022 : (window.location.port || 3022);
         this.apiKey = null;
         this.ws = null;
         this.isConnecting = false;
@@ -34,12 +34,12 @@ class ConduitClient {
     }
 
     get baseUrl() {
-        return window.location.origin || `http://${this.host}:${this.port}`;
+        return (window.runtime) ? `http://${this.host}:${this.port}` : (window.location.origin || `http://${this.host}:${this.port}`);
     }
 
     get wsUrl() {
-        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-        const host = window.location.host || `${this.host}:${this.port}`;
+        const protocol = (window.runtime) ? 'ws:' : (window.location.protocol === 'https:' ? 'wss:' : 'ws:');
+        const host = (window.runtime) ? `${this.host}:${this.port}` : (window.location.host || `${this.host}:${this.port}`);
         let url = `${protocol}//${host}/files`;
         if (this.apiKey) {
             url += `?key=${this.apiKey}`;
@@ -111,15 +111,28 @@ class ConduitClient {
     }
 
     // --- WebSocket ---
-    connect() {
+    connect(retryCount = 0) {
         if (this.isConnected || this.isConnecting) return;
 
         this.isConnecting = true;
+        console.debug(`[Conduit] Connecting to WebSocket (Attempt ${retryCount + 1}):`, this.wsUrl);
         this.ws = new WebSocket(this.wsUrl);
 
-        this.ws.onopen = () => this._handleWsOpen();
+        this.ws.onopen = () => {
+            this.retryCount = 0;
+            this._handleWsOpen();
+        };
         this.ws.onmessage = (event) => this._handleWsMessage(event);
-        this.ws.onclose = () => this._handleWsClose();
+        this.ws.onclose = () => {
+            if (!this.isConnected && retryCount < 5) {
+                console.warn(`[Conduit] Connection failed, retrying in 500ms...`);
+                this.isConnecting = false;
+                this.ws = null;
+                setTimeout(() => this.connect(retryCount + 1), 500);
+            } else {
+                this._handleWsClose();
+            }
+        };
         this.ws.onerror = (error) => this._handleWsError(error);
     }
 
@@ -178,9 +191,8 @@ class ConduitClient {
     }
 
     _handleWsError(error) {
-        console.error('[Conduit] WebSocket error:', error);
-        this.emit('error', { error: 'WebSocket connection error' });
-        this._handleWsClose(); // Treat error as a close event
+        console.error('[Conduit] WebSocket error for:', this.wsUrl, error);
+        // Let onclose handle the retry/disconnect logic
     }
 
     _send(payload) {
@@ -238,6 +250,14 @@ class ConduitClient {
 
     wsWrite(path, base64Content) {
         return this._send({ action: 'write', path, content: base64Content });
+    }
+
+    wsRename(oldPath, newPath) {
+        return this._send({ action: 'rename', path: oldPath, content: newPath });
+    }
+
+    wsDelete(path) {
+        return this._send({ action: 'delete', path });
     }
 
     // Watch is fire-and-forget, it just sends the command.
