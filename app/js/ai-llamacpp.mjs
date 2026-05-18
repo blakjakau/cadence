@@ -76,7 +76,7 @@ class LlamaCpp extends AI {
             }
         }
 
-        prompt += `<|im_start|>assistant\n`;
+        prompt += `<|im_start|>assistant\n<|channel>thought <channel|>\n`;
         return prompt;
     }
 

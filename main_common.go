@@ -19,24 +19,8 @@ import (
 )
 
 // This function now contains the core server logic, moved from main().
-func runConduitServer() {
-	getIsCompiled()
-	
-	flag.BoolVar(&debugLogging, "debug", false, "Enable debug logging")
-	flag.BoolVar(&keyFlag, "key", false, "Manage and print the API key for no-origin requests, then exit.")
-	flag.BoolVar(&installUserFlag, "install-user", false, "Install Conduit as a user-level application and protocol handler.")
-	flag.BoolVar(&installServiceFlag, "install-service", false, "Install Conduit as a systemd service (requires root).")
-	flag.BoolVar(&uninstallFlag, "uninstall", false, "Uninstall user and/or system Conduit installations.")
-	flag.StringVar(&rootFlag, "root", "", "Set the root directory for the file API (defaults to user's home directory).")
-	flag.BoolVar(&noIdleShutdownFlag, "no-idle-shutdown", false, "Disable automatic shutdown due to inactivity. Recommended for services.")
-	flag.StringVar(&serveFlag, "serve", "", "Serve live static files from this directory instead of embedded assets.")
-	flag.Parse()
-	
+func runCadenceServer(block bool) {
 	manageAPIKey(keyFlag)
-
-	if keyFlag {
-		os.Exit(0)
-	}
 
 	if installUserFlag {
 		msg, err := InstallUser()
@@ -56,7 +40,7 @@ func runConduitServer() {
 		if err != nil { os.Exit(1) }
 		os.Exit(0)
 	} else if len(flag.Args()) > 0 && flag.Args()[0] == "kill" {
-		log.Println("Shutting down Conduit via command line kill command.")
+		log.Println("Shutting down Cadence via command line kill command.")
 		os.Exit(0)
 	}
 
@@ -72,8 +56,41 @@ func runConduitServer() {
 		go startIdleShutdownManager(60 * time.Minute)
 	}
 	startTime = time.Now()
+	mux := createServerMux()
+
+	if serveFlag != "" {
+		port = "3023"
+	}
+
+	log.Printf("File API Root: %s", fileAPIRoot)
+	log.Printf("Cadence v%s - listening for WS connections (localhost:%s)", version, port)
+	log.Println("------------------------------------------------------------")
+
+	if browserFlag {
+		go func() {
+			time.Sleep(500 * time.Millisecond)
+			openBrowser("http://localhost:" + port + "/")
+		}()
+	}
+
+	if block {
+		err := http.ListenAndServe(":"+port, activityMiddleware(corsMiddleware(mux)))
+		if err != nil {
+			log.Fatal("ListenAndServe: ", err)
+		}
+	} else {
+		// Start background server (needed for WebSockets in Native mode)
+		go func() {
+			err := http.ListenAndServe(":"+port, activityMiddleware(corsMiddleware(mux)))
+			if err != nil {
+				log.Println("ListenAndServe (async) Error: ", err)
+			}
+		}()
+	}
+}
+
+func createServerMux() *http.ServeMux {
 	mux := http.NewServeMux()
-	log.Printf("Running as compiled build: %t", isCompiledBuild)
 	mux.HandleFunc("/terminal", terminalServer)
 	mux.HandleFunc("/up", upcheckHandler)
 	mux.HandleFunc("/files", filesApiHandler)
@@ -106,33 +123,56 @@ func runConduitServer() {
 	})
 
 	if serveFlag != "" {
-		port = "3023"
 		log.Printf("Serving live frontend from: %s", serveFlag)
 		mux.Handle("/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			http.SetCookie(w, &http.Cookie{Name: "cadence_dev", Value: "true", Path: "/"})
 			http.FileServer(http.Dir(serveFlag)).ServeHTTP(w, r)
 		}))
 	} else {
-		log.Println("Serving embedded frontend")
 		mux.Handle("/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			http.SetCookie(w, &http.Cookie{Name: "cadence_dev", Value: "false", Path: "/", MaxAge: -1})
 			http.FileServer(http.FS(getAppFS())).ServeHTTP(w, r)
 		}))
 	}
+	return mux
+}
 
-	log.Printf("File API Root: %s", fileAPIRoot)
-	log.Printf("Conduit v%s - listening for WS connections (localhost:%s)", version, port)
-	log.Println("------------------------------------------------------------")
+func parseFlags() {
+	flag.BoolVar(&debugLogging, "debug", true, "Enable debug logging")
+	flag.BoolVar(&keyFlag, "key", false, "Manage and print the API key for no-origin requests, then exit.")
+	flag.BoolVar(&installUserFlag, "install-user", false, "Install Cadence as a user-level application and protocol handler.")
+	flag.BoolVar(&installServiceFlag, "install-service", false, "Install Cadence as a systemd service (requires root).")
+	flag.BoolVar(&uninstallFlag, "uninstall", false, "Uninstall user and/or system Cadence installations.")
+	flag.StringVar(&rootFlag, "root", "", "Set the root directory for the file API (defaults to user's home directory).")
+	flag.BoolVar(&noIdleShutdownFlag, "no-idle-shutdown", true, "Disable automatic shutdown due to inactivity. Recommended for services.")
+	flag.StringVar(&serveFlag, "serve", "", "Serve live static files from this directory instead of embedded assets.")
+	flag.BoolVar(&browserFlag, "browser", false, "Open in the default browser instead of a native window.")
+	flag.BoolVar(&webviewFlag, "webview", false, "Open using the lightweight webview_go renderer instead of Wails.")
+	flag.BoolVar(&wailsFlag, "wails", false, "Force opening using the Wails rendering engine (if compiled).")
+	flag.Parse()
 
-	go func() {
-		time.Sleep(500 * time.Millisecond)
-		openBrowser("http://localhost:" + port + "/launch")
-	}()
+	if keyFlag {
+		manageAPIKey(keyFlag)
+		os.Exit(0)
+	}
 
-	err := http.ListenAndServe(":"+port, activityMiddleware(corsMiddleware(mux)))
+	initLogging()
+}
 
-	if err != nil {
-		log.Fatal("ListenAndServe: ", err)
+func initLogging() {
+	configDir, err := os.UserConfigDir()
+	if err == nil {
+		appConfigDir := filepath.Join(configDir, "cadence")
+		os.MkdirAll(appConfigDir, 0700)
+		logPath := filepath.Join(appConfigDir, "debug.log")
+		// Open the file with O_TRUNC to wipe it fresh on each launch
+		file, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0666)
+		if err == nil {
+			log.SetOutput(file)
+			log.Println("--- Cadence Session Started ---")
+		} else {
+			log.Printf("Failed to open debug.log: %v", err)
+		}
 	}
 }
 
@@ -148,15 +188,25 @@ var allowedOrigins = map[string]bool{
 	"http://localhost:3022":  true,
 	"http://localhost:3023":  true,
 	"http://localhost":       true,
+	"http://wails.localhost": true,
+	"wails://wails.localhost": true,
+	"wails://wails": true,
+	"wails://": true,
+	"http://127.0.0.1:3022": true,
+	"http://127.0.0.1:3023": true,
 }
 var rootFlag string
 var serveFlag string
+var browserFlag bool
+var webviewFlag bool
+var wailsFlag bool
+var RendererMode string = "unknown"
 var keyFlag bool
 var installUserFlag bool
 var installServiceFlag bool
 var uninstallFlag bool
 var noIdleShutdownFlag bool
-var debugLogging bool
+var debugLogging bool = true
 var requiredAPIKey string
 var isCompiledBuild bool
 var fileAPIRoot string
@@ -169,7 +219,7 @@ func getIsCompiled() {
 		log.Printf("Warning: Could not determine executable path: %v", err)
 	} else {
 		exeName := filepath.Base(exePath)
-		isCompiledBuild = strings.HasPrefix(exeName, "conduit-") || exeName == "conduit" || exeName == "conduit.exe"
+		isCompiledBuild = strings.HasPrefix(exeName, "cadence-") || exeName == "cadence" || exeName == "cadence.exe"
 	}
 }
 func updateLastActivity() {
@@ -188,7 +238,7 @@ func corsMiddleware(next http.Handler) http.Handler {
 		if allowedOrigins[origin] {
 			w.Header().Set("Access-Control-Allow-Origin", origin)
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-Conduit-Key")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-Cadence-Key")
 		}
 		// Handle preflight requests by immediately returning.
 		if r.Method == "OPTIONS" {
@@ -240,7 +290,7 @@ func killHandler() (string, error) {
 	}
 	log.Println("Received /kill request. Shutting down application.")
 	go func() { time.Sleep(100 * time.Millisecond); os.Exit(0) }()
-	return "Conduit server is shutting down.", nil
+	return "Cadence server is shutting down.", nil
 }
 
 func openBrowser(url string) {

@@ -11,7 +11,7 @@ import (
 	"strings"
 )
 
-const appName = "conduit" // Used for config directory
+const appName = "cadence" // Used for config directory
 const apiKeyFileName = "api-key"
 const apiKeyLength = 32 // 32 bytes of entropy -> 44 chars Base64 (approx)
 

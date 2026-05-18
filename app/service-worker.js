@@ -12,11 +12,7 @@ const deploy = true
 // ever, under any circumstance
 const NON_CACHEABLE_HOSTS = [
     "generativelanguage.googleapis.com", // Gemini API hostname
-    "localhost:3022", // conduit service
-    "localhost:3023", // conduit service DEV
-    "localhost:11434", // ollama service
     "github.com",
-    // Add other external API hostnames here, e.g.:
 ];
 
 
@@ -73,138 +69,122 @@ const staticAssets = [
 ]
 
 self.addEventListener("install", function (event) {
-	console.debug("[service] Installing")
+    console.debug("[service] Installing")
 
-	event.waitUntil(
-		(async () => {
-			const cache = await caches.open(CACHE_PRELOAD)
-			const offline = await caches.open(CACHE_OFFLINE)
+    event.waitUntil(
+        (async () => {
+            const cache = await caches.open(CACHE_PRELOAD)
+            const offline = await caches.open(CACHE_OFFLINE)
 
-			// await caches.delete(CACHE_PRELOAD);
-			// await caches.delete(CACHE_OFFLINE);
+            // Setting {cache: 'reload'} in the new request will ensure that the response
+            // isn't fulfilled from the HTTP cache; i.e., it will be from the network.
+            await cache.add(new Request(OFFLINE_URL, { cache: "reload" }))
+            await cache.add(new Request(MAIN_URL, { cache: "reload" }))
+            await cache.add(new Request(FILE_URL, { cache: "reload" }))
 
-			// Setting {cache: 'reload'} in the new request will ensure that the response
-			// isn't fulfilled from the HTTP cache; i.e., it will be from the network.
-			await cache.add(new Request(OFFLINE_URL, { cache: "reload" }))
-			await cache.add(new Request(MAIN_URL, { cache: "reload" }))
-			await cache.add(new Request(FILE_URL, { cache: "reload" }))
-
-			// always cache these static assets
-			for (let i = 0, l = staticAssets.length; i < l; i++) {
-				try {
-					// IMPORTANT: Do NOT add URLs from NON_CACHEABLE_HOSTS here,
-                    // as the goal is to prevent caching them.
-					// Check if the static asset should be cached
+            // always cache these static assets
+            for (let i = 0, l = staticAssets.length; i < l; i++) {
+                try {
+                    // Check if the static asset should be cached
                     const assetUrl = new URL(staticAssets[i], self.location.origin);
-                    if (!NON_CACHEABLE_HOSTS.includes(assetUrl.hostname)) {
-                        await cache.add(new Request(staticAssets[i], { cache: "reload" }))
-                        await offline.add(new Request(staticAssets[i]))
-                    } else {
-                        console.debug("[service] Not pre-caching non-cacheable static asset:", staticAssets[i]);
+                    // For installation/pre-caching, we still want to cache same-origin assets 
+                    // if they are part of the app itself, but we'll bypass them during FETCH
+                    // if running on localhost to avoid the reported issues.
+                    await cache.add(new Request(staticAssets[i], { cache: "reload" }))
+                    await offline.add(new Request(staticAssets[i]))
+                } catch (e) {
+                    console.error("failed to add cache", staticAssets[i], e)
+                }
+            }
+
+            // force cache these only if we're deployed
+            if (deploy) {
+                for (let i = 0, l = essential.length; i < l; i++) {
+                    try {
+                        await cache.add(new Request(essential[i], { cache: "reload" }))
+                        await offline.add(new Request(essential[i]))
+                    } catch (e) {
+                        console.error("failed to add cache", essential[i], e)
                     }
-				} catch (e) {
-					console.error("failed to add cache", staticAssets[i], e)
-				}
-			}
+                }
+            }
+        })()
+    )
 
-			// force cache these only if we're deployed
-			if (deploy) {
-				for (let i = 0, l = essential.length; i < l; i++) {
-					try {
-                        // IMPORTANT: Do NOT add URLs from NON_CACHEABLE_HOSTS here.
-                        const essentialUrl = new URL(essential[i], self.location.origin);
-                        if (!NON_CACHEABLE_HOSTS.includes(essentialUrl.host)) {
-						    await cache.add(new Request(essential[i], { cache: "reload" }))
-						    await offline.add(new Request(essential[i]))
-                        } else {
-                            console.debug("[service] Not pre-caching non-cacheable essential asset:", essential[i]);
-                        }
-					} catch (e) {
-						console.error("failed to add cache", essential[i], e)
-					}
-				}
-			}
-		})()
-	)
-
-	self.skipWaiting()
+    self.skipWaiting()
 })
 
 self.addEventListener("activate", (event) => {
-	console.debug("[service] Ready")
-	event.waitUntil(
-		(async () => {
-			// Enable navigation preload if it's supported.
-			// See https://developers.google.com/web/updates/2017/02/navigation-preload
-			if ("navigationPreload" in self.registration) {
-				await self.registration.navigationPreload.enable()
-			}
-		})()
-	)
+    console.debug("[service] Ready")
+    event.waitUntil(
+        (async () => {
+            // Enable navigation preload if it's supported.
+            if ("navigationPreload" in self.registration) {
+                await self.registration.navigationPreload.enable()
+            }
+        })()
+    )
 
-	// Tell the active serviceworker to take control of the page immediately.
-	self.clients.claim()
+    // Tell the active serviceworker to take control of the page immediately.
+    self.clients.claim()
 })
 
 self.addEventListener("fetch", (event) => {
-	event.respondWith(
-		(async () => {
-			const url = new URL(event.request.url);
-			console.debug("[service] Handling fetch:", url.pathname);
-			// --- Priority 1: Special Handlers (that don't touch cache) ---
-			if (url.pathname === "/version.json") {
+    event.respondWith(
+        (async () => {
+            const url = new URL(event.request.url);
+            
+            // --- Priority 1: Bypass Cache for Local/IP/API/Non-GET Requests ---
+            
+            // Check if hostname is an IP address (v4)
+            const ipRegex = /^(\d{1,3}\.){3}\d{1,3}$/;
+            const isIP = ipRegex.test(url.hostname);
+            const isLocal = url.hostname === "localhost" || isIP;
+            const isApi = url.pathname.startsWith("/api/") || NON_CACHEABLE_HOSTS.includes(url.host);
+            const isGet = event.request.method === "GET";
 
-				console.debug("[service] Intercepting and responding to /version.json");
-				console.debug("[service] Handling /version.json");
-				
-				const responseBody = { appName: "code.jakbox.dev", version: APP_VERSION };
-				const response = new Response(JSON.stringify(responseBody), {
-					headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
-				});
-				return response;
-			}
+            // If it's a local/IP request, an API call, or NOT a GET request, bypass the cache.
+            if (isLocal || isApi || !isGet) {
+                console.debug("[service] Bypassing cache:", url.host, url.pathname, event.request.method);
+                return fetch(event.request);
+            }
 
-			// Do not cache calls to external or internal APIs.
-			if (NON_CACHEABLE_HOSTS.includes(url.host) || url.pathname.startsWith("/api/")) {
-				console.debug("[service] Bypassing cache for API request:", url.href);
-				return fetch(event.request);
-			}
+            // --- Priority 2: Special Handlers ---
+            if (url.pathname === "/version.json") {
+                const responseBody = { appName: "code.jakbox.dev", version: APP_VERSION };
+                return new Response(JSON.stringify(responseBody), {
+                    headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
+                });
+            }
 
-			// --- Priority 2: Handle Navigation Requests ---
-
-            // Handle navigation requests with a network-first approach.
+            // --- Priority 3: Handle Navigation Requests ---
             if (event.request.mode === "navigate") {
                 try {
-                    // Attempt to fetch from the network first.
                     const networkResponse = await fetch(event.request);
-                    // If successful, update the CACHE_PRELOAD with the network response.
                     const cache = await caches.open(CACHE_PRELOAD);
                     await cache.put(event.request, networkResponse.clone());
                     return networkResponse;
                 } catch (error) {
-                    // If network fails, serve the OFFLINE_URL from the cache.
                     console.warn("[service] Network request for navigation failed, serving offline page.", error);
                     const cache = await caches.open(CACHE_PRELOAD);
                     return await cache.match(OFFLINE_URL);
                 }
             }
 
-            // --- Priority 3: Handle All Other Requests (Assets, etc.) ---
+            // --- Priority 4: Handle All Other Requests (Assets, etc.) ---
 
-            // Apply development-specific substitutions.
-            const isDev = self.location.hostname === "localhost";
-            if (isDev && (event.request.url.includes("manifest.json") || event.request.url.includes("favicon.png"))) {
+            // Apply development-specific substitutions (only for localhost)
+            if (isLocal && (event.request.url.includes("manifest.json") || event.request.url.includes("favicon.png"))) {
                 let substituteUrl = event.request.url;
                 if (event.request.url.includes("manifest.json")) {
                     substituteUrl = event.request.url.replace("manifest.json", "manifest_dev.json");
                 } else if (event.request.url.includes("favicon.png")) {
                     substituteUrl = event.request.url.replace("favicon.png", "favicon_dev.png");
                 }
-                console.log("[service] [dev-substitute]", substituteUrl);
                 return fetch(substituteUrl);
             }
 
-            // Use a cache-first strategy for all other assets.
+            // Use a cache-first strategy for all other assets (mostly external CDNs now).
             const cache = await caches.open(CACHE_OFFLINE);
             const cachedResponse = await cache.match(event.request);
 
@@ -216,14 +196,13 @@ self.addEventListener("fetch", (event) => {
             // If not found in cache, fetch from the network.
             try {
                 const networkResponse = await fetch(event.request);
-                // Cache the response if it's successful (status 200).
-                if (networkResponse && networkResponse.status === 200) {
+                // Only cache successful GET responses.
+                if (isGet && networkResponse && networkResponse.status === 200) {
                     console.debug("[service] [network] Caching new asset:", event.request.url);
                     await cache.put(event.request, networkResponse.clone());
                 }
                 return networkResponse;
             } catch (error) {
-                // If network fetch fails and it's not in cache, return a 404.
                 console.error("[service] Asset fetch failed, and not in cache:", event.request.url, error);
                 return new Response("", { status: 404, statusText: "Not Found" });
             }

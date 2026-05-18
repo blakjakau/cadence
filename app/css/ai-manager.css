@@ -695,11 +695,11 @@ button:disabled,
     display: block;
 }
 
-.thought-header .icon {
+.thought-header ui-icon {
     font-size: 14px;
     transition: transform 0.2s ease;
 }
 
-.thought-block[expanded] .thought-header .icon {
+.thought-block[expanded] .thought-header ui-icon {
     transform: rotate(90deg);
 }

@@ -3,7 +3,6 @@ package main
 import (
 	"encoding/base64"
 	"encoding/json"
-	"io/fs"
 	"io/ioutil"
 	"log"
 	"net/http"
@@ -51,7 +50,7 @@ type fileInfo struct {
 // watcherManager manages fsnotify watchers and WebSocket subscribers.
 type watcherManager struct {
 	watcher     *fsnotify.Watcher
-	subscribers map[*websocket.Conn]map[string]bool // map[client]map[path]bool
+	subscribers map[*websocket.Conn]map[string]string // map[client]map[fullPath]reqPath
 	mu          sync.Mutex
 }
 
@@ -65,7 +64,7 @@ func init() {
 	}
 	fileWatcher = &watcherManager{
 		watcher:     watcher,
-		subscribers: make(map[*websocket.Conn]map[string]bool),
+		subscribers: make(map[*websocket.Conn]map[string]string),
 	}
 }
 
@@ -87,16 +86,16 @@ func (wm *watcherManager) run() {
 	}
 }
 
-func (wm *watcherManager) addSubscription(client *websocket.Conn, path string) {
+func (wm *watcherManager) addSubscription(client *websocket.Conn, reqPath string, fullPath string) {
 	wm.mu.Lock()
 	defer wm.mu.Unlock()
 
 	if _, ok := wm.subscribers[client]; !ok {
-		wm.subscribers[client] = make(map[string]bool)
+		wm.subscribers[client] = make(map[string]string)
 	}
-	if !wm.subscribers[client][path] {
-		wm.subscribers[client][path] = true
-		wm.watcher.Add(path)
+	if wm.subscribers[client][fullPath] == "" {
+		wm.subscribers[client][fullPath] = reqPath
+		wm.watcher.Add(fullPath)
 	}
 }
 
@@ -113,14 +112,36 @@ func (wm *watcherManager) broadcastEvent(event fsnotify.Event) {
 	defer wm.mu.Unlock()
 
 	for client, paths := range wm.subscribers {
-		// Check if the client is subscribed to the event's directory
-		if paths[filepath.Dir(event.Name)] {
+		// Event could be on the watched file, or a file inside a watched directory
+		reqPath, watchedFile := paths[event.Name]
+		if watchedFile {
 			resp := fileResponse{
 				Action: "notify",
-				Path:   event.Name,
+				Path:   reqPath,
 				Data:   event.Op.String(), // e.g., "WRITE", "CREATE"
 			}
 			client.WriteJSON(resp)
+		} else {
+			dirPath := filepath.Dir(event.Name)
+			reqPathDir, watchedDir := paths[dirPath]
+			if watchedDir {
+				// Construct the relative path for the child
+				childName := filepath.Base(event.Name)
+				childReqPath := reqPathDir
+				if childReqPath == "." || childReqPath == "" {
+					childReqPath = childName
+				} else {
+					// Use forward slash for the client web api
+					childReqPath = childReqPath + "/" + childName
+				}
+
+				resp := fileResponse{
+					Action: "notify",
+					Path:   childReqPath,
+					Data:   event.Op.String(),
+				}
+				client.WriteJSON(resp)
+			}
 		}
 	}
 }
@@ -129,6 +150,7 @@ func (wm *watcherManager) broadcastEvent(event fsnotify.Event) {
 
 // filesApiHandler routes requests to either REST or WebSocket handlers.
 func filesApiHandler(w http.ResponseWriter, r *http.Request) {
+	log.Printf("[DEBUG] filesApiHandler hit from %s, Origin: %s", r.RemoteAddr, r.Header.Get("Origin"))
 	// The upgrader's CheckOrigin function handles WebSocket connections.
 	// For consistency, update it to use our new shared authorization function.
 	upgrader.CheckOrigin = func(req *http.Request) bool {
@@ -258,6 +280,7 @@ func handleFileWs(w http.ResponseWriter, r *http.Request) {
 	for {
 		var req fileRequest
 		if err := ws.ReadJSON(&req); err != nil {
+			log.Printf("WS Read Error (client disconnected or bad JSON): %v", err)
 			break
 		}
 		handleWsRequest(ws, req)
@@ -296,14 +319,31 @@ func handleWsRequest(ws *websocket.Conn, req fileRequest) {
 			resp.Data = base64.StdEncoding.EncodeToString(content)
 		}
 	case "write":
-		data, err := base64.StdEncoding.DecodeString(req.Content)
+		// Content is base64 encoded
+		decoded, err := base64.StdEncoding.DecodeString(req.Content)
 		if err != nil {
-			resp.Error = "Invalid base64 content"
-		} else if err := ioutil.WriteFile(fullPath, data, fs.FileMode(0644)); err != nil {
+			resp.Error = "Invalid base64 content: " + err.Error()
+		} else {
+			err = ioutil.WriteFile(fullPath, decoded, 0644)
+			if err != nil {
+				resp.Error = err.Error()
+			}
+		}
+	case "rename":
+		newFullPath, err := securePath(req.Content)
+		if err != nil {
+			resp.Error = "Forbidden new path"
+		} else {
+			if err := os.Rename(fullPath, newFullPath); err != nil {
+				resp.Error = err.Error()
+			}
+		}
+	case "delete":
+		if err := os.RemoveAll(fullPath); err != nil {
 			resp.Error = err.Error()
 		}
 	case "watch":
-		fileWatcher.addSubscription(ws, fullPath)
+		fileWatcher.addSubscription(ws, req.Path, fullPath)
 		// No immediate response needed for watch, confirmations are implicit
 		return
 	case "search":

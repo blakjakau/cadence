@@ -6,8 +6,8 @@
 	*/
 
 	/* Theme colors (assumed to be set via JS or in index.html) */
-	--theme: #00aabb;
-	--theme-dark: var(--themeDark, #007788);
+	--theme: #3f51b5;
+	--theme-dark: var(--themeDark, #303f9f);
 
 	/* Semantic Filetype Colors */
 	--color-file-js: #f0db4f;
@@ -48,7 +48,7 @@
 	--bg-tertiary: #B8BABF;
 	--bg-overlay: rgba(0,0,0,0.5);
 	--bg-code: #E3E5EE;
-	--bg-terminal: #222222;
+	--bg-terminal: #1e1e1e;
 	--bg-modal: #fafafa;
 
 	--text-primary: #3A3A3A;
@@ -95,10 +95,11 @@ button { border:0; }
 body {
 	font-family: var(--font-sans);
 	font-size:13px;
-    overflow: hidden;
+	overflow: hidden;
 	background:var(--bg-primary);
 	margin:0; padding:0;
 }
+
 
 /*ui-tab-item:not([active])::after { 
     display:inline-block;
@@ -157,7 +158,7 @@ ui-tab-item.drop-highlight {
 }
 
 #mainContent {
-    position: fixed;
+    position: absolute;
 	opacity:1;
 	transition:opacity 333ms;
     margin: 0;
@@ -501,7 +502,7 @@ body.showSplitView #leftTabs {
 }
 
 #mainContent, #sidebar, #statusbar, ui-actionbar, ui-file-list {
-	transition:left var(--animRate), right var(--animRate), width var(--animRate), opacity var(--animRate), background var(--animRate), color var(--animRate);
+	transition: left var(--animRate), right var(--animRate), width var(--animRate), bottom var(--animRate), height var(--animRate), opacity var(--animRate), background var(--animRate), color var(--animRate);
 }
 
 #leftHolder, #rightHolder {
@@ -520,6 +521,12 @@ body.showSplitView #leftTabs {
 	margin-left: 8px;
 }
 
+#statusbar ui-button {
+	color: inherit;
+}
+#statusbar ui-button ui-icon {
+	color: inherit;
+}
 
 #statusbar ui-button {
 	color: inherit;
@@ -754,6 +761,17 @@ body.showSplitView #leftTabs {
 	width:100%; /* The drawer should be full width */
 	background: var(--bg-primary);
 	box-shadow: 0 -5px 5px var(--shadow-color);
+	transition: left var(--animRate), width var(--animRate), height var(--animRate);
+}
+
+#drawerToggle {
+    position: absolute;
+    top: 0;
+    right: 8px;
+    height: 34px;
+    background: none;
+    cursor: pointer;
+    z-index: 20;
 }
 
 #sidebar {
@@ -780,6 +798,85 @@ body.showSplitView #leftTabs {
 .background-element img {
 	opacity:0.25;
     filter: grayscale(100%);
+}
+
+/* --- Native Titlebar & Wails Support --- */
+#native-titlebar {
+    display: none;
+    height: 32px;
+    background: var(--theme);
+    color: var(--text-inverted);
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 8px 0 12px;
+    z-index: 1000;
+    user-select: none;
+    -webkit-user-select: none;
+    -webkit-app-region: drag;
+    --wails-draggable: drag;
+}
+
+#native-titlebar .window-title {
+    font-weight: bold;
+    font-size: 12px;
+    opacity: 0.8;
+}
+
+#native-titlebar .window-controls {
+    display: flex;
+    gap: 4px;
+    -webkit-app-region: no-drag;
+}
+
+#native-titlebar .window-controls ui-button {
+    background: transparent;
+    color: var(--text-inverted);
+    width: 32px;
+    height: 28px;
+    min-height: 28px;
+    border-radius: 4px;
+}
+
+#native-titlebar .window-controls ui-button:hover {
+    background: rgba(255,255,255,0.1);
+}
+
+#native-titlebar .window-controls ui-button.close-btn:hover {
+    background: #e81123;
+}
+
+/* Combined Header/Menu for Native Mode */
+ui-actionbar#menu * {
+    --wails-draggable: none;
+}
+
+body.is-native #native-titlebar {
+    display: none !important;
+}
+
+body.is-native #menu {
+    top: 0px;
+}
+
+body.is-native #mainContent {
+    top: var(--menuHeight) !important;
+}
+
+/* Adjust all top-anchored elements when in native mode */
+body.is-native #sidebar,
+body.is-native #toggleSplitView,
+body.is-native #ace_settingsmenu,
+body.is-native #kbshortcutmenu,
+body.is-native #mainContent {
+    top: var(--menuHeight) !important;
+}
+
+body.is-native #menu .window-controls {
+    margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding-right: 8px;
 }
 
 .background-element .caption {
@@ -905,7 +1002,9 @@ ui-sidebar-panel pre::-webkit-scrollbar-thumb {
 .terminal-panel-container { /* Renamed from ui-terminal-panel */
     /*display: flex; */ /* removed as this is handled by the active attribute*/
     flex-direction: column;
-    height: 100%; /* Ensure the panel itself takes full height */
+    height: calc(100% - 34px); /* Ensure the panel itself takes full height */
+    width:100%;
+    background-color: var(--bg-terminal);
 }
 
 /* Styles for the terminal content wrapper within the panel */

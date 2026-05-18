@@ -16,8 +16,8 @@ import (
 
 // Install path constants for Windows
 const (
-	userLocalAppDataSubDirWindows = "Conduit"
-	targetExecName                = "conduit"
+	userLocalAppDataSubDirWindows = "Cadence"
+	targetExecName                = "cadence"
 )
 
 // checkIfInstalled checks if the executable is running from a known installation path.
@@ -50,14 +50,14 @@ func Uninstall() (string, error) {
 	messages.WriteString("Starting Windows uninstallation...\n")
 
 	// 1. Remove registry keys first, as this doesn't involve file locks.
-	cmdReg := exec.Command("reg", "delete", `HKCU\Software\Classes\conduit`, "/f")
+	cmdReg := exec.Command("reg", "delete", `HKCU\Software\Classes\web+cadence`, "/f")
 	regOut, errReg := cmdReg.CombinedOutput()
 	// We check the output because `reg delete` returns an error if the key doesn't exist.
 	// We only care about actual errors, not "key not found" messages.
 	if errReg != nil && !strings.Contains(string(regOut), "cannot find") {
 		messages.WriteString(fmt.Sprintf("! Warning during registry key deletion: %v\n", errReg))
 	} else {
-		messages.WriteString("- Removed registry entries for conduit:// protocol.\n")
+		messages.WriteString("- Removed registry entries for web+cadence:// protocol.\n")
 	}
 
 	// 2. Schedule self-deletion of files via a temporary batch script.
@@ -71,7 +71,7 @@ func Uninstall() (string, error) {
 	targetAppDir := filepath.Join(localAppData, userLocalAppDataSubDirWindows)
 
 	// Create a temporary batch file to perform the deletion after we exit.
-	batchFilePath := filepath.Join(os.TempDir(), "conduit_uninstall.bat")
+	batchFilePath := filepath.Join(os.TempDir(), "cadence_uninstall.bat")
 	// The batch script waits 2 seconds, removes the application directory, and then deletes itself.
 	batchContent := fmt.Sprintf(
 		"@echo off\r\n"+
@@ -155,23 +155,23 @@ func InstallUser() (string, error) {
 	}
 	defer k.Close()
 
-	conduitKey, _, err := registry.CreateKey(k, `conduit`, registry.SET_VALUE|registry.CREATE_SUB_KEY)
+	cadenceKey, _, err := registry.CreateKey(k, `web+cadence`, registry.SET_VALUE|registry.CREATE_SUB_KEY)
 	if err != nil {
-		return fmt.Sprintf("Failed to create registry key conduit: %v", err), err
+		return fmt.Sprintf("Failed to create registry key web+cadence: %v", err), err
 	}
-	defer conduitKey.Close()
+	defer cadenceKey.Close()
 
-	if err := conduitKey.SetStringValue("", "URL:Conduit Protocol"); err != nil {
-		return fmt.Sprintf("Failed to set default value for conduit key: %v", err), err
+	if err := cadenceKey.SetStringValue("", "URL:Cadence Protocol"); err != nil {
+		return fmt.Sprintf("Failed to set default value for cadence key: %v", err), err
 	}
-	if err := conduitKey.SetStringValue("URL Protocol", ""); err != nil {
-		return fmt.Sprintf("Failed to set URL Protocol value for conduit key: %v", err), err
+	if err := cadenceKey.SetStringValue("URL Protocol", ""); err != nil {
+		return fmt.Sprintf("Failed to set URL Protocol value for cadence key: %v", err), err
 	}
-	messages.WriteString("- Created registry key HKEY_CURRENT_USER\\Software\\Classes\\conduit\n")
+	messages.WriteString("- Created registry key HKEY_CURRENT_USER\\Software\\Classes\\web+cadence\n")
 
-	commandKey, _, err := registry.CreateKey(conduitKey, `shell\open\command`, registry.SET_VALUE)
+	commandKey, _, err := registry.CreateKey(cadenceKey, `shell\open\command`, registry.SET_VALUE)
 	if err != nil {
-		return fmt.Sprintf("Failed to create registry key conduit\\shell\\open\\command: %v", err), err
+		return fmt.Sprintf("Failed to create registry key cadence\\shell\\open\\command: %v", err), err
 	}
 	defer commandKey.Close()
 
@@ -180,10 +180,10 @@ func InstallUser() (string, error) {
 	// The -Command argument tells PowerShell to run our command and then exit.
 	commandValue := fmt.Sprintf(`powershell.exe -Command "Start-Process -WindowStyle Hidden -FilePath '%s' -ArgumentList '%%1'"`, targetExecPath)
 	if err := commandKey.SetStringValue("", commandValue); err != nil {
-		return fmt.Sprintf("Failed to set command value for conduit protocol: %v", err), err
+		return fmt.Sprintf("Failed to set command value for cadence protocol: %v", err), err
 	}
 	messages.WriteString(fmt.Sprintf("- Set registry command to: %s\n", commandValue))
 
-	messages.WriteString("\nWindows user installation complete. The 'conduit://' protocol handler should now be active.\n")
+	messages.WriteString("\nWindows user installation complete. The 'web+cadence://' protocol handler should now be active.\n")
 	return messages.String(), nil
 }

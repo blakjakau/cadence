@@ -16,7 +16,7 @@ import (
 // Install path constants for macOS
 const (
 	userApplicationsDirMacOS = "Applications"
-	targetExecName           = "conduit"
+	targetExecName           = "cadence"
 )
 
 // macOS-specific Info.plist template
@@ -25,20 +25,20 @@ const infoPlistTemplate = `<?xml version="1.0" encoding="UTF-8"?>
 <plist version="1.0">
 <dict>
 	<key>CFBundleExecutable</key>
-	<string>conduit</string>
+	<string>cadence</string>
 	<key>CFBundleIdentifier</key>
-	<string>com.jakbox.conduit</string>
+	<string>com.jakbox.cadence</string>
 	<key>CFBundleName</key>
-	<string>Conduit</string>
+	<string>Cadence</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleURLTypes</key>
 	<array>
 		<dict>
 			<key>CFBundleURLName</key>
-			<string>Conduit URL Scheme</string>
+			<string>Cadence URL Scheme</string>
 			<key>CFBundleURLSchemes</key>
-			<array><string>conduit</string></array>
+			<array><string>web+cadence</string></array>
 		</dict>
 	</array>
 </dict>
@@ -87,7 +87,7 @@ func checkIfInstalled() bool {
 		return false
 	}
 
-	appBundleName := "Conduit.app"
+	appBundleName := "Cadence.app"
 	targetAppDir := filepath.Join(homeDir, userApplicationsDirMacOS)
 	macOSDir := filepath.Join(targetAppDir, appBundleName, "Contents", "MacOS")
 	targetExecPath := filepath.Join(macOSDir, targetExecName)
@@ -110,7 +110,7 @@ func InstallUser() (string, error) {
 
 	messages.WriteString("Starting macOS user installation...\n")
 
-	appBundleName := "Conduit.app"
+	appBundleName := "Cadence.app"
 	targetAppDir := filepath.Join(homeDir, userApplicationsDirMacOS)
 	appBundlePath := filepath.Join(targetAppDir, appBundleName)
 	contentsDir := filepath.Join(appBundlePath, "Contents")
@@ -139,7 +139,7 @@ func InstallUser() (string, error) {
 	} else {
 		messages.WriteString(fmt.Sprintf("- Registered app bundle with Launch Services: %s\n", appBundlePath))
 	}
-	messages.WriteString("\nmacOS user installation complete. The 'conduit://' protocol handler should now be active.\n")
+	messages.WriteString("\nmacOS user installation complete. The 'web+cadence://' protocol handler should now be active.\n")
 
 	return messages.String(), nil
 }
@@ -159,7 +159,7 @@ func Uninstall() (string, error) {
 		return "Could not determine user home directory for uninstallation.", err
 	}
 
-	appBundleName := "Conduit.app"
+	appBundleName := "Cadence.app"
 	appBundlePath := filepath.Join(homeDir, userApplicationsDirMacOS, appBundleName)
 
 	messages.WriteString("--- User-level Uninstall (macOS) ---\n")

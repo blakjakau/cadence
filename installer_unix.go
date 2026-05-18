@@ -20,28 +20,28 @@ import (
 const (
         userExecDirLinux         = ".local/bin"
         userDesktopFileDirLinux  = ".local/share/applications"
-        desktopFileName          = "conduit.desktop"
-        targetExecName           = "conduit"
+        desktopFileName          = "cadence.desktop"
+        targetExecName           = "cadence"
         // System-wide paths for Linux service
-        systemExecPathLinux     = "/usr/local/bin/conduit"
-        serviceName             = "conduit.service" // Defined serviceName
-        systemServiceFileLinux  = "/etc/systemd/system/conduit.service"
+        systemExecPathLinux     = "/usr/local/bin/cadence"
+        serviceName             = "cadence.service" // Defined serviceName
+        systemServiceFileLinux  = "/etc/systemd/system/cadence.service"
 )
 
 // Unix-specific templates
 const desktopFileTemplate = `[Desktop Entry]
 Type=Application
-Name=Conduit Server
+Name=Cadence Server
 Comment=A PTY and file API server for web applications
 Exec={{.ExecPath}} %u
 Terminal=false
 Categories=Utility;Development;
-MimeType=x-scheme-handler/conduit;
+MimeType=x-scheme-handler/cadence;x-scheme-handler/web+cadence;
 NoDisplay=true
 `
 
 const serviceFileTemplate = `[Unit]
-Description=Conduit PTY and file API server
+Description=Cadence PTY and file API server
 After=network.target
 
 [Service]
@@ -162,10 +162,10 @@ func InstallUser() (string, error) {
         } else {
                 messages.WriteString("- Updated desktop application database.\n")
         }
-        if _, err := runCommand("xdg-mime", "default", desktopFileName, "x-scheme-handler/conduit"); err != nil {
+        if _, err := runCommand("xdg-mime", "default", desktopFileName, "x-scheme-handler/web+cadence"); err != nil {
                 messages.WriteString(fmt.Sprintf("! Warning: 'xdg-mime' failed: %v\n", err))
         } else {
-                messages.WriteString(fmt.Sprintf("- Set %s as default for conduit:// protocol.\n", desktopFileName))
+                messages.WriteString(fmt.Sprintf("- Set %s as default for web+cadence:// protocol.\n", desktopFileName))
         }
         messages.WriteString("\nUser installation complete. You may need to restart your desktop session for all changes to take effect.\n")
         return messages.String(), nil
@@ -242,15 +242,15 @@ func InstallService() (string, error) {
         if _, err := runCommand("systemctl", "enable", serviceName); err != nil {
                 messages.WriteString(fmt.Sprintf("! Warning: systemctl enable failed: %v\n", err))
         } else {
-                messages.WriteString("- Enabled conduit service to start on boot.\n")
+                messages.WriteString("- Enabled cadence service to start on boot.\n")
         }
-        if _, err := runCommand("systemctl", "start", "conduit.service"); err != nil { // Use explicit serviceName
+        if _, err := runCommand("systemctl", "start", "cadence.service"); err != nil { // Use explicit serviceName
                 messages.WriteString(fmt.Sprintf("! Warning: systemctl start failed: %v\n", err))
         } else {
-                messages.WriteString("- Started conduit service.\n")
+                messages.WriteString("- Started cadence service.\n")
         }
 
-        messages.WriteString("\nSystem service installation complete. Conduit should now run as a background service.\n")
+        messages.WriteString("\nSystem service installation complete. Cadence should now run as a background service.\n")
         return messages.String(), nil
 }
 
@@ -291,13 +291,13 @@ func Uninstall() (string, error) {
         // Attempt to remove system service install (requires root if it was installed by root)
         messages.WriteString("\n--- System Service Uninstall (requires root if installed) ---\n")
         if isRoot() && checkSystemctl() {
-                if _, err := runCommand("systemctl", "stop", "conduit.service"); err != nil { // Use explicit serviceName
-                        messages.WriteString(fmt.Sprintf("! Warning: Failed to stop service %s: %v\n", "conduit.service", err))
+                if _, err := runCommand("systemctl", "stop", "cadence.service"); err != nil { // Use explicit serviceName
+                        messages.WriteString(fmt.Sprintf("! Warning: Failed to stop service %s: %v\n", "cadence.service", err))
                 } else {
-                        messages.WriteString(fmt.Sprintf("- Stopped service: %s\n", "conduit.service"))
+                        messages.WriteString(fmt.Sprintf("- Stopped service: %s\n", "cadence.service"))
                 }
-                if _, err := runCommand("systemctl", "disable", "conduit.service"); err != nil { // Use explicit serviceName
-                        messages.WriteString(fmt.Sprintf("! Warning: Failed to disable service %s: %v\n", "conduit.service", err))
+                if _, err := runCommand("systemctl", "disable", "cadence.service"); err != nil { // Use explicit serviceName
+                        messages.WriteString(fmt.Sprintf("! Warning: Failed to disable service %s: %v\n", "cadence.service", err))
                 } else {
                         messages.WriteString(fmt.Sprintf("- Disabled service: %s\n", serviceName))
                 }

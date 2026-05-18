@@ -4,7 +4,9 @@
 package main
 
 func main() {
-	// On non-macOS systems, we just run the server directly.
-	// Command-line arguments are handled inside.
-	runConduitServer()
+	getIsCompiled()
+	parseFlags()
+
+	// Handled by wails_app.go (wails tag) or wails_stub.go (!wails tag)
+	handleStartup()
 }

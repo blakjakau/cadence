@@ -72,17 +72,28 @@ export class Panel extends Block {
 				document.body.style.cursor = ""
 				return
 			}
+			e.preventDefault() // Prevent default browser actions
+			
 			this.style.transition = "none"
-			this.style.webkitUserSelect = "none"
+			document.body.style.webkitUserSelect = "none"
+			document.body.style.userSelect = "none"
 			this.active = true
 			
+			let lastX = e.clientX
+			let lastY = e.clientY
+			
 			const move = (e)=>{
+				const deltaX = e.clientX - lastX
+				const deltaY = e.clientY - lastY
+				lastX = e.clientX
+				lastY = e.clientY
+
 				if(this.resize == "left" || this.resize == "right") { // horizontal
 					let nw;
 					if (this.resize === "left") {
-						nw = (this.offsetWidth - e.movementX - this.borderHandleVisual)
+						nw = (this.offsetWidth - deltaX - this.borderHandleVisual)
 					} else {
-						nw = (this.offsetWidth + e.movementX - this.borderHandleVisual)
+						nw = (this.offsetWidth + deltaX - this.borderHandleVisual)
 					}
 					this.style.width = Math.max(this.#minSize, Math.min(this.#maxSize, nw))+"px"
 					this.resizeListeners.forEach(f=>{
@@ -91,9 +102,9 @@ export class Panel extends Block {
 				} else { // vertical
 					let nh;
 					if (this.resize === "top") {
-						nh = (this.offsetHeight - e.movementY - this.borderHandleVisual)
+						nh = (this.offsetHeight - deltaY - this.borderHandleVisual)
 					} else {
-						nh = (this.offsetHeight + e.movementY - this.borderHandleVisual)
+						nh = (this.offsetHeight + deltaY - this.borderHandleVisual)
 					}
 					this.style.height = Math.max(this.#minSize, Math.min(this.#maxSize, nh))+"px"
 					this.resizeListeners.forEach(f=>{
@@ -105,8 +116,9 @@ export class Panel extends Block {
 				document.removeEventListener("pointermove", move)
 				document.removeEventListener("pointerup", release)
 				document.body.style.cursor = ""
+				document.body.style.webkitUserSelect = ""
+				document.body.style.userSelect = ""
 				this.style.transition = ""
-				this.style.webkitUserSelect = ""
 				this.active = false
 				if(this.resize == "left" || this.resize == "right") {
 					this.resizeEndListeners.forEach(f=>{ f(this.offsetWidth) })

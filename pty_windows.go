@@ -12,7 +12,7 @@ import (
 
 // startPty returns an io.ReadWriteCloser and the *exec.Cmd for the PTY process.
 // On modern Windows, this automatically uses the native ConPTY API.
-func startPty(shell string, homeDir string) (io.ReadWriteCloser, *exec.Cmd, func(cols, rows int), error) {
+func startPty(shell string, homeDir string, prompt string) (io.ReadWriteCloser, *exec.Cmd, func(cols, rows int), error) {
 	// We create a placeholder exec.Cmd. The conpty library starts the process,
 	// but does not expose the underlying *os.Process object.
 	// Therefore, ptyCmd.Process will be nil. This is handled in handlers.go.

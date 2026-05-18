@@ -1478,6 +1478,10 @@ class AIManager {
     _renderResponseContent(content) {
         if (!content) return "";
 
+        // Normalize alternative thinking markers: <|channel>thought <channel|> ... \n
+        // to standard <think>...</think> tags.
+        content = content.replace(/<\|channel>thought <channel\|>(.*?)(?:\n|$)/g, '<think>$1</think>\n');
+
         const thinkRegex = /<think>([\s\S]*?)(?:<\/think>|$)/;
         const match = content.match(thinkRegex);
 
@@ -1489,7 +1493,7 @@ class AIManager {
             let html = `
                 <div class="thought-block" ${isClosed ? "" : "expanded"}>
                     <div class="thought-header" onclick="this.parentElement.hasAttribute('expanded') ? this.parentElement.removeAttribute('expanded') : this.parentElement.setAttribute('expanded', '')">
-                        <span class="icon">chevron_right</span>
+                        <ui-icon>chevron_right</ui-icon>
                         <span>${isClosed ? "Thought Process" : "Thinking..."}</span>
                     </div>
                     <div class="thought-content">

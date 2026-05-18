@@ -18,10 +18,21 @@ class Modal {
         this.actionBar = new ActionBar();
         this.#panel.append(this.inner, this.actionBar);
 
-        // Close on escape key
-        this.escListener = (e) => {
+        // Handle keyboard shortcuts
+        this.keyListener = (e) => {
             if (e.key === 'Escape') {
-                this.hide(false); // Resolve with false or null on escape
+                const cancelBtn = this.actionBar.querySelector('ui-button.cancel');
+                if (cancelBtn) cancelBtn.click();
+                else this.hide(false); // Resolve with false or null on escape
+            } else if (e.key === 'Enter') {
+                // Prevent Enter from submitting if we are inside a textarea
+                if (e.target.tagName.toLowerCase() === 'textarea') return;
+                
+                const acceptBtn = this.actionBar.querySelector('ui-button.themed');
+                if (acceptBtn) {
+                    e.preventDefault();
+                    acceptBtn.click();
+                }
             }
         };
     }
@@ -30,7 +41,7 @@ class Modal {
         document.body.append(this.#panel);
         // A teeny delay to allow the element to be in the DOM for the CSS transition
         setTimeout(() => this.#panel.setAttribute('active', ''), 10);
-        document.addEventListener('keydown', this.escListener);
+        document.addEventListener('keydown', this.keyListener);
         return new Promise((resolve, reject) => {
             this.#promiseResolve = resolve;
             this.#promiseReject = reject;
@@ -39,7 +50,7 @@ class Modal {
 
     hide(resolutionValue) {
         this.#panel.removeAttribute('active');
-        document.removeEventListener('keydown', this.escListener);
+        document.removeEventListener('keydown', this.keyListener);
         this.#panel.blanker.remove();
         // Let CSS animation finish before removing from DOM
         setTimeout(() => this.#panel.remove(), 300);
@@ -50,7 +61,7 @@ class Modal {
 
     notice(content, title = 'Notice') {
         this.inner.innerHTML = `<h1>${title}</h1>${content}`;
-        this.actionBar.innerHTML = ''; // Clear previous buttons
+        this.actionBar.empty(); // Clear previous buttons
 
         const okButton = new Button('Ok');
         okButton.classList.add('themed');
@@ -62,7 +73,7 @@ class Modal {
 
     confirm(content, title = 'Confirm', buttons = ['Ok', 'Cancel']) {
         this.inner.innerHTML = `<h1>${title}</h1>${content}`;
-        this.actionBar.innerHTML = '';
+        this.actionBar.empty();
 
         const okButton = new Button(buttons[0]);
         okButton.classList.add('themed');
@@ -80,7 +91,7 @@ class Modal {
     prompt(content, title = 'Prompt', defaultValue = '') {
         // Clear previous content
         this.inner.innerHTML = '';
-        this.actionBar.innerHTML = '';
+        this.actionBar.empty();
 
         // Create and append title
         const titleElement = document.createElement('h1');
@@ -106,8 +117,6 @@ class Modal {
         }
         
         okButton.on('click', submit);
-        // Listen for 'Enter' key on the internal input element for submission
-        inputElement._input.addEventListener('keydown', (e) => e.key === 'Enter' && (e.preventDefault(), submit()));
 
         const cancelButton = new Button('Cancel');
         cancelButton.classList.add('cancel');

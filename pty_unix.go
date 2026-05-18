@@ -4,19 +4,23 @@ package main
 
 import (
 	"io"
+	"os"
 	"os/exec"
 
 	"github.com/creack/pty"
 )
 
 // startPty returns an io.ReadWriteCloser and the *exec.Cmd for the PTY process.
-func startPty(shell string, homeDir string) (io.ReadWriteCloser, *exec.Cmd, func(cols, rows int), error) {
+func startPty(shell string, homeDir string, prompt string) (io.ReadWriteCloser, *exec.Cmd, func(cols, rows int), error) {
 	c := exec.Command(shell)
 	c.Dir = homeDir
-	c.Env = append(c.Env, "TERM=xterm-256color")
+	c.Env = append(os.Environ(), "TERM=xterm-256color")
 
 	if shell == "bash" || shell == "zsh" {
 		c.Env = append(c.Env, `PROMPT_COMMAND=printf "\033]9;9;%s\033\\" "${PWD}"`)
+		if prompt != "" {
+			c.Env = append(c.Env, "PS1="+prompt)
+		}
 	}
 
 	// pty.Start returns an *os.File, which satisfies the io.ReadWriteCloser interface.

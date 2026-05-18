@@ -40,8 +40,7 @@ ui-settings-panel input[type="text"],
 ui-settings-panel input[type="password"],
 ui-settings-panel input[type="string"],
 ui-settings-panel input[type="number"],
-ui-settings-panel textarea,
-ui-settings-panel select {
+ui-settings-panel textarea {
     flex-grow: 1;
     padding: 8px;
     border: 1px solid var(--border-primary);
@@ -50,6 +49,24 @@ ui-settings-panel select {
     color: var(--text-primary);
     box-sizing: border-box;
     width: auto; /* Let flexbox manage width */
+}
+
+ui-settings-panel select {
+    flex-grow: 1;
+    padding: 8px;
+    padding-right: 32px;
+    border: 1px solid var(--border-primary);
+    border-radius: var(--buttonBorder);
+    background-color: var(--bg-primary);
+    color: var(--text-primary);
+    box-sizing: border-box;
+    width: auto;
+    appearance: none;
+    -webkit-appearance: none;
+    background-image: url("data:image/svg+xml;charset=UTF-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23888' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 8px center;
+    background-size: 16px;
 }
 
 ui-settings-panel textarea {
