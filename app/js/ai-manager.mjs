@@ -7,7 +7,7 @@ import Gemini from "./ai-gemini.mjs"
 import LlamaCpp from "./ai-llamacpp.mjs"
 import AIManagerHistory, { MAX_RECENT_MESSAGES_TO_PRESERVE } from "./ai-manager-history.mjs"
 import AIManagerSettings from "./ai-manager-settings.mjs" // NEW: Settings manager
-import { get, set, del } from "https://cdn.jsdelivr.net/npm/idb-keyval@6/+esm"
+import workspaceClient from "./workspace-client.mjs"
 
 import DiffHandler from "./tools/diff-handler.mjs"
 import systemPromptBuilder from './genericSystemPrompt.mjs'; // NEW: For building prompts
@@ -778,6 +778,12 @@ class AIManager {
      * This is only for the initial setup.
      */
     _populateInitialTabs() {
+		// Clear existing tabs without triggering active clicks
+		while (this.sessionTabBar._tabs && this.sessionTabBar._tabs.length > 0) {
+			const tab = this.sessionTabBar._tabs.pop();
+			tab.remove();
+		}
+
         const sortedSessions = [...this.allSessionMetadata].sort((a, b) => b.lastModified - a.lastModified);
         sortedSessions.forEach(meta => {
             const tab = this.sessionTabBar.add({ name: meta.name, id: meta.id, defaultStatusIcon: 'developer_board' });
@@ -796,7 +802,7 @@ class AIManager {
 			messages: [], promptInput: "", promptHistory: [], scrollTop: 0,
 		};
 
-		await set(`ai-session-${newId}`, newSessionData);
+		await workspaceClient.setSession(newId, newSessionData);
 		this.allSessionMetadata.push({ id: newId, name: newName, createdAt: newSessionData.createdAt, lastModified: newSessionData.lastModified });
 
 		// Add the tab to the UI.
@@ -821,11 +827,11 @@ class AIManager {
 			this.activeSession.scrollTop = this.conversationArea.scrollTop; // Save current scroll position
 			const currentSessionMeta = this.allSessionMetadata.find(s => s.id === this.activeSession.id);
 			if (currentSessionMeta) currentSessionMeta.lastModified = Date.now();
-			await set(`ai-session-${this.activeSession.id}`, this.activeSession);
+			await workspaceClient.setSession(this.activeSession.id, this.activeSession);
 		}
 
 		// Load the new session's data
-		const newSessionData = await get(`ai-session-${sessionId}`);
+		const newSessionData = await workspaceClient.getSession(sessionId);
 		if (!newSessionData) {
 			// This is a recovery case. The tab exists but data is gone.
 			console.error(`Data for session ID ${sessionId} not found!`);
@@ -876,7 +882,7 @@ class AIManager {
 	async deleteSession(sessionId, tab) {
 		const sessionMeta = this.allSessionMetadata.find(s => s.id === sessionId);
         // Find the full session data to check its message count
-        const fullSessionData = await get(`ai-session-${sessionId}`);
+        const fullSessionData = await workspaceClient.getSession(sessionId);
 
         // Only ask for confirmation if the session has a history AND it's not the only session left
         if (fullSessionData?.messages?.length > 0 || this.allSessionMetadata.length <= 1) { // Also ask for confirmation if it's the last session
@@ -887,7 +893,7 @@ class AIManager {
         }
 		
 		// Delete data
-		await del(`ai-session-${sessionId}`);
+		await workspaceClient.deleteSession(sessionId);
 		this.allSessionMetadata = this.allSessionMetadata.filter(s => s.id !== sessionId);
 
 		// If that was the last tab, we need to manually clean up the state.
@@ -920,7 +926,7 @@ class AIManager {
 				meta.name = trimmedName;
 				meta.lastModified = Date.now();
 			}
-			await set(`ai-session-${this.activeSession.id}`, this.activeSession);
+			await workspaceClient.setSession(this.activeSession.id, this.activeSession);
 
             // Update the UI via the component's API
             const tabToRename = this.sessionTabBar.tabs.find(t => t.config.id === this.activeSessionId);
@@ -1113,7 +1119,7 @@ class AIManager {
 				}, false);
 				// We still need to save the session since context items were added.
 				this.activeSession.lastModified = Date.now();
-				await set(`ai-session-${this.activeSession.id}`, this.activeSession);
+				await workspaceClient.setSession(this.activeSession.id, this.activeSession);
 				this._dispatchContextUpdate("context_files_updated");
 			}
 			this._isProcessing = false; // Release lock
@@ -1125,7 +1131,7 @@ class AIManager {
 		// Update lastModified timestamp for the session
 		this.activeSession.lastModified = Date.now();
 		// Save the active session to IndexedDB immediately after adding user prompt and context
-		await set(`ai-session-${this.activeSession.id}`, this.activeSession);
+		await workspaceClient.setSession(this.activeSession.id, this.activeSession);
 
 		// Render updated history in UI and dispatch event
 		// this.historyManager.render(); // NO LONGER NEEDED, using dynamic appends
@@ -1171,7 +1177,7 @@ class AIManager {
 				this.activeSession.messages.push(modelMessage);
 				this.historyManager.addInteractionToLastUserMessage(userMessage); // Add delete button to user prompt
 				this.activeSession.lastModified = Date.now();
-				await set(`ai-session-${this.activeSession.id}`, this.activeSession);
+				await workspaceClient.setSession(this.activeSession.id, this.activeSession);
 
 				// Now, render the final response in the UI.
 				// DEV: For visual debugging, let's pop a loader bar on top of every model response.
@@ -1202,7 +1208,7 @@ class AIManager {
 				// Update lastModified timestamp and save the active session
 				// No interaction added for errors.
 				this.activeSession.lastModified = Date.now();
-				await set(`ai-session-${this.activeSession.id}`, this.activeSession);
+				await workspaceClient.setSession(this.activeSession.id, this.activeSession);
 
 				this._dispatchContextUpdate("append_error")
 
@@ -1448,7 +1454,7 @@ class AIManager {
                         // NEW: Update the diff status in the message object and save
                         if (messageObject) {
                             messageObject.diffStatuses[index] = true;
-                            await set(`ai-session-${this.activeSession.id}`, this.activeSession); // Save the session immediately
+                            await workspaceClient.setSession(this.activeSession.id, this.activeSession); // Save the session immediately
                         }
                         // Add a system message to chat history for persistent feedback
                         this.historyManager.addMessage({

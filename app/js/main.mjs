@@ -2,7 +2,7 @@ import prettier from "https://unpkg.com/prettier@2.4.1/esm/standalone.mjs"
 import parserBabel from "https://unpkg.com/prettier@2.4.1/esm/parser-babel.mjs"
 import parserHtml from "https://unpkg.com/prettier@2.4.1/esm/parser-html.mjs"
 import parserCss from "https://unpkg.com/prettier@2.4.1/esm/parser-postcss.mjs"
-import { get, set, del } from "https://cdn.jsdelivr.net/npm/idb-keyval@6/+esm" // Keep these imports
+import workspaceClient from "./workspace-client.mjs"
 
 import {
 	getIconForFileName, addStylesheet, buildPath, clone, isElement, isFunction, isNotNull,
@@ -297,7 +297,7 @@ const saveAppConfig = async () => {
 
 	// updateWorkspaceSelectors()
 
-	await set("appConfig", app)
+	await workspaceClient.setAppConfig(app)
 	console.debug("saved", app)
 }
 window.saveAppConfig = saveAppConfig
@@ -349,7 +349,7 @@ const saveWorkspace = async () => {
 	workspace.activeSidebarTab = ui.iconTabBar?.activeTab?.iconId
 	// REMOVED: workspace.promptHistory = ui.aiManager.promptHistory; // No longer here
 	// AI sessions metadata is now stored directly in workspace (small footprint)
-	set(`workspace_${workspace.id}`, workspace) // This will save workspace.aiSessionsMetadata and workspace.activeAiSessionId
+	workspaceClient.setWorkspace(workspace) // This will save workspace.aiSessionsMetadata and workspace.activeAiSessionId
 }
 window.saveWorkspace = saveWorkspace
 
@@ -409,18 +409,28 @@ const openWorkspace = (() => {
 	// rename for possible future functionality
 	rename.remove()
 
+	let isOpeningWorkspace = false;
+
 	return async (name, triggered = false) => {
-		console.debug(`openWorkspace: Opening workspace ${name}.`)
-		let load = await get(`workspace_${name}`)
+		if (isOpeningWorkspace) return;
+		isOpeningWorkspace = true;
+		try {
+			console.debug(`openWorkspace: Opening workspace ${name}.`)
+			let load;
+			try {
+				load = await workspaceClient.getWorkspace(name)
+			} catch(e) {
+				console.warn("Failed to load workspace", name, e)
+			}
 
-		const hideActions = () => {
-			close.remove()
-			rename.remove()
-			remove.remove()
-		}
+			const hideActions = () => {
+				close.remove()
+				rename.remove()
+				remove.remove()
+			}
 
-		if ("undefined" != typeof load) {
-			workspaceUnloading = true
+			if ("undefined" != typeof load) {
+				workspaceUnloading = true
 			// clear the leftTabs
 			while (leftTabs.tabs.length > 1) {
 				leftTabs.tabs[0].close.click()
@@ -561,6 +571,9 @@ const openWorkspace = (() => {
 				saveAppConfig()
 				openWorkspace("default")
 			}
+		}
+		} finally {
+			isOpeningWorkspace = false;
 		}
 	}
 })()
@@ -1881,12 +1894,12 @@ const keyBinds = [
 				if (confirmed) {
 					// set(`workspace_${workspace.id}`console.warn("DELETE", workspace)
 					console.warn("DELETE", workspace)
-					del(`workspace_${workspace.id}`)
+					await workspaceClient.deleteWorkspace(workspace.id)
 
 					// NEW: Also delete all associated AI sessions from IndexedDB
 					// Note: This assumes `workspace.aiSessionsMetadata` holds all session IDs.
 					for (const sessionMeta of workspace.aiSessionsMetadata) {
-						await del(`ai-session-${sessionMeta.id}`)
+						await workspaceClient.deleteSession(sessionMeta.id)
 					}
 					// This is where a more robust orphaned session cleanup could happen if needed for truly lost sessions.
 
@@ -1947,17 +1960,24 @@ const keyBinds = [
 				workspace.aiSessionsMetadata = []
 				workspace.activeAiSessionId = null
 
+				if (ui.aiManager) {
+					ui.aiManager.loadSessions(workspace.aiSessionsMetadata, workspace.activeAiSessionId)
+				}
+
 				// clear the leftTabs
 				while (leftTabs.tabs.length > 1) {
 					leftTabs.tabs[0].close.click()
 				}
-				leftTabs.tabs[0].close.click()
+				if (leftTabs.tabs[0]) leftTabs.tabs[0].close.click()
 
 				// refresh the folder list
-				ui.showFolders()
+				await fileList.refreshAll()
+				ui.showSidebar()
+				
 				// update the workspace menu
 				// update the app config object
 				saveAppConfig()
+				saveWorkspace()
 
 				updateWorkspaceSelectors()
 			}
@@ -2089,9 +2109,8 @@ setTimeout(async () => {
 		// 2. Save the full active session data to IndexedDB (on demand)
 		// This happens on message append, delete, summarization, or session switch
 		if (activeSessionData && activeSessionData.id) {
-			const sessionKey = `ai-session-${activeSessionData.id}`
-			await set(sessionKey, activeSessionData)
-			console.debug(`AI session "${activeSessionData.name}" (${activeSessionData.id}) saved to IndexedDB.`)
+			await workspaceClient.setSession(activeSessionData.id, activeSessionData)
+			console.debug(`AI session "${activeSessionData.name}" (${activeSessionData.id}) saved to backend.`)
 		}
 	})
 
@@ -2116,7 +2135,12 @@ setTimeout(async () => {
 
 	leftEdit.on("ready", async () => {
 		// preload stored file and folder handles
-		let stored = await get("appConfig")
+		let stored;
+		try {
+			stored = await workspaceClient.getAppConfig();
+		} catch (e) {
+			console.warn("Failed to load app config", e);
+		}
 
 		app.darkmode = stored?.darkmode || "system"
 		app.sessionOptions = stored?.sessionOptions || null

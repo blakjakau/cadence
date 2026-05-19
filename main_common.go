@@ -56,6 +56,9 @@ func runCadenceServer(block bool) {
 		go startIdleShutdownManager(60 * time.Minute)
 	}
 	startTime = time.Now()
+	
+	initWorkspaceManager() // Initialize workspace persistence
+
 	mux := createServerMux()
 
 	if serveFlag != "" {
@@ -94,6 +97,9 @@ func createServerMux() *http.ServeMux {
 	mux.HandleFunc("/terminal", terminalServer)
 	mux.HandleFunc("/up", upcheckHandler)
 	mux.HandleFunc("/files", filesApiHandler)
+	mux.HandleFunc("/api/config", appConfigHandler)
+	mux.HandleFunc("/api/workspace", workspaceHandler)
+	mux.HandleFunc("/api/session", sessionHandler)
 	mux.HandleFunc("/kill", installationHandler(killHandler))
 	mux.HandleFunc("/install-service", installationHandler(InstallService))
 	mux.HandleFunc("/uninstall", installationHandler(Uninstall))
