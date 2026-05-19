@@ -8,6 +8,7 @@ import LlamaCpp from "./ai-llamacpp.mjs"
 import AIManagerHistory, { MAX_RECENT_MESSAGES_TO_PRESERVE } from "./ai-manager-history.mjs"
 import AIManagerSettings from "./ai-manager-settings.mjs" // NEW: Settings manager
 import workspaceClient from "./workspace-client.mjs"
+import agentTools from "./agent/agent-tools.mjs"
 
 import DiffHandler from "./tools/diff-handler.mjs"
 import systemPromptBuilder from './genericSystemPrompt.mjs'; // NEW: For building prompts
@@ -31,6 +32,62 @@ const promptEditorSettings = {
 	enableBasicAutocompletion: true,
 	enableLiveAutocompletion: true
 }
+
+const AGENT_SYSTEM_PROMPT = `
+You are CodeAgent, a highly capable autonomous software engineering assistant. You can read, list, search, write, edit, and open files in the workspace using the tools provided below.
+
+Rules for Thinking:
+- You MUST wrap your plan, thoughts, and reasoning in <thought>...</thought> tags at the very beginning of your response.
+- Example response:
+  <thought>
+  I need to inspect the contents of app.js. I'll read the file first to understand its structure.
+  </thought>
+  <tool_call name="read_file">
+    <path>app.js</path>
+  </tool_call>
+
+Tools Available:
+
+1. List Files:
+<tool_call name="list_files">
+  <path>relative_or_absolute_directory_path</path>
+</tool_call>
+
+2. Read File:
+<tool_call name="read_file">
+  <path>relative_or_absolute_file_path</path>
+</tool_call>
+
+3. Search Files (Grep):
+<tool_call name="search_files">
+  <query>search_query_text</query>
+</tool_call>
+
+4. Edit File (Surgical search and replace):
+<tool_call name="edit_file">
+  <path>relative_or_absolute_file_path</path>
+  <search>exact_code_to_find</search>
+  <replace>code_to_replace_with</replace>
+</tool_call>
+Note: The <search> block MUST match exactly, including leading spaces, newlines, and character-for-character content of the section of the file you want to edit.
+
+5. Create File:
+<tool_call name="create_file">
+  <path>relative_or_absolute_file_path</path>
+  <content>full_file_content_goes_here</content>
+</tool_call>
+
+6. Open File (Open a file in the workspace editor for the user to review):
+<tool_call name="open_file">
+  <path>relative_or_absolute_file_path</path>
+</tool_call>
+
+General Rules:
+- You can call EXACTLY ONE tool per turn. Do not stack multiple tool calls in a single response.
+- Once you receive a tool's output in the next turn, analyze it and choose your next action.
+- If you have completed the user's task or no more tools are required, write your final response explaining what you did without any tool calls (but still include your <thought> block!).
+- Strictly use the XML formats above. Do not invent new parameters or tags.
+`;
 
 class AIManager {
 	constructor() {
@@ -98,6 +155,8 @@ class AIManager {
 		this.settingsButton = null; // NEW: Reference for settings button
 
 		this.saveWorkspaceTimeout = null; // For debouncing workspace saves from _dispatchContextUpdate
+		this.agentMode = false; // NEW: Toggle between standard chat and agentic tool loop
+		this.agentModeToggle = null;
 	}
 
 	async init(panel) {
@@ -144,12 +203,10 @@ class AIManager {
 		window.addEventListener('setting-changed', this._handleSettingChangedExternally.bind(this));
 	}
 
-    /**
-     * NEW: Generates the system prompt based on current settings.
-     * This is intended to be called by the History Manager or AI Provider before making a request.
-     * @returns {string} The complete system prompt string.
-     */
     getSystemPrompt() {
+        if (this.agentMode) {
+            return AGENT_SYSTEM_PROMPT;
+        }
         return systemPromptBuilder(this.getSystemPromptConfig());
     }
 
@@ -310,12 +367,37 @@ class AIManager {
 		this.submitButton = this._createSubmitButton()
 		this.clearButton = this._createClearButton()
 
+		this.agentModeToggle = document.createElement("div");
+		this.agentModeToggle.className = "agent-toggle-wrapper";
+		this.agentModeToggle.innerHTML = `
+			<label class="switch" title="Agent Mode: CodeAgent can call tools to read/edit code">
+				<input type="checkbox" id="agent-mode-checkbox">
+				<span class="slider round"></span>
+			</label>
+			<span class="toggle-label" style="font-size: 11.5px; margin-left: 6px; font-weight: 600; color: var(--text-secondary); cursor: pointer; user-select: none;">Agent</span>
+		`;
+
+		const checkbox = this.agentModeToggle.querySelector('input');
+		checkbox.checked = this.agentMode || false;
+		checkbox.addEventListener('change', (e) => {
+			this.agentMode = e.target.checked;
+			localStorage.setItem("aiAgentMode", this.agentMode);
+			this._updatePromptAreaPlaceholder();
+		});
+		
+		// Clicking the label also toggles the checkbox
+		const label = this.agentModeToggle.querySelector('.toggle-label');
+		label.addEventListener('click', () => {
+			checkbox.click();
+		});
+
 		this.aiInfoDisplay = document.createElement("span");
 		this.aiInfoDisplay.classList.add("ai-info-display");
 
 
 		buttonContainer.append(this.clearButton)
 		buttonContainer.append(this.summarizeButton) // Add summarize button
+		buttonContainer.append(this.agentModeToggle) // Add agent mode toggle
 		buttonContainer.append(this.aiInfoDisplay); // Element is created, but content will be set by _updateAIInfoDisplay()
 		buttonContainer.append(spacer)
 		buttonContainer.append(this.submitButton)
@@ -461,7 +543,11 @@ class AIManager {
 
         if (this.ai && this.ai.isConfigured()) {
 			this.promptEditor.setReadOnly(false);
-            this.promptEditor.setOption("placeholder", "Enter your prompt here...");
+			if (this.agentMode) {
+				this.promptEditor.setOption("placeholder", "Ask CodeAgent to list/read/edit files... (use @ to tag files)");
+			} else {
+				this.promptEditor.setOption("placeholder", "Enter your prompt here...");
+			}
         } else {
 			this.promptEditor.setReadOnly(true);
             this.promptEditor.setOption("placeholder", "AI is not configured. Go to Settings (gear icon) to set up a provider.");
@@ -1136,6 +1222,11 @@ class AIManager {
 		// Render updated history in UI and dispatch event
 		// this.historyManager.render(); // NO LONGER NEEDED, using dynamic appends
 		this._dispatchContextUpdate("append_user"); // This will also save workspace metadata
+
+		if (this.agentMode) {
+			await this._runAgentLoop(userMessage, userMessageElement);
+			return;
+		}
 		// NEW: Create and append the new ui-loader-bar *before* the response block
 		// Ensure we calculate the space needed for the loader + response block, accounting for the file bar.
 		const fileBarContainer = this.panel.querySelector('.ai-filebar-container');
@@ -1222,6 +1313,289 @@ class AIManager {
 		const messagesForAI = this.historyManager.prepareMessagesForAI()
 		const systemPrompt = this.getSystemPrompt();
 		this.ai.chat(messagesForAI, callbacks, systemPrompt)
+	}
+
+	_parseToolCalls(content) {
+		const match = content.match(/<tool_call\s+name=["']([^"']+)["']\s*>([\s\S]*?)<\/tool_call>/i);
+		if (!match) return null;
+
+		const toolName = match[1];
+		const toolArgsContent = match[2];
+		const args = {};
+
+		// Extract any nested XML tags as args
+		const tagRegex = /<([a-zA-Z0-9_-]+)>([\s\S]*?)<\/\1>/g;
+		let tagMatch;
+		while ((tagMatch = tagRegex.exec(toolArgsContent)) !== null) {
+			const key = tagMatch[1];
+			let val = tagMatch[2];
+			if (key !== 'search' && key !== 'replace' && key !== 'content') {
+				val = val.trim();
+			}
+			args[key] = val;
+		}
+
+		return {
+			name: toolName,
+			arguments: args,
+			raw: match[0]
+		};
+	}
+
+	_showAgentApprovalCard(toolCall) {
+		return new Promise((resolve) => {
+			const card = document.createElement("div");
+			card.className = "agent-approval-card";
+			
+			let detailHtml = "";
+			if (toolCall.name === "edit_file") {
+				detailHtml = `
+					<div class="approval-header">
+						<ui-icon>edit</ui-icon>
+						<span>Approve File Edit</span>
+					</div>
+					<div class="approval-path">File: <code>${toolCall.arguments.path}</code></div>
+					<div class="approval-diff-preview">
+						<div class="diff-section remove">
+							<span class="diff-label">Remove:</span>
+							<pre><code>${this._escapeHtml(toolCall.arguments.search)}</code></pre>
+						</div>
+						<div class="diff-section add">
+							<span class="diff-label">Add:</span>
+							<pre><code>${this._escapeHtml(toolCall.arguments.replace)}</code></pre>
+						</div>
+					</div>
+				`;
+			} else if (toolCall.name === "create_file") {
+				detailHtml = `
+					<div class="approval-header">
+						<ui-icon>note_add</ui-icon>
+						<span>Approve New File Creation</span>
+					</div>
+					<div class="approval-path">File: <code>${toolCall.arguments.path}</code></div>
+					<div class="approval-diff-preview">
+						<div class="diff-section add">
+							<span class="diff-label">Content:</span>
+							<pre><code>${this._escapeHtml(toolCall.arguments.content.slice(0, 500))}${toolCall.arguments.content.length > 500 ? '\n... (truncated)' : ''}</code></pre>
+						</div>
+					</div>
+				`;
+			}
+
+			card.innerHTML = `
+				${detailHtml}
+				<div class="approval-actions">
+					<button class="approve-btn theme-button primary"><ui-icon>check</ui-icon> Approve</button>
+					<button class="reject-btn theme-button secondary"><ui-icon>close</ui-icon> Reject</button>
+				</div>
+			`;
+
+			const approveBtn = card.querySelector('.approve-btn');
+			const rejectBtn = card.querySelector('.reject-btn');
+
+			approveBtn.addEventListener('click', () => {
+				card.classList.add('approved');
+				approveBtn.disabled = true;
+				rejectBtn.disabled = true;
+				approveBtn.innerHTML = `<ui-icon>done</ui-icon> Approved`;
+				resolve(true);
+			});
+
+			rejectBtn.addEventListener('click', () => {
+				card.classList.add('rejected');
+				approveBtn.disabled = true;
+				rejectBtn.disabled = true;
+				rejectBtn.innerHTML = `<ui-icon>close</ui-icon> Rejected`;
+				resolve(false);
+			});
+
+			this.conversationArea.append(card);
+			this.conversationArea.scrollTop = this.conversationArea.scrollHeight;
+		});
+	}
+
+	_escapeHtml(text) {
+		if (!text) return "";
+		return text
+			.replace(/&/g, "&amp;")
+			.replace(/</g, "&lt;")
+			.replace(/>/g, "&gt;")
+			.replace(/"/g, "&quot;")
+			.replace(/'/g, "&#039;");
+	}
+
+	async _runAgentLoop(userMessage, userMessageElement) {
+		let loopCount = 0;
+		const maxLoops = 6;
+		
+		while (loopCount < maxLoops) {
+			loopCount++;
+			
+			// Show loader bar indicating the agent is thinking/running
+			const loaderBar = document.createElement("ui-loader-bar");
+			this.conversationArea.append(loaderBar);
+			
+			const modelMessageId = crypto.randomUUID();
+			const responseBlock = new Block();
+			responseBlock.classList.add("response-block");
+			responseBlock.dataset.messageId = modelMessageId;
+			const spinner = this._createSpinner();
+			responseBlock.append(spinner);
+			this.conversationArea.append(responseBlock);
+			
+			// Auto scroll
+			this.conversationArea.scrollTop = this.conversationArea.scrollHeight;
+			
+			let currentFullResponse = "";
+			const runPromise = new Promise((resolve, reject) => {
+				const callbacks = {
+					onUpdate: (fullResponse) => {
+						if (spinner.parentNode) spinner.remove();
+						responseBlock.innerHTML = this._renderResponseContent(fullResponse);
+						this._addCodeBlockButtons(responseBlock);
+						this.conversationArea.scrollTop = this.conversationArea.scrollHeight;
+					},
+					onDone: async (fullResponse) => {
+						loaderBar.remove();
+						currentFullResponse = fullResponse;
+						
+						// Append to activeSession messages
+						const modelMessage = {
+							id: modelMessageId,
+							role: "model",
+							type: "model",
+							content: fullResponse,
+							diffStatuses: [],
+							timestamp: Date.now()
+						};
+						this.activeSession.messages.push(modelMessage);
+						this.activeSession.lastModified = Date.now();
+						await workspaceClient.setSession(this.activeSession.id, this.activeSession);
+						
+						responseBlock.innerHTML = this._renderResponseContent(fullResponse);
+						this._addCodeBlockButtons(responseBlock, modelMessage);
+						
+						resolve(fullResponse);
+					},
+					onError: (err) => {
+						loaderBar.remove();
+						reject(err);
+					}
+				};
+				
+				const messagesForAI = this.historyManager.prepareMessagesForAI();
+				const systemPrompt = this.getSystemPrompt();
+				this.ai.chat(messagesForAI, callbacks, systemPrompt);
+			});
+			
+			try {
+				const responseContent = await runPromise;
+				
+				// Parse tool calls
+				const toolCall = this._parseToolCalls(responseContent);
+				if (!toolCall) {
+					// No more tool calls: agent is done!
+					this._isProcessing = false;
+					this._setButtonsDisabledState(false);
+					this._dispatchContextUpdate("append_model");
+					break;
+				}
+				
+				// Execute the tool call
+				let toolResult = "";
+				let approved = true;
+				
+				// Identify if tool is destructive
+				const isDestructive = ["edit_file", "create_file"].includes(toolCall.name);
+				if (isDestructive) {
+					approved = await this._showAgentApprovalCard(toolCall);
+				}
+				
+				if (approved) {
+					// Add temporary message block explaining what tool is running
+					const progressMsg = document.createElement("div");
+					progressMsg.className = "agent-tool-progress";
+					progressMsg.innerHTML = `<ui-icon class="spin">cached</ui-icon> Running tool: <code>${toolCall.name}</code>...`;
+					this.conversationArea.append(progressMsg);
+					this.conversationArea.scrollTop = this.conversationArea.scrollHeight;
+					
+					try {
+						if (toolCall.name === "list_files") {
+							toolResult = await agentTools.listFiles(toolCall.arguments.path);
+						} else if (toolCall.name === "read_file") {
+							toolResult = await agentTools.readFile(toolCall.arguments.path);
+						} else if (toolCall.name === "search_files") {
+							toolResult = await agentTools.searchFiles(toolCall.arguments.query);
+						} else if (toolCall.name === "edit_file") {
+							toolResult = await agentTools.editFile(
+								toolCall.arguments.path,
+								toolCall.arguments.search,
+								toolCall.arguments.replace,
+								this.activeSession.id
+							);
+						} else if (toolCall.name === "create_file") {
+							toolResult = await agentTools.createFile(
+								toolCall.arguments.path,
+								toolCall.arguments.content,
+								this.activeSession.id
+							);
+						} else if (toolCall.name === "open_file") {
+							toolResult = await agentTools.openFile(toolCall.arguments.path);
+						} else {
+							toolResult = `Error: Unknown tool ${toolCall.name}`;
+						}
+					} catch (e) {
+						toolResult = `Error executing tool: ${e.message}`;
+					}
+					
+					progressMsg.remove();
+				} else {
+					toolResult = `Error: User rejected the change to ${toolCall.arguments.path}.`;
+				}
+				
+				// Append tool result as a user response to feed back into conversation
+				const toolResponseMessage = {
+					id: crypto.randomUUID(),
+					role: "user",
+					type: "tool_response",
+					content: `[Tool Response: ${toolCall.name}]\n\n${toolResult}`,
+					timestamp: Date.now()
+				};
+				this.activeSession.messages.push(toolResponseMessage);
+				this.activeSession.lastModified = Date.now();
+				await workspaceClient.setSession(this.activeSession.id, this.activeSession);
+				
+				// Render simple system or message confirmation of tool run in the chat
+				const toolConfBlock = document.createElement("div");
+				toolConfBlock.className = "agent-tool-finished";
+				toolConfBlock.innerHTML = `
+					<ui-icon>${approved ? 'done' : 'close'}</ui-icon>
+					<span>Tool <code>${toolCall.name}</code> finished.</span>
+				`;
+				this.conversationArea.append(toolConfBlock);
+				this.conversationArea.scrollTop = this.conversationArea.scrollHeight;
+				
+			} catch (e) {
+				console.error("Agent Loop Error:", e);
+				const errBlock = document.createElement("div");
+				errBlock.className = "response-block error-block";
+				errBlock.innerHTML = `Agent Execution Error: ${e.message}`;
+				this.conversationArea.append(errBlock);
+				
+				this._isProcessing = false;
+				this._setButtonsDisabledState(false);
+				break;
+			}
+		}
+		
+		if (loopCount >= maxLoops) {
+			const warningBlock = document.createElement("div");
+			warningBlock.className = "response-block warning-block";
+			warningBlock.innerHTML = `Agent Loop stopped: Maximum iteration limit reached (${maxLoops} steps).`;
+			this.conversationArea.append(warningBlock);
+			this._isProcessing = false;
+			this._setButtonsDisabledState(false);
+		}
 	}
 
 	_addCodeBlockButtons(responseBlock, messageObject = null) { // Add messageObject parameter
@@ -1476,27 +1850,26 @@ class AIManager {
 	 * '+++' line and matching the file extension against the global window.ace_modes.
 	 * @param {string} diffContent - The full text content of the diff.
 	 * @returns {string|null} The inferred language name (e.g., "javascript") or null if not found.
-	 */    /**
-     * Renders response content, specifically handling <think> blocks as collapsible prefaces.
-     * @param {string} content The raw content from the AI model.
-     * @returns {string} HTML string representing the rendered content.
-     */
-    _renderResponseContent(content) {
+	 */    _renderResponseContent(content) {
         if (!content) return "";
 
-        // Normalize alternative thinking markers: <|channel>thought <channel|> ... \n
-        // to standard <think>...</think> tags.
+        // Normalize alternative thinking markers to standard <think>...</think> tags.
         content = content.replace(/<\|channel>thought <channel\|>(.*?)(?:\n|$)/g, '<think>$1</think>\n');
+        content = content.replace(/<thought>([\s\S]*?)<\/thought>/gi, '<think>$1</think>');
+        // Handle unclosed thought blocks during streaming
+        if (content.includes("<thought>") && !content.includes("</thought>")) {
+            content = content.replace("<thought>", "<think>");
+        }
+
+        let thinkHtml = "";
+        let mainContent = content;
 
         const thinkRegex = /<think>([\s\S]*?)(?:<\/think>|$)/;
-        const match = content.match(thinkRegex);
-
-        if (match) {
-            const thinkContent = match[1].trim();
-            const responsePart = content.replace(thinkRegex, "").trim();
-            const isClosed = content.includes("</think>");
-
-            let html = `
+        const thinkMatch = mainContent.match(thinkRegex);
+        if (thinkMatch) {
+            const thinkContent = thinkMatch[1].trim();
+            const isClosed = mainContent.includes("</think>");
+            thinkHtml = `
                 <div class="thought-block" ${isClosed ? "" : "expanded"}>
                     <div class="thought-header" onclick="this.parentElement.hasAttribute('expanded') ? this.parentElement.removeAttribute('expanded') : this.parentElement.setAttribute('expanded', '')">
                         <ui-icon>chevron_right</ui-icon>
@@ -1507,14 +1880,79 @@ class AIManager {
                     </div>
                 </div>
             `;
-
-            if (responsePart) {
-                html += this.md.render(responsePart);
-            }
-            return html;
+            mainContent = mainContent.replace(thinkRegex, "").trim();
         }
 
-        return this.md.render(content);
+        // Now, find and replace any <tool_call> tags in mainContent
+        let finalHtml = thinkHtml;
+        
+        const toolCallRegex = /<tool_call\s+name=["']([^"']+)["']\s*>([\s\S]*?)(?:<\/tool_call>|$)/i;
+        const toolCallMatch = mainContent.match(toolCallRegex);
+        if (toolCallMatch) {
+            const toolName = toolCallMatch[1];
+            const toolArgs = toolCallMatch[2];
+            const isClosed = mainContent.includes("</tool_call>");
+            
+            // Extract arguments as a dictionary
+            const args = {};
+            const tagRegex = /<([a-zA-Z0-9_-]+)>([\s\S]*?)<\/\1>/g;
+            let tagMatch;
+            while ((tagMatch = tagRegex.exec(toolArgs)) !== null) {
+                const key = tagMatch[1];
+                let val = tagMatch[2];
+                if (key !== 'search' && key !== 'replace' && key !== 'content') {
+                    val = val.trim();
+                }
+                args[key] = val;
+            }
+
+            // Create gorgeous tool card HTML
+            let icon = "extension";
+            if (toolName.includes("read")) icon = "find_in_page";
+            else if (toolName.includes("list")) icon = "folder_open";
+            else if (toolName.includes("search")) icon = "search";
+            else if (toolName.includes("edit")) icon = "edit";
+            else if (toolName.includes("create")) icon = "create_new_folder";
+            else if (toolName.includes("open")) icon = "launch";
+
+            // Construct compact one-line label
+            let label = `<code>${toolName}</code>`;
+            if (args.path) {
+                const shortFile = args.path.split('/').pop() || args.path;
+                label = `<code>${toolName}</code>: <span class="tool-call-path" title="${this._escapeHtml(args.path)}">${this._escapeHtml(shortFile)}</span>`;
+            } else if (args.query) {
+                label = `<code>${toolName}</code>: <span class="tool-call-query">"${this._escapeHtml(args.query)}"</span>`;
+            }
+
+            const toolCardHtml = `
+                <div class="tool-call-block compact">
+                    <div class="tool-call-header compact">
+                        <ui-icon>${icon}</ui-icon>
+                        <span class="tool-call-title compact">${label}</span>
+                        <span class="tool-call-status-badge compact ${isClosed ? 'invoked' : 'preparing'}">${isClosed ? "Invoked" : "Preparing..."}</span>
+                    </div>
+                </div>
+            `;
+
+            // Split content and render
+            const parts = mainContent.split(toolCallRegex);
+            const beforeText = parts[0] || "";
+            const afterText = parts[3] || "";
+            
+            if (beforeText.trim()) {
+                finalHtml += this.md.render(beforeText);
+            }
+            finalHtml += toolCardHtml;
+            if (afterText.trim()) {
+                finalHtml += this.md.render(afterText);
+            }
+        } else {
+            if (mainContent.trim()) {
+                finalHtml += this.md.render(mainContent);
+            }
+        }
+
+        return finalHtml;
     }
 
 	_inferLanguageFromDiff(diffContent) {
@@ -1687,6 +2125,11 @@ class AIManager {
 		const storedSummarizeTargetPercentage = localStorage.getItem("summarizeTargetPercentage")
 		if (storedSummarizeTargetPercentage !== null) {
 			this.config.summarizeTargetPercentage = parseInt(storedSummarizeTargetPercentage)
+		}
+
+		const storedAgentMode = localStorage.getItem("aiAgentMode")
+		if (storedAgentMode !== null) {
+			this.agentMode = storedAgentMode === "true"
 		}
 	}
 }
