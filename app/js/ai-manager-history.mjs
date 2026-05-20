@@ -225,9 +225,37 @@ class AIManagerHistory {
 					element.classList.remove('system-message-sticky-fade');
 				}, { once: true });
 			}
+		} else if (message.type === "task_state") {
+			element = new Block();
+			element.classList.add("task-state-block");
+			element.dataset.messageId = message.id;
+			element.innerHTML = `<strong>Current Task:</strong><br>${this.md.render(message.content)}`;
 		}
 
 		return element;
+	}
+
+	/**
+	 * Sets or updates the persistent "task_state" message.
+	 */
+	setTaskState(content) {
+		const existingIndex = this.chatHistory.findIndex(m => m.type === "task_state");
+		const message = {
+			id: existingIndex !== -1 ? this.chatHistory[existingIndex].id : crypto.randomUUID(),
+			type: "task_state",
+			role: "system",
+			content: content,
+			timestamp: Date.now()
+		};
+
+		if (existingIndex !== -1) {
+			this.manager.activeSession.messages[existingIndex] = message;
+			this.render();
+		} else {
+			this.manager.activeSession.messages.unshift(message);
+			this.render();
+		}
+		this.manager._dispatchContextUpdate("task_state_updated");
 	}
 
 	/**
@@ -487,68 +515,121 @@ class AIManagerHistory {
 	}
 
 	prepareMessagesForAI() {
-		// Now directly use the active session's messages
 		// Create a deep enough copy of messages to avoid modifying the original history.
-		let prunableHistory = (this.manager.activeSession?.messages || []).map(msg => ({ ...msg }));
+		let messages = (this.manager.activeSession?.messages || []).map(msg => ({ ...msg }));
 
-		prunableHistory = prunableHistory.filter(
-			(msg) => msg.type !== "system_message" && msg.role !== "temp_ai_response"
-		)
+		// 1. Extract the Evergreen Task State
+		const taskStateMessage = messages.find(msg => msg.type === "task_state");
+		
+		// 2. Separate chat/system/file messages from the protected task state
+		// We filter out task_state from the main pool so it doesn't get pruned.
+		let chatHistory = messages.filter(
+			(msg) => msg.type !== "task_state" && msg.type !== "system_message" && msg.role !== "temp_ai_response"
+		);
 
-		// Get the setting to control code block stripping
+		// NEW: If Agent Mode is turned OFF, strip out agent-specific tags and filter tool responses 
+		// to prevent chat history prompt contamination/few-shot leakage.
+		if (!this.manager.agentMode) {
+			chatHistory = chatHistory.filter(msg => msg.type !== "tool_response");
+			chatHistory = chatHistory.map(msg => {
+				if (msg.content) {
+					let newContent = msg.content;
+					// Strip XML tool calls
+					newContent = newContent.replace(/<tool_call\s+name=["']([^"']+)["']\s*>[\s\S]*?<\/tool_call>/gi, '');
+					// Strip thinking processes
+					newContent = newContent.replace(/<thought>[\s\S]*?<\/thought>/gi, '');
+					newContent = newContent.replace(/<think>[\s\S]*?<\/think>/gi, '');
+					// Strip implementation plan and task list
+					newContent = newContent.replace(/<implementation_plan>[\s\S]*?<\/implementation_plan>/gi, '');
+					newContent = newContent.replace(/<task_list>[\s\S]*?<\/task_list>/gi, '');
+					// Strip task completion signals
+					newContent = newContent.replace(/<complete_task>[\s\S]*?<\/complete_task>/gi, '');
+					return {
+						...msg,
+						content: newContent.trim()
+					};
+				}
+				return msg;
+			}).filter(msg => msg.content && msg.content.trim() !== "");
+		}
+
+		// NEW: In Agent Mode, auto-prune chat history by keeping only a sliding window of the last 6 dialogue messages.
+		// Older items are hidden from the model but remain in the chat bubble history for the user.
+		if (this.manager.agentMode) {
+			const keepCount = 6;
+			if (chatHistory.length > keepCount) {
+				chatHistory = chatHistory.slice(-keepCount);
+			}
+		}
+
+		// 3. Handle code block stripping in the chat history
 		const stripCodeBlocks = this.manager.ai.config.stripCodeBlocksFromContext;
-
 		if (stripCodeBlocks) {
-			// Regex to match any Markdown code block, optionally preceded by a Markdown header.
-			// This will remove the entire block (header + code) and replace it with a single newline.
 			const codeBlockWithHeaderRegex = /(?:^|\n)\s*(?:#{1,6}[^\n]*\n+)?\s*```(?:\w+)?\n[\s\S]*?\n\s*```/g;
-
-			prunableHistory.forEach(msg => {
-				// Apply stripping only to user and model messages. File context messages are handled differently.
+			chatHistory.forEach(msg => {
 				if ((msg.type === 'model' || msg.type === 'user') && msg.content) {
-					// Replace the matched header+code block with a single newline to maintain some spacing, then trim.
 					msg.content = msg.content.replace(codeBlockWithHeaderRegex, '\n').trim();
 				}
 			});
 		}
-		// If stripCodeBlocks is false, no stripping occurs here, preserving all content.
 
-		const maxTokens = this.ai.MAX_CONTEXT_TOKENS || 4096
-		let currentTokens = this.ai.estimateTokens(prunableHistory)
-		const minimumMessagesToKeep = 1
+		// 4. Prune the chat history to fit within the context window
+		const maxTokens = this.ai.MAX_CONTEXT_TOKENS || 4096;
+		let currentTokens = this.ai.estimateTokens(chatHistory);
+		const minimumMessagesToKeep = 1;
 
-		let oldestMessageIndex = 0
-		while (currentTokens > maxTokens && oldestMessageIndex < prunableHistory.length - minimumMessagesToKeep) {
-			const messageToRemove = prunableHistory[oldestMessageIndex]
-			if (messageToRemove.type === "user" || messageToRemove.type === "model") {
-				prunableHistory.splice(oldestMessageIndex, 1)
-				currentTokens = this.ai.estimateTokens(prunableHistory)
-			} else {
-				oldestMessageIndex++
+		while (currentTokens > maxTokens && chatHistory.length > minimumMessagesToKeep) {
+			chatHistory.shift(); // Remove oldest message
+			currentTokens = this.ai.estimateTokens(chatHistory);
+		}
+
+		// 5. Reconstruct the context for the AI
+		// We always want the Task State to be the very first thing the AI sees.
+		const contextForAI = [];
+
+		// NEW: Prepend evergreen plan and task checklist at the top of AI context in Agent Mode
+		if (this.manager.agentMode) {
+			if (this.manager.activeSession?.implementationPlan) {
+				contextForAI.push({
+					role: "system",
+					content: `EVERGREEN IMPLEMENTATION PLAN:\n${this.manager.activeSession.implementationPlan}`
+				});
+			}
+			if (this.manager.activeSession?.taskList) {
+				contextForAI.push({
+					role: "system",
+					content: `EVERGREEN TASK LIST:\n${this.manager.activeSession.taskList}`
+				});
 			}
 		}
 
-		oldestMessageIndex = 0
-		while (currentTokens > maxTokens && oldestMessageIndex < prunableHistory.length - minimumMessagesToKeep) {
-			prunableHistory.splice(oldestMessageIndex, 1)
-			currentTokens = this.ai.estimateTokens(prunableHistory)
+		if (taskStateMessage) {
+			contextForAI.push({
+				role: "system",
+				content: `CURRENT TASK STATUS:\n${taskStateMessage.content}`
+			});
 		}
 
-		if (currentTokens > maxTokens) {
-			console.warn(
-				`Context window exceeded even after aggressive pruning. Estimated tokens: ${currentTokens}, Max: ${maxTokens}`
-			)
-		}
-
-		return prunableHistory.map((msg) => {
+		// Add remaining chat history and file contexts
+		chatHistory.forEach(msg => {
 			if (msg.type === "file_context") {
-				return {
+				contextForAI.push({
 					role: "user",
 					content: `--- File: ${msg.id} ---\n\`\`\`${msg.language}\n${msg.content}\n\`\`\``,
-				}
+				});
+			} else {
+				contextForAI.push({
+					role: msg.role,
+					content: msg.content
+				});
 			}
-			return { role: msg.role, content: msg.content }
-		})
+		});
+
+		if (currentTokens > maxTokens) {
+			console.warn(`Context window exceeded even after pruning. Estimated: ${currentTokens}, Max: ${maxTokens}`);
+		}
+
+		return contextForAI;
 	}
 }
 

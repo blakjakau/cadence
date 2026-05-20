@@ -345,11 +345,36 @@ const onFileModified = (path) => {
 let workspaceUnloading = false
 const saveWorkspace = async () => {
 	if (workspaceUnloading) return
+
+	const orderedFiles = []
+	let planTasksSide = null
+
+	const addTabsFrom = (tabBar) => {
+		if (tabBar && tabBar.tabs) {
+			tabBar.tabs.forEach(tab => {
+				if (tab.config && tab.config.handle) {
+					if (tab.config.path === "plan_tasks") {
+						planTasksSide = tab.config.side
+					} else {
+						orderedFiles.push({
+							name: tab.config.name,
+							path: tab.config.path,
+							handle: tab.config.handle,
+							side: tab.config.side,
+						})
+					}
+				}
+			})
+		}
+	}
+	addTabsFrom(leftTabs)
+	addTabsFrom(rightTabs)
+	workspace.files = orderedFiles
+	workspace.planTasksSide = planTasksSide
+
 	workspace.openFolders = fileList.openFolders
 	workspace.activeSidebarTab = ui.iconTabBar?.activeTab?.iconId
-	// REMOVED: workspace.promptHistory = ui.aiManager.promptHistory; // No longer here
-	// AI sessions metadata is now stored directly in workspace (small footprint)
-	workspaceClient.setWorkspace(workspace) // This will save workspace.aiSessionsMetadata and workspace.activeAiSessionId
+	workspaceClient.setWorkspace(workspace)
 }
 window.saveWorkspace = saveWorkspace
 
@@ -1103,7 +1128,7 @@ window.ui.reloadFile = reloadFile
 const syncWorkspaceFile = (tab) => {
 	const config = tab.config
 	const handle = config.handle
-	if (!handle) return
+	if (!handle || handle === "plan_tasks") return
 
 	let matched = false
 	for (const file of workspace.files) {
@@ -1168,6 +1193,79 @@ const setCurrentEditor = (editor) => {
 		}
 	}
 }
+
+const renderPlanTasksView = (container) => {
+	const session = ui.aiManager.activeSession
+	if (!session) {
+		container.innerHTML = `<div class="plan-tasks-empty">No active session found. Open the Agent panel to begin.</div>`
+		return
+	}
+
+	const planHtml = session.implementationPlan 
+		? ui.aiManager.md.render(session.implementationPlan)
+		: `<span class="empty-state">No implementation plan defined. CodeAgent will outline one once active.</span>`
+
+	const tasksHtml = session.taskList
+		? ui.aiManager.md.render(session.taskList)
+		: `<span class="empty-state">No task list defined. CodeAgent will build one once active.</span>`
+
+	container.innerHTML = `
+		<div class="plan-tasks-split-container">
+			<div class="plan-pane">
+				<div class="pane-header">
+					<ui-icon>assignment</ui-icon>
+					<span>Implementation Plan</span>
+				</div>
+				<div class="pane-content markdown-body">${planHtml}</div>
+			</div>
+			<div class="tasks-pane">
+				<div class="pane-header">
+					<ui-icon>playlist_add_check</ui-icon>
+					<span>Task Checklist</span>
+				</div>
+				<div class="pane-content markdown-body tasks-content">${tasksHtml}</div>
+			</div>
+		</div>
+	`
+}
+
+const openPlanAndTaskList = (targetEditor = leftEdit) => {
+	{
+		let tab = leftTabs.tabs.find(t => t.config?.path === "plan_tasks")
+		if (tab) return tab.click()
+		tab = rightTabs.tabs.find(t => t.config?.path === "plan_tasks")
+		if (tab) return tab.click()
+	}
+
+	const removeEmptyUntitledTab = (tabGroup) => {
+		if (tabGroup.tabs.length === 1) {
+			const tab = tabGroup.tabs[0]
+			if (tab.config.name === "untitled" && tab.config.session.getValue() === "") {
+				tabGroup.remove(tab, true)
+			}
+		}
+	}
+	removeEmptyUntitledTab(leftTabs)
+	removeEmptyUntitledTab(rightTabs)
+
+	const tab = targetEditor.tabs.add({
+		name: "Implementation Plan & Checklist",
+		path: "plan_tasks",
+		mode: { mode: "plan_tasks" },
+		session: null,
+		side: targetEditor === leftEdit ? "left" : "right",
+		handle: "plan_tasks",
+		folder: "",
+		fileModified: false,
+		defaultStatusIcon: "playlist_add_check",
+	})
+	
+	tab.classList.add("plan-tasks-tab")
+	tab.click()
+}
+
+ui.renderPlanTasksView = renderPlanTasksView
+ui.openPlanAndTaskList = openPlanAndTaskList
 
 const openFileHandle = async (handle, knownPath = null, targetEditor = currentEditor) => {
 	let path = typeof handle === "string" ? handle : handle.path || knownPath
@@ -1417,9 +1515,19 @@ fileList.expand = (item) => {
 }
 
 const updateEditorUI = async (targetEditor, targetMediaView, tab) => {
-	if (tab.config.mode.mode === "media") {
+	const holder = targetEditor === leftEdit ? ui.leftHolder : ui.rightHolder
+	
+	if (tab.config.mode.mode === "plan_tasks") {
+		targetEditor.container.style.display = "none"
+		targetMediaView.style.display = "none"
+		if (holder.planTasksView) {
+			holder.planTasksView.style.display = "block"
+			renderPlanTasksView(holder.planTasksView)
+		}
+	} else if (tab.config.mode.mode === "media") {
 		targetEditor.container.style.display = "none"
 		targetMediaView.style.display = "block"
+		if (holder.planTasksView) holder.planTasksView.style.display = "none"
 
 		let data = tab.config.rawData
 		if (!data) {
@@ -1431,6 +1539,7 @@ const updateEditorUI = async (targetEditor, targetMediaView, tab) => {
 	} else {
 		targetEditor.container.style.display = "block"
 		targetMediaView.style.display = "none"
+		if (holder.planTasksView) holder.planTasksView.style.display = "none"
 		targetEditor.setSession(tab.config.session)
 		targetEditor.focus()
 	}
@@ -1564,6 +1673,9 @@ const restoreWorkspaceContent = async () => {
 				break
 			}
 		}
+		if (workspace.planTasksSide === "right") {
+			enableSplitView = true
+		}
 
 		if (enableSplitView) {
 			if (!document.body.classList.contains("showSplitView")) {
@@ -1599,6 +1711,12 @@ const restoreWorkspaceContent = async () => {
 			workspace.files = workspace.files.filter((file) => !missingFiles.includes(file.path))
 			saveWorkspace() // Save workspace after removing missing files
 		}
+
+		if (workspace.planTasksSide) {
+			const targetEditor = workspace.planTasksSide === "right" ? rightEdit : leftEdit
+			openPlanAndTaskList(targetEditor)
+		}
+
 		ui.showSidebar(1)
 	} finally {
 		restoreInProgress = false

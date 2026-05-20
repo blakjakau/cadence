@@ -36,6 +36,13 @@ class Gemini extends AI {
         return modelName;
     }
     
+    stop() {
+        if (this.abortController) {
+            this.abortController.abort();
+            this.abortController = null;
+        }
+    }
+
     isConfigured() {
     	return this.config.apiKey != "" && this.config.model != ""
     }
@@ -439,12 +446,15 @@ class Gemini extends AI {
                 onContextRatioUpdate(contextRatio);
             }
 
+            this.abortController = new AbortController();
+            
             const response = await fetch(this._streamApiUrl, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
                 },
                 body: JSON.stringify(requestBody),
+                signal: this.abortController.signal
             });
 
             if (!response.ok) {

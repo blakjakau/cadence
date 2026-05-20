@@ -11,8 +11,12 @@ export class EditorHolder extends Panel {
         this.editorElement.style.display = "block";
         this.mediaView = new MediaView();
         this.mediaView.style.display = "block";
+        this.planTasksView = document.createElement("div");
+        this.planTasksView.className = "plan-tasks-view";
+        this.planTasksView.style.display = "none";
         this.appendChild(this.editorElement);
         this.appendChild(this.mediaView);
+        this.appendChild(this.planTasksView);
 
         this.dragCounter = 0;
         this.dragLogging = (event)=>{
@@ -150,6 +154,7 @@ export class EditorHolder extends Panel {
         	this.dispatch('empty');
             this.editorElement.style.display = 'none';
             this.mediaView.style.display = 'none';
+            if (this.planTasksView) this.planTasksView.style.display = 'none';
         } else {
             const activeTab = this._tabs.activeTab;
             // if (activeTab && activeTab.config && activeTab.config.mode === "media") {

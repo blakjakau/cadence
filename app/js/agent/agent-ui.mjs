@@ -22,6 +22,7 @@ class AgenticUI {
         
         // Connect to manager
         agenticManager.onUpdate = () => this.render();
+        agenticManager.onConsentRequired = (count) => this.onConsentRequired(count);
         this.render();
     }
 
@@ -33,6 +34,10 @@ class AgenticUI {
         const clearBtn = new Button("Clear");
         clearBtn.icon = "delete_sweep";
         clearBtn.onclick = () => agenticManager.clearHistory();
+
+        const stopBtn = new Button("Stop");
+        stopBtn.icon = "stop_circle";
+        stopBtn.onclick = () => agenticManager.stop();
         
         this.planningToggle = document.createElement('div');
         this.planningToggle.classList.add('agentic-toggle-container');
@@ -49,6 +54,7 @@ class AgenticUI {
         };
 
         toolbar.append(clearBtn);
+        toolbar.append(stopBtn);
         // toolbar.append(new Inline("&nbsp;&nbsp;"));
         // toolbar.append(this.planningToggle);
 
@@ -85,6 +91,39 @@ class AgenticUI {
         bottomWrap.append(this.planningToggle);
         bottomWrap.append(inputWrap);
         this.panel.append(bottomWrap);
+    }
+
+    async onConsentRequired(count) {
+        return await this.showConsentPrompt(count);
+    }
+
+    async showConsentPrompt(count) {
+        return new Promise((resolve) => {
+            const banner = new Block();
+            banner.classList.add('agentic-consent-banner');
+            
+            const text = document.createElement('span');
+            text.innerText = `Agent has performed ${count} actions. Continue?`;
+            
+            const continueBtn = new Button("Continue");
+            continueBtn.onclick = () => {
+                banner.remove();
+                resolve(true);
+            };
+
+            const stopBtn = new Button("Stop");
+            stopBtn.onclick = () => {
+                banner.remove();
+                resolve(false);
+            };
+
+            banner.append(text);
+            banner.append(continueBtn);
+            banner.append(stopBtn);
+            
+            // Insert at the top of the chat area
+            this.chatArea.prepend(banner);
+        });
     }
 
     _initPromptEditor() {

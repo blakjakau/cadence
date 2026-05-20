@@ -276,10 +276,15 @@ export class TabBar extends Block {
 				this.movingItem.click()
 			}
 
+			this.enforceTabOrder()
+			let oldTabBar = movingTab.parentElement
+			if (oldTabBar && oldTabBar instanceof TabBar) {
+				oldTabBar.enforceTabOrder()
+			}
+
 			// Dispatch custom event after tab is dropped and handled
 			this.dispatch('tabs-updated', { isEmpty: this._tabs.length === 0 });
-			let oldTabBar = movingTab.parentElement
-			if(oldTabBar !== this) {
+			if(oldTabBar !== this && oldTabBar && oldTabBar instanceof TabBar) {
 				oldTabBar.dispatch('tabs-updated', { isEmpty: oldTabBar._tabs.length === 0 });
 			}
 		}
@@ -337,6 +342,24 @@ export class TabBar extends Block {
 		this._tabs[i].click()
 	}
 
+	enforceTabOrder() {
+		const planTab = this._tabs.find(t => t.config?.path === "plan_tasks");
+		if (planTab) {
+			const firstTab = Array.from(this.children).find(child => child.tagName === "UI-TAB-ITEM" && child !== planTab);
+			if (firstTab) {
+				this.insertBefore(planTab, firstTab);
+			} else {
+				const lastControl = Array.from(this.children).reverse().find(child => child.tagName !== "UI-TAB-ITEM");
+				if (lastControl) {
+					this.insertBefore(planTab, lastControl.nextSibling);
+				} else {
+					this.insertBefore(planTab, this.firstChild);
+				}
+			}
+			this._tabs = [planTab, ...this._tabs.filter(t => t !== planTab)];
+		}
+	}
+
 	add(config) {
 		const tab = new TabItem(config.name);
 		// Use the pre-built path from the config for the title attribute.
@@ -352,6 +375,7 @@ export class TabBar extends Block {
 		tab.tabBar = this
 		this._tabs.push(tab)
 		this.append(tab)
+		this.enforceTabOrder()
 
 		tab.onclick = (event) => {
 			const tabBar = tab.parentElement;

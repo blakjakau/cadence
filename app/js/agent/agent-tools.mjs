@@ -228,43 +228,65 @@ class AgentTools {
     async editFile(path, searchString, replacementString, sourceId) {
         try {
             const resolvedPath = this._resolveAndValidatePath(path);
-            const originalContent = await this.readFile(resolvedPath);
-            if (originalContent.startsWith("Error:")) throw new Error(originalContent);
-
-            if (!originalContent.includes(searchString)) {
-                throw new Error(`Target string not found in ${path}. Ensure the search string matches exactly, including whitespace.`);
-            }
-
-            const newContent = originalContent.replace(searchString, replacementString);
             
-            // Create backup before writing
-            await AgentBackup.create(resolvedPath, originalContent, sourceId);
-
-            if (this.conduit.isConnected) {
-                const base64Content = btoa(unescape(encodeURIComponent(newContent))); // Safe base64 encoding
-                const result = await this.conduit.wsWrite(resolvedPath, base64Content);
-                if (result.error) throw new Error(result.error);
-
-                // Update open editor tab dynamically
+            // 1. Ensure the file is open in the editor
+            let targetTab = null;
+            const findTab = () => {
                 if (window.ui?.leftTabs?.tabs || window.ui?.rightTabs?.tabs) {
                     const openTabs = [...(window.ui.leftTabs?.tabs || []), ...(window.ui.rightTabs?.tabs || [])];
-                    for (const tab of openTabs) {
-                        if (tab.config && tab.config.path === resolvedPath && tab.config.session) {
-                            tab.config.session.setValue(newContent);
-                            break;
-                        }
-                    }
+                    return openTabs.find(tab => tab.config && tab.config.path === resolvedPath && tab.config.session);
                 }
-                
-                // Refresh directory tree
-                if (window.ui?.fileList?.refreshFolders) {
-                    window.ui.fileList.refreshFolders();
-                }
+                return null;
+            };
 
-                return `Successfully updated ${path}.`;
-            } else {
-                return "Error: Conduit not connected. Persistent writes require Conduit.";
+            targetTab = findTab();
+
+            if (!targetTab) {
+                if (window.ui?.fileList?.open) {
+                    await window.ui.fileList.open(resolvedPath, resolvedPath);
+                    targetTab = findTab();
+                }
             }
+
+            if (!targetTab) {
+                throw new Error(`Failed to open file ${resolvedPath} in the editor.`);
+            }
+
+            // 2. Perform the edit ON THE ACE SESSION
+            const session = targetTab.config.session;
+            const originalContent = session.getValue();
+
+            const startIndex = originalContent.indexOf(searchString);
+            if (startIndex === -1) {
+                throw new Error(`Target string not found in the open editor tab for ${path}. Ensure the search string matches exactly, including whitespace.`);
+            }
+
+            const indexToPosition = (text, index) => {
+                const lines = text.substring(0, index).split('\n');
+                return {
+                    row: lines.length - 1,
+                    column: lines[lines.length - 1].length
+                };
+            };
+
+            const startPos = indexToPosition(originalContent, startIndex);
+            const endPos = indexToPosition(originalContent, startIndex + searchString.length);
+            
+            const Range = window.ace.require("ace/range").Range;
+            const rangeToReplace = new Range(startPos.row, startPos.column, endPos.row, endPos.column);
+            
+            // Apply the edit to the session using replace to preserve undo history
+            session.replace(rangeToReplace, replacementString);
+            
+            // Add a marker to annotate the change in the editor
+            const newEndPos = indexToPosition(session.getValue(), startIndex + replacementString.length);
+            const markerRange = new Range(startPos.row, 0, newEndPos.row, Infinity);
+            session.addMarker(markerRange, "agent-edit-marker", "fullLine");
+            
+            // Focus the tab
+            targetTab.click();
+
+            return `Successfully edited ${path} in the editor. The changes are pending user review and save.`;
         } catch (error) {
             return `Error editing file: ${error.message}`;
         }

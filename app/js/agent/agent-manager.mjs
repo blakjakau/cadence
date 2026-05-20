@@ -8,9 +8,12 @@ import aiManager from '../ai-manager.mjs';
 class AgenticManager {
     constructor() {
         this.history = [];
+        this.editBuffer = [];
         this.isProcessing = false;
+        this.isInterrupted = false;
         this.planOnly = true; // Toggle for Planning vs Action
         this.onUpdate = null; // Callback for UI updates
+        this.onConsentRequired = null; // Callback for UI consent prompt
         
         // Tool Definitions (Gemini format)
         this.toolDefinitions = [
@@ -86,8 +89,13 @@ class AgenticManager {
     }
 
     async submit(prompt) {
-        if (this.isProcessing) return;
+        if (this.isProcessing) {
+            // If already processing, a new prompt acts as an interruption
+            this.isInterrupted = true;
+            return;
+        }
         this.isProcessing = true;
+        this.isInterrupted = false;
         
         // Add user message to history
         this.history.push({ role: "user", content: prompt });
@@ -100,8 +108,20 @@ class AgenticManager {
             this.history.push({ role: "system_message", content: `Error: ${error.message}` });
         } finally {
             this.isProcessing = false;
+            this.isInterrupted = false;
             if (this.onUpdate) this.onUpdate();
         }
+    }
+
+    stop() {
+        this.isInterrupted = true;
+    }
+
+    async _requestConsent() {
+        if (this.onConsentRequired) {
+            return await this.onConsentRequired();
+        }
+        return true;
     }
     async _runLoop() {
         const ai = aiManager.ai;
@@ -113,7 +133,27 @@ Current project context: ${this._getProjectSummary()}
 Currently in ${currentMode} mode.
 ${this.planOnly ? "Explain your plan in detail but do NOT call any tools yet." : "You may call tools to execute your plan."}`;
         let loopActive = true;
+        let iterationCount = 0;
         while (loopActive) {
+            // 1. Check for interruptions
+            if (this.isInterrupted) {
+                console.log("[AgenticManager] Loop interrupted.");
+                loopActive = false;
+                break;
+            }
+
+            // 2. Heartbeat/Consent check every 10 iterations
+            iterationCount++;
+            if (iterationCount > 0 && iterationCount % 10 === 0) {
+                console.log(`[AgenticManager] Heartbeat: ${iterationCount} iterations reached. Requesting consent...`);
+                const consent = await this._requestConsent(iterationCount);
+                if (!consent) {
+                    console.log("[AgenticManager] Consent denied by user.");
+                    loopActive = false;
+                    break;
+                }
+            }
+
             const callbacks = {
                 tools: this.toolDefinitions,
                 onUpdate: () => this.onUpdate?.()
@@ -140,8 +180,14 @@ ${this.planOnly ? "Explain your plan in detail but do NOT call any tools yet." :
                     this.history.push({ role: "model", tool_calls: call.tool_calls });
                     if (this.onUpdate) this.onUpdate();
                     
-                    // Execute tool
-                    const result = await AgentTools.execute(call.name, call.args);
+                    // Execute tool (with buffering for edits)
+                    let result;
+                    if (call.name === 'edit_file') {
+                        this.editBuffer.push(call.args);
+                        result = { status: "staged", message: `Edit staged. Total pending: ${this.editBuffer.length}`, pending: this.editBuffer };
+                    } else {
+                        result = await AgentTools.execute(call.name, call.args);
+                    }
                     
                     // Record the result
                     this.history.push({ role: "tool", name: call.name, content: JSON.stringify(result) });
@@ -160,8 +206,19 @@ ${this.planOnly ? "Explain your plan in detail but do NOT call any tools yet." :
         return "Workspace loaded via Conduit.";
     }
 
+    async commitEdits() {
+        for (const args of this.editBuffer) {
+            await AgentTools.execute('edit_file', args);
+        }
+        const count = this.editBuffer.length;
+        this.editBuffer = [];
+        if (this.onUpdate) this.onUpdate();
+        return `Applied ${count} edits.`;
+    }
+
     clearHistory() {
         this.history = [];
+        this.editBuffer = [];
         if (this.onUpdate) this.onUpdate();
     }
 }

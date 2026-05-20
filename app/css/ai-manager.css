@@ -2,6 +2,12 @@
 @import "diff-output.css";
 @import "settings-panel.css";
 
+/* Ace editor marker for agent edits */
+.agent-edit-marker {
+    background: rgba(40, 167, 69, 0.2);
+    position: absolute;
+    z-index: 20;
+}
 /* AI Manager specific layout for the settings panel */
 .settings-panel.active {
     display: flex;
@@ -1099,3 +1105,421 @@ button:disabled,
     font-size: 8px;
     padding: 1px 4px;
 }
+
+/* Collapsible Agent Approval Cards after decision */
+.agent-approval-card.action-decided {
+    cursor: pointer;
+    padding: 0;
+    overflow: hidden;
+    gap: 0;
+    transition: all 0.2s ease-in-out;
+}
+
+.agent-approval-card .card-summary-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 12px;
+    font-weight: 500;
+    font-size: 13px;
+    user-select: none;
+    transition: background 0.2s ease;
+}
+
+.agent-approval-card.action-decided:hover {
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+}
+
+.agent-approval-card.action-decided:hover .card-summary-header {
+    background: color-mix(in srgb, var(--text-primary) 3%, transparent);
+}
+
+.agent-approval-card .card-summary-header ui-icon {
+    font-size: 16px;
+}
+
+.agent-approval-card.approved .card-summary-header ui-icon {
+    color: #2da44e;
+}
+
+.agent-approval-card.rejected .card-summary-header ui-icon {
+    color: #cf222e;
+}
+
+.agent-approval-card .card-summary-header .summary-status {
+    font-weight: 600;
+}
+
+.agent-approval-card.approved .card-summary-header .summary-status {
+    color: #2da44e;
+}
+
+.agent-approval-card.rejected .card-summary-header .summary-status {
+    color: #cf222e;
+}
+
+.agent-approval-card .card-summary-header .summary-path {
+    font-family: var(--font-mono);
+    color: var(--text-secondary);
+    font-size: 11px;
+    flex-grow: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.agent-approval-card .card-summary-header .expand-indicator {
+    transition: transform 0.2s ease;
+    color: var(--text-secondary);
+}
+
+.agent-approval-card.expanded .card-summary-header .expand-indicator {
+    transform: rotate(180deg);
+}
+
+/* Details content behavior */
+.agent-approval-card.action-decided .card-details-content {
+    display: none;
+    padding: 12px;
+    border-top: 1px solid var(--border-primary);
+    background: color-mix(in srgb, var(--text-primary) 1.5%, transparent);
+    flex-direction: column;
+    gap: 8px;
+}
+
+/* --- AGENTIC UI STYLES --- */
+
+/* Toolbar */
+.agentic-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 8px;
+    background-color: var(--bg-secondary);
+    border-bottom: 1px solid var(--border-primary);
+    flex-shrink: 0;
+}
+
+.agentic-stop-btn {
+    background-color: var(--theme-dark);
+    color: var(--text-inverted);
+    border: none;
+    padding: 4px 8px;
+    border-radius: var(--borderRadius);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 12px;
+}
+
+.agentic-stop-btn:hover {
+    background-color: var(--color-error);
+}
+
+/* Consent Banner */
+.agentic-consent-banner {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    padding: 12px 16px;
+    background-color: var(--bg-secondary);
+    border: 2px solid var(--theme);
+    border-radius: var(--borderRadius);
+    margin: 8px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+    z-index: 10;
+    animation: slide-down 0.3s ease-out;
+}
+
+.agentic-consent-banner span {
+    font-size: 14px;
+    font-weight: 500;
+    color: var(--text-primary);
+}
+
+.agentic-consent-banner button {
+    padding: 6px 12px;
+    border-radius: var(--borderRadius);
+    cursor: pointer;
+    font-size: 13px;
+    font-weight: 600;
+    border: none;
+}
+
+.agentic-consent-banner button:first-child {
+    background-color: var(--theme);
+    color: var(--text-inverted);
+}
+
+.agentic-consent-banner button:last-child {
+    background-color: var(--bg-tertiary);
+    color: var(--text-primary);
+    border: 1px solid var(--border-primary);
+}
+
+@keyframes slide-down {
+    from { transform: translateY(-100%); opacity: 0; }
+    to { transform: translateY(0); opacity: 1; }
+}
+
+/* Chat Messages */
+.agentic-chat-area {
+    flex: 1;
+    overflow-y: auto;
+    padding: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.agentic-msg {
+    max-width: 85%;
+    padding: 10px 14px;
+    border-radius: 12px;
+    line-height: 1.5;
+    font-size: 14px;
+}
+
+.agentic-msg.role-user {
+    align-self: flex-end;
+    background-color: var(--theme);
+    color: var(--text-inverted);
+    border-bottom-right-radius: 2px;
+}
+
+.agentic-msg.role-model {
+    align-self: flex-start;
+    background-color: var(--bg-secondary);
+    color: var(--text-primary);
+    border-bottom-left-radius: 2px;
+}
+
+.agentic-msg.role-system_message {
+    align-self: center;
+    background-color: transparent;
+    color: var(--text-secondary);
+    font-style: italic;
+    font-size: 12px;
+    text-align: center;
+    max-width: 100%;
+}
+
+.agentic-msg .msg-header {
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+    margin-bottom: 4px;
+    opacity: 0.6;
+    letter-spacing: 0.5px;
+}
+
+.agentic-empty-state {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 100%;
+    color: var(--text-secondary);
+    font-style: italic;
+    text-align: center;
+    padding: 24px;
+}
+
+/* Bottom Area */
+.agentic-bottom-wrap {
+    padding: 8px;
+    background-color: var(--bg-primary);
+    border-top: 1px solid var(--border-primary);
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.agentic-toggle-container {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+    color: var(--text-secondary);
+}
+
+.agentic-input-wrap {
+    display: flex;
+    align-items: flex-end;
+    gap: 8px;
+    padding: 4px;
+    background-color: var(--bg-secondary);
+    border: 1px solid var(--border-primary);
+    border-radius: var(--borderRadius);
+}
+
+.agentic-prompt-editor {
+    flex: 1;
+    min-height: 32px;
+}
+
+.agentic-submit-btn {
+    background: none;
+    border: none;
+    padding: 8px;
+    cursor: pointer;
+    color: var(--theme);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.agentic-submit-btn:hover {
+    color: var(--theme-dark);
+}
+
+.agent-approval-card.action-decided.expanded .card-details-content {
+    display: flex;
+}
+
+/* Colored & Icon'd Premium Tab for Implementation Plan & Task List */
+ui-tab-item.plan-tasks-tab {
+    background-color: rgba(45, 164, 78, 0.08) !important;
+    border-bottom: 2px solid rgba(45, 164, 78, 0.4) !important;
+    color: #2da44e !important;
+}
+
+ui-tab-item.plan-tasks-tab[active="true"],
+ui-tab-item.plan-tasks-tab.active {
+    background-color: #2da44e !important;
+    color: #ffffff !important;
+    border-bottom: 2px solid #2da44e !important;
+}
+
+ui-tab-item.plan-tasks-tab .status-icon {
+    color: #2da44e !important;
+}
+
+ui-tab-item.plan-tasks-tab[active="true"] .status-icon,
+ui-tab-item.plan-tasks-tab.active .status-icon {
+    color: #ffffff !important;
+}
+
+/* Premium Split Dashboard for Plan & Tasks Editor Tab */
+.plan-tasks-view {
+    display: none;
+    position: absolute;
+    top: var(--tabHeight);
+    left: 0;
+    right: 0;
+    bottom: 0;
+    overflow: hidden;
+    background: var(--bg-primary);
+    z-index: 2;
+}
+
+.plan-tasks-split-container {
+    display: flex;
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+}
+
+.plan-tasks-split-container .plan-pane,
+.plan-tasks-split-container .tasks-pane {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    overflow: hidden;
+}
+
+.plan-tasks-split-container .plan-pane {
+    border-right: 1px solid var(--border-primary);
+    border-left: 3px solid #d19a66; /* Orange border indicator for plan */
+}
+
+.plan-tasks-split-container .tasks-pane {
+    border-left: 3px solid #2da44e; /* Green border indicator for task checklist */
+}
+
+.plan-tasks-split-container .pane-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 16px;
+    background: var(--bg-secondary);
+    border-bottom: 1px solid var(--border-primary);
+    font-size: 13.5px;
+    font-weight: 600;
+    color: var(--text-primary);
+    flex-shrink: 0;
+}
+
+.plan-tasks-split-container .plan-pane .pane-header ui-icon {
+    color: #d19a66;
+}
+
+.plan-tasks-split-container .tasks-pane .pane-header ui-icon {
+    color: #2da44e;
+}
+
+.plan-tasks-split-container .pane-content {
+    flex: 1;
+    padding: 16px 20px;
+    overflow-y: auto;
+    line-height: 1.6;
+    font-size: 13px;
+    color: var(--text-secondary);
+    background: var(--bg-primary);
+}
+
+.plan-tasks-split-container .pane-content p {
+    margin: 0 0 10px 0;
+}
+
+.plan-tasks-split-container .pane-content p:last-child {
+    margin-bottom: 0;
+}
+
+.plan-tasks-split-container .pane-content ul {
+    margin: 8px 0;
+    padding-left: 20px;
+}
+
+.plan-tasks-split-container .pane-content li {
+    margin-bottom: 4px;
+}
+
+/* Checklist formatting inside the editor tab */
+.plan-tasks-split-container .tasks-content ul {
+    list-style-type: none;
+    padding-left: 0;
+}
+
+.plan-tasks-split-container .tasks-content ul ul {
+    padding-left: 28px;
+    margin-top: 4px;
+}
+
+.plan-tasks-split-container .tasks-content li {
+    display: block;
+    margin-bottom: 6px;
+    line-height: 1.4;
+}
+
+.plan-tasks-split-container .tasks-content input[type="checkbox"] {
+    margin-right: 8px;
+    margin-top: -2px;
+    vertical-align: middle;
+    pointer-events: none;
+}
+
+.plan-tasks-empty {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 100%;
+    height: 100%;
+    color: var(--text-secondary);
+    font-style: italic;
+    font-size: 14px;
+}
+
+

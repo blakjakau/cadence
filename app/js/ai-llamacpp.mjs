@@ -28,6 +28,13 @@ class LlamaCpp extends AI {
         };
     }
 
+    stop() {
+        if (this.abortController) {
+            this.abortController.abort();
+            this.abortController = null;
+        }
+    }
+
     isConfigured() {
         return this.config.server !== "";
     }
@@ -107,10 +114,13 @@ class LlamaCpp extends AI {
                 onContextRatioUpdate(currentTokens / this.MAX_CONTEXT_TOKENS);
             }
 
+            this.abortController = new AbortController();
+
             const response = await fetch(`${this.config.server}/completion`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(requestBody)
+                body: JSON.stringify(requestBody),
+                signal: this.abortController.signal
             });
 
             if (!response.ok) {
