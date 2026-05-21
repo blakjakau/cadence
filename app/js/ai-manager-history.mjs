@@ -162,6 +162,9 @@ class AIManagerHistory {
 		
 		leftPart.append(icon, label);
 
+		const actionsPart = new Block();
+		actionsPart.classList.add("banner-actions");
+
 		const openBtn = document.createElement("button");
 		openBtn.classList.add("open-plan-btn");
 		
@@ -179,7 +182,25 @@ class AIManagerHistory {
 			}
 		});
 
-		banner.append(leftPart, openBtn);
+		const proceedBtn = document.createElement("button");
+		proceedBtn.classList.add("proceed-plan-btn");
+		
+		const proceedText = document.createElement("span");
+		proceedText.textContent = "Proceed";
+		
+		const proceedIcon = document.createElement("ui-icon");
+		proceedIcon.textContent = "play_arrow";
+		
+		proceedBtn.append(proceedText, proceedIcon);
+		
+		proceedBtn.addEventListener("click", () => {
+			if (this.manager && typeof this.manager.proceedWithImplementationPlan === "function") {
+				this.manager.proceedWithImplementationPlan();
+			}
+		});
+
+		actionsPart.append(openBtn, proceedBtn);
+		banner.append(leftPart, actionsPart);
 		return banner;
 	}
 

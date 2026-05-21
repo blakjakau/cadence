@@ -1010,6 +1010,72 @@ class AIManager {
 	}
 
 	/**
+	 * Creates a new implementation session pre-populated with the active session's 
+	 * implementation plan, task list, and evergreen files in a clean environment.
+	 */
+	async proceedWithImplementationPlan() {
+		if (!this.activeSession) return;
+		const sourceSession = this.activeSession;
+		const plan = sourceSession.implementationPlan || "";
+		const tasklist = sourceSession.taskList || "";
+		const files = sourceSession.evergreenFiles ? [...sourceSession.evergreenFiles] : [];
+
+		if (!plan) {
+			window.modal.notice("No active implementation plan found in this session.", "Cannot Proceed");
+			return;
+		}
+
+		// 1. Save the current active session state first
+		this.activeSession.promptInput = this.promptEditor.getValue();
+		this.activeSession.scrollTop = this.conversationArea.scrollTop;
+		const currentSessionMeta = this.allSessionMetadata.find(s => s.id === this.activeSession.id);
+		if (currentSessionMeta) currentSessionMeta.lastModified = Date.now();
+		await workspaceClient.setSession(this.activeSession.id, this.activeSession);
+
+		// 2. Initialize new session data
+		const newId = `ai-session-${crypto.randomUUID()}`;
+		let baseName = sourceSession.name || "Chat";
+		if (baseName.startsWith("Implementation:")) {
+			baseName = baseName.replace("Implementation:", "").trim();
+		}
+		const newName = `Implementation: ${baseName}`;
+		
+		const newSessionData = {
+			id: newId,
+			name: newName,
+			createdAt: Date.now(),
+			lastModified: Date.now(),
+			messages: [],
+			promptInput: "Let's proceed with the implementation plan. Please execute the checklist step-by-step.",
+			promptHistory: [],
+			scrollTop: 0,
+			evergreenFiles: files,
+			implementationPlan: plan,
+			taskList: tasklist,
+		};
+
+		// 3. Create a helpful initial system message in history explaining the context
+		const initialMessage = {
+			role: "system",
+			type: "system_message",
+			content: `🚀 **New clean implementation environment created from "${baseName}"**\n\nThis thread is pre-populated with the approved **Implementation Plan** and **Task Checklist**. It has a completely clean conversational history to ensure the model focuses on implementation without historical distractions.\n\n${files.length > 0 ? `📁 *Evergreen files attached:* ${files.map(f => `\`${f.filename}\``).join(', ')}` : 'No files attached yet.'}`,
+			timestamp: Date.now(),
+		};
+		newSessionData.messages.push(initialMessage);
+
+		// 4. Save new session to database
+		await workspaceClient.setSession(newId, newSessionData);
+		this.allSessionMetadata.push({ id: newId, name: newName, createdAt: newSessionData.createdAt, lastModified: newSessionData.lastModified });
+
+		// 5. Add the new tab to the UI and register double-click for renaming
+		const newTab = this.sessionTabBar.add({ name: newName, id: newId, defaultStatusIcon: 'playlist_add_check' });
+		newTab.on('dblclick', () => this.renameCurrentSession());
+
+		// 6. Switch to it
+		newTab.click();
+	}
+
+	/**
 	 * SIMPLIFIED: Switches session DATA. The UI state is already handled by the TabBar component.
 	 */
 	async switchSession(sessionId) {
