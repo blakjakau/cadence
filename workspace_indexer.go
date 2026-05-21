@@ -47,6 +47,13 @@ func GetIndexManager() *IndexManager {
 	return globalIndexManager
 }
 
+// InitWorkspaceIndex initializes the global index manager with the given root directory and returns it.
+func InitWorkspaceIndex(root string) *IndexManager {
+	im := GetIndexManager()
+	im.SetActiveRoots([]string{root})
+	return im
+}
+
 // SetActiveRoots sets the active workspace folders and triggers indexing for any new ones
 func (im *IndexManager) SetActiveRoots(roots []string) {
 	im.mu.Lock()

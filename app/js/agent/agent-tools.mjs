@@ -147,7 +147,9 @@ class AgentTools {
 
             if (openTab && openTab.config.session) {
                 console.log(`[AgentTools] Reading ${path} from open editor buffer.`);
-                return openTab.config.session.getValue();
+                const session = openTab.config.session;
+                const edits = this.editBuffer[resolvedPath]?.edits || [];
+                return this._getCleanContentOfSession(session, edits);
             }
 
             if (this.conduit.isConnected) {
@@ -168,6 +170,98 @@ class AgentTools {
         } catch (error) {
             return `Error reading file: ${error.message}`;
         }
+    }
+
+    /**
+     * Gets a clean copy of the session content with all pending review edits applied.
+     * @param {Object} session - The Ace session
+     * @param {Array} edits - The array of pending edits
+     * @returns {string} Clean session content
+     */
+    _getCleanContentOfSession(session, edits) {
+        if (!edits || edits.length === 0) {
+            return session.getValue();
+        }
+
+        const doc = session.getDocument();
+        const dirtyContent = session.getValue();
+
+        // Convert anchor positions to dirty 1D offsets
+        const ranges = edits.map(edit => {
+            const startPos = edit.startDeletedAnchor.getPosition();
+            const endPos = edit.startAddedAnchor.getPosition();
+            return {
+                start: doc.positionToIndex(startPos),
+                end: doc.positionToIndex(endPos)
+            };
+        });
+
+        // Sort ranges by start offset ascending
+        ranges.sort((a, b) => a.start - b.start);
+
+        let cleanContent = "";
+        let currentDirty = 0;
+
+        for (const range of ranges) {
+            if (range.start > currentDirty) {
+                cleanContent += dirtyContent.substring(currentDirty, range.start);
+            }
+            currentDirty = range.end;
+        }
+
+        if (currentDirty < dirtyContent.length) {
+            cleanContent += dirtyContent.substring(currentDirty);
+        }
+
+        return cleanContent;
+    }
+
+    /**
+     * Maps a 1D offset in the clean content back to a 1D offset in the dirty Ace session content.
+     * @param {Object} session - The Ace session
+     * @param {Array} edits - The array of pending edits
+     * @param {number} cleanIndex - The 1D offset in clean content
+     * @returns {number} The 1D offset in dirty content
+     */
+    _mapCleanToDirtyOffset(session, edits, cleanIndex) {
+        if (!edits || edits.length === 0) {
+            return cleanIndex;
+        }
+
+        const doc = session.getDocument();
+        const dirtyLength = session.getValue().length;
+
+        // Convert anchor positions to dirty 1D offsets
+        const ranges = edits.map(edit => {
+            const startPos = edit.startDeletedAnchor.getPosition();
+            const endPos = edit.startAddedAnchor.getPosition();
+            return {
+                start: doc.positionToIndex(startPos),
+                end: doc.positionToIndex(endPos)
+            };
+        });
+
+        // Sort ranges by start offset ascending
+        ranges.sort((a, b) => a.start - b.start);
+
+        let currentDirty = 0;
+        let currentClean = 0;
+
+        for (const range of ranges) {
+            const segmentLen = range.start - currentDirty;
+            if (cleanIndex >= currentClean && cleanIndex <= currentClean + segmentLen) {
+                return currentDirty + (cleanIndex - currentClean);
+            }
+            currentClean += segmentLen;
+            currentDirty = range.end;
+        }
+
+        const finalLen = dirtyLength - currentDirty;
+        if (cleanIndex >= currentClean && cleanIndex <= currentClean + finalLen) {
+            return currentDirty + (cleanIndex - currentClean);
+        }
+
+        return dirtyLength;
     }
 
     /**
@@ -232,7 +326,8 @@ class AgentTools {
                     const resolvedPath = this._resolveAndValidatePath(path);
                     searchedPaths.add(resolvedPath);
 
-                    const content = tab.config.session.getValue();
+                    const edits = this.editBuffer[resolvedPath]?.edits || [];
+                    const content = this._getCleanContentOfSession(tab.config.session, edits);
                     if (content && content.toLowerCase().includes(lowercaseQuery)) {
                         const lines = content.split('\n');
                         lines.forEach((line, idx) => {
@@ -361,23 +456,20 @@ class AgentTools {
 
             // 2. Perform the edit ON THE ACE SESSION
             const session = targetTab.config.session;
-            const originalContent = session.getValue();
+            const edits = this.editBuffer[resolvedPath]?.edits || [];
+            const cleanContent = this._getCleanContentOfSession(session, edits);
 
-            const startIndex = originalContent.indexOf(searchString);
-            if (startIndex === -1) {
-                throw new Error(`Target string not found in the open editor tab for ${path}. Ensure the search string matches exactly, including whitespace.`);
+            const cleanStartIndex = cleanContent.indexOf(searchString);
+            if (cleanStartIndex === -1) {
+                throw new Error(`Target string not found in the clean view of ${path}. Ensure the search string matches exactly, including whitespace.`);
             }
 
-            const indexToPosition = (text, index) => {
-                const lines = text.substring(0, index).split('\n');
-                return {
-                    row: lines.length - 1,
-                    column: lines[lines.length - 1].length
-                };
-            };
+            const doc = session.getDocument();
+            const dirtyStartIndex = this._mapCleanToDirtyOffset(session, edits, cleanStartIndex);
+            const dirtyEndIndex = this._mapCleanToDirtyOffset(session, edits, cleanStartIndex + searchString.length);
 
-            const startPos = indexToPosition(originalContent, startIndex);
-            const endPos = indexToPosition(originalContent, startIndex + searchString.length);
+            const startPos = doc.indexToPosition(dirtyStartIndex);
+            const endPos = doc.indexToPosition(dirtyEndIndex);
             
             const Range = window.ace.require("ace/range").Range;
             const rangeToReplace = new Range(startPos.row, startPos.column, endPos.row, endPos.column);
@@ -388,12 +480,11 @@ class AgentTools {
             
             // Create dynamic Anchors that track the edited range dynamically
             const newContent = session.getValue();
-            const startDeletedPos = indexToPosition(newContent, startIndex);
-            const endDeletedPos = indexToPosition(newContent, startIndex + searchString.length);
-            const startAddedPos = indexToPosition(newContent, startIndex + searchString.length + 1);
-            const endAddedPos = indexToPosition(newContent, startIndex + searchString.length + 1 + replacementString.length);
+            const startDeletedPos = doc.indexToPosition(dirtyStartIndex);
+            const endDeletedPos = doc.indexToPosition(dirtyStartIndex + searchString.length);
+            const startAddedPos = doc.indexToPosition(dirtyStartIndex + searchString.length + 1);
+            const endAddedPos = doc.indexToPosition(dirtyStartIndex + searchString.length + 1 + replacementString.length);
 
-            const doc = session.getDocument();
             const startDeletedAnchor = doc.createAnchor(startDeletedPos.row, startDeletedPos.column);
             const endDeletedAnchor = doc.createAnchor(endDeletedPos.row, endDeletedPos.column);
             const startAddedAnchor = doc.createAnchor(startAddedPos.row, startAddedPos.column);
