@@ -1004,6 +1004,11 @@ button:disabled,
     color: #2da44e;
 }
 
+.tool-call-status-badge.failed {
+    background: rgba(234, 67, 53, 0.12);
+    color: #ea4335;
+}
+
 .tool-call-body {
     padding: 10px 12px;
     display: flex;

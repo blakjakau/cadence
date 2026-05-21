@@ -35,11 +35,6 @@ const promptEditorSettings = {
 
 const AGENT_SYSTEM_PROMPT = `You are CodeAgent, an autonomous software engineer.
 
-# Core Rules
-1. Thinking: ALWAYS wrap your reasoning in <thought>...</thought> at the very beginning of your response.
-2. Tools: Use AT MOST ONE <tool_call> per turn. Wait for the host to provide the result.
-3. Strict XML: Use only the exact XML tags below. Do not invent new tools.
-
 # Available Tools
 Choose ONE tool per turn and use its exact format:
 <tool_call name="list_files"><path>dir_path</path></tool_call>
@@ -73,7 +68,14 @@ I need to check app.js to understand the bug before editing.
 I am reading app.js to locate the issue.
 <tool_call name="read_file">
   <path>app.js</path>
-</tool_call>`;
+</tool_call>
+
+# Core Rules
+1. Thinking: ALWAYS wrap your reasoning in <thought>...</thought> at the very beginning of your response.
+2. Tools: Use AT MOST ONE <tool_call> per turn. Wait for the host to provide the result.
+3. Strict XML: Use only the exact XML tags below. Do not invent new tools.
+4. NEVER use control or tool tags to discuss or think about your actions, only to perform them
+`;
 
 class AIManager {
 	constructor() {
@@ -1365,7 +1367,7 @@ class AIManager {
 
 				// Now, render the final response in the UI.
 				// DEV: For visual debugging, let's pop a loader bar on top of every model response.
-				responseBlock.innerHTML = this._renderResponseContent(fullResponse);
+				responseBlock.innerHTML = this._renderResponseContent(fullResponse, modelMessage);
 
 				this._addCodeBlockButtons(responseBlock, modelMessage); // Pass the message object here to read/write persistent state
 
@@ -1530,6 +1532,70 @@ class AIManager {
 		});
 	}
 
+	_showPlanApprovalCard(planText) {
+		return new Promise((resolve) => {
+			const card = document.createElement("div");
+			card.className = "agent-approval-card plan-approval-card";
+
+			card.innerHTML = `
+				<div class="card-summary-header" style="display: none;">
+					<ui-icon>assignment</ui-icon>
+					<span class="summary-status"></span>
+					<span class="summary-path">Implementation Plan</span>
+					<ui-icon class="expand-indicator">expand_more</ui-icon>
+				</div>
+				<div class="card-details-content">
+					<div class="approval-header">
+						<ui-icon>assignment</ui-icon>
+						<span>Approve Implementation Plan</span>
+					</div>
+					<div class="approval-path" style="margin-bottom: 6px;">Please review the proposed implementation plan:</div>
+					<div class="approval-diff-preview" style="padding: 10px; background: rgba(0, 0, 0, 0.15); border-radius: 4px; border: 1px solid var(--border-primary); margin-bottom: 8px;">
+						${this.md.render(planText)}
+					</div>
+					<div class="approval-actions">
+						<button class="approve-btn theme-button primary"><ui-icon>check</ui-icon> Approve Plan & Continue</button>
+						<button class="reject-btn theme-button secondary"><ui-icon>close</ui-icon> Reject & Abort</button>
+					</div>
+				</div>
+			`;
+
+			const approveBtn = card.querySelector('.approve-btn');
+			const rejectBtn = card.querySelector('.reject-btn');
+			const summaryHeader = card.querySelector('.card-summary-header');
+			const summaryStatus = card.querySelector('.summary-status');
+			const actionsDiv = card.querySelector('.approval-actions');
+
+			const finalizeCard = (statusText, className) => {
+				card.classList.add(className);
+				card.classList.add('action-decided');
+
+				if (actionsDiv) actionsDiv.remove();
+
+				if (summaryStatus) summaryStatus.textContent = statusText;
+				if (summaryHeader) summaryHeader.style.display = 'flex';
+
+				summaryHeader.addEventListener('click', (e) => {
+					e.stopPropagation();
+					card.classList.toggle('expanded');
+				});
+			};
+
+			approveBtn.addEventListener('click', () => {
+				finalizeCard('Plan Approved', 'approved');
+				resolve(true);
+			});
+
+			rejectBtn.addEventListener('click', () => {
+				finalizeCard('Plan Rejected', 'rejected');
+				resolve(false);
+			});
+
+			this.conversationArea.append(card);
+			this.conversationArea.scrollTop = this.conversationArea.scrollHeight;
+		});
+	}
+
 	_escapeHtml(text) {
 		if (!text) return "";
 		return text
@@ -1587,7 +1653,7 @@ class AIManager {
 						this.activeSession.lastModified = Date.now();
 						await workspaceClient.setSession(this.activeSession.id, this.activeSession);
 
-						responseBlock.innerHTML = this._renderResponseContent(fullResponse);
+						responseBlock.innerHTML = this._renderResponseContent(fullResponse, modelMessage);
 						this._addCodeBlockButtons(responseBlock, modelMessage);
 
 						resolve(fullResponse);
@@ -1604,6 +1670,32 @@ class AIManager {
 
 			try {
 				const responseContent = await runPromise;
+
+				// Parse implementation plan and check if we need to show plan approval
+				const planRegex = /<implementation_plan>([\s\S]*?)(?:<\/implementation_plan>|$)/i;
+				const planMatch = responseContent.match(planRegex);
+				if (planMatch) {
+					const planText = planMatch[1].trim();
+					if (planText) {
+						const planApproved = await this._showPlanApprovalCard(planText);
+						if (!planApproved) {
+							// User rejected plan, stop processing loop!
+							const abortBlock = document.createElement("div");
+							abortBlock.className = "agent-tool-finished";
+							abortBlock.innerHTML = `
+								<ui-icon>close</ui-icon>
+								<span>Agent aborted: Implementation Plan rejected by the user.</span>
+							`;
+							this.conversationArea.append(abortBlock);
+							this.conversationArea.scrollTop = this.conversationArea.scrollHeight;
+
+							this._isProcessing = false;
+							this._setButtonsDisabledState(false);
+							this._dispatchContextUpdate("append_model");
+							break;
+						}
+					}
+				}
 
 				// Parse tool calls
 				const toolCall = this._parseToolCalls(responseContent);
@@ -1680,6 +1772,13 @@ class AIManager {
 				this.activeSession.messages.push(toolResponseMessage);
 				this.activeSession.lastModified = Date.now();
 				await workspaceClient.setSession(this.activeSession.id, this.activeSession);
+
+				// Update the model message block in the DOM to reflect the actual tool execution status (failed or invoked)
+				const modelMessage = this.activeSession.messages.find(m => m.id === modelMessageId);
+				if (modelMessage) {
+					responseBlock.innerHTML = this._renderResponseContent(responseContent, modelMessage);
+					this._addCodeBlockButtons(responseBlock, modelMessage);
+				}
 
 				// Render simple system or message confirmation of tool run in the chat
 				const toolConfBlock = document.createElement("div");
@@ -1966,8 +2065,28 @@ class AIManager {
 	 * '+++' line and matching the file extension against the global window.ace_modes.
 	 * @param {string} diffContent - The full text content of the diff.
 	 * @returns {string|null} The inferred language name (e.g., "javascript") or null if not found.
-	 */    _renderResponseContent(content) {
+	 */    _renderResponseContent(content, message = null) {
 		if (!content) return "";
+
+		// Detect if a tool call associated with this message failed.
+		// A tool call fails if the subsequent message in activeSession is a tool_response and its content starts with or contains 'Error'.
+		let isFailed = false;
+		if (message && this.activeSession && this.activeSession.messages) {
+			const index = this.activeSession.messages.findIndex(m => m.id === message.id);
+			if (index !== -1 && index + 1 < this.activeSession.messages.length) {
+				const nextMessage = this.activeSession.messages[index + 1];
+				if (nextMessage && nextMessage.type === "tool_response") {
+					const responseContent = nextMessage.content || "";
+					const prefixMatch = responseContent.match(/^\[Tool Response: [^\]]+\]\s*\n\s*/i);
+					if (prefixMatch) {
+						const toolResultText = responseContent.substring(prefixMatch[0].length).trim();
+						if (toolResultText.toLowerCase().startsWith("error")) {
+							isFailed = true;
+						}
+					}
+				}
+			}
+		}
 
 		// Extract evergreen implementation plan
 		const planRegex = /<implementation_plan>([\s\S]*?)(?:<\/implementation_plan>|$)/i;
@@ -2102,12 +2221,15 @@ class AIManager {
 				label = `<code>${toolName}</code>: <span class="tool-call-query">"${this._escapeHtml(args.query)}"</span>`;
 			}
 
+			const badgeClass = isClosed ? (isFailed ? 'failed' : 'invoked') : 'preparing';
+			const badgeText = isClosed ? (isFailed ? 'Failed' : 'Invoked') : 'Preparing...';
+
 			const toolCardHtml = `
                 <div class="tool-call-block compact">
                     <div class="tool-call-header compact">
                         <ui-icon>${icon}</ui-icon>
                         <span class="tool-call-title compact">${label}</span>
-                        <span class="tool-call-status-badge compact ${isClosed ? 'invoked' : 'preparing'}">${isClosed ? "Invoked" : "Preparing..."}</span>
+                        <span class="tool-call-status-badge compact ${badgeClass}">${badgeText}</span>
                     </div>
                 </div>
             `;
