@@ -474,6 +474,40 @@ class AgentTools {
         return `Executing: ${command}\nOutput: (Terminal execution via agent is not supported directly for security reasons. Please use the terminal tab instead.)`;
     }
 
+    /**
+     * Centralized tool execution dispatcher.
+     * @param {string} name - The tool name.
+     * @param {object} args - The arguments.
+     * @param {string} [sourceId] - Optional session ID for tracking
+     */
+    async execute(name, args = {}, sourceId = null) {
+        switch (name) {
+            case 'list_files':
+                return await this.listFiles(args.path);
+            case 'read_file':
+                return await this.readFile(args.path);
+            case 'search_files':
+                return await this.searchFiles(args.query);
+            case 'edit_file':
+                return await this.editFile(
+                    args.path,
+                    args.search || args.searchString,
+                    args.replace || args.replacementString,
+                    sourceId
+                );
+            case 'create_file':
+                return await this.createFile(args.path, args.content, sourceId);
+            case 'open_file':
+                return await this.openFile(args.path);
+            case 'find_file':
+                return await this.findFile(args.path);
+            case 'exec_command':
+                return await this.execCommand(args.command);
+            default:
+                throw new Error(`Tool '${name}' is not recognized.`);
+        }
+    }
+
     getEditBuffer() {
         return this.editBuffer;
     }

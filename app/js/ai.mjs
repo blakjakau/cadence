@@ -144,21 +144,27 @@ export default class AI {
 
     // NEW METHOD: Finds an open tab's full info object by its file path
     async _getTabSessionByPath(targetPath) {
+        if (!targetPath) return null;
         const openTabs = this._getAllOpenTabs();
-        // 1. Exact match
-        for (const tabInfo of openTabs) {
-            if (tabInfo.config && tabInfo.config.path === targetPath && tabInfo.config.session) {
-                return tabInfo; // Return the full tabInfo object (which contains config.session)
+        
+        const cleanPath = (p) => p ? p.replace(/\\/g, '/') : '';
+        const normTarget = cleanPath(targetPath);
+
+        const matches = openTabs.filter(tab => {
+            if (!tab.config || !tab.config.path || !tab.config.session) return false;
+            const normTabPath = cleanPath(tab.config.path);
+            if (normTabPath === normTarget) return true;
+            if (normTabPath.endsWith('/' + normTarget) || normTarget.endsWith('/' + normTabPath)) {
+                return true;
             }
-        }
-        // 2. Partial match (if path ends with targetPath)
-        const matches = openTabs.filter(tab => 
-            tab.config?.path?.endsWith(targetPath)
-        );
-        if (matches.length === 1) {
+            return false;
+        });
+
+        if (matches.length > 0) {
+            if (matches.length > 1) {
+                console.warn(`Multiple tabs match path suffix: ${targetPath}`);
+            }
             return matches[0];
-        } else if (matches.length > 1) {
-            console.warn(`Multiple tabs match path suffix: ${targetPath}`);
         }
         return null;
     }

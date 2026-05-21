@@ -95,6 +95,17 @@ class AgenticManager {
                     },
                     required: ["path"]
                 }
+            },
+            {
+                name: "open_file",
+                description: "Opens a file in the workspace editor for the user to review.",
+                parameters: {
+                    type: "OBJECT",
+                    properties: {
+                        path: { type: "STRING", description: "The path of the file to open." }
+                    },
+                    required: ["path"]
+                }
             }
         ];
     }

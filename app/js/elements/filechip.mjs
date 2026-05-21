@@ -5,35 +5,6 @@ import { Icon } from './icon.mjs';
 export class FileChip extends Button {
     constructor(config) {
         super();
-        this.config = config;
-        this.id = `filechip-${config.id}`; // Use the message id for the element id, prefixed for clarity
-
-        const textContent = `${config.filename} (${(config.content.length / 1024).toFixed(1)} KB)`;
-        this.setAttribute('title', textContent);
-        
-        const textElement = document.createElement('span');
-        textElement.textContent = config.filename;
-        
-        this._close = new Icon();
-        this._close.innerHTML = "close";
-        this._close.setAttribute("close", "close");
-        // this._close.setAttribute("size", "tiny");
-
-        this.append(textElement, this._close);
-
-        this.onclick = (e) => {
-            if (e.target !== this._close) {
-                // Potentially do something on chip click, like scroll to file in file list
-            }
-        };
-
-        this._close.onclick = (e) => {
-            e.stopPropagation();
-            this.dispatch('chip-close');
-        };
-export class FileChip extends Button {
-    constructor(config) {
-        super();
         
         if (config) {
             this.config = config;
@@ -46,9 +17,9 @@ export class FileChip extends Button {
             this._textElement = textElement;
         } else {
             // Handle cases where it's created via HTML tag
-            this.id = `filechip-${this.getAttribute('data-path')}`;
             const filename = this.getAttribute('filename') || this.getAttribute('data-filename');
             const path = this.getAttribute('path') || this.getAttribute('data-path');
+            this.id = `filechip-${path || 'unknown'}`;
             
             const textElement = document.createElement('span');
             textElement.textContent = filename || '';

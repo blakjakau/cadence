@@ -36,7 +36,7 @@ const promptEditorSettings = {
 const AGENT_SYSTEM_PROMPT = `You are CodeAgent, an autonomous software engineer.
 
 # Available Tools
-Choose ONE tool per turn and use its exact format:
+Choose AT MOST ONE tool per turn and use its exact format:
 <tool_call name="list_files"><path>dir_path</path></tool_call>
 <tool_call name="read_file"><path>file_path</path></tool_call>
 <tool_call name="search_files"><query>text</query></tool_call>
@@ -72,9 +72,11 @@ I am reading app.js to locate the issue.
 
 # Core Rules
 1. Thinking: ALWAYS wrap your reasoning in <thought>...</thought> at the very beginning of your response.
-2. Tools: Use AT MOST ONE <tool_call> per turn. Wait for the host to provide the result.
-3. Strict XML: Use only the exact XML tags below. Do not invent new tools.
-4. NEVER use control or tool tags to discuss or think about your actions, only to perform them
+2. Task Focus: In your <thought> block, you MUST actively reference the EVERGREEN TASK LIST and state which task you are currently working on. If you complete a task, you MUST immediately output a <complete_task> tag.
+3. Looping Prevention: In your <thought> block, actively review your last 3 turns. If you are repeating tool calls, executing identical searches, or failing edits, you must explain why progress has stalled and immediately propose an alternative approach or different tool. Do not repeat failed edits or duplicate search queries.
+4. Tools: Use AT MOST ONE <tool_call> per turn. Wait for the host to provide the result.
+5. Strict XML: Use only the exact XML tags below. Do not invent new tools.
+6. NEVER use control or tool tags to discuss or think about your actions, only to perform them.
 `;
 
 class AIManager {
@@ -307,6 +309,37 @@ class AIManager {
 		this.editBufferDisplay = this._createEditBufferDisplay();
 		this._emptyStateElement = this._createEmptyStateElement();
 		this.chatContainer.append(fileBarContainer, this.editBufferDisplay, this.conversationArea, this._emptyStateElement);
+
+		// Listen for file focus requests from chips in the conversation area
+		this.chatContainer.addEventListener('file-focus-request', async (e) => {
+			let path = e.detail.path;
+			try {
+				if (agentTools && typeof agentTools._resolveAndValidatePath === 'function') {
+					path = agentTools._resolveAndValidatePath(path);
+				}
+			} catch (err) {
+				console.warn("[AIManager] Failed to resolve path relative to workspace:", err);
+			}
+
+			let tab = await this.ai._getTabSessionByPath(path);
+			if (!tab && window.ui?.fileList?.open) {
+				await window.ui.fileList.open(path);
+				tab = await this.ai._getTabSessionByPath(path);
+			}
+			if (tab) {
+				tab.click();
+				// Wait for the tab switch to complete and focus the editor
+				setTimeout(() => {
+					const editor = window.editors.find(ed => ed.id?.includes(tab.config.session.id));
+					// Fallback: if we can't find it by ID, try to find it by the session's editor
+					if (editor) {
+						editor.focus();
+					} else if (tab.config.session && tab.config.session.editor) {
+						tab.config.session.editor.focus();
+					}
+				}, 100);
+			}
+		});
 
 		this.panel.append(this.chatContainer, this.settingsPanel, this.sessionTabBar, promptContainer);
 	}
@@ -1411,11 +1444,12 @@ class AIManager {
 	}
 
 	_parseToolCalls(content) {
-		const match = content.match(/<tool_call\s+name=["']([^"']+)["']\s*>([\s\S]*?)<\/tool_call>/i);
-		if (!match) return null;
+		const parsed = this._parseBlocks(content);
+		const tc = parsed.toolCallBlocks.find(b => b.closed);
+		if (!tc) return null;
 
-		const toolName = match[1];
-		const toolArgsContent = match[2];
+		const toolName = tc.name;
+		const toolArgsContent = content.substring(tc.contentStartIdx, tc.contentEndIdx);
 		const args = {};
 
 		// Extract any nested XML tags as args
@@ -1433,7 +1467,7 @@ class AIManager {
 		return {
 			name: toolName,
 			arguments: args,
-			raw: match[0]
+			raw: content.substring(tc.startIdx, tc.endIdx)
 		};
 	}
 
@@ -1672,10 +1706,9 @@ class AIManager {
 				const responseContent = await runPromise;
 
 				// Parse implementation plan and check if we need to show plan approval
-				const planRegex = /<implementation_plan>([\s\S]*?)(?:<\/implementation_plan>|$)/i;
-				const planMatch = responseContent.match(planRegex);
-				if (planMatch) {
-					const planText = planMatch[1].trim();
+				const parsed = this._parseBlocks(responseContent);
+				if (parsed.planBlock) {
+					const planText = responseContent.substring(parsed.planBlock.contentStartIdx, parsed.planBlock.contentEndIdx).trim();
 					if (planText) {
 						const planApproved = await this._showPlanApprovalCard(planText);
 						if (!planApproved) {
@@ -1726,32 +1759,7 @@ class AIManager {
 					this.conversationArea.scrollTop = this.conversationArea.scrollHeight;
 
 					try {
-						if (toolCall.name === "list_files") {
-							toolResult = await agentTools.listFiles(toolCall.arguments.path);
-						} else if (toolCall.name === "read_file") {
-							toolResult = await agentTools.readFile(toolCall.arguments.path);
-						} else if (toolCall.name === "search_files") {
-							toolResult = await agentTools.searchFiles(toolCall.arguments.query);
-						} else if (toolCall.name === "edit_file") {
-							toolResult = await agentTools.editFile(
-								toolCall.arguments.path,
-								toolCall.arguments.search,
-								toolCall.arguments.replace,
-								this.activeSession.id
-							);
-						} else if (toolCall.name === "create_file") {
-							toolResult = await agentTools.createFile(
-								toolCall.arguments.path,
-								toolCall.arguments.content,
-								this.activeSession.id
-							);
-						} else if (toolCall.name === "open_file") {
-							toolResult = await agentTools.openFile(toolCall.arguments.path);
-						} else if (toolCall.name === "find_file") {
-							toolResult = await agentTools.findFile(toolCall.arguments.path);
-						} else {
-							toolResult = `Error: Unknown tool ${toolCall.name}`;
-						}
+						toolResult = await agentTools.execute(toolCall.name, toolCall.arguments, this.activeSession.id);
 					} catch (e) {
 						toolResult = `Error executing tool: ${e.message}`;
 					}
@@ -2088,14 +2096,18 @@ class AIManager {
 			}
 		}
 
+		const parsed = this._parseBlocks(content);
+		const rangesToRemove = [];
+
 		// Extract evergreen implementation plan
-		const planRegex = /<implementation_plan>([\s\S]*?)(?:<\/implementation_plan>|$)/i;
-		const planMatch = content.match(planRegex);
-		if (planMatch) {
-			const planText = planMatch[1].trim();
+		if (parsed.planBlock) {
+			const planText = content.substring(parsed.planBlock.contentStartIdx, parsed.planBlock.contentEndIdx).trim();
 			if (planText && this.activeSession && this.activeSession.implementationPlan !== planText) {
 				this.activeSession.implementationPlan = planText;
 				this._updateAgentProgressPanel();
+				if (this.historyManager && typeof this.historyManager.updateImplementationPlanTrigger === 'function') {
+					this.historyManager.updateImplementationPlanTrigger();
+				}
 				workspaceClient.setSession(this.activeSession.id, this.activeSession);
 
 				// Automatically open the Implementation Plan & Checklist tab if it's not already open!
@@ -2107,29 +2119,24 @@ class AIManager {
 					}
 				}
 			}
-			content = content.replace(planRegex, '');
+			rangesToRemove.push({ startIdx: parsed.planBlock.startIdx, endIdx: parsed.planBlock.endIdx });
 		}
 
 		// Extract evergreen task list
-		const taskListRegex = /<task_list>([\s\S]*?)(?:<\/task_list>|$)/i;
-		const taskListMatch = content.match(taskListRegex);
-		if (taskListMatch) {
-			const tasksText = taskListMatch[1].trim();
+		if (parsed.taskListBlock) {
+			const tasksText = content.substring(parsed.taskListBlock.contentStartIdx, parsed.taskListBlock.contentEndIdx).trim();
 			if (tasksText && this.activeSession && this.activeSession.taskList !== tasksText) {
 				this.activeSession.taskList = tasksText;
 				this._updateAgentProgressPanel();
 				workspaceClient.setSession(this.activeSession.id, this.activeSession);
 			}
-			content = content.replace(taskListRegex, '');
+			rangesToRemove.push({ startIdx: parsed.taskListBlock.startIdx, endIdx: parsed.taskListBlock.endIdx });
 		}
 
 		// Extract complete_task signals
-		const completeTaskRegex = /<complete_task>([\s\S]*?)(?:<\/complete_task>|$)/gi;
-		let completeTaskMatch;
 		let taskListUpdated = false;
-
-		while ((completeTaskMatch = completeTaskRegex.exec(content)) !== null) {
-			const taskText = completeTaskMatch[1].trim();
+		for (const block of parsed.completeTaskBlocks) {
+			const taskText = content.substring(block.contentStartIdx, block.contentEndIdx).trim();
 			if (taskText && this.activeSession && this.activeSession.taskList) {
 				const escapedTaskText = taskText.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
 				const checkboxRegex = new RegExp(`([\\-*]\\s*\\[\\s*\\]\\s*)${escapedTaskText}`, 'i');
@@ -2140,6 +2147,7 @@ class AIManager {
 					taskListUpdated = true;
 				}
 			}
+			rangesToRemove.push({ startIdx: block.startIdx, endIdx: block.endIdx });
 		}
 
 		if (taskListUpdated) {
@@ -2147,25 +2155,10 @@ class AIManager {
 			workspaceClient.setSession(this.activeSession.id, this.activeSession);
 		}
 
-		content = content.replace(/<complete_task>[\s\S]*?<\/complete_task>/gi, '');
-		content = content.replace(/<complete_task>[\s\S]*?$/gi, '');
-
-		// Normalize alternative thinking markers to standard <think>...</think> tags.
-		content = content.replace(/<\|channel>thought <channel\|>(.*?)(?:\n|$)/g, '<think>$1</think>\n');
-		content = content.replace(/<thought>([\s\S]*?)<\/thought>/gi, '<think>$1</think>');
-		// Handle unclosed thought blocks during streaming
-		if (content.includes("<thought>") && !content.includes("</thought>")) {
-			content = content.replace("<thought>", "<think>");
-		}
-
 		let thinkHtml = "";
-		let mainContent = content;
-
-		const thinkRegex = /<think>([\s\S]*?)(?:<\/think>|$)/;
-		const thinkMatch = mainContent.match(thinkRegex);
-		if (thinkMatch) {
-			const thinkContent = thinkMatch[1].trim();
-			const isClosed = mainContent.includes("</think>");
+		if (parsed.thoughtBlock) {
+			const thinkContent = content.substring(parsed.thoughtBlock.contentStartIdx, parsed.thoughtBlock.contentEndIdx).trim();
+			const isClosed = parsed.thoughtBlock.closed;
 			thinkHtml = `
                 <div class="thought-block" ${isClosed ? "" : "expanded"}>
                     <div class="thought-header" onclick="this.parentElement.hasAttribute('expanded') ? this.parentElement.removeAttribute('expanded') : this.parentElement.setAttribute('expanded', '')">
@@ -2177,18 +2170,18 @@ class AIManager {
                     </div>
                 </div>
             `;
-			mainContent = mainContent.replace(thinkRegex, "").trim();
+			rangesToRemove.push({ startIdx: parsed.thoughtBlock.startIdx, endIdx: parsed.thoughtBlock.endIdx });
 		}
 
-		// Now, find and replace any <tool_call> tags in mainContent
+		const mainContent = this._removeRanges(content, rangesToRemove);
 		let finalHtml = thinkHtml;
 
-		const toolCallRegex = /<tool_call\s+name=["']([^"']+)["']\s*>([\s\S]*?)(?:<\/tool_call>|$)/i;
-		const toolCallMatch = mainContent.match(toolCallRegex);
-		if (toolCallMatch) {
-			const toolName = toolCallMatch[1];
-			const toolArgs = toolCallMatch[2];
-			const isClosed = mainContent.includes("</tool_call>");
+		const finalParsed = this._parseBlocks(mainContent);
+		if (finalParsed.toolCallBlocks.length > 0) {
+			const tc = finalParsed.toolCallBlocks[0];
+			const toolName = tc.name;
+			const toolArgs = mainContent.substring(tc.contentStartIdx, tc.contentEndIdx);
+			const isClosed = tc.closed;
 
 			// Extract arguments as a dictionary
 			const args = {};
@@ -2214,11 +2207,16 @@ class AIManager {
 
 			// Construct compact one-line label
 			let label = `<code>${toolName}</code>`;
+			const fileActions = ["edit_file", "read_file", "create_file", "find_file", "open_file"];
 			if (args.path) {
-				const shortFile = args.path.split('/').pop() || args.path;
-				label = `<code>${toolName}</code>: <span class="tool-call-path" title="${this._escapeHtml(args.path)}">${this._escapeHtml(shortFile)}</span>`;
+				if (fileActions.includes(toolName)) {
+					const shortFile = args.path.split('/').pop() || args.path;
+					label = `<code>${toolName}:</code> <ui-filechip filename="${this._escapeHtml(shortFile)}" path="${this._escapeHtml(args.path)}"></ui-filechip>`;
+				} else {
+					label = `<code>${toolName}:</code> <span class="tool-call-path" title="${this._escapeHtml(args.path)}">${this._escapeHtml(args.path)}</span>`;
+				}
 			} else if (args.query) {
-				label = `<code>${toolName}</code>: <span class="tool-call-query">"${this._escapeHtml(args.query)}"</span>`;
+				label = `<code>${toolName}:</code> <span class="tool-call-query">"${this._escapeHtml(args.query)}"</span>`;
 			}
 
 			const badgeClass = isClosed ? (isFailed ? 'failed' : 'invoked') : 'preparing';
@@ -2234,10 +2232,8 @@ class AIManager {
                 </div>
             `;
 
-			// Split content and render
-			const parts = mainContent.split(toolCallRegex);
-			const beforeText = parts[0] || "";
-			const afterText = parts[3] || "";
+			const beforeText = mainContent.substring(0, tc.startIdx) || "";
+			const afterText = mainContent.substring(tc.endIdx) || "";
 
 			if (beforeText.trim()) {
 				finalHtml += this.md.render(beforeText);
@@ -2405,6 +2401,211 @@ class AIManager {
 			return true; // Signal to proceed
 		}
 		return true; // No stale files, proceed
+	}
+	_parseBlocks(content) {
+		if (!content) return { thoughtBlock: null, planBlock: null, taskListBlock: null, completeTaskBlocks: [], toolCallBlocks: [] };
+		let inCodeBlock = false;
+		let inInlineCode = false;
+
+		let thoughtBlock = null;
+		let planBlock = null;
+		let taskListBlock = null;
+		const completeTaskBlocks = [];
+		const toolCallBlocks = [];
+
+		let activeBlock = null; // Reference to the currently open block
+
+		let i = 0;
+		const len = content.length;
+
+		while (i < len) {
+			// Toggle code block states
+			if (content.startsWith("```", i)) {
+				inCodeBlock = !inCodeBlock;
+				i += 3;
+				continue;
+			}
+			if (content.startsWith("`", i) && !inCodeBlock) {
+				inInlineCode = !inInlineCode;
+				i += 1;
+				continue;
+			}
+
+			// If inside code, just skip
+			if (inCodeBlock || inInlineCode) {
+				i++;
+				continue;
+			}
+
+			// If we have an active open block, we only look for its closing tag
+			if (activeBlock) {
+				if (activeBlock.type === 'thought') {
+					if (activeBlock.subType === 'thought' && content.startsWith("</thought>", i)) {
+						activeBlock.endIdx = i + 10;
+						activeBlock.contentEndIdx = i;
+						activeBlock.closed = true;
+						activeBlock = null;
+						i += 10;
+						continue;
+					}
+					if (activeBlock.subType === 'think' && content.startsWith("</think>", i)) {
+						activeBlock.endIdx = i + 8;
+						activeBlock.contentEndIdx = i;
+						activeBlock.closed = true;
+						activeBlock = null;
+						i += 8;
+						continue;
+					}
+					if (activeBlock.subType === 'channel' && content.startsWith("\n", i)) {
+						activeBlock.endIdx = i + 1;
+						activeBlock.contentEndIdx = i;
+						activeBlock.closed = true;
+						activeBlock = null;
+						i += 1;
+						continue;
+					}
+				} else if (activeBlock.type === 'plan') {
+					if (content.startsWith("</implementation_plan>", i)) {
+						activeBlock.endIdx = i + 22;
+						activeBlock.contentEndIdx = i;
+						activeBlock.closed = true;
+						activeBlock = null;
+						i += 22;
+						continue;
+					}
+				} else if (activeBlock.type === 'taskList') {
+					if (content.startsWith("</task_list>", i)) {
+						activeBlock.endIdx = i + 12;
+						activeBlock.contentEndIdx = i;
+						activeBlock.closed = true;
+						activeBlock = null;
+						i += 12;
+						continue;
+					}
+				} else if (activeBlock.type === 'completeTask') {
+					if (content.startsWith("</complete_task>", i)) {
+						activeBlock.endIdx = i + 16;
+						activeBlock.contentEndIdx = i;
+						activeBlock.closed = true;
+						activeBlock = null;
+						i += 16;
+						continue;
+					}
+				} else if (activeBlock.type === 'toolCall') {
+					if (content.startsWith("</tool_call>", i)) {
+						activeBlock.endIdx = i + 12;
+						activeBlock.contentEndIdx = i;
+						activeBlock.closed = true;
+						activeBlock = null;
+						i += 12;
+						continue;
+					}
+				}
+				i++;
+				continue;
+			}
+
+			// No active block, look for start tags of blocks we haven't triggered/opened yet,
+			// or completeTask/toolCall blocks (which can trigger multiple times).
+
+			// 1. Thought block (only once)
+			if (!thoughtBlock) {
+				if (content.startsWith("<thought>", i)) {
+					thoughtBlock = { type: 'thought', subType: 'thought', startIdx: i, contentStartIdx: i + 9, closed: false };
+					activeBlock = thoughtBlock;
+					i += 9;
+					continue;
+				}
+				if (content.startsWith("<think>", i)) {
+					thoughtBlock = { type: 'thought', subType: 'think', startIdx: i, contentStartIdx: i + 7, closed: false };
+					activeBlock = thoughtBlock;
+					i += 7;
+					continue;
+				}
+				if (content.startsWith("<|channel>thought <channel|>", i)) {
+					thoughtBlock = { type: 'thought', subType: 'channel', startIdx: i, contentStartIdx: i + 28, closed: false };
+					activeBlock = thoughtBlock;
+					i += 28;
+					continue;
+				}
+			}
+
+			// 2. Implementation plan block (only once)
+			if (!planBlock) {
+				if (content.startsWith("<implementation_plan>", i)) {
+					planBlock = { type: 'plan', startIdx: i, contentStartIdx: i + 21, closed: false };
+					activeBlock = planBlock;
+					i += 21;
+					continue;
+				}
+			}
+
+			// 3. Task list block (only once)
+			if (!taskListBlock) {
+				if (content.startsWith("<task_list>", i)) {
+					taskListBlock = { type: 'taskList', startIdx: i, contentStartIdx: i + 11, closed: false };
+					activeBlock = taskListBlock;
+					i += 11;
+					continue;
+				}
+			}
+
+			// 4. Complete task block (multiple)
+			if (content.startsWith("<complete_task>", i)) {
+				const block = { type: 'completeTask', startIdx: i, contentStartIdx: i + 15, closed: false };
+				completeTaskBlocks.push(block);
+				activeBlock = block;
+				i += 15;
+				continue;
+			}
+
+			// 5. Tool call block (multiple)
+			if (content.startsWith("<tool_call", i)) {
+				const startTagEnd = content.indexOf(">", i);
+				if (startTagEnd !== -1) {
+					const startTag = content.substring(i, startTagEnd + 1);
+					const nameMatch = startTag.match(/name=["']([^"']+)["']/i);
+					const toolName = nameMatch ? nameMatch[1] : "";
+					const block = {
+						type: 'toolCall',
+						startIdx: i,
+						contentStartIdx: startTagEnd + 1,
+						closed: false,
+						name: toolName,
+						startTag: startTag
+					};
+					toolCallBlocks.push(block);
+					activeBlock = block;
+					i = startTagEnd + 1;
+					continue;
+				}
+			}
+
+			i++;
+		}
+
+		// For any unclosed active block, we set its content end to the end of the string
+		if (activeBlock) {
+			activeBlock.endIdx = len;
+			activeBlock.contentEndIdx = len;
+		}
+
+		return {
+			thoughtBlock,
+			planBlock,
+			taskListBlock,
+			completeTaskBlocks,
+			toolCallBlocks
+		};
+	}
+
+	_removeRanges(str, ranges) {
+		const sorted = [...ranges].filter(r => r !== null && r !== undefined).sort((a, b) => b.startIdx - a.startIdx);
+		let result = str;
+		for (const r of sorted) {
+			result = result.substring(0, r.startIdx) + result.substring(r.endIdx);
+		}
+		return result;
 	}
 
 	async loadSettings() {

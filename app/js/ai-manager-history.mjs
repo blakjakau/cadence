@@ -128,6 +128,12 @@ class AIManagerHistory {
 		// If we have history, hide empty state and render messages.
 		this.manager._emptyStateElement.style.display = 'none';
 
+		// If the active session has an implementation plan, show a premium trigger banner!
+		if (this.manager.activeSession?.implementationPlan) {
+			const planTrigger = this._createImplementationPlanTrigger();
+			if (planTrigger) this.conversationArea.append(planTrigger);
+		}
+
 		// Use the new element factory for each message in the history
 		for (let i = 0; i < this.chatHistory.length; i++) {
 			const message = this.chatHistory[i];
@@ -136,6 +142,70 @@ class AIManagerHistory {
 			if (element) this.conversationArea.append(element);
 		}
 	}
+
+	/**
+	 * Creates a premium UI banner trigger to open the implementation plan tab.
+	 * @returns {HTMLElement|null} The generated DOM element.
+	 */
+	_createImplementationPlanTrigger() {
+		const banner = new Block();
+		banner.classList.add("ai-implementation-plan-banner");
+
+		const leftPart = new Block();
+		leftPart.classList.add("banner-left");
+		
+		const icon = document.createElement("ui-icon");
+		icon.textContent = "assignment";
+		
+		const label = document.createElement("span");
+		label.textContent = "Active Implementation Plan & Checklist";
+		
+		leftPart.append(icon, label);
+
+		const openBtn = document.createElement("button");
+		openBtn.classList.add("open-plan-btn");
+		
+		const btnText = document.createElement("span");
+		btnText.textContent = "Open Tab";
+		
+		const btnIcon = document.createElement("ui-icon");
+		btnIcon.textContent = "open_in_new";
+		
+		openBtn.append(btnText, btnIcon);
+		
+		openBtn.addEventListener("click", () => {
+			if (window.ui && typeof window.ui.openPlanAndTaskList === "function") {
+				window.ui.openPlanAndTaskList();
+			}
+		});
+
+		banner.append(leftPart, openBtn);
+		return banner;
+	}
+
+	/**
+	 * Dynamically inserts or updates the implementation plan trigger banner in the conversation area.
+	 */
+	updateImplementationPlanTrigger() {
+		if (!this.conversationArea) return;
+		
+		const existingTrigger = this.conversationArea.querySelector('.ai-implementation-plan-banner');
+		
+		if (this.manager.activeSession?.implementationPlan) {
+			if (!existingTrigger) {
+				const planTrigger = this._createImplementationPlanTrigger();
+				if (planTrigger) {
+					// Prepend so it is at the very top of the chat area
+					this.conversationArea.prepend(planTrigger);
+				}
+			}
+		} else {
+			if (existingTrigger) {
+				existingTrigger.remove();
+			}
+		}
+	}
+
 
 	/**
 	 * NEW: Dynamically creates and appends a single message element to the DOM.
@@ -553,14 +623,29 @@ class AIManagerHistory {
 			}).filter(msg => msg.content && msg.content.trim() !== "");
 		}
 
-		// NEW: In Agent Mode, auto-prune chat history by keeping only a sliding window of the last 6 dialogue messages.
-		// Older items are hidden from the model but remain in the chat bubble history for the user.
+		// Partition chat history into file contexts and dialogue history to preserve attachments
+		const fileContexts = chatHistory.filter(msg => msg.type === "file_context");
+		let dialogueHistory = chatHistory.filter(msg => msg.type !== "file_context");
+
+		// Advanced Dialogue Pruning in Agent Mode
 		if (this.manager.agentMode) {
-			const keepCount = 6;
-			if (chatHistory.length > keepCount) {
-				chatHistory = chatHistory.slice(-keepCount);
+			// Keep a safe history of the last 14 dialogue turns (user instructions, thoughts, tool actions, and results)
+			const keepCount = 14;
+			if (dialogueHistory.length > keepCount) {
+				const firstUserPrompt = dialogueHistory.find(msg => msg.type === "user");
+				const recentHistory = dialogueHistory.slice(-keepCount);
+				
+				// Always guarantee that the original user request (overall goal) is preserved at the start
+				if (firstUserPrompt && !recentHistory.some(msg => msg.id === firstUserPrompt.id)) {
+					dialogueHistory = [firstUserPrompt, ...recentHistory];
+				} else {
+					dialogueHistory = recentHistory;
+				}
 			}
 		}
+
+		// Recombine file contexts and pruned dialogue history
+		chatHistory = [...fileContexts, ...dialogueHistory];
 
 		// 3. Handle code block stripping in the chat history
 		const stripCodeBlocks = this.manager.ai.config.stripCodeBlocksFromContext;

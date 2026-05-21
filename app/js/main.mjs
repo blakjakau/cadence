@@ -1366,9 +1366,21 @@ const openFileHandle = async (handle, knownPath = null, targetEditor = currentEd
 
 	// don't add a new tab if the file is already open in a tab
 	{
-		let tab = leftTabs.byTitle(path)
+		const clean = (p) => p ? p.replace(/\\/g, '/') : '';
+		const normPath = clean(path);
+		const findOpenTab = (tabBar) => {
+			for (const tab of tabBar.tabs) {
+				const normTabPath = clean(tab.config?.path);
+				if (normTabPath === normPath || normTabPath.endsWith('/' + normPath) || normPath.endsWith('/' + normTabPath)) {
+					return tab;
+				}
+			}
+			return null;
+		};
+
+		let tab = findOpenTab(leftTabs)
 		if (tab) return tab.click()
-		tab = rightTabs.byTitle(path)
+		tab = findOpenTab(rightTabs)
 		if (tab) return tab.click()
 	}
 

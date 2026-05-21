@@ -1093,6 +1093,9 @@ button:disabled,
 }
 
 .tool-call-title.compact {
+    display: flex;
+    align-items: center;
+    gap: 6px;
     font-family: var(--font-sans);
 }
 
@@ -1641,5 +1644,83 @@ ui-tab-item.plan-tasks-tab.active .status-icon {
     color: #ffffff !important;
     transform: translateY(-1px);
 }
+
+/* Hide close button and make padding symmetric for filechips inside chat history */
+.conversation-area ui-filechip {
+    padding-right: 8px;
+}
+.conversation-area ui-filechip > ui-icon[close] {
+    display: none;
+}
+
+/* Premium trigger banner for Implementation Plan in chat history */
+.ai-implementation-plan-banner {
+    position: sticky;
+    top: 0px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 16px;
+    margin: 4px 8px 12px 8px;
+    background-color: var(--bg-primary);
+    background-image: linear-gradient(135deg, rgba(45, 164, 78, 0.15) 0%, rgba(45, 164, 78, 0.05) 100%);
+    border: 1px solid rgba(45, 164, 78, 0.3);
+    border-radius: var(--borderRadius, 6px);
+    gap: 12px;
+    z-index: 10;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+    transition: all 0.2s ease;
+}
+
+.ai-implementation-plan-banner:hover {
+    border-color: rgba(45, 164, 78, 0.5);
+    background: linear-gradient(135deg, rgba(45, 164, 78, 0.2) 0%, rgba(45, 164, 78, 0.08) 100%);
+}
+
+.ai-implementation-plan-banner .banner-left {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    color: #2da44e;
+    font-weight: 500;
+    font-size: 0.95em;
+}
+
+.ai-implementation-plan-banner .banner-left ui-icon {
+    font-size: 1.3em;
+    color: #2da44e;
+}
+
+.ai-implementation-plan-banner .open-plan-btn {
+    background: #2da44e;
+    color: #ffffff;
+    border: none;
+    padding: 6px 14px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-weight: 600;
+    font-size: 0.85em;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    box-shadow: 0 2px 4px rgba(45, 164, 78, 0.2);
+    transition: all 0.2s ease;
+}
+
+.ai-implementation-plan-banner .open-plan-btn ui-icon {
+    font-size: 1.2em;
+    color: #ffffff;
+}
+
+.ai-implementation-plan-banner .open-plan-btn:hover {
+    background: #2c974b;
+    box-shadow: 0 3px 6px rgba(45, 164, 78, 0.3);
+    transform: translateY(-1px);
+}
+
+.ai-implementation-plan-banner .open-plan-btn:active {
+    transform: translateY(0);
+}
+
 
 
