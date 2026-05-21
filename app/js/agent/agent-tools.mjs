@@ -171,6 +171,44 @@ class AgentTools {
     }
 
     /**
+     * Reads a file's structural outline.
+     * @param {string} path 
+     */
+    async readFileOutline(path) {
+        try {
+            const resolvedPath = this._resolveAndValidatePath(path);
+            if (this.conduit.isConnected) {
+                const result = await this.conduit.wsGetOutline(resolvedPath);
+                if (result.error) throw new Error(result.error);
+                return result.data || "No outline available.";
+            } else {
+                return "Error: Conduit not connected.";
+            }
+        } catch (error) {
+            return `Error reading file outline: ${error.message}`;
+        }
+    }
+
+    /**
+     * Searches for a symbol in the workspace index.
+     * @param {string} query 
+     */
+    async readSymbol(query) {
+        try {
+            if (this.conduit.isConnected) {
+                const result = await this.conduit.wsSearchSymbols(query);
+                if (result.error) throw new Error(result.error);
+                if (!result.data || result.data.length === 0) return "No matches found.";
+                return result.data.map(sym => `${sym.filePath}:${sym.line} - ${sym.signature}`).join('\n');
+            } else {
+                return "Error: Conduit not connected.";
+            }
+        } catch (error) {
+            return `Error searching symbol: ${error.message}`;
+        }
+    }
+
+    /**
      * Searches for text across files (Grep) accelerating using Go and local buffers.
      * @param {string} query 
      */
@@ -486,6 +524,10 @@ class AgentTools {
                 return await this.listFiles(args.path);
             case 'read_file':
                 return await this.readFile(args.path);
+            case 'read_file_outline':
+                return await this.readFileOutline(args.path);
+            case 'read_symbol':
+                return await this.readSymbol(args.query || args.symbol);
             case 'search_files':
                 return await this.searchFiles(args.query);
             case 'edit_file':

@@ -264,6 +264,22 @@ class ConduitClient {
         return this._send({ action: 'search', path, type, query });
     }
 
+    wsSearchSymbols(query) {
+        return this._send({ action: 'search_symbols', query });
+    }
+
+    wsGetOutline(path) {
+        return this._send({ action: 'get_outline', path });
+    }
+
+    wsGetIndexerStatus() {
+        return this._send({ action: 'get_indexer_status' });
+    }
+
+    wsSetActiveRoots(roots) {
+        return this._send({ action: 'set_active_roots', content: JSON.stringify(roots) });
+    }
+
     // Watch is fire-and-forget, it just sends the command.
     wsWatch(path) {
         const message = { action: 'watch', path };

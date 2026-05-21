@@ -17,7 +17,23 @@ import (
 )
 
 
-// fileAPIRoot is a global variable set in main.go
+var indexManagerInit2 sync.Once
+
+func getIndexManagerAPI() *IndexManager {
+	im := GetIndexManager()
+	indexManagerInit2.Do(func() {
+		im.OnStatusUpdate = func() {
+			if fileWatcher != nil {
+				status := map[string]interface{}{
+					"roots": im.GetRoots(),
+					"size":  im.GetTotalSizeFormatted(),
+				}
+				fileWatcher.broadcastIndexerStatus(status)
+			}
+		}
+	})
+	return im
+}
 
 // --- File API message structs ---
 
@@ -150,6 +166,19 @@ func (wm *watcherManager) broadcastEvent(event fsnotify.Event) {
 				client.WriteJSON(resp)
 			}
 		}
+	}
+}
+
+func (wm *watcherManager) broadcastIndexerStatus(status interface{}) {
+	wm.mu.Lock()
+	defer wm.mu.Unlock()
+
+	resp := fileResponse{
+		Action: "indexer_status",
+		Data:   status,
+	}
+	for client := range wm.subscribers {
+		client.WriteJSON(resp)
 	}
 }
 
@@ -334,6 +363,9 @@ func handleWsRequest(ws *websocket.Conn, req fileRequest) {
 			err = ioutil.WriteFile(fullPath, decoded, 0644)
 			if err != nil {
 				resp.Error = err.Error()
+			} else {
+				im := getIndexManagerAPI()
+				im.UpdateFile(fullPath, string(decoded))
 			}
 		}
 	case "rename":
@@ -370,6 +402,34 @@ func handleWsRequest(ws *websocket.Conn, req fileRequest) {
 			}
 		} else {
 			resp.Error = "Unsupported search type"
+		}
+	case "get_outline":
+		im := getIndexManagerAPI()
+		resp.Data = im.GetOutline(fullPath)
+	case "search_symbols":
+		im := getIndexManagerAPI()
+		resp.Data = im.SearchSymbols(req.Query)
+	case "set_active_roots":
+		im := getIndexManagerAPI()
+		var roots []string
+		
+		if err := json.Unmarshal([]byte(req.Content), &roots); err != nil {
+			resp.Error = "Invalid roots format"
+		} else {
+			var secureRoots []string
+			for _, r := range roots {
+				if secureRoot, err := securePath(r); err == nil {
+					secureRoots = append(secureRoots, secureRoot)
+				}
+			}
+			im.SetActiveRoots(secureRoots)
+			resp.Data = "ok"
+		}
+	case "get_indexer_status":
+		im := getIndexManagerAPI()
+		resp.Data = map[string]interface{}{
+			"roots": im.GetRoots(),
+			"size":  im.GetTotalSizeFormatted(),
 		}
 	default:
 		resp.Error = "Unknown action"

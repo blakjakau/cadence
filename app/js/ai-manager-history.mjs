@@ -716,13 +716,25 @@ class AIManagerHistory {
 			});
 		}
 
-		// Add remaining chat history and file contexts
+		// Layer Outlines First
 		chatHistory.forEach(msg => {
-			if (msg.type === "file_context") {
+			if (msg.type === "file_context" && msg.mode === "outline" && msg.outline) {
 				contextForAI.push({
 					role: "user",
-					content: `--- File: ${msg.id} ---\n\`\`\`${msg.language}\n${msg.content}\n\`\`\``,
+					content: `--- Outline: ${msg.id} ---\n\`\`\`${msg.language}\n${msg.outline}\n\`\`\``,
 				});
+			}
+		});
+
+		// Add remaining chat history and Full file contexts
+		chatHistory.forEach(msg => {
+			if (msg.type === "file_context") {
+				if (msg.mode !== "outline") {
+					contextForAI.push({
+						role: "user",
+						content: `--- File: ${msg.id} ---\n\`\`\`${msg.language}\n${msg.content}\n\`\`\``,
+					});
+				}
 			} else {
 				contextForAI.push({
 					role: msg.role,

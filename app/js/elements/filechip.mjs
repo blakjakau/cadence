@@ -34,7 +34,27 @@ export class FileChip extends Button {
         this._close.innerHTML = "close";
         this._close.setAttribute("close", "close");
 
-        this.append(this._textElement, this._close);
+        this._modeToggle = document.createElement('span');
+        this._modeToggle.classList.add('chip-mode-toggle');
+        // Default to Full. If config passed with mode outline, use that.
+        this._modeToggle.textContent = (config && config.mode === 'outline') ? '[Outline]' : '[Full]';
+        this._modeToggle.style.marginRight = '5px';
+        this._modeToggle.style.cursor = 'pointer';
+        this._modeToggle.style.fontSize = '10px';
+        this._modeToggle.style.color = 'var(--text-secondary)';
+        
+        this._modeToggle.onclick = (e) => {
+            e.stopPropagation();
+            const newMode = this._modeToggle.textContent === '[Full]' ? 'outline' : 'full';
+            this._modeToggle.textContent = newMode === 'outline' ? '[Outline]' : '[Full]';
+            this.dispatchEvent(new CustomEvent('chip-mode-toggle', {
+                bubbles: true,
+                composed: true,
+                detail: { mode: newMode }
+            }));
+        };
+
+        this.append(this._modeToggle, this._textElement, this._close);
 
         this.onclick = (e) => {
             if (e.target !== this._close) {

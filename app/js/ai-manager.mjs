@@ -39,6 +39,8 @@ const AGENT_SYSTEM_PROMPT = `You are CodeAgent, an autonomous software engineer.
 Choose AT MOST ONE tool per turn and use its exact format:
 <tool_call name="list_files"><path>dir_path</path></tool_call>
 <tool_call name="read_file"><path>file_path</path></tool_call>
+<tool_call name="read_file_outline"><path>file_path</path></tool_call>
+<tool_call name="read_symbol"><query>symbol_name</query></tool_call>
 <tool_call name="search_files"><query>text</query></tool_call>
 <tool_call name="create_file"><path>file_path</path><content>text</content></tool_call>
 <tool_call name="open_file"><path>file_path</path></tool_call>
@@ -75,8 +77,9 @@ I am reading app.js to locate the issue.
 2. Task Focus: In your <thought> block, you MUST actively reference the EVERGREEN TASK LIST and state which task you are currently working on. If you complete a task, you MUST immediately output a <complete_task> tag.
 3. Looping Prevention: In your <thought> block, actively review your last 3 turns. If you are repeating tool calls, executing identical searches, or failing edits, you must explain why progress has stalled and immediately propose an alternative approach or different tool. Do not repeat failed edits or duplicate search queries.
 4. Tools: Use AT MOST ONE <tool_call> per turn. Wait for the host to provide the result.
-5. Strict XML: Use only the exact XML tags below. Do not invent new tools.
-6. NEVER use control or tool tags to discuss or think about your actions, only to perform them.
+5. Context Limits: ALWAYS explore files by reading their outlines first using read_file_outline before reading full files, to avoid flooding your context window.
+6. Strict XML: Use only the exact XML tags below. Do not invent new tools.
+7. NEVER use control or tool tags to discuss or think about your actions, only to perform them.
 `;
 
 class AIManager {
@@ -295,6 +298,24 @@ class AIManager {
 			}
 			// Proceed with the deletion
 			this.historyManager._handleDeleteFileContextItem(fileId);
+		});
+		
+		this.fileBar.on('file-mode-toggle', (e) => {
+			const fileId = e.detail.fileId;
+			const mode = e.detail.mode;
+			const fileMessage = this.activeSession?.messages.find(m => m.id === fileId);
+			if (fileMessage) {
+				fileMessage.mode = mode;
+				if (mode === 'outline' && !fileMessage.outline) {
+					window.conduit.wsGetOutline(fileMessage.id).then(res => {
+						fileMessage.outline = res.data;
+						this.historyManager.render();
+						this._dispatchContextUpdate("file_mode_changed");
+					}).catch(err => console.error("Failed to get outline", err));
+				} else {
+					this._dispatchContextUpdate("file_mode_changed");
+				}
+			}
 		});
 		this.progressBar = this._createProgressBar();
 		fileBarContainer.append(this.fileBar, this.progressBar);
@@ -578,7 +599,7 @@ class AIManager {
 			const fileContextCompleter = {
 				// This regex tells ACE what constitutes a "word" for this completer.
 				// It will activate on '@' and replace the whole token.
-				identifierRegexps: [/@[\w.]*/],
+				identifierRegexps: [/@[\w.#\-]*/],
 				getCompletions: (editor, session, pos, prefix, callback) => {
 					// Only activate this completer for our AI prompt editor
 					if (editor.id !== "ai-prompt-editor") {
@@ -591,8 +612,31 @@ class AIManager {
 						// No @-word found, so we provide no completions.
 						return callback(null, []);
 					}
-					// ACE automatically provides the text after the '@' as the prefix.
-					const searchTerm = prefix;
+					
+					const searchTerm = match[1];
+					
+					// Handle Symbol Lookup (@file.js#symbol)
+					if (searchTerm.includes('#')) {
+						const parts = searchTerm.split('#');
+						const fileFilter = parts[0];
+						const symbolQuery = parts[1];
+						
+						window.conduit.wsSearchSymbols(symbolQuery).then(results => {
+							if (!results || !results.data) return callback(null, []);
+							let filtered = results.data;
+							if (fileFilter) {
+								filtered = filtered.filter(s => s.filePath.toLowerCase().includes(fileFilter.toLowerCase()));
+							}
+							const completions = filtered.map(sym => ({
+								caption: `${sym.name} (${sym.type}) - ${sym.filePath.split('/').pop()}`,
+								value: `${sym.filePath}#${sym.name}`,
+								meta: "Symbol"
+							}));
+							callback(null, completions);
+						}).catch(() => callback(null, []));
+						return;
+					}
+
 					const fileResults = window.ui.fileList.find(searchTerm, 20);
 					const fileCompletions = fileResults.map(item => ({
 						caption: item.name,
@@ -1375,7 +1419,16 @@ class AIManager {
 				language: item.language,
 				content: item.content,
 				timestamp: Date.now(),
+				mode: this.agentMode ? 'outline' : 'full',
 			};
+			
+			if (this.agentMode) {
+				window.conduit.wsGetOutline(item.id).then(res => {
+					contextMessage.outline = res.data;
+					this.historyManager.render();
+				}).catch(err => console.error("Failed to get outline", err));
+			}
+
 			this.activeSession.messages.push(contextMessage);
 			// NEW: Add context files to the file bar instead of the main chat area
 			this.fileBar.add(contextMessage);

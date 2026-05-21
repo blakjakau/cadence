@@ -21,6 +21,10 @@ export class FileBar extends Block {
             this.dispatch('file-remove-request', { fileId: config.id });
         });
         
+        chip.on('chip-mode-toggle', (e) => {
+            this.dispatch('file-mode-toggle', { fileId: config.id, mode: e.detail.mode });
+        });
+        
         this._chips.set(config.id, chip);
         this.append(chip);
         

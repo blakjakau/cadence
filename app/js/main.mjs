@@ -17,6 +17,31 @@ import {
 import { observeFile, unobserveFile } from "./fileSystemObserver.mjs"
 import conduitClient from "./conduit-client.mjs?v=1778190000000"
 
+function updateIndexerStatus(data) {
+	const el = document.getElementById('indexer_status');
+	if (el && data) {
+		const size = data.size || "0 KB";
+		const roots = data.roots || [];
+		el.textContent = `Index ready (Size: ${size})`;
+		el.title = `Roots:\n${roots.join('\n')}`;
+	}
+}
+
+conduitClient.on('indexer_status', (msg) => {
+	updateIndexerStatus(msg.data);
+});
+
+conduitClient.on('connect', () => {
+	if (workspace && workspace.folders) {
+		conduitClient.wsSetActiveRoots(workspace.folders).catch(e => console.warn(e));
+	}
+	conduitClient.wsGetIndexerStatus().then(res => {
+		if (!res.error) {
+			updateIndexerStatus(res.data);
+		}
+	}).catch(e => console.warn("Could not get initial index status:", e));
+});
+
 const canPrettify = {
 	"ace/mode/javascript": { name: "babel", plugins: [parserBabel] },
 	"ace/mode/json": { name: "json", plugins: [parserBabel] },
@@ -376,6 +401,10 @@ const saveWorkspace = async () => {
 	workspace.openFolders = fileList.openFolders
 	workspace.activeSidebarTab = ui.iconTabBar?.activeTab?.iconId
 	workspaceClient.setWorkspace(workspace)
+	
+	if (workspace.folders) {
+		conduitClient.wsSetActiveRoots(workspace.folders).catch(e => console.warn(e));
+	}
 }
 window.saveWorkspace = saveWorkspace
 
@@ -478,6 +507,11 @@ const openWorkspace = (() => {
 			} catch (e) {
 				// Ignore if .cadence doesn't exist
 			}
+			
+			if (workspace.folders) {
+				conduitClient.wsSetActiveRoots(workspace.folders).catch(e => console.warn(e));
+			}
+			
 			workspace.ignorePaths = load.ignorePaths || [".git", "node_modules", "dist", "build"]
 			workspace.openFolders = load.openFolders || []
 			workspace.scratchpad = load.scratchpad || ""
