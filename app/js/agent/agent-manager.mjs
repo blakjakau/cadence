@@ -84,6 +84,17 @@ class AgenticManager {
                     },
                     required: ["command"]
                 }
+            },
+            {
+                name: "find_file",
+                description: "Find files matching a specific path using progressive segment/atom matching.",
+                parameters: {
+                    type: "OBJECT",
+                    properties: {
+                        path: { type: "STRING", description: "The file path or partial path to locate." }
+                    },
+                    required: ["path"]
+                }
             }
         ];
     }
@@ -194,10 +205,25 @@ ${this.planOnly ? "Explain your plan in detail but do NOT call any tools yet." :
                     if (this.onUpdate) this.onUpdate();
                 }
             } else {
-                // Final response (no more tools)
-                this.history.push({ role: "model", content: response.text || "" });
+                // Final response (no more tools) or a Plan
+                const text = response.text || "";
+                this.history.push({ role: "model", content: text });
                 if (this.onUpdate) this.onUpdate();
-                loopActive = false;
+
+                if (this.planOnly) {
+                    console.log("[AgenticManager] Plan received. Requesting consent to proceed to action mode.");
+                    const consent = await this._requestConsent();
+                    if (consent) {
+                        console.log("[AgenticManager] Consent granted. Switching to ACTION mode.");
+                        this.planOnly = false;
+                        loopActive = true; // Continue loop in ACTION mode
+                    } else {
+                        console.log("[AgenticManager] Consent denied. Stopping after plan.");
+                        loopActive = false;
+                    }
+                } else {
+                    loopActive = false;
+                }
             }
         }
     }

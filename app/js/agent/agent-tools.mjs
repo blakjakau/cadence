@@ -8,6 +8,7 @@ import AgentBackup from './agent-backup.mjs';
 class AgentTools {
     constructor() {
         this.conduit = conduit;
+        this.editBuffer = {}; // Tracks { [resolvedPath]: { markerIds: [] } }
     }
 
     _resolveAndValidatePath(targetPath) {
@@ -136,6 +137,19 @@ class AgentTools {
     async readFile(path) {
         try {
             const resolvedPath = this._resolveAndValidatePath(path);
+            
+            // Try to find if the file is open in the editor
+            let openTab = null;
+            if (window.ui?.leftTabs?.tabs || window.ui?.rightTabs?.tabs) {
+                const openTabs = [...(window.ui.leftTabs?.tabs || []), ...(window.ui.rightTabs?.tabs || [])];
+                openTab = openTabs.find(tab => tab.config && tab.config.path === resolvedPath && tab.config.session);
+            }
+
+            if (openTab && openTab.config.session) {
+                console.log(`[AgentTools] Reading ${path} from open editor buffer.`);
+                return openTab.config.session.getValue();
+            }
+
             if (this.conduit.isConnected) {
                 const result = await this.conduit.wsRead(resolvedPath);
                 if (result.error) throw new Error(result.error);
@@ -157,55 +171,110 @@ class AgentTools {
     }
 
     /**
-     * Searches for text across files (Grep) client-side.
+     * Searches for text across files (Grep) accelerating using Go and local buffers.
      * @param {string} query 
      */
     async searchFiles(query) {
         try {
-            if (!window.ui?.fileList?.index?.files) {
-                return "Error: File list index is not loaded.";
-            }
-            const files = window.ui.fileList.index.files;
             const matches = [];
             const lowercaseQuery = query.toLowerCase();
-            
-            // Limit search count to avoid freezing UI on huge repos
-            let searchedCount = 0;
-            for (const file of files) {
-                if (file.isDir) continue;
-                searchedCount++;
+            const searchedPaths = new Set();
+
+            // 1. Search all local active editor buffers (open files) first
+            const openTabs = [...(window.ui?.leftTabs?.tabs || []), ...(window.ui?.rightTabs?.tabs || [])];
+            for (const tab of openTabs) {
+                const path = tab.config?.path;
+                if (!path || !tab.config.session) continue;
                 
-                // If path matches query
-                if (file.path.toLowerCase().includes(lowercaseQuery)) {
-                    matches.push({ path: file.path, type: "filename_match" });
-                }
-                
-                // Read and check content of text files (skip known binaries/large formats)
-                const extension = file.path.split('.').pop().toLowerCase();
+                const extension = path.split('.').pop().toLowerCase();
                 const skipExtensions = ['png', 'jpg', 'jpeg', 'gif', 'ico', 'pdf', 'zip', 'gz', 'tar', 'exe', 'bin', 'dll'];
                 if (skipExtensions.includes(extension)) continue;
 
-                // Validate before reading
                 try {
-                    const resolvedPath = this._resolveAndValidatePath(file.path);
-                    const content = await this.readFile(resolvedPath);
-                    if (content && !content.startsWith("Error:") && content.toLowerCase().includes(lowercaseQuery)) {
+                    const resolvedPath = this._resolveAndValidatePath(path);
+                    searchedPaths.add(resolvedPath);
+
+                    const content = tab.config.session.getValue();
+                    if (content && content.toLowerCase().includes(lowercaseQuery)) {
                         const lines = content.split('\n');
                         lines.forEach((line, idx) => {
                             if (line.toLowerCase().includes(lowercaseQuery)) {
-                                matches.push({ path: file.path, line: idx + 1, content: line.trim() });
+                                matches.push({ path, line: idx + 1, content: line.trim() });
                             }
                         });
                     }
                 } catch (e) {
-                    // Ignore search access errors for secure skipped files
-                    continue;
+                    // Ignore local search errors
                 }
-                
-                if (matches.length >= 50) break;
-                if (searchedCount >= 200) break; // Safety limit
             }
-            
+
+            // 2. Search remaining files using backend Go server if connected
+            if (this.conduit.isConnected) {
+                console.log(`[AgentTools] Running backend Go search for query: "${query}"`);
+                try {
+                    const res = await this.conduit.wsSearch(".", "content", query);
+                    if (res && !res.error && Array.isArray(res.data)) {
+                        for (const match of res.data) {
+                            try {
+                                const resolved = this._resolveAndValidatePath(match.path);
+                                if (searchedPaths.has(resolved)) continue; // Already searched
+                                matches.push({
+                                    path: match.path,
+                                    line: match.line,
+                                    content: match.content
+                                });
+                            } catch (e) {
+                                // Skip files that fail path resolution
+                            }
+                        }
+                    }
+                } catch (e) {
+                    console.error("[AgentTools] Backend search failed, falling back...", e);
+                }
+            }
+
+            // 3. Fallback to client-side indexing if backend search is offline/unavailable
+            if (matches.length === 0 && window.ui?.fileList?.index?.files) {
+                console.log("[AgentTools] Falling back to client-side files index search");
+                const files = window.ui.fileList.index.files;
+                let searchedCount = 0;
+                for (const file of files) {
+                    if (file.isDir) continue;
+                    
+                    try {
+                        const resolvedPath = this._resolveAndValidatePath(file.path);
+                        if (searchedPaths.has(resolvedPath)) continue;
+                        
+                        searchedCount++;
+                        searchedPaths.add(resolvedPath);
+
+                        // Filename match check
+                        if (file.path.toLowerCase().includes(lowercaseQuery)) {
+                            matches.push({ path: file.path, type: "filename_match" });
+                        }
+
+                        const extension = file.path.split('.').pop().toLowerCase();
+                        const skipExtensions = ['png', 'jpg', 'jpeg', 'gif', 'ico', 'pdf', 'zip', 'gz', 'tar', 'exe', 'bin', 'dll'];
+                        if (skipExtensions.includes(extension)) continue;
+
+                        const content = await this.readFile(resolvedPath);
+                        if (content && !content.startsWith("Error:") && content.toLowerCase().includes(lowercaseQuery)) {
+                            const lines = content.split('\n');
+                            lines.forEach((line, idx) => {
+                                if (line.toLowerCase().includes(lowercaseQuery)) {
+                                    matches.push({ path: file.path, line: idx + 1, content: line.trim() });
+                                }
+                            });
+                        }
+                    } catch (e) {
+                        continue;
+                    }
+
+                    if (matches.length >= 50) break;
+                    if (searchedCount >= 200) break;
+                }
+            }
+
             if (matches.length === 0) return "No matches found.";
             return matches.map(m => {
                 if (m.type === "filename_match") {
@@ -275,16 +344,79 @@ class AgentTools {
             const Range = window.ace.require("ace/range").Range;
             const rangeToReplace = new Range(startPos.row, startPos.column, endPos.row, endPos.column);
             
-            // Apply the edit to the session using replace to preserve undo history
-            session.replace(rangeToReplace, replacementString);
+            // Perform review replacement: show search string and replacement string inline separated by a newline
+            const combinedString = searchString + "\n" + replacementString;
+            session.replace(rangeToReplace, combinedString);
             
-            // Add a marker to annotate the change in the editor
-            const newEndPos = indexToPosition(session.getValue(), startIndex + replacementString.length);
-            const markerRange = new Range(startPos.row, 0, newEndPos.row, Infinity);
-            session.addMarker(markerRange, "agent-edit-marker", "fullLine");
+            // Create dynamic Anchors that track the edited range dynamically
+            const newContent = session.getValue();
+            const startDeletedPos = indexToPosition(newContent, startIndex);
+            const endDeletedPos = indexToPosition(newContent, startIndex + searchString.length);
+            const startAddedPos = indexToPosition(newContent, startIndex + searchString.length + 1);
+            const endAddedPos = indexToPosition(newContent, startIndex + searchString.length + 1 + replacementString.length);
+
+            const doc = session.getDocument();
+            const startDeletedAnchor = doc.createAnchor(startDeletedPos.row, startDeletedPos.column);
+            const endDeletedAnchor = doc.createAnchor(endDeletedPos.row, endDeletedPos.column);
+            const startAddedAnchor = doc.createAnchor(startAddedPos.row, startAddedPos.column);
+            const endAddedAnchor = doc.createAnchor(endAddedPos.row, endAddedPos.column);
+
+            // Add a dynamic marker to annotate the change in the editor (red for deleted, green for added)
+            const dynamicMarker = {
+                update: function(html, markerLayer, session, config) {
+                    const startDel = startDeletedAnchor.getPosition();
+                    const endDel = endDeletedAnchor.getPosition();
+                    const startAdd = startAddedAnchor.getPosition();
+                    const endAdd = endAddedAnchor.getPosition();
+                    
+                    const Range = window.ace.require("ace/range").Range;
+                    
+                    // Draw deleted marker (red)
+                    const rangeDel = new Range(startDel.row, 0, endDel.row, Infinity);
+                    markerLayer.drawFullLineMarker(html, rangeDel, "agent-edit-deleted", config);
+                    
+                    // Draw added marker (green)
+                    const rangeAdd = new Range(startAdd.row, 0, endAdd.row, Infinity);
+                    markerLayer.drawFullLineMarker(html, rangeAdd, "agent-edit-added", config);
+                }
+            };
+            session.addDynamicMarker(dynamicMarker);
             
+            // Track in edit buffer
+            if (!this.editBuffer[resolvedPath]) {
+                this.editBuffer[resolvedPath] = {
+                    edits: [],
+                    currentIndex: 0
+                };
+            }
+            
+            const edit = {
+                id: dynamicMarker.id,
+                startDeletedAnchor: startDeletedAnchor,
+                endDeletedAnchor: endDeletedAnchor,
+                startAddedAnchor: startAddedAnchor,
+                endAddedAnchor: endAddedAnchor,
+                // Fallbacks for backward compatibility
+                startAnchor: startDeletedAnchor,
+                endAnchor: endAddedAnchor,
+                originalText: searchString,
+                replacementText: replacementString,
+                status: "pending"
+            };
+            
+            this.editBuffer[resolvedPath].edits.push(edit);
+
+            if (window.ui?.aiManager?._renderEditBuffer) {
+                window.ui.aiManager._renderEditBuffer();
+            }
+
             // Focus the tab
             targetTab.click();
+
+            // Refresh UI notice bar if active
+            if (window.ui?.updateAgentEditsNotice) {
+                window.ui.updateAgentEditsNotice(targetTab);
+            }
 
             return `Successfully edited ${path} in the editor. The changes are pending user review and save.`;
         } catch (error) {
@@ -340,6 +472,184 @@ class AgentTools {
      */
     async execCommand(command) {
         return `Executing: ${command}\nOutput: (Terminal execution via agent is not supported directly for security reasons. Please use the terminal tab instead.)`;
+    }
+
+    getEditBuffer() {
+        return this.editBuffer;
+    }
+
+    async resolveEdit(resolvedPath, editIndex, accept) {
+        const info = this.editBuffer[resolvedPath];
+        if (!info || !info.edits || !info.edits[editIndex]) {
+            return; // Already resolved or invalid
+        }
+        
+        const edit = info.edits[editIndex];
+        
+        // Find open tab
+        const openTabs = [...(window.ui?.leftTabs?.tabs || []), ...(window.ui?.rightTabs?.tabs || [])];
+        const tab = openTabs.find(t => t.config && t.config.path === resolvedPath && t.config.session);
+        if (!tab) {
+            throw new Error(`Tab for ${resolvedPath} is not open.`);
+        }
+        const session = tab.config.session;
+        
+        // Remove marker
+        try {
+            session.removeMarker(edit.id);
+        } catch (e) {
+            console.warn("[AgentTools] Failed to remove marker:", e);
+        }
+        
+        const Range = window.ace.require("ace/range").Range;
+        if (accept) {
+            // Keep the replacement block: delete the original search block + separating newline
+            const start = edit.startDeletedAnchor.getPosition();
+            const end = edit.startAddedAnchor.getPosition();
+            const deleteRange = new Range(start.row, start.column, end.row, end.column);
+            session.replace(deleteRange, "");
+        } else {
+            // Reject: keep the original search block: delete the separating newline + replacement block
+            const start = edit.endDeletedAnchor.getPosition();
+            const end = edit.endAddedAnchor.getPosition();
+            const deleteRange = new Range(start.row, start.column, end.row, end.column);
+            session.replace(deleteRange, "");
+        }
+        
+        // Detach anchors to prevent leaks
+        try {
+            if (edit.startDeletedAnchor) edit.startDeletedAnchor.detach();
+            if (edit.endDeletedAnchor) edit.endDeletedAnchor.detach();
+            if (edit.startAddedAnchor) edit.startAddedAnchor.detach();
+            if (edit.endAddedAnchor) edit.endAddedAnchor.detach();
+            if (edit.startAnchor) edit.startAnchor.detach();
+            if (edit.endAnchor) edit.endAnchor.detach();
+        } catch (e) {
+            console.warn("[AgentTools] Failed to detach anchors:", e);
+        }
+        
+        // Remove from the edits list
+        info.edits.splice(editIndex, 1);
+        
+        // Adjust currentIndex if necessary
+        if (info.currentIndex >= info.edits.length) {
+            info.currentIndex = Math.max(0, info.edits.length - 1);
+        }
+        
+        // If there are no more pending edits for this file, save it!
+        if (info.edits.length === 0) {
+            delete this.editBuffer[resolvedPath];
+            if (window.saveFileTab) {
+                await window.saveFileTab(tab);
+                tab.config.session.baseValue = tab.config.session.getValue();
+            }
+            
+            // Check if there are other files with edits
+            const remainingPaths = Object.keys(this.editBuffer);
+            if (remainingPaths.length > 0) {
+                const nextPath = remainingPaths[0];
+                if (window.ui?.fileList?.open) {
+                    await window.ui.fileList.open(nextPath);
+                }
+            } else {
+                // Hide notice bar completely
+                if (window.ui?.hideAgentEditsNotice) {
+                    window.ui.hideAgentEditsNotice(tab.config.side);
+                }
+            }
+        }
+        
+        if (window.ui?.aiManager?._renderEditBuffer) {
+            window.ui.aiManager._renderEditBuffer();
+        }
+        
+        // Trigger UI refresh
+        if (window.ui?.updateAgentEditsNotice) {
+            window.ui.updateAgentEditsNotice(tab);
+        }
+    }
+
+    async resolveAllEdits(resolvedPath, accept) {
+        const info = this.editBuffer[resolvedPath];
+        if (!info || !info.edits) return;
+        
+        // Resolve from end to start to avoid shifting earlier positions
+        for (let i = info.edits.length - 1; i >= 0; i--) {
+            await this.resolveEdit(resolvedPath, i, accept);
+        }
+    }
+
+    async commitEdits() {
+        const paths = Object.keys(this.editBuffer);
+        for (const resolvedPath of paths) {
+            await this.resolveAllEdits(resolvedPath, true);
+        }
+        return `Successfully committed all pending edits.`;
+    }
+
+    async discardEdits() {
+        const paths = Object.keys(this.editBuffer);
+        for (const resolvedPath of paths) {
+            await this.resolveAllEdits(resolvedPath, false);
+        }
+        return `Successfully discarded all pending edits.`;
+    }
+
+    /**
+     * Finds files in the workspace matching a path using progressive atoms.
+     * @param {string} searchPath 
+     * @returns {Promise<string>}
+     */
+    async findFile(searchPath) {
+        try {
+            if (!window.ui?.fileList?.index?.files) {
+                return "Error: File list index is not loaded.";
+            }
+            const files = window.ui.fileList.index.files;
+            
+            // Normalize slashes
+            const cleanSearch = searchPath.replace(/\\/g, '/').replace(/\/+/g, '/').toLowerCase();
+            
+            // Split path into segments
+            const segments = cleanSearch.split('/').filter(s => s && s !== '.');
+            if (segments.length === 0) {
+                return "Error: Empty search path.";
+            }
+
+            let matches = [];
+            
+            // Try matching with progressively fewer leading atoms
+            for (let i = 0; i < segments.length; i++) {
+                const subPath = segments.slice(i).join('/');
+                matches = files.filter(f => {
+                    if (f.isDir) return false;
+                    const filePath = f.path.replace(/\\/g, '/').replace(/\/+/g, '/').toLowerCase();
+                    return filePath.endsWith('/' + subPath) || filePath === subPath;
+                });
+                
+                if (matches.length > 0) {
+                    break;
+                }
+            }
+
+            // Fallback: If no match, try checking if the last segment is a substring anywhere in the path
+            if (matches.length === 0) {
+                const lastSegment = segments[segments.length - 1];
+                matches = files.filter(f => {
+                    if (f.isDir) return false;
+                    const filePath = f.path.replace(/\\/g, '/').replace(/\/+/g, '/').toLowerCase();
+                    return filePath.includes(lastSegment);
+                });
+            }
+
+            if (matches.length === 0) {
+                return `No files found matching '${searchPath}'.`;
+            }
+
+            return matches.map(f => f.path).join('\n');
+        } catch (error) {
+            return `Error finding file: ${error.message}`;
+        }
     }
 }
 

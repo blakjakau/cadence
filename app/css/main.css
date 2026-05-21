@@ -924,6 +924,15 @@ body.is-native #menu .window-controls {
     background-color: var(--theme-dark); /* Darker blue on hover */
 }
 
+.notice-bar button.cancel {
+    background-color: #c0392b; /* Red background for cancel/reject actions */
+    color: #fff;
+}
+
+.notice-bar button.cancel:hover {
+    background-color: #e74c3c; /* Lighter red on hover */
+}
+
 #sidebar-panels-container {
 	position: relative;
 	height: 100%;

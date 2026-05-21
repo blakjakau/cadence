@@ -47,6 +47,7 @@ Choose ONE tool per turn and use its exact format:
 <tool_call name="search_files"><query>text</query></tool_call>
 <tool_call name="create_file"><path>file_path</path><content>text</content></tool_call>
 <tool_call name="open_file"><path>file_path</path></tool_call>
+<tool_call name="find_file"><path>search_path</path></tool_call>
 <tool_call name="edit_file">
   <path>file_path</path>
   <search>exact_lines_to_replace</search>
@@ -315,11 +316,21 @@ class AIManager {
 		display.innerHTML = `
 			<div class="header">Pending Edits</div>
 			<div class="file-list"></div>
-			<button class="commit-button theme-button">Commit All</button>
+			<div style="display: flex; gap: 8px; margin-top: 8px;">
+				<button class="commit-button theme-button">Commit All</button>
+				<button class="discard-button theme-button secondary" style="background: var(--bg-hover); color: var(--text-color);">Discard All</button>
+			</div>
 		`;
 		display.querySelector(".commit-button").onclick = async () => {
 			await agentTools.commitEdits();
 			this._renderEditBuffer();
+		};
+		display.querySelector(".discard-button").onclick = async () => {
+			const confirmed = await window.modal.confirm("Are you sure you want to discard all pending edits? This will undo all changes made by the AI agent to your active buffers.", "Discard Pending Edits");
+			if (confirmed) {
+				await agentTools.discardEdits();
+				this._renderEditBuffer();
+			}
 		};
 		return display;
 	}
@@ -334,7 +345,7 @@ class AIManager {
 		}
 		this.editBufferDisplay.style.display = "block";
 		const list = this.editBufferDisplay.querySelector(".file-list");
-		list.innerHTML = files.map(f => `<div>${f.split('/').pop()}</div>`).join('');
+		list.innerHTML = files.map(f => `<div title="${this._escapeHtml(f)}">${this._escapeHtml(f.split('/').pop())}</div>`).join('');
 	}
 
 	_updateAgentProgressPanel() {
@@ -417,8 +428,11 @@ class AIManager {
 			checkbox.click();
 		});
 
-		this.aiInfoDisplay = document.createElement("span");
-		this.aiInfoDisplay.classList.add("ai-info-display");
+		this.aiInfoDisplay = document.createElement("select");
+		this.aiInfoDisplay.classList.add("ai-info-display", "ai-provider-select");
+		this.aiInfoDisplay.addEventListener('change', (e) => {
+			this.switchAiProvider(e.target.value);
+		});
 
 
 		buttonContainer.append(this.clearButton)
@@ -842,19 +856,39 @@ class AIManager {
 	// Method to update the AI info display element
 	_updateAIInfoDisplay() {
 		if (this.aiInfoDisplay && this.ai) {
+			// Clear existing options
+			this.aiInfoDisplay.innerHTML = "";
+			
+			// Populate options
+			Object.keys(this.aiProviders).forEach(provider => {
+				// Try to find the model name in current config or workspace/app settings
+				const config = (provider === this.aiProvider) 
+					? this.ai.config 
+					: (window.workspace.aiConfig?.[provider] || window.app.aiConfig?.[provider]);
+
+				// Suppress unconfigured providers from the quick list
+				if (!config?.model) {
+					return;
+				}
+
+				const option = document.createElement("option");
+				option.value = provider;
+				let label = provider.charAt(0).toUpperCase() + provider.slice(1);
+				label += ` (${config.model})`;
+				
+				option.textContent = label;
+				if (provider === this.aiProvider) {
+					option.selected = true;
+				}
+				this.aiInfoDisplay.appendChild(option);
+			});
+
 			if (this.ai.isConfigured()) {
-				const providerName = this.aiProvider;
-				const modelName = this.ai.config?.model || "No Model Selected"; // Fallback
-				this.aiInfoDisplay.textContent = `AI: ${modelName}`;
-				this.aiInfoDisplay.setAttribute("title", `AI Provider: ${providerName}, Model: ${modelName}`);
+				const modelName = this.ai.config?.model || "No Model";
+				this.aiInfoDisplay.setAttribute("title", `Provider: ${this.aiProvider}, Model: ${modelName}`);
 			} else {
-				this.aiInfoDisplay.textContent = `AI: Not Configured`;
-				this.aiInfoDisplay.setAttribute("title", `AI Provider: ${this.aiProvider}, Status: Not Configured. Go to Settings.`);
+				this.aiInfoDisplay.setAttribute("title", `Provider: ${this.aiProvider}, Status: Not Configured`);
 			}
-		} else if (this.aiInfoDisplay) {
-			// Fallback if ai hasn't been initialized yet or something went wrong
-			this.aiInfoDisplay.textContent = `AI: Loading...`;
-			this.aiInfoDisplay.setAttribute("title", `AI Provider: ${this.aiProvider}, Status: Loading or Error.`);
 		}
 	}
 
@@ -926,6 +960,7 @@ class AIManager {
 		const newSessionData = { // Initialize with scrollTop 0 for new sessions
 			id: newId, name: newName, createdAt: Date.now(), lastModified: Date.now(),
 			messages: [], promptInput: "", promptHistory: [], scrollTop: 0,
+			evergreenFiles: [],
 		};
 
 		await workspaceClient.setSession(newId, newSessionData);
@@ -1215,7 +1250,12 @@ class AIManager {
 		this.promptEditor.setValue("");
 		this._resizePromptArea();
 		// Process prompt for @ tags, always using "chat" logic now.
-		const { processedPrompt, contextItems } = await this.ai._getContextualPrompt(userPrompt, "chat")
+		const { processedPrompt, contextItems } = await this.ai._getContextualPrompt(
+            userPrompt, 
+            "chat", 
+            this.activeSession.evergreenFiles,
+            this.agentMode
+        )
 
 		// NEW: Remove any existing context items for the same files being added in this turn
 		if (contextItems.length > 0) {
@@ -1615,6 +1655,8 @@ class AIManager {
 							);
 						} else if (toolCall.name === "open_file") {
 							toolResult = await agentTools.openFile(toolCall.arguments.path);
+						} else if (toolCall.name === "find_file") {
+							toolResult = await agentTools.findFile(toolCall.arguments.path);
 						} else {
 							toolResult = `Error: Unknown tool ${toolCall.name}`;
 						}

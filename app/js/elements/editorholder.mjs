@@ -194,6 +194,22 @@ export class EditorHolder extends Panel {
             <span>This file has been modified outside the editor.</span>
             <button rel="reload">Reload</button> <button rel="dismiss">X</button> `;
         this.appendChild(noticeBar);
+
+        // Add agent edits notice bar
+        const agentEditsBar = document.createElement("div");
+        agentEditsBar.setAttribute("id", `${this.id}AgentEditsNotice`);
+        agentEditsBar.classList.add("notice-bar", "agent-edits-notice");
+        agentEditsBar.style.display = "none";
+        agentEditsBar.innerHTML = `
+            <span>Pending edits: <b class="edit-index">0</b> of <b class="edit-total">0</b></span>
+            <button rel="prev-edit" title="Previous Edit" style="padding: 4px 10px; margin: 0 2px;">&lt;</button>
+            <button rel="next-edit" title="Next Edit" style="padding: 4px 10px; margin: 0 2px;">&gt;</button>
+            <button rel="accept-edit" class="themed" style="margin: 0 2px;">Accept</button>
+            <button rel="reject-edit" class="cancel" style="margin: 0 2px;">Reject</button>
+            <button rel="accept-all" class="themed" style="margin: 0 2px;">Accept All</button>
+            <button rel="reject-all" class="cancel" style="margin: 0 2px;">Reject All</button>
+        `;
+        this.appendChild(agentEditsBar);
     }
 }
 

@@ -260,6 +260,10 @@ class ConduitClient {
         return this._send({ action: 'delete', path });
     }
 
+    wsSearch(path, type, query) {
+        return this._send({ action: 'search', path, type, query });
+    }
+
     // Watch is fire-and-forget, it just sends the command.
     wsWatch(path) {
         const message = { action: 'watch', path };

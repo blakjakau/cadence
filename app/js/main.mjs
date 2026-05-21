@@ -281,6 +281,7 @@ const saveFile = async (tab) => {
 		}, 2000)
 	}
 }
+window.saveFileTab = saveFile;
 
 const saveAppConfig = async () => {
 	app.sessionOptions = ui.leftEdit.session.getOptions()
@@ -1213,20 +1214,112 @@ const renderPlanTasksView = (container) => {
 		<div class="plan-tasks-split-container">
 			<div class="plan-pane">
 				<div class="pane-header">
-					<ui-icon>assignment</ui-icon>
-					<span>Implementation Plan</span>
+					<div class="header-left">
+						<ui-icon>assignment</ui-icon>
+						<span>Implementation Plan</span>
+					</div>
+					<button class="edit-plan-btn">
+						<ui-icon>edit</ui-icon>
+						<span>Edit</span>
+					</button>
 				</div>
 				<div class="pane-content markdown-body">${planHtml}</div>
 			</div>
 			<div class="tasks-pane">
 				<div class="pane-header">
-					<ui-icon>playlist_add_check</ui-icon>
-					<span>Task Checklist</span>
+					<div class="header-left">
+						<ui-icon>playlist_add_check</ui-icon>
+						<span>Task Checklist</span>
+					</div>
+					<button class="edit-tasks-btn">
+						<ui-icon>edit</ui-icon>
+						<span>Edit</span>
+					</button>
 				</div>
 				<div class="pane-content markdown-body tasks-content">${tasksHtml}</div>
 			</div>
 		</div>
 	`
+
+	const planBtn = container.querySelector(".edit-plan-btn")
+	const planContent = container.querySelector(".plan-pane .pane-content")
+	let planEditorInstance = null
+
+	planBtn.onclick = async () => {
+		if (!planEditorInstance) {
+			planBtn.innerHTML = `<ui-icon>save</ui-icon><span>Save</span>`
+			planBtn.style.color = "var(--theme)"
+			planBtn.style.borderColor = "var(--theme)"
+
+			const rawMarkdown = session.implementationPlan || ""
+			planContent.innerHTML = `<div class="plan-ace-editor" style="position: absolute; top: 0; left: 0; right: 0; bottom: 0;"></div>`
+			const editorDiv = planContent.querySelector(".plan-ace-editor")
+
+			planEditorInstance = window.ace.edit(editorDiv)
+			const theme = window.leftEdit?.renderer?.getTheme() || "ace/theme/tomorrow_night"
+			planEditorInstance.setTheme(theme)
+			planEditorInstance.session.setMode("ace/mode/markdown")
+			planEditorInstance.setValue(rawMarkdown, -1)
+			planEditorInstance.setFontSize(12)
+			planEditorInstance.setShowPrintMargin(false)
+			planEditorInstance.renderer.setShowGutter(true)
+			planEditorInstance.focus()
+		} else {
+			const newValue = planEditorInstance.getValue()
+			session.implementationPlan = newValue
+
+			planEditorInstance.destroy()
+			planEditorInstance = null
+
+			try {
+				await workspaceClient.setSession(session.id, session)
+			} catch (e) {
+				console.error("[PlanTasksView] Error saving session plan:", e)
+			}
+
+			renderPlanTasksView(container)
+		}
+	}
+
+	const tasksBtn = container.querySelector(".edit-tasks-btn")
+	const tasksContent = container.querySelector(".tasks-pane .pane-content")
+	let tasksEditorInstance = null
+
+	tasksBtn.onclick = async () => {
+		if (!tasksEditorInstance) {
+			tasksBtn.innerHTML = `<ui-icon>save</ui-icon><span>Save</span>`
+			tasksBtn.style.color = "var(--theme)"
+			tasksBtn.style.borderColor = "var(--theme)"
+
+			const rawMarkdown = session.taskList || ""
+			tasksContent.innerHTML = `<div class="tasks-ace-editor" style="position: absolute; top: 0; left: 0; right: 0; bottom: 0;"></div>`
+			const editorDiv = tasksContent.querySelector(".tasks-ace-editor")
+
+			tasksEditorInstance = window.ace.edit(editorDiv)
+			const theme = window.leftEdit?.renderer?.getTheme() || "ace/theme/tomorrow_night"
+			tasksEditorInstance.setTheme(theme)
+			tasksEditorInstance.session.setMode("ace/mode/markdown")
+			tasksEditorInstance.setValue(rawMarkdown, -1)
+			tasksEditorInstance.setFontSize(12)
+			tasksEditorInstance.setShowPrintMargin(false)
+			tasksEditorInstance.renderer.setShowGutter(true)
+			tasksEditorInstance.focus()
+		} else {
+			const newValue = tasksEditorInstance.getValue()
+			session.taskList = newValue
+
+			tasksEditorInstance.destroy()
+			tasksEditorInstance = null
+
+			try {
+				await workspaceClient.setSession(session.id, session)
+			} catch (e) {
+				console.error("[PlanTasksView] Error saving session tasks:", e)
+			}
+
+			renderPlanTasksView(container)
+		}
+	}
 }
 
 const openPlanAndTaskList = (targetEditor = leftEdit) => {
@@ -1560,8 +1653,10 @@ leftTabs.click = async (event) => {
 	// Check if the file has been modified externally and show notice
 	if (tab.config.fileModified) {
 		ui.showFileModifiedNotice(tab, "left")
+		ui.hideAgentEditsNotice("left")
 	} else {
 		ui.hideFileModifiedNotice("left") // Hide if not modified
+		ui.updateAgentEditsNotice(tab)
 	}
 }
 
@@ -1572,8 +1667,10 @@ rightTabs.click = async (event) => {
 	// Check if the file has been modified externally and show notice
 	if (tab.config.fileModified) {
 		ui.showFileModifiedNotice(tab, "right")
+		ui.hideAgentEditsNotice("right")
 	} else {
 		ui.hideFileModifiedNotice("right") // Hide if not modified
+		ui.updateAgentEditsNotice(tab)
 	}
 }
 
@@ -2343,6 +2440,7 @@ setTimeout(async () => {
 			leftEdit.container.style.display = "none"
 			leftMedia.style.display = "none"
 			window.ui.hideFileModifiedNotice("left") // Hide notice bar when empty
+			window.ui.hideAgentEditsNotice("left")
 		}
 
 		rightTabs.onEmpty = () => {
@@ -2350,6 +2448,7 @@ setTimeout(async () => {
 			rightEdit.container.style.display = "none"
 			rightMedia.style.display = "none"
 			window.ui.hideFileModifiedNotice("right") // Hide notice bar when empty
+			window.ui.hideAgentEditsNotice("right")
 			ui.toggleSplitView({ targetState: "closed" })
 		}
 

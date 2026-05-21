@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/fsnotify/fsnotify"
 	"github.com/gorilla/websocket"
@@ -30,11 +31,17 @@ type fileRequest struct {
 }
 
 type fileResponse struct {
-	RequestId int         `json:"requestId,omitempty"` // Added to echo back the request ID
+	RequestId int         `json:"requestId,omitempty"` // Echo back the request ID
 	Action    string      `json:"action"`
 	Path      string      `json:"path"`
 	Error     string      `json:"error,omitempty"`
 	Data      interface{} `json:"data,omitempty"`
+}
+
+type searchMatch struct {
+	Path    string `json:"path"`
+	Line    int    `json:"line"`
+	Content string `json:"content"`
 }
 
 type fileInfo struct {
@@ -354,6 +361,13 @@ func handleWsRequest(ws *websocket.Conn, req fileRequest) {
 			} else {
 				resp.Data = results
 			}
+		} else if req.Type == "content" {
+			results, err := walkAndSearchContent(fullPath, req.Query)
+			if err != nil {
+				resp.Error = err.Error()
+			} else {
+				resp.Data = results
+			}
 		} else {
 			resp.Error = "Unsupported search type"
 		}
@@ -366,13 +380,45 @@ func handleWsRequest(ws *websocket.Conn, req fileRequest) {
 
 // walkAndSearchFolders recursively searches for directories matching the query.
 func walkAndSearchFolders(path, query string) ([]fileInfo, error) {
-	entries, err := ioutil.ReadDir(path)
+	visited := make(map[string]bool)
+	return walkAndSearchFoldersHelper(path, query, visited, 0)
+}
+
+func walkAndSearchFoldersHelper(path, query string, visited map[string]bool, depth int) ([]fileInfo, error) {
+	if depth > 15 {
+		return nil, nil // Stop deep recursion
+	}
+
+	// Resolve the absolute path to detect circular symlinks
+	absPath, err := filepath.Abs(path)
 	if err != nil {
 		return nil, err
 	}
+	realPath, err := filepath.EvalSymlinks(absPath)
+	if err != nil {
+		realPath = absPath // Fallback if eval symlinks fails
+	}
 
-	if strings.HasPrefix(filepath.Base(path), ".") && filepath.Base(path) != "." {
-		return nil, nil // Skip dot files/folders themselves for top-level search
+	if visited[realPath] {
+		return nil, nil // Circular dependency/symlink loop detected
+	}
+	visited[realPath] = true
+	defer func() { visited[realPath] = false }() // Cleanup when unwinding
+
+	baseName := filepath.Base(path)
+	// Skip dot folders early (unless it's the exact match query)
+	if strings.HasPrefix(baseName, ".") && baseName != "." && strings.ToLower(baseName) != strings.ToLower(query) {
+		return nil, nil
+	}
+	// Skip other standard large/ignored folders early
+	lowerBaseName := strings.ToLower(baseName)
+	if lowerBaseName == "node_modules" || lowerBaseName == "dist" || lowerBaseName == "build" || lowerBaseName == ".pkgconfig" {
+		return nil, nil
+	}
+
+	entries, err := ioutil.ReadDir(path)
+	if err != nil {
+		return nil, err
 	}
 
 	var foundItems []fileInfo
@@ -381,16 +427,159 @@ func walkAndSearchFolders(path, query string) ([]fileInfo, error) {
 			continue
 		}
 
-		children, _ := walkAndSearchFolders(filepath.Join(path, entry.Name()), query)
-		
-		// Skip dot folders from being added to results, unless it's the specific query.
-		if strings.HasPrefix(entry.Name(), ".") && strings.ToLower(entry.Name()) != strings.ToLower(query) {
+		childName := entry.Name()
+		childLower := strings.ToLower(childName)
+		// Skip dot folders early, unless it matches the query
+		if strings.HasPrefix(childName, ".") && childLower != strings.ToLower(query) {
 			continue
 		}
-		if strings.Contains(strings.ToLower(entry.Name()), strings.ToLower(query)) || len(children) > 0 {
-			item := fileInfo{Name: entry.Name(), IsDir: true, Size: entry.Size(), ModTime: entry.ModTime().Unix(), Children: children}
+		// Skip standard ignored folders early
+		if childLower == "node_modules" || childLower == "dist" || childLower == "build" || childLower == ".pkgconfig" {
+			continue
+		}
+
+		children, _ := walkAndSearchFoldersHelper(filepath.Join(path, childName), query, visited, depth+1)
+
+		if strings.Contains(childLower, strings.ToLower(query)) || len(children) > 0 {
+			item := fileInfo{
+				Name:     childName,
+				IsDir:    true,
+				Size:     entry.Size(),
+				ModTime:  entry.ModTime().Unix(),
+				Children: children,
+			}
 			foundItems = append(foundItems, item)
 		}
 	}
 	return foundItems, nil
+}
+
+// walkAndSearchContent recursively searches text files under rootPath for occurrences of query.
+func walkAndSearchContent(rootPath, query string) ([]searchMatch, error) {
+	var matches []searchMatch
+	queryLower := strings.ToLower(query)
+	limit := 100 // Cap results at 100 to prevent overwhelming memory or socket
+
+	startTime := time.Now()
+	timeout := 5 * time.Second
+
+	// Map to prevent processing the same file multiple times via symlinks
+	visitedFiles := make(map[string]bool)
+
+	err := filepath.WalkDir(rootPath, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return nil // Skip files we can't access
+		}
+		if len(matches) >= limit {
+			return filepath.SkipDir // Stop walking if limit reached
+		}
+		if time.Since(startTime) > timeout {
+			return filepath.SkipAll // Stop search if it takes longer than 5s
+		}
+
+		// Skip hidden folders and specific large/binary directories
+		if d.IsDir() {
+			name := d.Name()
+			nameLower := strings.ToLower(name)
+			if strings.HasPrefix(name, ".") && name != "." {
+				return filepath.SkipDir
+			}
+			if nameLower == "node_modules" || nameLower == "dist" || nameLower == "build" || nameLower == ".pkgconfig" {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+
+		// Only search regular files
+		if !d.Type().IsRegular() {
+			return nil
+		}
+
+		// Skip files based on extension
+		ext := strings.ToLower(filepath.Ext(path))
+		skipExts := map[string]bool{
+			".png": true, ".jpg": true, ".jpeg": true, ".gif": true,
+			".ico": true, ".pdf": true, ".zip": true, ".gz": true,
+			".tar": true, ".exe": true, ".bin": true, ".dll": true,
+			".mp4": true, ".mp3": true, ".wav": true, ".webp": true,
+			".conduit-server": true,
+			".gguf": true, ".sqlite": true, ".sqlite3": true, ".db": true,
+			".7z": true, ".rar": true, ".tgz": true, ".iso": true,
+			".so": true, ".dylib": true, ".onnx": true, ".mov": true,
+			".avi": true, ".mkv": true, ".webm": true,
+		}
+		if skipExts[ext] {
+			return nil
+		}
+
+		// Check file size using Lstat/Info first, before reading the whole file!
+		info, err := d.Info()
+		if err != nil {
+			return nil // Skip files whose info we can't read
+		}
+		// Limit file size to 5 MB
+		if info.Size() > 5 * 1024 * 1024 {
+			return nil // Skip large files
+		}
+
+		// Get absolute/canonical path to prevent symlink cycle/redundancy
+		absPath, err := filepath.Abs(path)
+		if err == nil {
+			realPath, err := filepath.EvalSymlinks(absPath)
+			if err == nil {
+				if visitedFiles[realPath] {
+					return nil // Already processed this physical file
+				}
+				visitedFiles[realPath] = true
+			}
+		}
+
+		// Quick check for binary: read a small prefix (up to 1024 bytes)
+		file, err := os.Open(path)
+		if err != nil {
+			return nil
+		}
+		prefix := make([]byte, 1024)
+		n, _ := file.Read(prefix)
+		file.Close()
+
+		for i := 0; i < n; i++ {
+			if prefix[i] == 0 {
+				return nil // Binary file check: found null byte
+			}
+		}
+
+		// Read file content safely
+		contentBytes, err := ioutil.ReadFile(path)
+		if err != nil {
+			return nil // Skip unreadable files
+		}
+		content := string(contentBytes)
+
+		if strings.Contains(strings.ToLower(content), queryLower) {
+			lines := strings.Split(content, "\n")
+			relPath, err := filepath.Rel(fileAPIRoot, path)
+			if err != nil {
+				relPath = path
+			}
+			relPath = strings.ReplaceAll(filepath.ToSlash(relPath), "\\", "/")
+
+			for idx, line := range lines {
+				if strings.Contains(strings.ToLower(line), queryLower) {
+					matches = append(matches, searchMatch{
+						Path:    relPath,
+						Line:    idx + 1,
+						Content: strings.TrimSpace(line),
+					})
+					if len(matches) >= limit {
+						break
+					}
+				}
+			}
+		}
+
+		return nil
+	})
+
+	return matches, err
 }

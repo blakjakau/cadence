@@ -4,6 +4,7 @@ import { NativeTitleBar } from './elements/native-titlebar.mjs';
 import { ConduitFileList } from './elements/conduit-filelist.mjs';
 import aiManager from './ai-manager.mjs';
 import ollama from './ai-ollama.mjs';
+import agentTools from './agent/agent-tools.mjs';
 
 const defaultSettings = {
 	showGutter: true, //set to true to hide the line numbering
@@ -1331,6 +1332,108 @@ const uiManager = {
 		const noticeBar = document.getElementById(noticeBarId);
 		noticeBar.style.display = "none"; // Hide the notice bar
 		noticeBar.currentTab = null; // Clear the tab reference
+	},
+
+	updateAgentEditsNotice: (tab) => {
+		if (!tab || !tab.config || !tab.config.path) return;
+		const resolvedPath = tab.config.path;
+		const info = agentTools.getEditBuffer()[resolvedPath];
+		const side = tab.config.side || 'left';
+		
+		if (!info || !info.edits || info.edits.length === 0) {
+			uiManager.hideAgentEditsNotice(side);
+			return;
+		}
+
+		const noticeBarId = (side === 'left') ? "leftHolderAgentEditsNotice" : "rightHolderAgentEditsNotice";
+		const noticeBar = document.getElementById(noticeBarId);
+		if (!noticeBar) return;
+
+		// Hide the other notice bar (file modified notice) if it's shown
+		uiManager.hideFileModifiedNotice(side);
+
+		const editIndexEl = noticeBar.querySelector(".edit-index");
+		const editTotalEl = noticeBar.querySelector(".edit-total");
+		
+		editIndexEl.textContent = info.edits.length > 0 ? (info.currentIndex + 1) : 0;
+		editTotalEl.textContent = info.edits.length;
+
+		// Wire up buttons
+		const prevBtn = noticeBar.querySelector("button[rel=prev-edit]");
+		const nextBtn = noticeBar.querySelector("button[rel=next-edit]");
+		const acceptBtn = noticeBar.querySelector("button[rel=accept-edit]");
+		const rejectBtn = noticeBar.querySelector("button[rel=reject-edit]");
+		const acceptAllBtn = noticeBar.querySelector("button[rel=accept-all]");
+		const rejectAllBtn = noticeBar.querySelector("button[rel=reject-all]");
+
+		prevBtn.onclick = () => {
+			if (info.edits.length > 0) {
+				info.currentIndex = (info.currentIndex - 1 + info.edits.length) % info.edits.length;
+				uiManager.updateAgentEditsNotice(tab);
+				uiManager.scrollToAgentEdit(tab, side, info.currentIndex);
+			}
+		};
+
+		nextBtn.onclick = () => {
+			if (info.edits.length > 0) {
+				info.currentIndex = (info.currentIndex + 1) % info.edits.length;
+				uiManager.updateAgentEditsNotice(tab);
+				uiManager.scrollToAgentEdit(tab, side, info.currentIndex);
+			}
+		};
+
+		acceptBtn.onclick = async () => {
+			const idx = info.currentIndex;
+			await agentTools.resolveEdit(resolvedPath, idx, true);
+		};
+
+		rejectBtn.onclick = async () => {
+			const idx = info.currentIndex;
+			await agentTools.resolveEdit(resolvedPath, idx, false);
+		};
+
+		acceptAllBtn.onclick = async () => {
+			await agentTools.resolveAllEdits(resolvedPath, true);
+		};
+
+		rejectAllBtn.onclick = async () => {
+			const confirmed = await window.modal.confirm("Are you sure you want to reject all pending edits for this file?", "Reject All Edits");
+			if (confirmed) {
+				await agentTools.resolveAllEdits(resolvedPath, false);
+			}
+		};
+
+		noticeBar.style.display = "flex";
+	},
+
+	scrollToAgentEdit: (tab, side, editIndex) => {
+		const editor = (side === 'left') ? leftEdit : rightEdit;
+		if (!editor) return;
+
+		const resolvedPath = tab.config.path;
+		const info = agentTools.getEditBuffer()[resolvedPath];
+		if (!info || !info.edits || !info.edits[editIndex]) return;
+
+		const edit = info.edits[editIndex];
+		const start = edit.startDeletedAnchor ? edit.startDeletedAnchor.getPosition() : edit.startAnchor.getPosition();
+		const end = edit.endAddedAnchor ? edit.endAddedAnchor.getPosition() : edit.endAnchor.getPosition();
+
+		// Scroll to line
+		editor.gotoLine(start.row + 1, start.column, true);
+
+		// Set selection range to highlight the modified code chunk
+		const Range = window.ace.require("ace/range").Range;
+		const selectionRange = new Range(start.row, start.column, end.row, end.column);
+		editor.selection.setRange(selectionRange);
+		editor.focus();
+	},
+
+	hideAgentEditsNotice: (side) => {
+		const noticeBarId = (side === 'left') ? "leftHolderAgentEditsNotice" : "rightHolderAgentEditsNotice";
+		const noticeBar = document.getElementById(noticeBarId);
+		if (noticeBar) {
+			noticeBar.style.display = "none";
+		}
 	},
 }
 

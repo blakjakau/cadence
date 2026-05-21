@@ -212,20 +212,43 @@ export default class AI {
 	}
 	/**
 	 * Processes the user's prompt to extract `@` tags for context inclusion.
-	 * Returns the prompt with tags either inlined (for 'generate' mode)
-	 * or removed and stored as structured objects (for 'chat' mode).
-	 * @param {string} prompt The original user prompt.
-	 * @param {'chat' | 'generate'} runMode The current run mode.
-	 * Returns the prompt with tags removed and stored as structured context items.
 	 * @param {string} prompt - The original user prompt.
-	 * @param {'chat'} runMode - The current run mode.
+	 * @param {'chat' | 'generate'} runMode - The current run mode.
+	 * @param {Array<string>} evergreenFiles - List of persistent file paths to include as context.
+	 * @param {boolean} agentMode - Whether agent mode is enabled.
 	 * @returns {Promise<{processedPrompt: string, contextItems: Array<Object>}>}
 	 */
-	async _getContextualPrompt(prompt, runMode) {
+	async _getContextualPrompt(prompt, runMode, evergreenFiles = [], agentMode = false) {
         let processedPrompt = prompt;
         const contextItems = [];
 		const allFilePaths = window.ui?.fileList?.index?.files.map(f => f.path) || [];
 		const processedPaths = new Set();
+        
+        // --- Pre-process Evergreen Files ---
+        if (!agentMode) {
+            for (const pathString of evergreenFiles) {
+                if (processedPaths.has(pathString)) continue;
+                processedPaths.add(pathString);
+                const fileData = this._findFileByPath(pathString);
+                if (!fileData) continue;
+                let tab = await this._getTabSessionByPath(fileData.path);
+                if (!tab && window.ui?.fileList?.open) {
+                    await window.ui.fileList.open(fileData);
+                    tab = await this._getTabSessionByPath(fileData.path);
+                }
+                if (tab) {
+                    contextItems.push({
+                        type: "file_context",
+                        id: fileData.path,
+                        filename: fileData.name,
+                        language: tab.config.mode.name || 'text',
+                        content: tab.config.session.getValue(),
+                        isSelection: false
+                    });
+                }
+            }
+        }
+
 		if (this.editor && prompt.includes("@")) {
 			// --- Phase 1: Handle @/path/to/file.ext tags ---
 			// Regex to find any @-mention followed by non-space characters.

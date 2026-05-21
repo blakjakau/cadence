@@ -1,5 +1,6 @@
 //go:build darwin
 // +build darwin
+
 package main
 /*
 #cgo CFLAGS: -x objective-c
