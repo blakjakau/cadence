@@ -244,8 +244,11 @@ class ConduitClient {
         return this._send({ action: 'list', path });
     }
 
-    wsRead(path) {
-        return this._send({ action: 'read', path });
+    wsRead(path, startLine = 0, lineCount = 0) {
+        const payload = { action: 'read', path };
+        if (startLine > 0) payload.startLine = startLine;
+        if (lineCount > 0) payload.lineCount = lineCount;
+        return this._send(payload);
     }
 
     wsWrite(path, base64Content) {

@@ -44,6 +44,8 @@ type fileRequest struct {
 	Content   string `json:"content,omitempty"`   // Base64 encoded content for "write"
 	Type      string `json:"type,omitempty"`      // For "search"
 	Query     string `json:"query,omitempty"`     // For "search"
+	StartLine int    `json:"startLine,omitempty"` // For "read" partial (1-indexed)
+	LineCount int    `json:"lineCount,omitempty"` // For "read" partial
 }
 
 type fileResponse struct {
@@ -352,7 +354,25 @@ func handleWsRequest(ws *websocket.Conn, req fileRequest) {
 		if err != nil {
 			resp.Error = err.Error()
 		} else {
-			resp.Data = base64.StdEncoding.EncodeToString(content)
+			if req.StartLine > 0 {
+				lines := strings.Split(string(content), "\n")
+				startIdx := req.StartLine - 1
+				endIdx := startIdx + req.LineCount
+				if startIdx < 0 {
+					startIdx = 0
+				}
+				if endIdx > len(lines) || req.LineCount <= 0 {
+					endIdx = len(lines)
+				}
+				if startIdx < len(lines) {
+					subset := strings.Join(lines[startIdx:endIdx], "\n")
+					resp.Data = base64.StdEncoding.EncodeToString([]byte(subset))
+				} else {
+					resp.Data = base64.StdEncoding.EncodeToString([]byte(""))
+				}
+			} else {
+				resp.Data = base64.StdEncoding.EncodeToString(content)
+			}
 		}
 	case "write":
 		// Content is base64 encoded

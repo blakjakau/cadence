@@ -14,6 +14,7 @@ type SymbolInfo struct {
 	Name      string `json:"name"`
 	Type      string `json:"type"` // "function", "struct", "class", "method"
 	Line      int    `json:"line"`
+	Length    int    `json:"length,omitempty"`
 	Signature string `json:"signature"`
 }
 
@@ -45,6 +46,8 @@ func parseGoOutline(path string, content string) (string, []SymbolInfo, error) {
 		switch node := n.(type) {
 		case *ast.FuncDecl:
 			pos := fset.Position(node.Pos())
+			end := fset.Position(node.End())
+			length := end.Line - pos.Line + 1
 			
 			// Reconstruct signature loosely
 			recv := ""
@@ -58,12 +61,15 @@ func parseGoOutline(path string, content string) (string, []SymbolInfo, error) {
 				Name:      node.Name.Name,
 				Type:      "function",
 				Line:      pos.Line,
+				Length:    length,
 				Signature: sig,
 			})
 			return false // Don't descend into function body
 			
 		case *ast.GenDecl:
 			pos := fset.Position(node.Pos())
+			end := fset.Position(node.End())
+			length := end.Line - pos.Line + 1
 			if node.Tok == token.TYPE {
 				for _, spec := range node.Specs {
 					if typeSpec, ok := spec.(*ast.TypeSpec); ok {
@@ -73,6 +79,7 @@ func parseGoOutline(path string, content string) (string, []SymbolInfo, error) {
 							Name:      typeSpec.Name.Name,
 							Type:      "struct",
 							Line:      pos.Line,
+							Length:    length,
 							Signature: sig,
 						})
 					}
@@ -88,6 +95,7 @@ func parseGoOutline(path string, content string) (string, []SymbolInfo, error) {
 func parseRegexOutline(path string, content string) (string, []SymbolInfo, error) {
 	var symbols []SymbolInfo
 	var outlineLines []string
+	isPython := strings.HasSuffix(path, ".py")
 
 	lines := strings.Split(content, "\n")
 	
@@ -109,25 +117,31 @@ func parseRegexOutline(path string, content string) (string, []SymbolInfo, error
 		matched := false
 		
 		if matches := classRegex.FindStringSubmatch(line); len(matches) > 1 {
-			symbols = append(symbols, SymbolInfo{Name: matches[1], Type: "class", Line: lineNum, Signature: trimLine})
+			length := findSymbolLength(lines, i, isPython)
+			symbols = append(symbols, SymbolInfo{Name: matches[1], Type: "class", Line: lineNum, Length: length, Signature: trimLine})
 			matched = true
 		} else if matches := pythonClassRegex.FindStringSubmatch(line); len(matches) > 1 {
-			symbols = append(symbols, SymbolInfo{Name: matches[1], Type: "class", Line: lineNum, Signature: trimLine})
+			length := findSymbolLength(lines, i, true)
+			symbols = append(symbols, SymbolInfo{Name: matches[1], Type: "class", Line: lineNum, Length: length, Signature: trimLine})
 			matched = true
 		} else if matches := funcRegex.FindStringSubmatch(line); len(matches) > 1 {
-			symbols = append(symbols, SymbolInfo{Name: matches[1], Type: "function", Line: lineNum, Signature: trimLine})
+			length := findSymbolLength(lines, i, isPython)
+			symbols = append(symbols, SymbolInfo{Name: matches[1], Type: "function", Line: lineNum, Length: length, Signature: trimLine})
 			matched = true
 		} else if matches := arrowFuncRegex.FindStringSubmatch(line); len(matches) > 1 {
-			symbols = append(symbols, SymbolInfo{Name: matches[1], Type: "function", Line: lineNum, Signature: trimLine})
+			length := findSymbolLength(lines, i, isPython)
+			symbols = append(symbols, SymbolInfo{Name: matches[1], Type: "function", Line: lineNum, Length: length, Signature: trimLine})
 			matched = true
 		} else if matches := pythonDefRegex.FindStringSubmatch(line); len(matches) > 1 {
-			symbols = append(symbols, SymbolInfo{Name: matches[1], Type: "function", Line: lineNum, Signature: trimLine})
+			length := findSymbolLength(lines, i, true)
+			symbols = append(symbols, SymbolInfo{Name: matches[1], Type: "function", Line: lineNum, Length: length, Signature: trimLine})
 			matched = true
 		} else if matches := methodRegex.FindStringSubmatch(line); len(matches) > 1 {
 			// Skip basic control structures that look like methods
 			skipWords := map[string]bool{"if": true, "for": true, "while": true, "switch": true, "catch": true}
 			if !skipWords[matches[1]] {
-				symbols = append(symbols, SymbolInfo{Name: matches[1], Type: "method", Line: lineNum, Signature: trimLine})
+				length := findSymbolLength(lines, i, isPython)
+				symbols = append(symbols, SymbolInfo{Name: matches[1], Type: "method", Line: lineNum, Length: length, Signature: trimLine})
 				matched = true
 			}
 		}
@@ -138,4 +152,61 @@ func parseRegexOutline(path string, content string) (string, []SymbolInfo, error
 	}
 
 	return strings.Join(outlineLines, "\n"), symbols, nil
+}
+
+// findSymbolLength calculates the approximate length of a function/class
+func findSymbolLength(lines []string, startIdx int, isPython bool) int {
+	if startIdx >= len(lines) {
+		return 1
+	}
+	if isPython {
+		startLine := lines[startIdx]
+		startIndent := len(startLine) - len(strings.TrimLeft(startLine, " \t"))
+		for i := startIdx + 1; i < len(lines); i++ {
+			line := lines[i]
+			trimLine := strings.TrimSpace(line)
+			if trimLine == "" || strings.HasPrefix(trimLine, "#") {
+				continue
+			}
+			indent := len(line) - len(strings.TrimLeft(line, " \t"))
+			if indent <= startIndent {
+				return i - startIdx
+			}
+		}
+		return len(lines) - startIdx
+	}
+
+	depth := 0
+	started := false
+	inString := false
+	var stringChar rune
+
+	for i := startIdx; i < len(lines); i++ {
+		line := lines[i]
+		for j, char := range line {
+			if !inString {
+				if char == '"' || char == '\'' || char == '`' {
+					inString = true
+					stringChar = char
+				} else if char == '{' {
+					depth++
+					started = true
+				} else if char == '}' {
+					depth--
+					if started && depth == 0 {
+						return i - startIdx + 1
+					}
+				} else if char == '/' && j+1 < len(line) && line[j+1] == '/' {
+					break 
+				}
+			} else {
+				if char == stringChar {
+					if j == 0 || line[j-1] != '\\' {
+						inString = false
+					}
+				}
+			}
+		}
+	}
+	return len(lines) - startIdx
 }
