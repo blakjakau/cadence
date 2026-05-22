@@ -421,6 +421,104 @@ class AgentTools {
     }
 
     /**
+     * Searches for exact text within a specific file and returns matches with context.
+     * @param {string} path 
+     * @param {string} query 
+     */
+    async searchInFile(path, query) {
+        try {
+            const resolvedPath = this._resolveAndValidatePath(path);
+            if (!query) return "Error: Query is empty.";
+
+            let content = "";
+            let openTab = null;
+            if (window.ui?.leftTabs?.tabs || window.ui?.rightTabs?.tabs) {
+                const openTabs = [...(window.ui.leftTabs?.tabs || []), ...(window.ui.rightTabs?.tabs || [])];
+                openTab = openTabs.find(tab => tab.config && tab.config.path === resolvedPath && tab.config.session);
+            }
+
+            if (openTab && openTab.config.session) {
+                const edits = this.editBuffer[resolvedPath]?.edits || [];
+                content = this._getCleanContentOfSession(openTab.config.session, edits);
+            } else if (this.conduit.isConnected) {
+                const result = await this.conduit.wsRead(resolvedPath);
+                if (result.error) throw new Error(result.error);
+                content = atob(result.data);
+            } else {
+                return "Error: Cannot read file, Conduit is not connected.";
+            }
+
+            let outlineSymbols = [];
+            try {
+                if (this.conduit.isConnected) {
+                    const outlineResp = await this.conduit.wsGetOutline(resolvedPath);
+                    if (!outlineResp.error && outlineResp.data) {
+                        try {
+                            const parsed = JSON.parse(outlineResp.data);
+                            if (parsed && parsed.symbols) {
+                                outlineSymbols = parsed.symbols;
+                            }
+                        } catch (e) {
+                            // Ignored
+                        }
+                    }
+                }
+            } catch (e) {
+                // Ignore outline errors
+            }
+
+            const lines = content.split('\n');
+            const matches = [];
+            for (let i = 0; i < lines.length; i++) {
+                if (lines[i].includes(query)) {
+                    matches.push(i);
+                }
+            }
+
+            if (matches.length === 0) {
+                return `[No matches found in ${path} for query: "${query}"]`;
+            }
+
+            let output = `Found ${matches.length} matches for "${query}" in ${path}:\n\n`;
+            const limit = 10;
+            const displayMatches = matches.slice(0, limit);
+
+            for (let i = 0; i < displayMatches.length; i++) {
+                const lineIndex = displayMatches[i];
+                const lineNum = lineIndex + 1;
+                
+                let wrappingSymbol = null;
+                for (const sym of outlineSymbols) {
+                    if (lineNum >= sym.line && (!sym.length || lineNum < sym.line + sym.length)) {
+                        wrappingSymbol = sym;
+                    }
+                }
+
+                const wrapText = wrappingSymbol ? `Found inside ${wrappingSymbol.type} '${wrappingSymbol.name}' (Lines ${wrappingSymbol.line}-${wrappingSymbol.length ? wrappingSymbol.line + wrappingSymbol.length - 1 : '?'})` : 'Found at root level';
+                
+                output += `Match ${i + 1}: ${wrapText}\n`;
+                
+                const startContext = Math.max(0, lineIndex - 2);
+                const endContext = Math.min(lines.length - 1, lineIndex + 2);
+                
+                for (let j = startContext; j <= endContext; j++) {
+                    const prefix = j === lineIndex ? ">" : " ";
+                    output += `Line ${j + 1}: ${prefix}  ${lines[j]}\n`;
+                }
+                output += `\n`;
+            }
+
+            if (matches.length > limit) {
+                output += `[Warning: ${matches.length - limit} additional matches omitted. Your search is too broad. Please refine your query to be more specific.]`;
+            }
+
+            return output.trim();
+        } catch (error) {
+            return `Error searching in file: ${error.message}`;
+        }
+    }
+
+    /**
      * Performs a surgical edit on a file.
      * @param {string} path 
      * @param {string} searchString 
@@ -621,6 +719,8 @@ class AgentTools {
                 return await this.readSymbol(args.query || args.symbol);
             case 'search_files':
                 return await this.searchFiles(args.query);
+            case 'search_in_file':
+                return await this.searchInFile(args.path, args.query);
             case 'edit_file':
                 return await this.editFile(
                     args.path,

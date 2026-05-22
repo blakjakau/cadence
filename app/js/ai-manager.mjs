@@ -38,8 +38,16 @@ const AGENT_SYSTEM_PROMPT = `You are CodeAgent, an autonomous software engineer.
 # Available Tools
 Choose AT MOST ONE tool per turn and use its exact format:
 <tool_call name="list_files"><path>dir_path</path></tool_call>
-<tool_call name="read_file"><path>file_path</path></tool_call>
+<tool_call name="read_file">
+  <path>file_path</path>
+  <startLine>1</startLine> <!-- Optional -->
+  <lineCount>50</lineCount> <!-- Optional -->
+</tool_call>
 <tool_call name="read_file_outline"><path>file_path</path></tool_call>
+<tool_call name="search_in_file">
+  <path>file_path</path>
+  <query>exact_text</query>
+</tool_call>
 <tool_call name="read_symbol"><query>symbol_name</query></tool_call>
 <tool_call name="search_files"><query>text</query></tool_call>
 <tool_call name="create_file"><path>file_path</path><content>text</content></tool_call>
@@ -77,7 +85,7 @@ I am reading app.js to locate the issue.
 2. Task Focus: In your <thought> block, you MUST actively reference the EVERGREEN TASK LIST and state which task you are currently working on. If you complete a task, you MUST immediately output a <complete_task> tag.
 3. Looping Prevention: In your <thought> block, actively review your last 3 turns. If you are repeating tool calls, executing identical searches, or failing edits, you must explain why progress has stalled and immediately propose an alternative approach or different tool. Do not repeat failed edits or duplicate search queries.
 4. Tools: Use AT MOST ONE <tool_call> per turn. Wait for the host to provide the result.
-5. Context Limits: ALWAYS explore files by reading their outlines first using read_file_outline before reading full files, to avoid flooding your context window.
+5. Context Limits: ALWAYS explore files by reading their outlines first using read_file_outline. Outlines provide symbol line numbers and lengths. NEVER read a full file if you can extract just the function you need using the <startLine> and <lineCount> parameters of read_file. If you need to find exact text inside a file, use search_in_file to locate the exact line numbers and surrounding context. This saves token context window.
 6. Strict XML: Use only the exact XML tags below. Do not invent new tools.
 7. NEVER use control or tool tags to discuss or think about your actions, only to perform them.
 `;
@@ -151,6 +159,9 @@ class AIManager {
 		this.saveWorkspaceTimeout = null; // For debouncing workspace saves from _dispatchContextUpdate
 		this.agentMode = false; // NEW: Toggle between standard chat and agentic tool loop
 		this.agentModeToggle = null;
+		this.planningMode = false; // NEW: Toggle planning mode
+		this.planningModeToggle = null;
+		this.isPaused = false; // NEW: Track if agent is paused
 	}
 
 	async init(panel) {
@@ -322,6 +333,7 @@ class AIManager {
 
 		// --- Other UI Elements ---
 		this.conversationArea = this._createConversationArea();
+		this.submitButton = this._createSubmitButton();
 		const promptContainer = this._createPromptContainer();
 		this.settingsPanel = this.settingsManager.createPanel(); // NEW: Create panel via manager
 
@@ -451,14 +463,7 @@ class AIManager {
 
 		const buttonContainer = new Block()
 		buttonContainer.classList.add("button-container");
-
-		const spacer = new Block()
-		spacer.classList.add("spacer")
-
-		this.summarizeButton = this._createSummarizeButton() // Summarize button
-		this.submitButton = this._createSubmitButton()
-		this.clearButton = this._createClearButton()
-
+		
 		this.agentModeToggle = document.createElement("div");
 		this.agentModeToggle.className = "agent-toggle-wrapper";
 		this.agentModeToggle.innerHTML = `
@@ -484,6 +489,29 @@ class AIManager {
 			checkbox.click();
 		});
 
+		this.planningModeToggle = document.createElement("div");
+		this.planningModeToggle.className = "planning-toggle-wrapper";
+		this.planningModeToggle.innerHTML = `
+			<label class="switch" title="Planning Mode: Focus on generating implementation plans">
+				<input type="checkbox" id="planning-mode-checkbox">
+				<span class="slider round"></span>
+			</label>
+			<span class="toggle-label" style="font-size: 11.5px; margin-left: 6px; font-weight: 600; color: var(--text-secondary); cursor: pointer; user-select: none;">Plan</span>
+		`;
+
+		const pCheckbox = this.planningModeToggle.querySelector('input');
+		pCheckbox.checked = this.planningMode || false;
+		pCheckbox.addEventListener('change', (e) => {
+			this.planningMode = e.target.checked;
+			localStorage.setItem("aiPlanningMode", this.planningMode);
+			this._updatePromptAreaPlaceholder();
+		});
+
+		const pLabel = this.planningModeToggle.querySelector('.toggle-label');
+		pLabel.addEventListener('click', () => {
+			pCheckbox.click();
+		});
+
 		this.aiInfoDisplay = document.createElement("select");
 		this.aiInfoDisplay.classList.add("ai-info-display", "ai-provider-select");
 		this.aiInfoDisplay.addEventListener('change', (e) => {
@@ -491,9 +519,8 @@ class AIManager {
 		});
 
 
-		buttonContainer.append(this.clearButton)
-		buttonContainer.append(this.summarizeButton) // Add summarize button
 		buttonContainer.append(this.agentModeToggle) // Add agent mode toggle
+		buttonContainer.append(this.planningModeToggle) // Add planning mode toggle
 		buttonContainer.append(this.aiInfoDisplay); // Element is created, but content will be set by _updateAIInfoDisplay()
 		this.stopButton = document.createElement("button");
 		this.stopButton.className = "agentic-stop-btn";
@@ -501,9 +528,20 @@ class AIManager {
 		this.stopButton.innerHTML = `<ui-icon>stop</ui-icon> Stop`;
 		this.stopButton.onclick = () => this.stopAgent();
 
+		this.pauseButton = document.createElement("button");
+		this.pauseButton.className = "agentic-pause-btn pause-btn";
+		this.pauseButton.style.display = "none";
+		this.pauseButton.innerHTML = `<ui-icon>pause</ui-icon> Pause`;
+		this.pauseButton.onclick = () => this.isPaused ? this.resumeAgent() : this.pauseAgent();
+
+		const spacer = document.createElement("div");
 		buttonContainer.append(spacer)
 		buttonContainer.append(this.stopButton)
-		buttonContainer.append(this.submitButton)
+		buttonContainer.append(this.pauseButton)
+		
+		if (this.submitButton) {
+			buttonContainer.append(this.submitButton)
+		}
 
 		promptContainer.append(this.promptArea)
 		promptContainer.append(buttonContainer)
@@ -680,16 +718,6 @@ class AIManager {
 		}
 	}
 
-	// Manual Summarize Button
-	_createSummarizeButton() {
-		const summarizeButton = new Button("Summarize")
-		summarizeButton.icon = "compress" // Using a suitable icon
-		summarizeButton.classList.add("summarize-button", "theme-button")
-		summarizeButton.on("click", () => this.historyManager.performSummarization())
-		this._setButtonsDisabledState(this._isProcessing) // Initial state
-		return summarizeButton
-	}
-
 	_createSubmitButton() {
 		const submitButton = new Button("Send")
 		submitButton.icon = "send"
@@ -697,16 +725,6 @@ class AIManager {
 		submitButton.on("click", () => this.generate())
 		this._setButtonsDisabledState(this._isProcessing) // Initial state
 		return submitButton
-	}
-
-	_createClearButton() {
-		const clearButton = new Button("Clear")
-		clearButton.classList.add("clear-button")
-		clearButton.on("click", () => {
-			this.historyManager.clear()
-		})
-		this._setButtonsDisabledState(this._isProcessing) // Initial state
-		return clearButton
 	}
 
 	/**
@@ -792,26 +810,14 @@ class AIManager {
 		if (this.stopButton) {
 			this.stopButton.style.display = this._isProcessing ? 'flex' : 'none';
 		}
-		if (this.clearButton) this.clearButton.disabled = disabled || !this.activeSession?.messages?.length; // Clear is disabled if no messages
+
+		if (this.pauseButton) {
+			this.pauseButton.style.display = this._isProcessing ? 'flex' : 'none';
+		}
 
 		// Also disable all history delete buttons while processing
 		if (this.conversationArea) {
 			this.conversationArea.querySelectorAll('.delete-history-button').forEach(btn => btn.disabled = disabled);
-		}
-
-		if (this.summarizeButton) {
-			// Check activeSession exists before accessing its messages
-			const eligibleMessages = this.activeSession?.messages?.filter(
-				(msg) => msg.type === "user" || msg.type === "model"
-			) || []; // Default to empty array if no active session or messages
-
-			// NEW, more accurate condition:
-			// Summarization is only possible if the number of messages we can potentially summarize
-			// (i.e., total messages minus the ones we must preserve) is at least 2 (a user/model pair).
-			const summarizableMessageCount = eligibleMessages.length - MAX_RECENT_MESSAGES_TO_PRESERVE
-			const canSummarize = summarizableMessageCount >= 2 && isAIConfigured; // Must be configured to summarize
-
-			this.summarizeButton.disabled = disabled || !canSummarize
 		}
 
 		// Disable session management buttons while processing
@@ -1296,6 +1302,18 @@ class AIManager {
 		}
 		this._isProcessing = false;
 		this._setButtonsDisabledState(false);
+	}
+
+	pauseAgent() {
+		this.isPaused = true;
+		this.pauseButton.innerHTML = `<ui-icon>play_arrow</ui-icon> Resume`;
+		this.pauseButton.classList.replace("pause-btn", "resume-btn");
+	}
+
+	resumeAgent() {
+		this.isPaused = false;
+		this.pauseButton.innerHTML = `<ui-icon>pause</ui-icon> Pause`;
+		this.pauseButton.classList.replace("resume-btn", "pause-btn");
 	}
 
 	async generate() {
