@@ -108,6 +108,26 @@ class AgentTools {
         return cleanFinalResolvedPath;
     }
 
+    _normalizePathForTabComparison(p) {
+        if (!p) return "";
+        return p.replace(/\\/g, '/').replace(/\/+/g, '/').replace(/^\//, '').replace(/\/$/, '');
+    }
+
+    _findOpenTab(resolvedPath) {
+        if (!resolvedPath) return null;
+        const normTarget = this._normalizePathForTabComparison(resolvedPath);
+        
+        if (window.ui?.leftTabs?.tabs || window.ui?.rightTabs?.tabs) {
+            const openTabs = [...(window.ui.leftTabs?.tabs || []), ...(window.ui.rightTabs?.tabs || [])];
+            return openTabs.find(tab => {
+                if (!tab.config || !tab.config.path || !tab.config.session) return false;
+                const normTabPath = this._normalizePathForTabComparison(tab.config.path);
+                return normTabPath === normTarget;
+            }) || null;
+        }
+        return null;
+    }
+
     /**
      * Lists files in a directory.
      * @param {string} path 
@@ -139,11 +159,7 @@ class AgentTools {
             const resolvedPath = this._resolveAndValidatePath(path);
             
             // Try to find if the file is open in the editor
-            let openTab = null;
-            if (window.ui?.leftTabs?.tabs || window.ui?.rightTabs?.tabs) {
-                const openTabs = [...(window.ui.leftTabs?.tabs || []), ...(window.ui.rightTabs?.tabs || [])];
-                openTab = openTabs.find(tab => tab.config && tab.config.path === resolvedPath && tab.config.session);
-            }
+            const openTab = this._findOpenTab(resolvedPath);
 
             if (openTab && openTab.config.session) {
                 console.log(`[AgentTools] Reading ${path} from open editor buffer.`);
@@ -431,11 +447,7 @@ class AgentTools {
             if (!query) return "Error: Query is empty.";
 
             let content = "";
-            let openTab = null;
-            if (window.ui?.leftTabs?.tabs || window.ui?.rightTabs?.tabs) {
-                const openTabs = [...(window.ui.leftTabs?.tabs || []), ...(window.ui.rightTabs?.tabs || [])];
-                openTab = openTabs.find(tab => tab.config && tab.config.path === resolvedPath && tab.config.session);
-            }
+            const openTab = this._findOpenTab(resolvedPath);
 
             if (openTab && openTab.config.session) {
                 const edits = this.editBuffer[resolvedPath]?.edits || [];
@@ -530,21 +542,12 @@ class AgentTools {
             const resolvedPath = this._resolveAndValidatePath(path);
             
             // 1. Ensure the file is open in the editor
-            let targetTab = null;
-            const findTab = () => {
-                if (window.ui?.leftTabs?.tabs || window.ui?.rightTabs?.tabs) {
-                    const openTabs = [...(window.ui.leftTabs?.tabs || []), ...(window.ui.rightTabs?.tabs || [])];
-                    return openTabs.find(tab => tab.config && tab.config.path === resolvedPath && tab.config.session);
-                }
-                return null;
-            };
-
-            targetTab = findTab();
+            let targetTab = this._findOpenTab(resolvedPath);
 
             if (!targetTab) {
                 if (window.ui?.fileList?.open) {
                     await window.ui.fileList.open(resolvedPath, resolvedPath);
-                    targetTab = findTab();
+                    targetTab = this._findOpenTab(resolvedPath);
                 }
             }
 
@@ -745,7 +748,8 @@ class AgentTools {
         return this.editBuffer;
     }
 
-    async resolveEdit(resolvedPath, editIndex, accept) {
+    async resolveEdit(path, editIndex, accept) {
+        const resolvedPath = this._resolveAndValidatePath(path);
         const info = this.editBuffer[resolvedPath];
         if (!info || !info.edits || !info.edits[editIndex]) {
             return; // Already resolved or invalid
@@ -754,8 +758,7 @@ class AgentTools {
         const edit = info.edits[editIndex];
         
         // Find open tab
-        const openTabs = [...(window.ui?.leftTabs?.tabs || []), ...(window.ui?.rightTabs?.tabs || [])];
-        const tab = openTabs.find(t => t.config && t.config.path === resolvedPath && t.config.session);
+        const tab = this._findOpenTab(resolvedPath);
         if (!tab) {
             throw new Error(`Tab for ${resolvedPath} is not open.`);
         }
@@ -836,7 +839,8 @@ class AgentTools {
         }
     }
 
-    async resolveAllEdits(resolvedPath, accept) {
+    async resolveAllEdits(path, accept) {
+        const resolvedPath = this._resolveAndValidatePath(path);
         const info = this.editBuffer[resolvedPath];
         if (!info || !info.edits) return;
         
@@ -921,4 +925,5 @@ class AgentTools {
 }
 
 const agentTools = new AgentTools();
+window.agentTools = agentTools
 export default agentTools;

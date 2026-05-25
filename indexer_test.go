@@ -24,6 +24,15 @@ func hello() {
 `
 	os.WriteFile(goFile, []byte(content), 0644)
 
+	// Create a dummy mjs file
+	mjsFile := filepath.Join(tmpDir, "test.mjs")
+	mjsContent := `
+export function greet(name) {
+	return "hello " + name;
+}
+`
+	os.WriteFile(mjsFile, []byte(mjsContent), 0644)
+
 	// Init index
 	idx := InitWorkspaceIndex(tmpDir)
 	
@@ -32,7 +41,12 @@ func hello() {
 
 	outline := idx.GetOutline(goFile)
 	if outline == "" {
-		t.Errorf("Expected outline to be generated, got empty string")
+		t.Errorf("Expected outline to be generated for go file, got empty string")
+	}
+
+	mjsOutline := idx.GetOutline(mjsFile)
+	if mjsOutline == "" {
+		t.Errorf("Expected outline to be generated for mjs file, got empty string")
 	}
 
 	results := idx.SearchSymbols("hello")
@@ -40,5 +54,12 @@ func hello() {
 		t.Errorf("Expected to find 'hello' symbol")
 	} else if results[0].Name != "hello" {
 		t.Errorf("Expected symbol name 'hello', got %s", results[0].Name)
+	}
+
+	mjsResults := idx.SearchSymbols("greet")
+	if len(mjsResults) == 0 {
+		t.Errorf("Expected to find 'greet' symbol")
+	} else if mjsResults[0].Name != "greet" {
+		t.Errorf("Expected symbol name 'greet', got %s", mjsResults[0].Name)
 	}
 }

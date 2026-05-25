@@ -6,7 +6,9 @@ import Claude from "./ai-claude.mjs"
 import Gemini from "./ai-gemini.mjs"
 import LlamaCpp from "./ai-llamacpp.mjs"
 import AIManagerHistory, { MAX_RECENT_MESSAGES_TO_PRESERVE } from "./ai-manager-history.mjs"
-import AIManagerSettings from "./ai-manager-settings.mjs" // NEW: Settings manager
+import AIManagerSettings from "./ai-manager-settings.mjs"
+import AIManagerMessageRenderer from "./ai-manager-message-renderer.mjs" // NEW: Settings manager
+import AIManagerSessions from "./ai-manager-sessions.mjs" // NEW: Sessions manager
 import workspaceClient from "./workspace-client.mjs"
 import agentTools from "./agent/agent-tools.mjs"
 
@@ -33,7 +35,7 @@ const promptEditorSettings = {
 	enableLiveAutocompletion: true
 }
 
-const AGENT_SYSTEM_PROMPT = `You are CodeAgent, an autonomous software engineer.
+const AGENT_SYSTEM_PROMPT = `You are Cadence, an autonomous software engineer.
 
 # Available Tools
 Choose AT MOST ONE tool per turn and use its exact format:
@@ -85,9 +87,10 @@ I am reading app.js to locate the issue.
 2. Task Focus: In your <thought> block, you MUST actively reference the EVERGREEN TASK LIST and state which task you are currently working on. If you complete a task, you MUST immediately output a <complete_task> tag.
 3. Looping Prevention: In your <thought> block, actively review your last 3 turns. If you are repeating tool calls, executing identical searches, or failing edits, you must explain why progress has stalled and immediately propose an alternative approach or different tool. Do not repeat failed edits or duplicate search queries.
 4. Tools: Use AT MOST ONE <tool_call> per turn. Wait for the host to provide the result.
-5. Context Limits: ALWAYS explore files by reading their outlines first using read_file_outline. Outlines provide symbol line numbers and lengths. NEVER read a full file if you can extract just the function you need using the <startLine> and <lineCount> parameters of read_file. If you need to find exact text inside a file, use search_in_file to locate the exact line numbers and surrounding context. This saves token context window.
-6. Strict XML: Use only the exact XML tags below. Do not invent new tools.
-7. NEVER use control or tool tags to discuss or think about your actions, only to perform them.
+5. Always choose the least impactful tool (don't read the whole file if you only need a lines of function)
+6. Context Limits: ALWAYS explore files by reading their outlines first using read_file_outline. Outlines provide symbol line numbers and lengths. NEVER read a full file if you can extract just the function you need using the <startLine> and <lineCount> parameters of read_file. If you need to find exact text inside a file, use search_in_file to locate the exact line numbers and surrounding context. This saves token context window.
+7. Strict XML: Use only the exact XML tags below. Do not invent new tools.
+8. NEVER use control or tool tags to discuss or think about your actions, only to perform them.
 `;
 
 class AIManager {
@@ -102,6 +105,8 @@ class AIManager {
 		}
 		// NEW: Settings logic is moved to AIManagerSettings
 		this.settingsManager = new AIManagerSettings(this);
+		this.messageRenderer = new AIManagerMessageRenderer(this);
+		this.sessionsManager = new AIManagerSessions(this);
 
 		// NEW: Default system prompt config
 		this.systemPromptConfig = {
@@ -274,7 +279,30 @@ class AIManager {
 		this.sessionTabBar.classList.add('tabs-inverted');
 		this.sessionTabBar.exclusiveDropType = "ai-tab"
 		this.sessionTabBar.click = (e) => this.switchSession(e.tab.config.id);
-		this.sessionTabBar.close = (e) => this.deleteSession(e.tab.config.id, e.tab);
+		this.sessionTabBar.close = (e) => this.sessionsManager.closeSessionTab(e.tab.config.id, e.tab);
+
+		const aiMenu = document.getElementById("ai_tab_context");
+		if (aiMenu) {
+			this.sessionTabBar.context = (e) => {
+				aiMenu._activeTab = e.tab;
+				aiMenu.showAt(e);
+			};
+			aiMenu.click = (action) => {
+				const tab = aiMenu._activeTab;
+				if (!tab) return;
+				const sessionId = tab.config.id;
+				
+				if (action === "rename") {
+					this.switchSession(sessionId);
+					this.sessionsManager.renameCurrentSession();
+				} else if (action === "archive") {
+					this.sessionsManager.closeSessionTab(sessionId, tab);
+				} else if (action === "delete") {
+					this.sessionsManager.deleteSession(sessionId, tab);
+				}
+			};
+		}
+
 
 		this.newSessionButton = new Button("");
 		this.newSessionButton.icon = "add_comment";
@@ -282,12 +310,18 @@ class AIManager {
 		this.newSessionButton.classList.add('new-session-button');
 		this.newSessionButton.on('click', () => this.createNewSession());
 
+		this.historyButton = new Button("");
+		this.historyButton.icon = "history";
+		this.historyButton.title = "Chat History";
+		this.historyButton.classList.add('history-button');
+		this.historyButton.on('click', () => this.sessionsManager.showHistoryModal());
+
 		this.settingsButton = new Button("");
 		this.settingsButton.icon = "settings";
 		this.settingsButton.classList.add("settings-button");
 		this.settingsButton.onclick = () => this.toggleSettingsPanel();
 
-		this.sessionTabBar.append(this.newSessionButton, this.settingsButton)
+		this.sessionTabBar.append(this.historyButton, this.newSessionButton)
 
 		// --- NEW FileBar and Context Progress Bar ---
 		const fileBarContainer = new Block();
@@ -430,6 +464,14 @@ class AIManager {
 		return conversationArea
 	}
 
+	_shouldAutoScroll() {
+		if (!this.conversationArea) return false;
+		// Use Math.ceil to handle fractional scroll positions from high-DPI screens or browser zoom
+		// We use Math.max to avoid negative distances if scrollHeight < clientHeight
+		const distanceToBottom = Math.max(0, this.conversationArea.scrollHeight - this.conversationArea.clientHeight) - Math.ceil(this.conversationArea.scrollTop);
+		return distanceToBottom <= 50;
+	}
+
 	_createProgressBar() {
 		const progressBar = document.createElement("div")
 		progressBar.classList.add("progress-bar")
@@ -522,6 +564,7 @@ class AIManager {
 		buttonContainer.append(this.agentModeToggle) // Add agent mode toggle
 		buttonContainer.append(this.planningModeToggle) // Add planning mode toggle
 		buttonContainer.append(this.aiInfoDisplay); // Element is created, but content will be set by _updateAIInfoDisplay()
+		buttonContainer.append(this.settingsButton);
 		this.stopButton = document.createElement("button");
 		this.stopButton.className = "agentic-stop-btn";
 		this.stopButton.style.display = "none";
@@ -986,269 +1029,48 @@ class AIManager {
 		this._updatePromptAreaPlaceholder(); // Update placeholder
 	}
 
-	/**
-	 * Manages initial session loading, populates the UI, and activates the correct session.
-	 */
+	// --- Session Management Delegation ---
+	get allSessionMetadata() { return this.sessionsManager.allSessionMetadata; }
+	set allSessionMetadata(val) { this.sessionsManager.allSessionMetadata = val; }
+
+	get activeSessionId() { return this.sessionsManager.activeSessionId; }
+	set activeSessionId(val) { this.sessionsManager.activeSessionId = val; }
+
+	get activeSession() { return this.sessionsManager.activeSession; }
+	set activeSession(val) { this.sessionsManager.activeSession = val; }
+
+	get promptIndex() { return this.sessionsManager.promptIndex; }
+	set promptIndex(val) { this.sessionsManager.promptIndex = val; }
+
+	get _unsentPromptBuffer() { return this.sessionsManager._unsentPromptBuffer; }
+	set _unsentPromptBuffer(val) { this.sessionsManager._unsentPromptBuffer = val; }
+
 	async loadSessions(aiSessionsMetadata = [], activeSessionId = null) {
-		this.allSessionMetadata = aiSessionsMetadata;
-
-		// 1. Create the tab UI elements from the metadata.
-		this._populateInitialTabs();
-
-		let idToActivate = activeSessionId;
-
-		// 2. Determine which session to activate.
-		// If the intended active session doesn't exist in the metadata, fall back to the most recent.
-		if (!this.allSessionMetadata.some(s => s.id === idToActivate)) {
-			const sortedSessions = [...this.allSessionMetadata].sort((a, b) => b.lastModified - a.lastModified);
-			idToActivate = sortedSessions.length > 0 ? sortedSessions[0].id : null;
-		}
-
-		// 3. Activate the chosen session or create a new one.
-		if (idToActivate) {
-			const tabToActivate = this.sessionTabBar.tabs.find(t => t.config.id === idToActivate);
-			if (tabToActivate) {
-				// Clicking the tab programmatically triggers the whole cascade correctly:
-				// TabBar sets its active state -> our click handler calls switchSession -> data loads.
-				tabToActivate.click();
-			}
-		} else {
-			// If no sessions exist at all, create one.
-			await this.createNewSession();
-		}
+		return this.sessionsManager.loadSessions(aiSessionsMetadata, activeSessionId);
 	}
 
-	/**
-	 * Populates the TabBar with tabs from the metadata.
-	 * This is only for the initial setup.
-	 */
-	_populateInitialTabs() {
-		// Clear existing tabs without triggering active clicks
-		while (this.sessionTabBar._tabs && this.sessionTabBar._tabs.length > 0) {
-			const tab = this.sessionTabBar._tabs.pop();
-			tab.remove();
-		}
-
-		const sortedSessions = [...this.allSessionMetadata].sort((a, b) => b.lastModified - a.lastModified);
-		sortedSessions.forEach(meta => {
-			const tab = this.sessionTabBar.add({ name: meta.name, id: meta.id, defaultStatusIcon: 'developer_board' });
-			tab.on('dblclick', () => this.renameCurrentSession());
-		});
-	}
-
-	/**
-	 * Creates a new session, adds its tab to the UI, and activates it by simulating a click.
-	 */
 	async createNewSession() {
-		const newId = `ai-session-${crypto.randomUUID()}`;
-		const newName = `Chat ${this.allSessionMetadata.length + 1}`;
-		const newSessionData = { // Initialize with scrollTop 0 for new sessions
-			id: newId, name: newName, createdAt: Date.now(), lastModified: Date.now(),
-			messages: [], promptInput: "", promptHistory: [], scrollTop: 0,
-			evergreenFiles: [],
-		};
-
-		await workspaceClient.setSession(newId, newSessionData);
-		this.allSessionMetadata.push({ id: newId, name: newName, createdAt: newSessionData.createdAt, lastModified: newSessionData.lastModified });
-
-		// Add the tab to the UI.
-		const newTab = this.sessionTabBar.add({ name: newName, id: newId, defaultStatusIcon: 'developer_board' });
-		newTab.on('dblclick', () => this.renameCurrentSession());
-
-		// Activate it using the component's own mechanism.
-		newTab.click();
+		return this.sessionsManager.createNewSession();
 	}
 
-	/**
-	 * Creates a new implementation session pre-populated with the active session's 
-	 * implementation plan, task list, and evergreen files in a clean environment.
-	 */
-	async proceedWithImplementationPlan() {
-		if (!this.activeSession) return;
-		const sourceSession = this.activeSession;
-		const plan = sourceSession.implementationPlan || "";
-		const tasklist = sourceSession.taskList || "";
-		const files = sourceSession.evergreenFiles ? [...sourceSession.evergreenFiles] : [];
-
-		if (!plan) {
-			window.modal.notice("No active implementation plan found in this session.", "Cannot Proceed");
-			return;
-		}
-
-		// 1. Save the current active session state first
-		this.activeSession.promptInput = this.promptEditor.getValue();
-		this.activeSession.scrollTop = this.conversationArea.scrollTop;
-		const currentSessionMeta = this.allSessionMetadata.find(s => s.id === this.activeSession.id);
-		if (currentSessionMeta) currentSessionMeta.lastModified = Date.now();
-		await workspaceClient.setSession(this.activeSession.id, this.activeSession);
-
-		// 2. Initialize new session data
-		const newId = `ai-session-${crypto.randomUUID()}`;
-		let baseName = sourceSession.name || "Chat";
-		if (baseName.startsWith("Implementation:")) {
-			baseName = baseName.replace("Implementation:", "").trim();
-		}
-		const newName = `Implementation: ${baseName}`;
-		
-		const newSessionData = {
-			id: newId,
-			name: newName,
-			createdAt: Date.now(),
-			lastModified: Date.now(),
-			messages: [],
-			promptInput: "Let's proceed with the implementation plan. Please execute the checklist step-by-step.",
-			promptHistory: [],
-			scrollTop: 0,
-			evergreenFiles: files,
-			implementationPlan: plan,
-			taskList: tasklist,
-		};
-
-		// 3. Create a helpful initial system message in history explaining the context
-		const initialMessage = {
-			role: "system",
-			type: "system_message",
-			content: `🚀 **New clean implementation environment created from "${baseName}"**\n\nThis thread is pre-populated with the approved **Implementation Plan** and **Task Checklist**. It has a completely clean conversational history to ensure the model focuses on implementation without historical distractions.\n\n${files.length > 0 ? `📁 *Evergreen files attached:* ${files.map(f => `\`${f.filename}\``).join(', ')}` : 'No files attached yet.'}`,
-			timestamp: Date.now(),
-		};
-		newSessionData.messages.push(initialMessage);
-
-		// 4. Save new session to database
-		await workspaceClient.setSession(newId, newSessionData);
-		this.allSessionMetadata.push({ id: newId, name: newName, createdAt: newSessionData.createdAt, lastModified: newSessionData.lastModified });
-
-		// 5. Add the new tab to the UI and register double-click for renaming
-		const newTab = this.sessionTabBar.add({ name: newName, id: newId, defaultStatusIcon: 'playlist_add_check' });
-		newTab.on('dblclick', () => this.renameCurrentSession());
-
-		// 6. Switch to it
-		newTab.click();
-	}
-
-	/**
-	 * SIMPLIFIED: Switches session DATA. The UI state is already handled by the TabBar component.
-	 */
 	async switchSession(sessionId) {
-		// If we are already on this session, do nothing.
-		// The TabBar might fire a click on an already-active tab.
-		if (this.activeSessionId === sessionId && this.activeSession) return;
-
-		// Save the state of the *current* active session (if any)
-		if (this.activeSession && this.activeSession.id) {
-			this.activeSession.promptInput = this.promptEditor.getValue();
-			this.activeSession.scrollTop = this.conversationArea.scrollTop; // Save current scroll position
-			const currentSessionMeta = this.allSessionMetadata.find(s => s.id === this.activeSession.id);
-			if (currentSessionMeta) currentSessionMeta.lastModified = Date.now();
-			await workspaceClient.setSession(this.activeSession.id, this.activeSession);
-		}
-
-		// Load the new session's data
-		const newSessionData = await workspaceClient.getSession(sessionId);
-		if (!newSessionData) {
-			// This is a recovery case. The tab exists but data is gone.
-			console.error(`Data for session ID ${sessionId} not found!`);
-			const staleTab = this.sessionTabBar.tabs.find(t => t.config.id === sessionId);
-			if (staleTab) this.deleteSession(sessionId, staleTab); // Trigger a proper delete.
-			return; // Abort this switch.
-		}
-
-		// Update manager's state
-		this.activeSession = newSessionData;
-		this.activeSessionId = sessionId;
-		this._unsentPromptBuffer = null; // Clear any pending unsent prompt from the previous session
-
-		// disapear the panel first		
-		this.conversationArea.style.scrollBehavior = 'auto'; // Make scroll instant
-		this.conversationArea.style.transition = "opacity 100ms linear"
-		this.conversationArea.style.opacity = 0
-
-		setTimeout(() => {
-			void this.conversationArea.scrollTop
-			// Update the rest of the UI based on the new data
-			// Do NOT auto-scroll to bottom. Instead, restore saved scroll position.
-			this.historyManager.loadSessionMessages(this.activeSession.messages, false);
-
-			// Restore scroll position after content has been rendered
-			// A small timeout ensures the DOM has updated before setting scroll.
-			setTimeout(() => {
-				void this.conversationArea.scrollTop
-				this.conversationArea.scrollTop = this.activeSession.scrollTop || 0;
-				this.conversationArea.style.scrollBehavior = ''; // Restore smooth scrolling
-				this.conversationArea.style.opacity = 1
-			}, 100)
-		}, 100)
-
-		this.promptEditor.setValue(this.activeSession.promptInput || "", -1);
-		this.promptIndex = (this.activeSession.promptHistory?.length || 0);
-		this._resizePromptArea();
-		this._setButtonsDisabledState(this._isProcessing);
-		this._updatePromptAreaPlaceholder(); // Update placeholder after session switch
-		this._updateAgentProgressPanel();
-		this._dispatchContextUpdate("session_switched");
-		this.promptEditor.focus(); // Ensure focus returns to the prompt editor after a switch
+		return this.sessionsManager.switchSession(sessionId);
 	}
 
-	/**
-	 * Deletes a session and tells the TabBar to remove its UI tab.
-	 * The TabBar will then automatically activate another tab, triggering our switchSession handler.
-	 */
 	async deleteSession(sessionId, tab) {
-		const sessionMeta = this.allSessionMetadata.find(s => s.id === sessionId);
-		// Find the full session data to check its message count
-		const fullSessionData = await workspaceClient.getSession(sessionId);
-
-		// Only ask for confirmation if the session has a history AND it's not the only session left
-		if (fullSessionData?.messages?.length > 0 || this.allSessionMetadata.length <= 1) { // Also ask for confirmation if it's the last session
-			const confirmed = await window.modal.confirm(`Are you sure you want to delete the chat "<strong>${sessionMeta.name}</strong>"? This action cannot be undone.`, "Delete Chat Session");
-			if (!confirmed) {
-				return;
-			}
-		}
-
-		// Delete data
-		await workspaceClient.deleteSession(sessionId);
-		this.allSessionMetadata = this.allSessionMetadata.filter(s => s.id !== sessionId);
-
-		// If that was the last tab, we need to manually clean up the state.
-		if (this.allSessionMetadata.length === 0) {
-			this.activeSession = null;
-			this.activeSessionId = null;
-			this.historyManager.clear(true); // Force clear the UI without confirmation
-		}
-
-		// Remove UI element. The TabBar component handles activating the next tab and firing its click event.
-		this.sessionTabBar.remove(tab);
-
-		this._dispatchContextUpdate("session_deleted");
+		return this.sessionsManager.deleteSession(sessionId, tab);
 	}
 
-	/**
-	 * Renames the current session and updates the specific tab's text via its property.
-	 */
 	async renameCurrentSession() {
-		if (!this.activeSession) return;
-		const newName = await window.modal.prompt("Enter new chat name:", "Rename Chat", this.activeSession.name);
+		return this.sessionsManager.renameCurrentSession();
+	}
 
-		if (newName && newName.trim() !== "") {
-			const trimmedName = newName.trim();
+	async proceedWithImplementationPlan() {
+		return this.sessionsManager.proceedWithImplementationPlan();
+	}
 
-			// Update data
-			this.activeSession.name = trimmedName;
-			const meta = this.allSessionMetadata.find(s => s.id === this.activeSession.id);
-			if (meta) {
-				meta.name = trimmedName;
-				meta.lastModified = Date.now();
-			}
-			await workspaceClient.setSession(this.activeSession.id, this.activeSession);
-
-			// Update the UI via the component's API
-			const tabToRename = this.sessionTabBar.tabs.find(t => t.config.id === this.activeSessionId);
-			if (tabToRename) {
-				tabToRename.name = trimmedName; // This uses the TabItem's setter
-			}
-
-			this._dispatchContextUpdate("session_renamed");
-		}
+	_populateInitialTabs() {
+		return this.sessionsManager._populateInitialTabs();
 	}
 
 	// The old _updateSessionUI method is no longer needed and has been removed.
@@ -1261,16 +1083,18 @@ class AIManager {
 	 * @param {object} [details={}] - Additional details relevant to the update type.
 	 */
 	_dispatchContextUpdate(type, details = {}) {
-		// Ensure ai, historyManager, and activeSession are available
-		if (!this.ai || !this.historyManager || !this.activeSession) {
-			console.warn("Attempted to dispatch context update before AI, History Manager, or active session was ready.");
+		// Ensure ai, historyManager are available
+		if (!this.ai || !this.historyManager) {
+			console.warn("Attempted to dispatch context update before AI or History Manager was ready.");
 			return;
 		}
 
 		// Calculate tokens based on the active session's messages
-		const estimatedTokensFullHistory = this.ai.isConfigured() ? this.ai.estimateTokens(this.activeSession.messages) : 0;
-		const estimatedWindow = this.ai.isConfigured() ? this.ai.estimateTokens(this.historyManager.prepareMessagesForAI()) : 0;
+		const estimatedTokensFullHistory = (this.ai.isConfigured() && this.activeSession) ? this.ai.estimateTokens(this.activeSession.messages) : 0;
+		const estimatedWindow = (this.ai.isConfigured() && this.activeSession) ? this.ai.estimateTokens(this.historyManager.prepareMessagesForAI()) : 0;
 		const maxContextTokens = this.ai.isConfigured() ? this.ai.MAX_CONTEXT_TOKENS : 0;
+
+		const shouldPassSessionData = this.activeSession && type !== "session_deleted" && type !== "session_closed";
 
 		const eventDetail = {
 			aiProvider: this.aiProvider,
@@ -1284,7 +1108,7 @@ class AIManager {
 				activeSessionId: this.activeSessionId,
 				sessions: JSON.parse(JSON.stringify(this.allSessionMetadata)) // Deep copy to prevent mutation issues
 			},
-			activeSessionData: JSON.parse(JSON.stringify(this.activeSession)), // Deep copy of active session
+			activeSessionData: shouldPassSessionData ? JSON.parse(JSON.stringify(this.activeSession)) : null, // Deep copy of active session
 			...details,
 		};
 
@@ -1521,9 +1345,13 @@ class AIManager {
 		const callbacks = {
 			onUpdate: (fullResponse) => { // Update the responseBlock directly
 				if (spinner.parentNode) spinner.remove(); // Remove spinner on first stream chunk
+				const shouldScroll = this._shouldAutoScroll();
 				// NEW: _renderResponseContent handles <think> blocks
-				responseBlock.innerHTML = this._renderResponseContent(fullResponse);
-				this._addCodeBlockButtons(responseBlock)
+				responseBlock.innerHTML = this.messageRenderer.renderResponseContent(fullResponse);
+				this.messageRenderer.addCodeBlockButtons(responseBlock)
+				if (shouldScroll && this.conversationArea) {
+					this.conversationArea.scrollTop = this.conversationArea.scrollHeight;
+				}
 			},
 			onDone: async (fullResponse, contextRatioPercent) => { // Mark async to await set
 				// First, update the session data and add the delete button to the user's prompt.
@@ -1537,14 +1365,19 @@ class AIManager {
 
 				// Now, render the final response in the UI.
 				// DEV: For visual debugging, let's pop a loader bar on top of every model response.
-				responseBlock.innerHTML = this._renderResponseContent(fullResponse, modelMessage);
+				responseBlock.innerHTML = this.messageRenderer.renderResponseContent(fullResponse, modelMessage);
 
-				this._addCodeBlockButtons(responseBlock, modelMessage); // Pass the message object here to read/write persistent state
+				this.messageRenderer.addCodeBlockButtons(responseBlock, modelMessage); // Pass the message object here to read/write persistent state
 
 				this._dispatchContextUpdate("append_model") // Dispatch after model response
 
 				this._isProcessing = false // Release lock
 				this._setButtonsDisabledState(false) // Re-enable buttons
+
+				// Auto-rename if this is the first model response and the name is default
+				if (this.activeSession.messages.filter(m => m.role === 'model').length === 1 && this.activeSession.name.startsWith("Chat ")) {
+					this.sessionsManager.autoRenameSession(userMessage.content);
+				}
 			},
 			onError: async (error) => { // Mark async to await set
 				// The spinner is also removed here when innerHTML is overwritten.
@@ -1581,7 +1414,7 @@ class AIManager {
 	}
 
 	_parseToolCalls(content) {
-		const parsed = this._parseBlocks(content);
+		const parsed = this.messageRenderer.parseBlocks(content);
 		const tc = parsed.toolCallBlocks.find(b => b.closed);
 		if (!tc) return null;
 
@@ -1698,8 +1531,11 @@ class AIManager {
 				resolve(false);
 			});
 
+			const shouldScroll = this._shouldAutoScroll();
 			this.conversationArea.append(card);
-			this.conversationArea.scrollTop = this.conversationArea.scrollHeight;
+			if (shouldScroll && this.conversationArea) {
+				this.conversationArea.scrollTop = this.conversationArea.scrollHeight;
+			}
 		});
 	}
 
@@ -1762,8 +1598,11 @@ class AIManager {
 				resolve(false);
 			});
 
+			const shouldScroll = this._shouldAutoScroll();
 			this.conversationArea.append(card);
-			this.conversationArea.scrollTop = this.conversationArea.scrollHeight;
+			if (shouldScroll && this.conversationArea) {
+				this.conversationArea.scrollTop = this.conversationArea.scrollHeight;
+			}
 		});
 	}
 
@@ -1794,19 +1633,25 @@ class AIManager {
 			responseBlock.dataset.messageId = modelMessageId;
 			const spinner = this._createSpinner();
 			responseBlock.append(spinner);
+			const shouldScrollAtStart = this._shouldAutoScroll();
 			this.conversationArea.append(responseBlock);
 
 			// Auto scroll
-			this.conversationArea.scrollTop = this.conversationArea.scrollHeight;
+			if (shouldScrollAtStart && this.conversationArea) {
+				this.conversationArea.scrollTop = this.conversationArea.scrollHeight;
+			}
 
 			let currentFullResponse = "";
 			const runPromise = new Promise((resolve, reject) => {
 				const callbacks = {
 					onUpdate: (fullResponse) => {
 						if (spinner.parentNode) spinner.remove();
-						responseBlock.innerHTML = this._renderResponseContent(fullResponse);
-						this._addCodeBlockButtons(responseBlock);
-						this.conversationArea.scrollTop = this.conversationArea.scrollHeight;
+						const shouldScroll = this._shouldAutoScroll();
+						responseBlock.innerHTML = this.messageRenderer.renderResponseContent(fullResponse);
+						this.messageRenderer.addCodeBlockButtons(responseBlock);
+						if (shouldScroll && this.conversationArea) {
+							this.conversationArea.scrollTop = this.conversationArea.scrollHeight;
+						}
 					},
 					onDone: async (fullResponse) => {
 						currentFullResponse = fullResponse;
@@ -1824,8 +1669,13 @@ class AIManager {
 						this.activeSession.lastModified = Date.now();
 						await workspaceClient.setSession(this.activeSession.id, this.activeSession);
 
-						responseBlock.innerHTML = this._renderResponseContent(fullResponse, modelMessage);
-						this._addCodeBlockButtons(responseBlock, modelMessage);
+						responseBlock.innerHTML = this.messageRenderer.renderResponseContent(fullResponse, modelMessage);
+						this.messageRenderer.addCodeBlockButtons(responseBlock, modelMessage);
+
+						// Auto-rename if this is the first model response and the name is default
+						if (this.activeSession.messages.filter(m => m.role === 'model').length === 1 && this.activeSession.name.startsWith("Chat ")) {
+							this.sessionsManager.autoRenameSession(userMessage.content);
+						}
 
 						resolve(fullResponse);
 					},
@@ -1843,7 +1693,7 @@ class AIManager {
 				const responseContent = await runPromise;
 
 				// Parse implementation plan and check if we need to show plan approval
-				const parsed = this._parseBlocks(responseContent);
+				const parsed = this.messageRenderer.parseBlocks(responseContent);
 				if (parsed.planBlock) {
 					const planText = responseContent.substring(parsed.planBlock.contentStartIdx, parsed.planBlock.contentEndIdx).trim();
 					if (planText) {
@@ -1856,8 +1706,11 @@ class AIManager {
 								<ui-icon>close</ui-icon>
 								<span>Agent aborted: Implementation Plan rejected by the user.</span>
 							`;
+							const shouldScroll = this._shouldAutoScroll();
 							this.conversationArea.append(abortBlock);
-							this.conversationArea.scrollTop = this.conversationArea.scrollHeight;
+							if (shouldScroll && this.conversationArea) {
+								this.conversationArea.scrollTop = this.conversationArea.scrollHeight;
+							}
 
 							this._isProcessing = false;
 							this._setButtonsDisabledState(false);
@@ -1892,8 +1745,11 @@ class AIManager {
 					const progressMsg = document.createElement("div");
 					progressMsg.className = "agent-tool-progress";
 					progressMsg.innerHTML = `<ui-icon class="spin">cached</ui-icon> Running tool: <code>${toolCall.name}</code>...`;
+					const shouldScroll = this._shouldAutoScroll();
 					this.conversationArea.append(progressMsg);
-					this.conversationArea.scrollTop = this.conversationArea.scrollHeight;
+					if (shouldScroll && this.conversationArea) {
+						this.conversationArea.scrollTop = this.conversationArea.scrollHeight;
+					}
 
 					try {
 						toolResult = await agentTools.execute(toolCall.name, toolCall.arguments, this.activeSession.id);
@@ -1921,8 +1777,8 @@ class AIManager {
 				// Update the model message block in the DOM to reflect the actual tool execution status (failed or invoked)
 				const modelMessage = this.activeSession.messages.find(m => m.id === modelMessageId);
 				if (modelMessage) {
-					responseBlock.innerHTML = this._renderResponseContent(responseContent, modelMessage);
-					this._addCodeBlockButtons(responseBlock, modelMessage);
+					responseBlock.innerHTML = this.messageRenderer.renderResponseContent(responseContent, modelMessage);
+					this.messageRenderer.addCodeBlockButtons(responseBlock, modelMessage);
 				}
 
 				// Render simple system or message confirmation of tool run in the chat
@@ -1932,8 +1788,11 @@ class AIManager {
 					<ui-icon>${approved ? 'done' : 'close'}</ui-icon>
 					<span>Tool <code>${toolCall.name}</code> finished.</span>
 				`;
+				const shouldScroll = this._shouldAutoScroll();
 				this.conversationArea.append(toolConfBlock);
-				this.conversationArea.scrollTop = this.conversationArea.scrollHeight;
+				if (shouldScroll && this.conversationArea) {
+					this.conversationArea.scrollTop = this.conversationArea.scrollHeight;
+				}
 
 			} catch (e) {
 				console.error("Agent Loop Error:", e);
@@ -1958,466 +1817,7 @@ class AIManager {
 		}
 	}
 
-	_addCodeBlockButtons(responseBlock, messageObject = null) { // Add messageObject parameter
-		const preElements = responseBlock.querySelectorAll("pre")
-		preElements.forEach((pre, index) => {
-			// Check if buttons are already added to this <pre> element
-			if (pre.querySelector('.code-buttons')) {
-				return; // Skip if buttons already exist
-			}
 
-			const codeElement = pre.querySelector("code") // Get the code element inside pre
-			const isDiff = codeElement && codeElement.classList.contains('language-diff');
-
-			const buttonContainer = new Block()
-
-			// Ensure messageObject.diffStatuses exists and is an array
-			if (messageObject && !Array.isArray(messageObject.diffStatuses)) {
-				messageObject.diffStatuses = [];
-			}
-			buttonContainer.classList.add("code-buttons")
-
-			if (!isDiff) {
-				// Common buttons for all code blocks
-				const copyButton = new Button()
-				copyButton.classList.add("code-button")
-				copyButton.icon = "content_copy"
-				copyButton.title = "Copy code"
-				copyButton.on("click", () => {
-					const code = codeElement ? codeElement.innerText : pre.innerText; // Use codeElement if exists
-					navigator.clipboard.writeText(code)
-					copyButton.icon = "done"
-					setTimeout(() => {
-						copyButton.icon = "content_copy"
-					}, 1000)
-				})
-				buttonContainer.append(copyButton);
-
-				const insertButton = new Button()
-				insertButton.classList.add("code-button")
-				insertButton.icon = "input"
-				insertButton.title = "Insert into editor"
-				insertButton.on("click", () => {
-					const code = codeElement ? codeElement.innerText : pre.innerText; // Use codeElement if exists
-					const event = new CustomEvent("insert-snippet", { detail: code })
-					window.dispatchEvent(event)
-					insertButton.icon = "done"
-					setTimeout(() => {
-						insertButton.icon = "input"
-					}, 1000)
-				})
-				buttonContainer.append(insertButton);
-			}
-
-			// Expand/Collapse button
-			const expandCollapseButton = new Button();
-			expandCollapseButton.classList.add("code-button", "expand-collapse-button");
-
-			const codeContent = codeElement ? codeElement.innerText : pre.innerText;
-			const lineCount = codeContent.split('\n').length;
-			const codeLanguage = codeElement ? Array.from(codeElement.classList).find(cls => cls.startsWith('language-'))?.substring(9) : '';
-
-			// Determine initial state and button visibility
-			if (lineCount < 30) {
-				pre.setAttribute("expanded", ""); // Apply expanded state
-				expandCollapseButton.style.display = "none"; // Hide button
-			} else if (codeLanguage === "diff") {
-				pre.setAttribute("expanded", ""); // Apply expanded state for diffs
-				expandCollapseButton.icon = "unfold_less";
-				expandCollapseButton.title = "Collapse code block";
-			} else {
-				pre.setAttribute("collapsed", ""); // Apply collapsed state by default
-				expandCollapseButton.icon = "unfold_more";
-				expandCollapseButton.title = "Expand code block";
-			}
-
-			expandCollapseButton.on("click", () => {
-				if (pre.hasAttribute("collapsed")) {
-					pre.removeAttribute("collapsed");
-					// Default state (30em)
-					expandCollapseButton.icon = "unfold_more"; // Still "unfold_more" to go to expanded next
-					expandCollapseButton.title = "Expand code block";
-				} else if (!pre.hasAttribute("expanded")) {
-					// Currently in default (30em) state, go to expanded
-					pre.setAttribute("expanded", "");
-					expandCollapseButton.icon = "unfold_less";
-					expandCollapseButton.title = "Collapse code block";
-				} else {
-					// Currently expanded, go to collapsed
-					pre.removeAttribute("expanded");
-					pre.setAttribute("collapsed", "");
-					expandCollapseButton.icon = "unfold_more";
-					expandCollapseButton.title = "Expand code block";
-				}
-			});
-			buttonContainer.append(expandCollapseButton) // Append the new button
-
-
-			// NEW: Diff specific handling
-			if (isDiff) {
-				const originalDiffString = codeElement.textContent; // Get the raw diff content
-
-				// Infer the language from the '+++ b/path/to/file.ext' line in the diff.
-				const highlightLang = this._inferLanguageFromDiff(originalDiffString);
-
-				// Render the diff using DiffHandler, passing the inferred language for highlighting
-				const renderedDiffHtml = DiffHandler.renderStateless(originalDiffString, 'html', highlightLang, hljs);
-				// Create a temporary div to parse the HTML and extract the inner content
-				const tempDiv = document.createElement('div');
-				tempDiv.innerHTML = renderedDiffHtml;
-				const newPreContent = tempDiv.querySelector('.diff-output')?.innerHTML || '';
-
-				if (newPreContent) {
-					// pre.tagName = "ui-block"
-					pre.innerHTML = newPreContent; // Replace with styled diff content
-					pre.classList.add('diff-output'); // Add a class for specific styling
-					// Store the original raw diff string on the pre element for the apply button
-					pre.dataset.originalDiffContent = originalDiffString;
-				} else {
-					console.warn("DiffHandler.renderStateless returned unexpected output for diff block.");
-				}
-
-				// Add "Apply Diff" button
-				const applyDiffButton = new Button();
-				applyDiffButton.classList.add("code-button");
-
-				// Check state from messageObject if available
-				if (messageObject && messageObject.diffStatuses && messageObject.diffStatuses[index]) {
-					applyDiffButton.icon = "done";
-					applyDiffButton.title = "Diff applied successfully!";
-
-					// If diff is applied, start it in collapsed state
-					pre.removeAttribute("expanded"); // Remove any expanded state
-					pre.setAttribute("collapsed", ""); // Apply collapsed state
-					expandCollapseButton.icon = "unfold_more";
-					expandCollapseButton.title = "Expand code block";
-
-				} else {
-					applyDiffButton.icon = "merge"; // Suitable icon for applying changes
-					applyDiffButton.title = "Apply diff to file";
-				}
-
-				applyDiffButton.on("click", async () => {
-					const rawDiff = pre.dataset.originalDiffContent;
-					if (!rawDiff) {
-						alert("Error: Could not retrieve original diff content to apply.");
-						return;
-					}
-
-					// Extract target path from diff header (e.g., +++ b/path/to/file)
-					const targetPathMatch = rawDiff.match(/^\+\+\+ b\/(.+)$/m) || rawDiff.match(/^\+\+\+ (.+)$/m);
-					if (!targetPathMatch || !targetPathMatch[1]) {
-						alert("Error: Could not determine target file path from diff header. Ensure the diff starts with '+++ b/filename'.");
-						return;
-					}
-					const targetPath = targetPathMatch[1];
-
-					// 1. Find the ORIGINAL content from the chat history using a robust search.
-					let originalContentFromContext = null;
-					const normalizedTargetPath = targetPath.startsWith('/') ? targetPath.substring(1) : targetPath;
-
-					let exactMatch = null;
-					let partialMatches = [];
-
-					// Iterate backward to find the most recent matching file context.
-					for (let i = this.activeSession.messages.length - 1; i >= 0; i--) {
-						const msg = this.activeSession.messages[i];
-						if (msg.type === "file_context" && msg.id) {
-							const normalizedMsgId = msg.id.startsWith('/') ? msg.id.substring(1) : msg.id;
-							if (normalizedMsgId === normalizedTargetPath) {
-								exactMatch = msg.content;
-								break; // Found exact match, this is the best case.
-							}
-							if (normalizedMsgId.endsWith(normalizedTargetPath)) {
-								partialMatches.push(msg.content);
-							}
-						}
-					}
-
-					if (exactMatch) {
-						originalContentFromContext = exactMatch;
-					} else if (partialMatches.length > 0) {
-						// Use the most recent partial match (first one found when iterating backwards).
-						originalContentFromContext = partialMatches[0];
-					}
-
-					if (!originalContentFromContext) {
-						alert(`Error: The original content for "${targetPath}" was not found in this chat session's context history. Cannot apply diff.`);
-						return;
-					}
-					// 2. Find the LIVE editor tab using the AI's helper.
-					// This is made resilient to diffs that may omit the leading slash.
-					let tabToUpdate = await this.ai._getTabSessionByPath(targetPath);
-					// If the path from the diff doesn't match, try adding a leading slash.
-					if (!tabToUpdate && !targetPath.startsWith('/')) {
-						tabToUpdate = await this.ai._getTabSessionByPath(`/${targetPath}`);
-					}
-
-					if (!tabToUpdate) {
-						alert(`Error: File "${targetPath}" is not currently open in the editor. Please open the file to apply the diff.`);
-						return;
-					}
-
-					// 3. Apply the diff using DiffHandler, using content from history
-					const newFileContentFromDiff = DiffHandler.applyAIResponseDiff(originalContentFromContext, rawDiff);
-
-					if (newFileContentFromDiff === null) {
-						alert(`Failed to apply diff to "${targetPath}". There might be a content mismatch with the file as it was originally sent to AI. Please review the diff manually.`);
-						console.error("Diff application failed:", { originalContentFromContext, rawDiff });
-						applyDiffButton.classList.remove("diff-apply-success"); // Ensure success state is removed
-						applyDiffButton.classList.add("diff-apply-failed");
-					} else {
-
-						// 4. Update the live file content in the editor, preserving undo history.
-						const session = tabToUpdate.config.session;
-						const doc = session.getDocument();
-						const lastRow = doc.getLength() - 1;
-						const lastCol = doc.getLine(lastRow).length;
-						const fullRange = new window.ace.Range(0, 0, lastRow, lastCol);
-						session.replace(fullRange, newFileContentFromDiff);
-
-						// IMPORTANT: DO NOT call session.markClean() here.
-						// replace() marks it dirty, which is correct because it's not saved to disk yet.
-						// The user should manually save after applying.
-
-						// Provide visual feedback
-						applyDiffButton.classList.remove("diff-apply-failed"); // Ensure failure state is removed
-						applyDiffButton.classList.add("diff-apply-success");
-						applyDiffButton.icon = "done";
-						applyDiffButton.title = "Diff applied successfully!";
-						// NEW: Update the diff status in the message object and save
-						if (messageObject) {
-							messageObject.diffStatuses[index] = true;
-							await workspaceClient.setSession(this.activeSession.id, this.activeSession); // Save the session immediately
-						}
-						// Add a system message to chat history for persistent feedback
-						this.historyManager.addMessage({
-							type: "system_message",
-							content: `Diff successfully applied to **${targetPath}**. Remember to save the file.`,
-							timestamp: Date.now(),
-						}, false); // Auto-scroll is now automatically suppressed for system messages
-					}
-				});
-				buttonContainer.append(applyDiffButton);
-			}
-
-			pre.prepend(buttonContainer)
-		})
-	}
-
-	/**
-	 * NEW METHOD: Infers the programming language from a diff string by parsing the
-	 * '+++' line and matching the file extension against the global window.ace_modes.
-	 * @param {string} diffContent - The full text content of the diff.
-	 * @returns {string|null} The inferred language name (e.g., "javascript") or null if not found.
-	 */    _renderResponseContent(content, message = null) {
-		if (!content) return "";
-
-		// Detect if a tool call associated with this message failed.
-		// A tool call fails if the subsequent message in activeSession is a tool_response and its content starts with or contains 'Error'.
-		let isFailed = false;
-		if (message && this.activeSession && this.activeSession.messages) {
-			const index = this.activeSession.messages.findIndex(m => m.id === message.id);
-			if (index !== -1 && index + 1 < this.activeSession.messages.length) {
-				const nextMessage = this.activeSession.messages[index + 1];
-				if (nextMessage && nextMessage.type === "tool_response") {
-					const responseContent = nextMessage.content || "";
-					const prefixMatch = responseContent.match(/^\[Tool Response: [^\]]+\]\s*\n\s*/i);
-					if (prefixMatch) {
-						const toolResultText = responseContent.substring(prefixMatch[0].length).trim();
-						if (toolResultText.toLowerCase().startsWith("error")) {
-							isFailed = true;
-						}
-					}
-				}
-			}
-		}
-
-		const parsed = this._parseBlocks(content);
-		const rangesToRemove = [];
-
-		// Extract evergreen implementation plan
-		if (parsed.planBlock) {
-			const planText = content.substring(parsed.planBlock.contentStartIdx, parsed.planBlock.contentEndIdx).trim();
-			if (planText && this.activeSession && this.activeSession.implementationPlan !== planText) {
-				this.activeSession.implementationPlan = planText;
-				this._updateAgentProgressPanel();
-				if (this.historyManager && typeof this.historyManager.updateImplementationPlanTrigger === 'function') {
-					this.historyManager.updateImplementationPlanTrigger();
-				}
-				workspaceClient.setSession(this.activeSession.id, this.activeSession);
-
-				// Automatically open the Implementation Plan & Checklist tab if it's not already open!
-				if (window.ui.openPlanAndTaskList) {
-					const isOpen = (window.ui.leftTabs?.tabs?.some(t => t.config?.path === "plan_tasks")) ||
-						(window.ui.rightTabs?.tabs?.some(t => t.config?.path === "plan_tasks"));
-					if (!isOpen) {
-						window.ui.openPlanAndTaskList();
-					}
-				}
-			}
-			rangesToRemove.push({ startIdx: parsed.planBlock.startIdx, endIdx: parsed.planBlock.endIdx });
-		}
-
-		// Extract evergreen task list
-		if (parsed.taskListBlock) {
-			const tasksText = content.substring(parsed.taskListBlock.contentStartIdx, parsed.taskListBlock.contentEndIdx).trim();
-			if (tasksText && this.activeSession && this.activeSession.taskList !== tasksText) {
-				this.activeSession.taskList = tasksText;
-				this._updateAgentProgressPanel();
-				workspaceClient.setSession(this.activeSession.id, this.activeSession);
-			}
-			rangesToRemove.push({ startIdx: parsed.taskListBlock.startIdx, endIdx: parsed.taskListBlock.endIdx });
-		}
-
-		// Extract complete_task signals
-		let taskListUpdated = false;
-		for (const block of parsed.completeTaskBlocks) {
-			const taskText = content.substring(block.contentStartIdx, block.contentEndIdx).trim();
-			if (taskText && this.activeSession && this.activeSession.taskList) {
-				const escapedTaskText = taskText.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
-				const checkboxRegex = new RegExp(`([\\-*]\\s*\\[\\s*\\]\\s*)${escapedTaskText}`, 'i');
-				if (checkboxRegex.test(this.activeSession.taskList)) {
-					this.activeSession.taskList = this.activeSession.taskList.replace(checkboxRegex, (match, bulletGroup) => {
-						return bulletGroup.replace(/\[\s*\]/, '[x]') + taskText;
-					});
-					taskListUpdated = true;
-				}
-			}
-			rangesToRemove.push({ startIdx: block.startIdx, endIdx: block.endIdx });
-		}
-
-		if (taskListUpdated) {
-			this._updateAgentProgressPanel();
-			workspaceClient.setSession(this.activeSession.id, this.activeSession);
-		}
-
-		let thinkHtml = "";
-		if (parsed.thoughtBlock) {
-			const thinkContent = content.substring(parsed.thoughtBlock.contentStartIdx, parsed.thoughtBlock.contentEndIdx).trim();
-			const isClosed = parsed.thoughtBlock.closed;
-			thinkHtml = `
-                <div class="thought-block" ${isClosed ? "" : "expanded"}>
-                    <div class="thought-header" onclick="this.parentElement.hasAttribute('expanded') ? this.parentElement.removeAttribute('expanded') : this.parentElement.setAttribute('expanded', '')">
-                        <ui-icon>chevron_right</ui-icon>
-                        <span>${isClosed ? "Thought Process" : "Thinking..."}</span>
-                    </div>
-                    <div class="thought-content">
-                        ${this.md.render(thinkContent)}
-                    </div>
-                </div>
-            `;
-			rangesToRemove.push({ startIdx: parsed.thoughtBlock.startIdx, endIdx: parsed.thoughtBlock.endIdx });
-		}
-
-		const mainContent = this._removeRanges(content, rangesToRemove);
-		let finalHtml = thinkHtml;
-
-		const finalParsed = this._parseBlocks(mainContent);
-		if (finalParsed.toolCallBlocks.length > 0) {
-			const tc = finalParsed.toolCallBlocks[0];
-			const toolName = tc.name;
-			const toolArgs = mainContent.substring(tc.contentStartIdx, tc.contentEndIdx);
-			const isClosed = tc.closed;
-
-			// Extract arguments as a dictionary
-			const args = {};
-			const tagRegex = /<([a-zA-Z0-9_-]+)>([\s\S]*?)<\/\1>/g;
-			let tagMatch;
-			while ((tagMatch = tagRegex.exec(toolArgs)) !== null) {
-				const key = tagMatch[1];
-				let val = tagMatch[2];
-				if (key !== 'search' && key !== 'replace' && key !== 'content') {
-					val = val.trim();
-				}
-				args[key] = val;
-			}
-
-			// Create gorgeous tool card HTML
-			let icon = "extension";
-			if (toolName.includes("read")) icon = "find_in_page";
-			else if (toolName.includes("list")) icon = "folder_open";
-			else if (toolName.includes("search")) icon = "search";
-			else if (toolName.includes("edit")) icon = "edit";
-			else if (toolName.includes("create")) icon = "create_new_folder";
-			else if (toolName.includes("open")) icon = "launch";
-
-			// Construct compact one-line label
-			let label = `<code>${toolName}</code>`;
-			const fileActions = ["edit_file", "read_file", "create_file", "find_file", "open_file"];
-			if (args.path) {
-				if (fileActions.includes(toolName)) {
-					const shortFile = args.path.split('/').pop() || args.path;
-					label = `<code>${toolName}:</code> <ui-filechip filename="${this._escapeHtml(shortFile)}" path="${this._escapeHtml(args.path)}"></ui-filechip>`;
-				} else {
-					label = `<code>${toolName}:</code> <span class="tool-call-path" title="${this._escapeHtml(args.path)}">${this._escapeHtml(args.path)}</span>`;
-				}
-			} else if (args.query) {
-				label = `<code>${toolName}:</code> <span class="tool-call-query">"${this._escapeHtml(args.query)}"</span>`;
-			}
-
-			const badgeClass = isClosed ? (isFailed ? 'failed' : 'invoked') : 'preparing';
-			const badgeText = isClosed ? (isFailed ? 'Failed' : 'Invoked') : 'Preparing...';
-
-			const toolCardHtml = `
-                <div class="tool-call-block compact">
-                    <div class="tool-call-header compact">
-                        <ui-icon>${icon}</ui-icon>
-                        <span class="tool-call-title compact">${label}</span>
-                        <span class="tool-call-status-badge compact ${badgeClass}">${badgeText}</span>
-                    </div>
-                </div>
-            `;
-
-			const beforeText = mainContent.substring(0, tc.startIdx) || "";
-			const afterText = mainContent.substring(tc.endIdx) || "";
-
-			if (beforeText.trim()) {
-				finalHtml += this.md.render(beforeText);
-			}
-			finalHtml += toolCardHtml;
-			if (afterText.trim()) {
-				finalHtml += this.md.render(afterText);
-			}
-		} else {
-			if (mainContent.trim()) {
-				finalHtml += this.md.render(mainContent);
-			}
-		}
-
-		return finalHtml;
-	}
-
-	_inferLanguageFromDiff(diffContent) {
-		if (!window.ace_modes) {
-			console.warn("AIManager: window.ace_modes is not available. Cannot infer language for diff highlighting.");
-			return null;
-		}
-
-		// Regex to find the filename from the '+++' line.
-		const filenameMatch = diffContent.match(/^\+\+\+\s(?:b\/)?(.+?)(?:\t.*)?$/m);
-		if (!filenameMatch || !filenameMatch[1]) {
-			return null; // Could not find a filename in the diff header.
-		}
-		const filename = filenameMatch[1];
-
-		// Iterate through ace_modes to find a matching language.
-		for (const lang in window.ace_modes) {
-			const mode = window.ace_modes[lang];
-			if (mode && mode.extRe instanceof RegExp) {
-				// IMPORTANT: Reset lastIndex for global regexes to avoid state issues.
-				mode.extRe.lastIndex = 0;
-				if (mode.extRe.test(filename)) {
-					// Return the language name compatible with highlight.js
-					// (ace_modes keys are generally compatible).
-					return lang;
-				}
-			}
-		}
-
-		// No language matched the file extension.
-		return null;
-	}
 
 	/**
 	 * NEW METHOD: Updates or removes stale file context messages in the active session.
@@ -2538,211 +1938,6 @@ class AIManager {
 			return true; // Signal to proceed
 		}
 		return true; // No stale files, proceed
-	}
-	_parseBlocks(content) {
-		if (!content) return { thoughtBlock: null, planBlock: null, taskListBlock: null, completeTaskBlocks: [], toolCallBlocks: [] };
-		let inCodeBlock = false;
-		let inInlineCode = false;
-
-		let thoughtBlock = null;
-		let planBlock = null;
-		let taskListBlock = null;
-		const completeTaskBlocks = [];
-		const toolCallBlocks = [];
-
-		let activeBlock = null; // Reference to the currently open block
-
-		let i = 0;
-		const len = content.length;
-
-		while (i < len) {
-			// Toggle code block states
-			if (content.startsWith("```", i)) {
-				inCodeBlock = !inCodeBlock;
-				i += 3;
-				continue;
-			}
-			if (content.startsWith("`", i) && !inCodeBlock) {
-				inInlineCode = !inInlineCode;
-				i += 1;
-				continue;
-			}
-
-			// If inside code, just skip
-			if (inCodeBlock || inInlineCode) {
-				i++;
-				continue;
-			}
-
-			// If we have an active open block, we only look for its closing tag
-			if (activeBlock) {
-				if (activeBlock.type === 'thought') {
-					if (activeBlock.subType === 'thought' && content.startsWith("</thought>", i)) {
-						activeBlock.endIdx = i + 10;
-						activeBlock.contentEndIdx = i;
-						activeBlock.closed = true;
-						activeBlock = null;
-						i += 10;
-						continue;
-					}
-					if (activeBlock.subType === 'think' && content.startsWith("</think>", i)) {
-						activeBlock.endIdx = i + 8;
-						activeBlock.contentEndIdx = i;
-						activeBlock.closed = true;
-						activeBlock = null;
-						i += 8;
-						continue;
-					}
-					if (activeBlock.subType === 'channel' && content.startsWith("\n", i)) {
-						activeBlock.endIdx = i + 1;
-						activeBlock.contentEndIdx = i;
-						activeBlock.closed = true;
-						activeBlock = null;
-						i += 1;
-						continue;
-					}
-				} else if (activeBlock.type === 'plan') {
-					if (content.startsWith("</implementation_plan>", i)) {
-						activeBlock.endIdx = i + 22;
-						activeBlock.contentEndIdx = i;
-						activeBlock.closed = true;
-						activeBlock = null;
-						i += 22;
-						continue;
-					}
-				} else if (activeBlock.type === 'taskList') {
-					if (content.startsWith("</task_list>", i)) {
-						activeBlock.endIdx = i + 12;
-						activeBlock.contentEndIdx = i;
-						activeBlock.closed = true;
-						activeBlock = null;
-						i += 12;
-						continue;
-					}
-				} else if (activeBlock.type === 'completeTask') {
-					if (content.startsWith("</complete_task>", i)) {
-						activeBlock.endIdx = i + 16;
-						activeBlock.contentEndIdx = i;
-						activeBlock.closed = true;
-						activeBlock = null;
-						i += 16;
-						continue;
-					}
-				} else if (activeBlock.type === 'toolCall') {
-					if (content.startsWith("</tool_call>", i)) {
-						activeBlock.endIdx = i + 12;
-						activeBlock.contentEndIdx = i;
-						activeBlock.closed = true;
-						activeBlock = null;
-						i += 12;
-						continue;
-					}
-				}
-				i++;
-				continue;
-			}
-
-			// No active block, look for start tags of blocks we haven't triggered/opened yet,
-			// or completeTask/toolCall blocks (which can trigger multiple times).
-
-			// 1. Thought block (only once)
-			if (!thoughtBlock) {
-				if (content.startsWith("<thought>", i)) {
-					thoughtBlock = { type: 'thought', subType: 'thought', startIdx: i, contentStartIdx: i + 9, closed: false };
-					activeBlock = thoughtBlock;
-					i += 9;
-					continue;
-				}
-				if (content.startsWith("<think>", i)) {
-					thoughtBlock = { type: 'thought', subType: 'think', startIdx: i, contentStartIdx: i + 7, closed: false };
-					activeBlock = thoughtBlock;
-					i += 7;
-					continue;
-				}
-				if (content.startsWith("<|channel>thought <channel|>", i)) {
-					thoughtBlock = { type: 'thought', subType: 'channel', startIdx: i, contentStartIdx: i + 28, closed: false };
-					activeBlock = thoughtBlock;
-					i += 28;
-					continue;
-				}
-			}
-
-			// 2. Implementation plan block (only once)
-			if (!planBlock) {
-				if (content.startsWith("<implementation_plan>", i)) {
-					planBlock = { type: 'plan', startIdx: i, contentStartIdx: i + 21, closed: false };
-					activeBlock = planBlock;
-					i += 21;
-					continue;
-				}
-			}
-
-			// 3. Task list block (only once)
-			if (!taskListBlock) {
-				if (content.startsWith("<task_list>", i)) {
-					taskListBlock = { type: 'taskList', startIdx: i, contentStartIdx: i + 11, closed: false };
-					activeBlock = taskListBlock;
-					i += 11;
-					continue;
-				}
-			}
-
-			// 4. Complete task block (multiple)
-			if (content.startsWith("<complete_task>", i)) {
-				const block = { type: 'completeTask', startIdx: i, contentStartIdx: i + 15, closed: false };
-				completeTaskBlocks.push(block);
-				activeBlock = block;
-				i += 15;
-				continue;
-			}
-
-			// 5. Tool call block (multiple)
-			if (content.startsWith("<tool_call", i)) {
-				const startTagEnd = content.indexOf(">", i);
-				if (startTagEnd !== -1) {
-					const startTag = content.substring(i, startTagEnd + 1);
-					const nameMatch = startTag.match(/name=["']([^"']+)["']/i);
-					const toolName = nameMatch ? nameMatch[1] : "";
-					const block = {
-						type: 'toolCall',
-						startIdx: i,
-						contentStartIdx: startTagEnd + 1,
-						closed: false,
-						name: toolName,
-						startTag: startTag
-					};
-					toolCallBlocks.push(block);
-					activeBlock = block;
-					i = startTagEnd + 1;
-					continue;
-				}
-			}
-
-			i++;
-		}
-
-		// For any unclosed active block, we set its content end to the end of the string
-		if (activeBlock) {
-			activeBlock.endIdx = len;
-			activeBlock.contentEndIdx = len;
-		}
-
-		return {
-			thoughtBlock,
-			planBlock,
-			taskListBlock,
-			completeTaskBlocks,
-			toolCallBlocks
-		};
-	}
-
-	_removeRanges(str, ranges) {
-		const sorted = [...ranges].filter(r => r !== null && r !== undefined).sort((a, b) => b.startIdx - a.startIdx);
-		let result = str;
-		for (const r of sorted) {
-			result = result.substring(0, r.startIdx) + result.substring(r.endIdx);
-		}
-		return result;
 	}
 
 	async loadSettings() {

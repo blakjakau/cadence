@@ -100,6 +100,7 @@ func createServerMux() *http.ServeMux {
 	mux.HandleFunc("/api/config", appConfigHandler)
 	mux.HandleFunc("/api/workspace", workspaceHandler)
 	mux.HandleFunc("/api/session", sessionHandler)
+	mux.HandleFunc("/api/sessions", sessionsHandler)
 	mux.HandleFunc("/kill", installationHandler(killHandler))
 	mux.HandleFunc("/install-service", installationHandler(InstallService))
 	mux.HandleFunc("/uninstall", installationHandler(Uninstall))

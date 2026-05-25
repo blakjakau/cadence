@@ -201,13 +201,17 @@ export class EditorHolder extends Panel {
         agentEditsBar.classList.add("notice-bar", "agent-edits-notice");
         agentEditsBar.style.display = "none";
         agentEditsBar.innerHTML = `
-            <span>Pending edits: <b class="edit-index">0</b> of <b class="edit-total">0</b></span>
-            <button rel="prev-edit" title="Previous Edit" style="padding: 4px 10px; margin: 0 2px;">&lt;</button>
-            <button rel="next-edit" title="Next Edit" style="padding: 4px 10px; margin: 0 2px;">&gt;</button>
-            <button rel="accept-edit" class="themed" style="margin: 0 2px;">Accept</button>
-            <button rel="reject-edit" class="cancel" style="margin: 0 2px;">Reject</button>
-            <button rel="accept-all" class="themed" style="margin: 0 2px;">Accept All</button>
-            <button rel="reject-all" class="cancel" style="margin: 0 2px;">Reject All</button>
+            <div class="notice-bar-row first-row" style="display: flex; width: 100%; justify-content: space-between; align-items: center; gap: 8px;">
+                <button rel="prev-edit" title="Previous Edit" style="padding: 4px 10px; margin: 0 2px;">&lt;</button>
+                <span>Pending edits: <b class="edit-index">0</b> of <b class="edit-total">0</b></span>
+                <button rel="accept-edit" class="themed" style="margin: 0 2px;">Accept</button>
+                <button rel="reject-edit" class="cancel" style="margin: 0 2px;">Reject</button>
+                <button rel="next-edit" title="Next Edit" style="padding: 4px 10px; margin: 0 2px;">&gt;</button>
+            </div>
+            <div class="notice-bar-row second-row" style="display: flex; width: 100%; justify-content: center; align-items: center; gap: 8px; margin-top: 6px; padding-top: 6px; border-top: 1px dashed var(--theme);">
+                <button rel="accept-all" class="themed" style="margin: 0 2px; flex: 1;">Accept All</button>
+                <button rel="reject-all" class="cancel" style="margin: 0 2px; flex: 1;">Reject All</button>
+            </div>
         `;
         this.appendChild(agentEditsBar);
     }

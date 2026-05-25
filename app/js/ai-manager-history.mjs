@@ -295,8 +295,8 @@ class AIManagerHistory {
 			element.classList.add("response-block");
 			if (message.type === "error") element.classList.add("error-block"); // Add a specific class for error styling
 			element.dataset.messageId = message.id; // Store message ID on the response block
-			element.innerHTML = this.manager._renderResponseContent(message.content, message); // Render content
-			if (message.type === "model") this.manager._addCodeBlockButtons(element, message); // Add buttons for model messages, passing the message object
+			element.innerHTML = this.manager.messageRenderer.renderResponseContent(message.content, message); // Render content
+			if (message.type === "model") this.manager.messageRenderer.addCodeBlockButtons(element, message); // Add buttons for model messages, passing the message object
 
 		} else if (message.type === "system_message") {
 			element = new Block();

@@ -1178,3 +1178,10 @@ ui-tabbar.tabs-inverted[slim] > ui-tab-item[active] {
 ui-tabbar.tabs-inverted[slim] > ui-tab-item[active] {
     border-radius: 0 0 8px 8px; /* Rounded BOTTOM corners */
 }
+
+/* Agent Edits Notice Bar Overrides */
+.notice-bar.agent-edits-notice {
+    flex-direction: column;
+    align-items: stretch;
+    padding: 8px 12px;
+}

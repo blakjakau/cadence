@@ -233,7 +233,7 @@ func (idx *WorkspaceIndex) ScanWorkspace() {
 
 		// Check extensions
 		ext := strings.ToLower(filepath.Ext(path))
-		if ext != ".go" && ext != ".js" && ext != ".ts" && ext != ".jsx" && ext != ".tsx" && ext != ".py" {
+		if ext != ".go" && ext != ".js" && ext != ".mjs" && ext != ".ts" && ext != ".jsx" && ext != ".tsx" && ext != ".py" {
 			return nil
 		}
 
@@ -269,7 +269,7 @@ func (idx *WorkspaceIndex) ScanWorkspace() {
 // UpdateFile updates the index for a single file (e.g. on file save via fsnotify or websocket)
 func (idx *WorkspaceIndex) UpdateFile(path string, content string) {
 	ext := strings.ToLower(filepath.Ext(path))
-	if ext != ".go" && ext != ".js" && ext != ".ts" && ext != ".jsx" && ext != ".tsx" && ext != ".py" {
+	if ext != ".go" && ext != ".js" && ext != ".mjs" && ext != ".ts" && ext != ".jsx" && ext != ".tsx" && ext != ".py" {
 		return
 	}
 

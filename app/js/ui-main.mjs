@@ -1337,7 +1337,13 @@ const uiManager = {
 	updateAgentEditsNotice: (tab) => {
 		if (!tab || !tab.config || !tab.config.path) return;
 		const resolvedPath = tab.config.path;
-		const info = agentTools.getEditBuffer()[resolvedPath];
+		
+		// Find edit buffer info using normalized path matching to handle leading slash variations
+		const buffer = agentTools.getEditBuffer();
+		const normTarget = agentTools._normalizePathForTabComparison(resolvedPath);
+		const matchingPath = Object.keys(buffer).find(k => agentTools._normalizePathForTabComparison(k) === normTarget);
+		const info = matchingPath ? buffer[matchingPath] : null;
+		
 		const side = tab.config.side || 'left';
 		
 		if (!info || !info.edits || info.edits.length === 0) {
@@ -1404,6 +1410,7 @@ const uiManager = {
 		};
 
 		noticeBar.style.display = "flex";
+		uiManager.scrollToAgentEdit(tab, side, info.currentIndex);
 	},
 
 	scrollToAgentEdit: (tab, side, editIndex) => {
@@ -1411,7 +1418,11 @@ const uiManager = {
 		if (!editor) return;
 
 		const resolvedPath = tab.config.path;
-		const info = agentTools.getEditBuffer()[resolvedPath];
+		// Find edit buffer info using normalized path matching to handle leading slash variations
+		const buffer = agentTools.getEditBuffer();
+		const normTarget = agentTools._normalizePathForTabComparison(resolvedPath);
+		const matchingPath = Object.keys(buffer).find(k => agentTools._normalizePathForTabComparison(k) === normTarget);
+		const info = matchingPath ? buffer[matchingPath] : null;
 		if (!info || !info.edits || !info.edits[editIndex]) return;
 
 		const edit = info.edits[editIndex];

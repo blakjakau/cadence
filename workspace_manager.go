@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
@@ -270,4 +271,52 @@ func sessionHandler(w http.ResponseWriter, r *http.Request) {
 	} else {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 	}
+}
+
+func sessionsHandler(w http.ResponseWriter, r *http.Request) {
+	if !checkRequestAuthorization(r) {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	files, err := ioutil.ReadDir(configDir)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	var sessions []map[string]interface{}
+	sessionMutex.Lock()
+	defer sessionMutex.Unlock()
+
+	for _, f := range files {
+		if !f.IsDir() && strings.HasPrefix(f.Name(), "ai_session_") && strings.HasSuffix(f.Name(), ".json") {
+			path := filepath.Join(configDir, f.Name())
+			data, err := ioutil.ReadFile(path)
+			if err == nil {
+				var sessionData struct {
+					ID           string `json:"id"`
+					Name         string `json:"name"`
+					CreatedAt    int64  `json:"createdAt"`
+					LastModified int64  `json:"lastModified"`
+				}
+				if err := json.Unmarshal(data, &sessionData); err == nil && sessionData.ID != "" {
+					sessions = append(sessions, map[string]interface{}{
+						"id":           sessionData.ID,
+						"name":         sessionData.Name,
+						"createdAt":    sessionData.CreatedAt,
+						"lastModified": sessionData.LastModified,
+					})
+				}
+			}
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(sessions)
 }

@@ -61,6 +61,14 @@ export const workspaceClient = {
         return await res.json();
     },
 
+    async getSessions() {
+        const res = await fetch(`${API_BASE}/sessions`);
+        if (!res.ok) {
+            throw new Error(`Failed to fetch sessions: ${res.statusText}`);
+        }
+        return await res.json();
+    },
+
     async setSession(id, data) {
         const res = await fetch(`${API_BASE}/session?id=${encodeURIComponent(id)}`, {
             method: 'POST',

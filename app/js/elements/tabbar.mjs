@@ -305,6 +305,11 @@ export class TabBar extends Block {
 		this._click = v
 	}
 
+	set context(v) {
+		if (!isFunction(v)) throw new Error("context must be a function")
+		this._context = v
+	}
+
 	get activeIndex() {
 		for (let i = 0, l = this._tabs.length; i < l; i++) {
 			if (this._tabs[i].getAttribute("active") !== null) {
@@ -397,6 +402,10 @@ export class TabBar extends Block {
 		tab.oncontextmenu = (event) => {
 			event.preventDefault()
 			event.stopPropagation()
+			if ("function" == typeof this._context) {
+				event.tab = tab
+				this._context(event)
+			}
 		}
 
 		tab.onpointerdown = (event) => {

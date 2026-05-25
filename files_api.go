@@ -222,6 +222,16 @@ func securePath(path string) (string, error) {
 	if err != nil {
 		return "", err // e.g., root doesn't exist or permissions issue
 	}
+
+	// If the path is absolute and under absRoot, make it relative to absRoot first
+	// to avoid duplicate path prefix issues.
+	cleanedPath := filepath.Clean(path)
+	if filepath.IsAbs(cleanedPath) {
+		if rel, err := filepath.Rel(absRoot, cleanedPath); err == nil && !strings.HasPrefix(rel, "..") {
+			path = rel
+		}
+	}
+
 	// 3. Join and clean the requested path relative to the root
 	absPath := filepath.Join(absRoot, filepath.Clean(path))
 	if !strings.HasPrefix(absPath, absRoot) {
