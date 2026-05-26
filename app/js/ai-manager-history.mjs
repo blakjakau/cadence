@@ -109,6 +109,8 @@ class AIManagerHistory {
 	render({ isNewMessage = false } = {}) {
 		if (!this.conversationArea) return;
 
+		console.log("[History Render Debug] rendering messages:", this.chatHistory.map(m => ({ id: m.id, role: m.role, type: m.type, contentPreview: m.content ? m.content.substring(0, 60) : "" })));
+
 		this.conversationArea.innerHTML = ""; // Clear existing messages
 		this.populateFileBar(); // Always populate file bar
 
@@ -128,11 +130,6 @@ class AIManagerHistory {
 		// If we have history, hide empty state and render messages.
 		this.manager._emptyStateElement.style.display = 'none';
 
-		// If the active session has an implementation plan, show a premium trigger banner!
-		if (this.manager.activeSession?.implementationPlan) {
-			const planTrigger = this._createImplementationPlanTrigger();
-			if (planTrigger) this.conversationArea.append(planTrigger);
-		}
 
 		// Use the new element factory for each message in the history
 		for (let i = 0; i < this.chatHistory.length; i++) {
@@ -140,90 +137,6 @@ class AIManagerHistory {
 			if (message.type === 'file_context') continue;
 			const element = this._createMessageElement(message, i); // No isNewMessage for full render
 			if (element) this.conversationArea.append(element);
-		}
-	}
-
-	/**
-	 * Creates a premium UI banner trigger to open the implementation plan tab.
-	 * @returns {HTMLElement|null} The generated DOM element.
-	 */
-	_createImplementationPlanTrigger() {
-		const banner = new Block();
-		banner.classList.add("ai-implementation-plan-banner");
-
-		const leftPart = new Block();
-		leftPart.classList.add("banner-left");
-		
-		const icon = document.createElement("ui-icon");
-		icon.textContent = "assignment";
-		
-		const label = document.createElement("span");
-		label.textContent = "Active Implementation Plan & Checklist";
-		
-		leftPart.append(icon, label);
-
-		const actionsPart = new Block();
-		actionsPart.classList.add("banner-actions");
-
-		const openBtn = document.createElement("button");
-		openBtn.classList.add("open-plan-btn");
-		
-		const btnText = document.createElement("span");
-		btnText.textContent = "Open Tab";
-		
-		const btnIcon = document.createElement("ui-icon");
-		btnIcon.textContent = "open_in_new";
-		
-		openBtn.append(btnText, btnIcon);
-		
-		openBtn.addEventListener("click", () => {
-			if (window.ui && typeof window.ui.openPlanAndTaskList === "function") {
-				window.ui.openPlanAndTaskList();
-			}
-		});
-
-		const proceedBtn = document.createElement("button");
-		proceedBtn.classList.add("proceed-plan-btn");
-		
-		const proceedText = document.createElement("span");
-		proceedText.textContent = "Proceed";
-		
-		const proceedIcon = document.createElement("ui-icon");
-		proceedIcon.textContent = "play_arrow";
-		
-		proceedBtn.append(proceedText, proceedIcon);
-		
-		proceedBtn.addEventListener("click", () => {
-			if (this.manager && typeof this.manager.proceedWithImplementationPlan === "function") {
-				this.manager.proceedWithImplementationPlan();
-			}
-		});
-
-		actionsPart.append(openBtn, proceedBtn);
-		banner.append(leftPart, actionsPart);
-		return banner;
-	}
-
-	/**
-	 * Dynamically inserts or updates the implementation plan trigger banner in the conversation area.
-	 */
-	updateImplementationPlanTrigger() {
-		if (!this.conversationArea) return;
-		
-		const existingTrigger = this.conversationArea.querySelector('.ai-implementation-plan-banner');
-		
-		if (this.manager.activeSession?.implementationPlan) {
-			if (!existingTrigger) {
-				const planTrigger = this._createImplementationPlanTrigger();
-				if (planTrigger) {
-					// Prepend so it is at the very top of the chat area
-					this.conversationArea.prepend(planTrigger);
-				}
-			}
-		} else {
-			if (existingTrigger) {
-				existingTrigger.remove();
-			}
 		}
 	}
 
@@ -618,6 +531,23 @@ class AIManagerHistory {
 			(msg) => msg.type !== "task_state" && msg.type !== "system_message" && msg.role !== "temp_ai_response"
 		);
 
+		// NEW: Always strip thought blocks from the context.
+		// Native reasoning models will get confused and try to explicitly output the tags
+		// if they see them in the few-shot history.
+		chatHistory = chatHistory.map(msg => {
+			if (msg.content) {
+				let newContent = msg.content;
+				newContent = newContent.replace(/<thought>[\s\S]*?<\/thought>/gi, '');
+				newContent = newContent.replace(/<think>[\s\S]*?<\/think>/gi, '');
+				newContent = newContent.replace(/<\|channel>thought[\s\S]*?<channel\|>/gi, '');
+				return {
+					...msg,
+					content: newContent.trim()
+				};
+			}
+			return msg;
+		}).filter(msg => msg.content && msg.content.trim() !== "");
+
 		// NEW: If Agent Mode is turned OFF, strip out agent-specific tags and filter tool responses 
 		// to prevent chat history prompt contamination/few-shot leakage.
 		if (!this.manager.agentMode) {
@@ -627,12 +557,13 @@ class AIManagerHistory {
 					let newContent = msg.content;
 					// Strip XML tool calls
 					newContent = newContent.replace(/<tool_call\s+name=["']([^"']+)["']\s*>[\s\S]*?<\/tool_call>/gi, '');
-					// Strip thinking processes
-					newContent = newContent.replace(/<thought>[\s\S]*?<\/thought>/gi, '');
-					newContent = newContent.replace(/<think>[\s\S]*?<\/think>/gi, '');
-					// Strip implementation plan and task list
+					// Strip legacy implementation plan and task list XML tags
 					newContent = newContent.replace(/<implementation_plan>[\s\S]*?<\/implementation_plan>/gi, '');
 					newContent = newContent.replace(/<task_list>[\s\S]*?<\/task_list>/gi, '');
+					// Strip JSON project management tools (if they leaked in as native tool calls)
+					// (These shouldn't be in msg.content if they are native, but if they were serialized, strip them)
+					newContent = newContent.replace(/<tool_call\s+name=["'](create_implementation_plan|update_task_list|complete_task)["']\s*>[\s\S]*?<\/tool_call>/gi, '');
+					// Strip legacy task completion signals
 					// Strip task completion signals
 					newContent = newContent.replace(/<complete_task>[\s\S]*?<\/complete_task>/gi, '');
 					return {
@@ -650,18 +581,45 @@ class AIManagerHistory {
 
 		// Advanced Dialogue Pruning in Agent Mode
 		if (this.manager.agentMode) {
-			// Keep a safe history of the last 14 dialogue turns (user instructions, thoughts, tool actions, and results)
+			// Keep a safe history of the last 14 dialogue turns (thoughts, tool actions, and results)
+			// BUT preserve ALL user instructions to maintain chronological task timeline
 			const keepCount = 14;
 			if (dialogueHistory.length > keepCount) {
-				const firstUserPrompt = dialogueHistory.find(msg => msg.type === "user");
-				const recentHistory = dialogueHistory.slice(-keepCount);
+				const userPrompts = dialogueHistory.filter(msg => msg.type === "user");
 				
-				// Always guarantee that the original user request (overall goal) is preserved at the start
-				if (firstUserPrompt && !recentHistory.some(msg => msg.id === firstUserPrompt.id)) {
-					dialogueHistory = [firstUserPrompt, ...recentHistory];
-				} else {
-					dialogueHistory = recentHistory;
+				let sliceIndex = dialogueHistory.length - keepCount;
+				// Fix paired pruning boundary:
+				// If the message at sliceIndex is a tool_response, we must also include its model message (sliceIndex - 1).
+				if (sliceIndex > 0 && dialogueHistory[sliceIndex].type === "tool_response") {
+					sliceIndex -= 1;
 				}
+				
+				const recentHistory = dialogueHistory.slice(sliceIndex);
+				
+				const keepIds = new Set();
+				userPrompts.forEach(m => keepIds.add(m.id));
+				recentHistory.forEach(m => keepIds.add(m.id));
+				
+				const newDialogueHistory = [];
+				let lastKeptIndex = -1;
+				
+				for (let i = 0; i < dialogueHistory.length; i++) {
+					if (keepIds.has(dialogueHistory[i].id)) {
+						const skipped = i - lastKeptIndex - 1;
+						if (skipped > 0) {
+							newDialogueHistory.push({
+								id: `pruned-gap-${i}`,
+								role: "system",
+								type: "system_message",
+								content: `[${skipped} turns pruned for context length]`
+							});
+						}
+						newDialogueHistory.push(dialogueHistory[i]);
+						lastKeptIndex = i;
+					}
+				}
+				
+				dialogueHistory = newDialogueHistory;
 			}
 		}
 
@@ -672,9 +630,12 @@ class AIManagerHistory {
 		const stripCodeBlocks = this.manager.ai.config.stripCodeBlocksFromContext;
 		if (stripCodeBlocks) {
 			const codeBlockWithHeaderRegex = /(?:^|\n)\s*(?:#{1,6}[^\n]*\n+)?\s*```(?:\w+)?\n[\s\S]*?\n\s*```/g;
-			chatHistory.forEach(msg => {
-				if ((msg.type === 'model' || msg.type === 'user') && msg.content) {
-					msg.content = msg.content.replace(codeBlockWithHeaderRegex, '\n').trim();
+			chatHistory.forEach((msg, index) => {
+				const isLastMessage = index === chatHistory.length - 1;
+				const isToolResponse = msg.content && msg.content.startsWith('[Tool Response:');
+				
+				if (!isLastMessage && !isToolResponse && (msg.type === 'model' || msg.type === 'user') && msg.content) {
+					msg.content = msg.content.replace(codeBlockWithHeaderRegex, '\n\n<OBSOLETE CODE STRIPPED>\n\n').trim();
 				}
 			});
 		}

@@ -1,10 +1,12 @@
 // ai-llamacpp.mjs
 import AI from './ai.mjs';
 import systemPrompt from "./llamacppSystemPrompt.mjs";
+import { tools as cadenceTools } from "./ai-manager-tools-schema.mjs";
 
 class LlamaCpp extends AI {
     constructor() {
         super();
+        this.providerId = 'llamacpp';
         this.config = {
             server: "http://localhost:8080",
             model: "unknown",
@@ -28,9 +30,10 @@ class LlamaCpp extends AI {
         };
     }
 
-    stop() {
+    stop(reason) {
         if (this.abortController) {
-            this.abortController.abort();
+            this.abortReason = reason;
+            this.abortController.abort(reason);
             this.abortController = null;
         }
     }
@@ -64,27 +67,25 @@ class LlamaCpp extends AI {
     }
 
     /**
-     * Formats the messages array into a ChatML-style string for the /completion endpoint.
+     * Formats the messages array into the OpenAI-compatible Chat format
      */
-    _formatPrompt(messages, systemPromptOverride = null) {
-        let prompt = "";
+    _formatChatMessages(messages, systemPromptOverride = null) {
+        const formattedMessages = [];
         const activeSystemPrompt = systemPromptOverride || this.config.system || systemPrompt;
 
         if (activeSystemPrompt) {
-            prompt += `<|im_start|>system\n${activeSystemPrompt}<|im_end|>\n`;
+            formattedMessages.push({ role: "system", content: activeSystemPrompt });
         }
 
         for (const msg of messages) {
             if (msg.type === 'file_context') {
-                prompt += `<|im_start|>user\n--- File: ${msg.filename} ---\n\`\`\`${msg.language || ''}\n${msg.content}\n\`\`\`<|im_end|>\n`;
+                formattedMessages.push({ role: "user", content: `--- File: ${msg.filename} ---\n\`\`\`${msg.language || ''}\n${msg.content}\n\`\`\`` });
             } else {
-                const role = msg.role === 'model' ? 'assistant' : 'user';
-                prompt += `<|im_start|>${role}\n${msg.content}<|im_end|>\n`;
+                formattedMessages.push({ role: msg.role === 'model' ? 'assistant' : 'user', content: msg.content });
             }
         }
 
-        prompt += `<|im_start|>assistant\n<|channel>thought <channel|>\n`;
-        return prompt;
+        return formattedMessages;
     }
 
     async generate(prompt, callbacks = {}) {
@@ -97,17 +98,28 @@ class LlamaCpp extends AI {
         if (onStart) onStart();
 
         try {
-            const prompt = this._formatPrompt(messages, systemPromptOverride);
+            const formattedMessages = this._formatChatMessages(messages, systemPromptOverride);
             
             const requestBody = {
-                prompt: prompt,
+                messages: formattedMessages,
                 stream: true,
                 temperature: this.config.temperature,
                 top_k: this.config.top_k,
                 top_p: this.config.top_p,
-                n_predict: this.config.n_predict,
+                max_tokens: this.config.n_predict,
                 stop: this.config.stop
             };
+
+            if (cadenceTools && cadenceTools.length > 0) {
+                requestBody.tools = cadenceTools.map(t => ({
+                    type: "function",
+                    function: {
+                        name: t.name,
+                        description: t.description,
+                        parameters: t.parameters
+                    }
+                }));
+            }
 
             const currentTokens = this.estimateTokens(messages);
             if (onContextRatioUpdate) {
@@ -116,7 +128,8 @@ class LlamaCpp extends AI {
 
             this.abortController = new AbortController();
 
-            const response = await fetch(`${this.config.server}/completion`, {
+            const requestStartTime = Date.now();
+            const response = await fetch(`${this.config.server}/v1/chat/completions`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(requestBody),
@@ -132,6 +145,9 @@ class LlamaCpp extends AI {
             const decoder = new TextDecoder();
             let fullResponse = '';
             let buffer = '';
+            let isReasoning = false;
+            let thinkingStartTime = 0;
+            let totalThinkingMs = 0;
 
             while (true) {
                 const { done, value } = await reader.read();
@@ -145,15 +161,66 @@ class LlamaCpp extends AI {
                     if (!line.startsWith('data: ')) continue;
                     const jsonStr = line.substring(6).trim();
                     if (!jsonStr) continue;
+                    if (jsonStr === '[DONE]') continue;
 
                     try {
                         const parsed = JSON.parse(jsonStr);
-                        if (parsed.content) {
-                            fullResponse += parsed.content;
-                            if (onUpdate) onUpdate(fullResponse);
-                        }
-                        if (parsed.stop) {
-                            // End of stream indicator in llama.cpp
+                        if (parsed.choices && parsed.choices.length > 0 && parsed.choices[0].delta) {
+                            const delta = parsed.choices[0].delta;
+                            let chunkUpdate = '';
+
+                            if (typeof delta.reasoning_content === 'string') {
+                                if (!isReasoning) {
+                                    isReasoning = true;
+                                    thinkingStartTime = Date.now();
+                                    chunkUpdate += "<thought>\n";
+                                }
+                                chunkUpdate += delta.reasoning_content;
+                            }
+
+                            if (typeof delta.content === 'string') {
+                                if (isReasoning) {
+                                    isReasoning = false;
+                                    totalThinkingMs += Date.now() - thinkingStartTime;
+                                    chunkUpdate += "\n</thought>\n";
+                                }
+                                chunkUpdate += delta.content;
+                            }
+
+                            if (delta.tool_calls) {
+                                if (isReasoning) {
+                                    isReasoning = false;
+                                    totalThinkingMs += Date.now() - thinkingStartTime;
+                                    chunkUpdate += "\n</thought>\n";
+                                }
+                                if (!callbacks.toolCalls) callbacks.toolCalls = [];
+                                for (const call of delta.tool_calls) {
+                                    if (call.function) {
+                                        const rawCall = { functionCall: { name: call.function.name, args: {} } };
+                                        let parsedArgs = {};
+                                        try {
+                                            parsedArgs = JSON.parse(call.function.arguments);
+                                            rawCall.functionCall.args = parsedArgs;
+                                        } catch (e) {
+                                            // Handle partial JSON or unparseable JSON
+                                        }
+                                        callbacks.toolCalls.push(rawCall);
+
+                                        let xmlToolCall = `\n<tool_call name="${call.function.name}">\n`;
+                                        for (const [key, value] of Object.entries(parsedArgs)) {
+                                            const stringValue = typeof value === 'object' ? JSON.stringify(value) : value;
+                                            xmlToolCall += `  <${key}>${stringValue}</${key}>\n`;
+                                        }
+                                        xmlToolCall += `</tool_call>\n`;
+                                        chunkUpdate += xmlToolCall;
+                                    }
+                                }
+                            }
+
+                            if (chunkUpdate) {
+                                fullResponse += chunkUpdate;
+                                if (onUpdate) onUpdate(fullResponse);
+                            }
                         }
                     } catch (e) {
                         console.warn("[Llama.cpp] JSON parse error:", e);
@@ -161,16 +228,35 @@ class LlamaCpp extends AI {
                 }
             }
 
+            if (isReasoning) {
+                isReasoning = false;
+                totalThinkingMs += Date.now() - thinkingStartTime;
+                fullResponse += "\n</thought>";
+                if (onUpdate) onUpdate(fullResponse);
+            }
+
+            const requestEndTime = Date.now();
             const finalTokens = this.estimateTokens([...messages, { role: 'model', content: fullResponse }]);
+            const outputTokens = Math.max(0, finalTokens - currentTokens);
             if (onContextRatioUpdate) {
                 onContextRatioUpdate(finalTokens / this.MAX_CONTEXT_TOKENS);
             }
 
+            this.recordTelemetry(currentTokens, outputTokens, requestEndTime - requestStartTime, Math.round(totalThinkingMs / 1000));
+
             if (onDone) onDone(fullResponse, Math.round((finalTokens / this.MAX_CONTEXT_TOKENS) * 100));
 
         } catch (error) {
-            console.error("[Llama.cpp] Chat error:", error);
-            if (onError) onError(error);
+            if (error && error.name === 'AbortError') {
+                const reasonStr = this.abortReason ? `: ${this.abortReason}` : " by Cadence Agent Protocol.";
+                console.info(`⏸️ [Llama.cpp] Stream generation intentionally halted${reasonStr}`);
+                this.abortReason = null;
+            } else if (typeof error === 'string') {
+                console.info(`⏸️ [Llama.cpp] Stream generation intentionally halted: ${error}`);
+            } else {
+                console.error("[Llama.cpp] Chat error:", error);
+                if (onError) onError(error);
+            }
         }
     }
 

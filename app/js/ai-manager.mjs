@@ -14,6 +14,7 @@ import agentTools from "./agent/agent-tools.mjs"
 
 import DiffHandler from "./tools/diff-handler.mjs"
 import systemPromptBuilder from './genericSystemPrompt.mjs'; // NEW: For building prompts
+import getAgentSystemPrompt from './ai-manager-agent-prompt.mjs'; // NEW: For building agent prompts
 import hljs from "./tools/highlightjs.mjs"
 const MAX_PROMPT_HISTORY = 50 // This is now PER-SESSION
 
@@ -34,65 +35,6 @@ const promptEditorSettings = {
 	enableBasicAutocompletion: true,
 	enableLiveAutocompletion: true
 }
-
-const AGENT_SYSTEM_PROMPT = `You are Cadence, an autonomous software engineer.
-
-# Available Tools
-Choose AT MOST ONE tool per turn and use its exact format:
-<tool_call name="list_files"><path>dir_path</path></tool_call>
-<tool_call name="read_file">
-  <path>file_path</path>
-  <startLine>1</startLine> <!-- Optional -->
-  <lineCount>50</lineCount> <!-- Optional -->
-</tool_call>
-<tool_call name="read_file_outline"><path>file_path</path></tool_call>
-<tool_call name="search_in_file">
-  <path>file_path</path>
-  <query>exact_text</query>
-</tool_call>
-<tool_call name="read_symbol"><query>symbol_name</query></tool_call>
-<tool_call name="search_files"><query>text</query></tool_call>
-<tool_call name="create_file"><path>file_path</path><content>text</content></tool_call>
-<tool_call name="open_file"><path>file_path</path></tool_call>
-<tool_call name="find_file"><path>search_path</path></tool_call>
-<tool_call name="edit_file">
-  <path>file_path</path>
-  <search>exact_lines_to_replace</search>
-  <replace>new_lines</replace>
-</tool_call>
-* Note: For edit_file, <search> MUST perfectly match existing file content character-for-character.
-
-# Project Management
-The host maintains your plan and task list to save tokens. ONLY output these tags to CREATE or ALTER them:
-- <implementation_plan>
-IMPLEMENTATION_PLAN_AS_MARKDOWN
-</implementation_plan>
-- <task_list>
-  - [ ] Step 1
-  - [ ] Step 2
-  </task_list>
-When you finish a task, output <complete_task>Step 1</complete_task>. The host will mark it [x] automatically. DO NOT rewrite the full <task_list> just to check a box.
-
-# Example Turn
-<thought>
-I need to check app.js to understand the bug before editing.
-</thought>
-I am reading app.js to locate the issue.
-<tool_call name="read_file">
-  <path>app.js</path>
-</tool_call>
-
-# Core Rules
-1. Thinking: ALWAYS wrap your reasoning in <thought>...</thought> at the very beginning of your response.
-2. Task Focus: In your <thought> block, you MUST actively reference the EVERGREEN TASK LIST and state which task you are currently working on. If you complete a task, you MUST immediately output a <complete_task> tag.
-3. Looping Prevention: In your <thought> block, actively review your last 3 turns. If you are repeating tool calls, executing identical searches, or failing edits, you must explain why progress has stalled and immediately propose an alternative approach or different tool. Do not repeat failed edits or duplicate search queries.
-4. Tools: Use AT MOST ONE <tool_call> per turn. Wait for the host to provide the result.
-5. Always choose the least impactful tool (don't read the whole file if you only need a lines of function)
-6. Context Limits: ALWAYS explore files by reading their outlines first using read_file_outline. Outlines provide symbol line numbers and lengths. NEVER read a full file if you can extract just the function you need using the <startLine> and <lineCount> parameters of read_file. If you need to find exact text inside a file, use search_in_file to locate the exact line numbers and surrounding context. This saves token context window.
-7. Strict XML: Use only the exact XML tags below. Do not invent new tools.
-8. NEVER use control or tool tags to discuss or think about your actions, only to perform them.
-`;
-
 class AIManager {
 	constructor() {
 		this.ai = null
@@ -216,7 +158,8 @@ class AIManager {
 
 	getSystemPrompt() {
 		if (this.agentMode) {
-			return AGENT_SYSTEM_PROMPT;
+			const modelName = (this.ai && this.ai.config && this.ai.config.model) ? this.ai.config.model.toLowerCase() : '';
+			return getAgentSystemPrompt(modelName);
 		}
 		return systemPromptBuilder(this.getSystemPromptConfig());
 	}
@@ -509,7 +452,7 @@ class AIManager {
 		this.agentModeToggle = document.createElement("div");
 		this.agentModeToggle.className = "agent-toggle-wrapper";
 		this.agentModeToggle.innerHTML = `
-			<label class="switch" title="Agent Mode: CodeAgent can call tools to read/edit code">
+			<label class="switch" title="Agent Mode: Cadence can call tools to read/edit code">
 				<input type="checkbox" id="agent-mode-checkbox">
 				<span class="slider round"></span>
 			</label>
@@ -751,7 +694,7 @@ class AIManager {
 		if (this.ai && this.ai.isConfigured()) {
 			this.promptEditor.setReadOnly(false);
 			if (this.agentMode) {
-				this.promptEditor.setOption("placeholder", "Ask CodeAgent to list/read/edit files... (use @ to tag files)");
+				this.promptEditor.setOption("placeholder", "Ask Cadence to list/read/edit files... (use @ to tag files)");
 			} else {
 				this.promptEditor.setOption("placeholder", "Enter your prompt here...");
 			}
@@ -1065,8 +1008,8 @@ class AIManager {
 		return this.sessionsManager.renameCurrentSession();
 	}
 
-	async proceedWithImplementationPlan() {
-		return this.sessionsManager.proceedWithImplementationPlan();
+	async proceedWithImplementationPlan(comment = "", isAccepted = true) {
+		return this.sessionsManager.proceedWithImplementationPlan(comment, isAccepted);
 	}
 
 	_populateInitialTabs() {
@@ -1312,6 +1255,12 @@ class AIManager {
 		// this.historyManager.render(); // NO LONGER NEEDED, using dynamic appends
 		this._dispatchContextUpdate("append_user"); // This will also save workspace metadata
 
+		// Auto-rename if this is the first message and the name is default
+		if (this.activeSession.messages.filter(m => m.type === 'user').length === 1 && this.activeSession.name.startsWith("Chat ")) {
+			// Don't await it, let it run in the background
+			this.sessionsManager.autoRenameSession(userMessage.content);
+		}
+
 		if (this.agentMode) {
 			await this._runAgentLoop(userMessage, userMessageElement);
 			return;
@@ -1358,6 +1307,9 @@ class AIManager {
 				// This is safer than doing it after rendering, which could fail.
 				// The spinner is removed when innerHTML is set, so no explicit removal is needed here.
 				const modelMessage = { id: modelMessageId, role: "model", type: "model", content: fullResponse, diffStatuses: [], timestamp: Date.now() };
+				if (callbacks.thoughtSignature) {
+					modelMessage.thoughtSignature = callbacks.thoughtSignature;
+				}
 				this.activeSession.messages.push(modelMessage);
 				this.historyManager.addInteractionToLastUserMessage(userMessage); // Add delete button to user prompt
 				this.activeSession.lastModified = Date.now();
@@ -1373,11 +1325,6 @@ class AIManager {
 
 				this._isProcessing = false // Release lock
 				this._setButtonsDisabledState(false) // Re-enable buttons
-
-				// Auto-rename if this is the first model response and the name is default
-				if (this.activeSession.messages.filter(m => m.role === 'model').length === 1 && this.activeSession.name.startsWith("Chat ")) {
-					this.sessionsManager.autoRenameSession(userMessage.content);
-				}
 			},
 			onError: async (error) => { // Mark async to await set
 				// The spinner is also removed here when innerHTML is overwritten.
@@ -1439,6 +1386,36 @@ class AIManager {
 			arguments: args,
 			raw: content.substring(tc.startIdx, tc.endIdx)
 		};
+	}
+
+	_parseAllToolCalls(content) {
+		if (!content) return [];
+		const parsed = this.messageRenderer.parseBlocks(content);
+		const closedTcs = parsed.toolCallBlocks.filter(b => b.closed);
+		if (closedTcs.length === 0) return [];
+
+		return closedTcs.map(tc => {
+			const toolName = tc.name;
+			const toolArgsContent = content.substring(tc.contentStartIdx, tc.contentEndIdx);
+			const args = {};
+
+			const tagRegex = /<([a-zA-Z0-9_-]+)>([\s\S]*?)<\/\1>/g;
+			let tagMatch;
+			while ((tagMatch = tagRegex.exec(toolArgsContent)) !== null) {
+				const key = tagMatch[1];
+				let val = tagMatch[2];
+				if (key !== 'search' && key !== 'replace' && key !== 'content') {
+					val = val.trim();
+				}
+				args[key] = val;
+			}
+
+			return {
+				name: toolName,
+				arguments: args,
+				raw: content.substring(tc.startIdx, tc.endIdx)
+			};
+		});
 	}
 
 	_showAgentApprovalCard(toolCall) {
@@ -1539,72 +1516,7 @@ class AIManager {
 		});
 	}
 
-	_showPlanApprovalCard(planText) {
-		return new Promise((resolve) => {
-			const card = document.createElement("div");
-			card.className = "agent-approval-card plan-approval-card";
 
-			card.innerHTML = `
-				<div class="card-summary-header" style="display: none;">
-					<ui-icon>assignment</ui-icon>
-					<span class="summary-status"></span>
-					<span class="summary-path">Implementation Plan</span>
-					<ui-icon class="expand-indicator">expand_more</ui-icon>
-				</div>
-				<div class="card-details-content">
-					<div class="approval-header">
-						<ui-icon>assignment</ui-icon>
-						<span>Approve Implementation Plan</span>
-					</div>
-					<div class="approval-path" style="margin-bottom: 6px;">Please review the proposed implementation plan:</div>
-					<div class="approval-diff-preview" style="padding: 10px; background: rgba(0, 0, 0, 0.15); border-radius: 4px; border: 1px solid var(--border-primary); margin-bottom: 8px;">
-						${this.md.render(planText)}
-					</div>
-					<div class="approval-actions">
-						<button class="approve-btn theme-button primary"><ui-icon>check</ui-icon> Approve Plan & Continue</button>
-						<button class="reject-btn theme-button secondary"><ui-icon>close</ui-icon> Reject & Abort</button>
-					</div>
-				</div>
-			`;
-
-			const approveBtn = card.querySelector('.approve-btn');
-			const rejectBtn = card.querySelector('.reject-btn');
-			const summaryHeader = card.querySelector('.card-summary-header');
-			const summaryStatus = card.querySelector('.summary-status');
-			const actionsDiv = card.querySelector('.approval-actions');
-
-			const finalizeCard = (statusText, className) => {
-				card.classList.add(className);
-				card.classList.add('action-decided');
-
-				if (actionsDiv) actionsDiv.remove();
-
-				if (summaryStatus) summaryStatus.textContent = statusText;
-				if (summaryHeader) summaryHeader.style.display = 'flex';
-
-				summaryHeader.addEventListener('click', (e) => {
-					e.stopPropagation();
-					card.classList.toggle('expanded');
-				});
-			};
-
-			approveBtn.addEventListener('click', () => {
-				finalizeCard('Plan Approved', 'approved');
-				resolve(true);
-			});
-
-			rejectBtn.addEventListener('click', () => {
-				finalizeCard('Plan Rejected', 'rejected');
-				resolve(false);
-			});
-
-			const shouldScroll = this._shouldAutoScroll();
-			this.conversationArea.append(card);
-			if (shouldScroll && this.conversationArea) {
-				this.conversationArea.scrollTop = this.conversationArea.scrollHeight;
-			}
-		});
-	}
 
 	_escapeHtml(text) {
 		if (!text) return "";
@@ -1620,11 +1532,42 @@ class AIManager {
 		let loopCount = 0;
 		const maxLoops = 15;
 		this._abortAgent = false;
+		let isThrottled = true;
+		let throttleBar = null;
 
-		while (loopCount < maxLoops) {
+		while (this._isProcessing) {
 			if (this._abortAgent) break;
 
 			loopCount++;
+
+			if (loopCount > maxLoops) {
+				if (!throttleBar) {
+					throttleBar = document.createElement("div");
+					throttleBar.className = "agent-throttle-bar";
+					throttleBar.innerHTML = `
+						<ui-icon style="vertical-align: middle; margin-right: 4px; font-size: 16px;">speed</ui-icon>
+						<span class="throttle-text"></span>
+						<ui-button class="throttle-toggle theme-button" style="padding: 4px 8px; font-size: 11px; margin-left: 12px; min-width: 80px;">Continue &gt;</ui-button>
+					`;
+					const btn = throttleBar.querySelector('.throttle-toggle');
+					btn.onclick = () => {
+						isThrottled = !isThrottled;
+						if (isThrottled) {
+							btn.innerText = "Continue >";
+							throttleBar.classList.remove('unthrottled');
+						} else {
+							btn.innerText = "Throttle";
+							throttleBar.classList.add('unthrottled');
+						}
+					};
+					this.chatContainer.append(throttleBar);
+				}
+				throttleBar.querySelector('.throttle-text').innerText = `Agent execution throttled due to long running task: ${loopCount} of ${maxLoops} iterations`;
+
+				if (isThrottled) {
+					await new Promise(r => setTimeout(r, 7000));
+				}
+			}
 
 
 			const modelMessageId = crypto.randomUUID();
@@ -1642,9 +1585,14 @@ class AIManager {
 			}
 
 			let currentFullResponse = "";
+			let streamForciblyEnded = false;
+			let forcedReason = "";
+
 			const runPromise = new Promise((resolve, reject) => {
 				const callbacks = {
 					onUpdate: (fullResponse) => {
+						if (streamForciblyEnded) return;
+						currentFullResponse = fullResponse;
 						if (spinner.parentNode) spinner.remove();
 						const shouldScroll = this._shouldAutoScroll();
 						responseBlock.innerHTML = this.messageRenderer.renderResponseContent(fullResponse);
@@ -1652,34 +1600,33 @@ class AIManager {
 						if (shouldScroll && this.conversationArea) {
 							this.conversationArea.scrollTop = this.conversationArea.scrollHeight;
 						}
+
+						// Scan streaming tokens for early truncation
+						const check = this._checkStreamingResponse(fullResponse);
+						if (check.shouldAbort) {
+							streamForciblyEnded = true;
+							forcedReason = check.reason;
+							this.ai.stop(check.reason);
+							
+							// Save immediately since ai.stop throws AbortError which doesn't trigger onError
+							this._finalizeModelMessage(currentFullResponse, forcedReason, callbacks, modelMessageId, responseBlock)
+								.then(finalizedResponse => resolve(finalizedResponse))
+								.catch(err => reject(err));
+						}
 					},
 					onDone: async (fullResponse) => {
+						if (streamForciblyEnded) return;
 						currentFullResponse = fullResponse;
-
-						// Append to activeSession messages
-						const modelMessage = {
-							id: modelMessageId,
-							role: "model",
-							type: "model",
-							content: fullResponse,
-							diffStatuses: [],
-							timestamp: Date.now()
-						};
-						this.activeSession.messages.push(modelMessage);
-						this.activeSession.lastModified = Date.now();
-						await workspaceClient.setSession(this.activeSession.id, this.activeSession);
-
-						responseBlock.innerHTML = this.messageRenderer.renderResponseContent(fullResponse, modelMessage);
-						this.messageRenderer.addCodeBlockButtons(responseBlock, modelMessage);
-
-						// Auto-rename if this is the first model response and the name is default
-						if (this.activeSession.messages.filter(m => m.role === 'model').length === 1 && this.activeSession.name.startsWith("Chat ")) {
-							this.sessionsManager.autoRenameSession(userMessage.content);
-						}
-
-						resolve(fullResponse);
+						const finalizedResponse = await this._finalizeModelMessage(fullResponse, null, callbacks, modelMessageId, responseBlock);
+						resolve(finalizedResponse);
 					},
-					onError: (err) => {
+					onError: async (err) => {
+						// Stream forcibly ended logic is now handled in onUpdate directly.
+						if (streamForciblyEnded) {
+							// We shouldn't hit this, but just in case, resolve without saving twice.
+							resolve(currentFullResponse);
+							return;
+						}
 						reject(err);
 					}
 				};
@@ -1692,87 +1639,102 @@ class AIManager {
 			try {
 				const responseContent = await runPromise;
 
-				// Parse implementation plan and check if we need to show plan approval
-				const parsed = this.messageRenderer.parseBlocks(responseContent);
-				if (parsed.planBlock) {
-					const planText = responseContent.substring(parsed.planBlock.contentStartIdx, parsed.planBlock.contentEndIdx).trim();
-					if (planText) {
-						const planApproved = await this._showPlanApprovalCard(planText);
-						if (!planApproved) {
-							// User rejected plan, stop processing loop!
-							const abortBlock = document.createElement("div");
-							abortBlock.className = "agent-tool-finished";
-							abortBlock.innerHTML = `
-								<ui-icon>close</ui-icon>
-								<span>Agent aborted: Implementation Plan rejected by the user.</span>
-							`;
-							const shouldScroll = this._shouldAutoScroll();
-							this.conversationArea.append(abortBlock);
-							if (shouldScroll && this.conversationArea) {
-								this.conversationArea.scrollTop = this.conversationArea.scrollHeight;
-							}
-
-							this._isProcessing = false;
-							this._setButtonsDisabledState(false);
-							this._dispatchContextUpdate("append_model");
-							break;
-						}
-					}
-				}
+				// Removed legacy XML plan parsing logic
 
 				// Parse tool calls
-				const toolCall = this._parseToolCalls(responseContent);
-				if (!toolCall) {
+				const toolCalls = this._parseAllToolCalls(responseContent);
+				if (toolCalls.length === 0) {
 					// No more tool calls: agent is done!
+					if (!responseContent.includes("<complete_task>")) {
+						const warnBlock = document.createElement("div");
+						warnBlock.className = "response-block warning-block";
+						warnBlock.innerHTML = `⚠️ <b>Agent Loop Halted:</b> The model stopped generating without producing a tool call or completing a task.`;
+						this.conversationArea.append(warnBlock);
+						const shouldScroll = this._shouldAutoScroll();
+						if (shouldScroll && this.conversationArea) {
+							this.conversationArea.scrollTop = this.conversationArea.scrollHeight;
+						}
+					}
+
 					this._isProcessing = false;
 					this._setButtonsDisabledState(false);
 					this._dispatchContextUpdate("append_model");
 					break;
 				}
 
-				// Execute the tool call
-				let toolResult = "";
-				let approved = true;
+				// Execute all parsed tool calls sequentially
+				let accumulatedResponses = [];
+				let hasPlan = false;
 
-				// Identify if tool is destructive
-				const isDestructive = ["create_file"].includes(toolCall.name);
-				if (isDestructive) {
-					approved = await this._showAgentApprovalCard(toolCall);
-				}
+				for (const toolCall of toolCalls) {
+					let toolResult = "";
+					let approved = true;
 
-				if (approved) {
-					// Add temporary message block explaining what tool is running
-					const progressMsg = document.createElement("div");
-					progressMsg.className = "agent-tool-progress";
-					progressMsg.innerHTML = `<ui-icon class="spin">cached</ui-icon> Running tool: <code>${toolCall.name}</code>...`;
+					// Identify if tool is destructive
+					const isDestructive = ["create_file"].includes(toolCall.name);
+					if (isDestructive) {
+						approved = await this._showAgentApprovalCard(toolCall);
+					}
+
+					if (approved) {
+						// Add temporary message block explaining what tool is running
+						const progressMsg = document.createElement("div");
+						progressMsg.className = "agent-tool-progress";
+						progressMsg.innerHTML = `<ui-icon class="spin">cached</ui-icon> Running tool: <code>${toolCall.name}</code>...`;
+						const shouldScroll = this._shouldAutoScroll();
+						this.conversationArea.append(progressMsg);
+						if (shouldScroll && this.conversationArea) {
+							this.conversationArea.scrollTop = this.conversationArea.scrollHeight;
+						}
+
+						try {
+							toolResult = await agentTools.execute(toolCall.name, toolCall.arguments, this.activeSession.id);
+						} catch (e) {
+							toolResult = `Error executing tool: ${e.message}`;
+						}
+
+						progressMsg.remove();
+					} else {
+						toolResult = `Error: User rejected the change to ${toolCall.arguments.path || "file"}.`;
+					}
+
+					accumulatedResponses.push(`[Tool Response: ${toolCall.name}]\n\n${toolResult}`);
+
+					if (toolCall.name === "create_implementation_plan") {
+						hasPlan = true;
+					}
+
+					// Render simple system or message confirmation of tool run in the chat
+					const toolConfBlock = document.createElement("div");
+					toolConfBlock.className = "agent-tool-finished";
+					toolConfBlock.innerHTML = `
+						<ui-icon>${approved ? 'done' : 'close'}</ui-icon>
+						<span>Tool <code>${toolCall.name}</code> finished.</span>
+					`;
 					const shouldScroll = this._shouldAutoScroll();
-					this.conversationArea.append(progressMsg);
+					this.conversationArea.append(toolConfBlock);
 					if (shouldScroll && this.conversationArea) {
 						this.conversationArea.scrollTop = this.conversationArea.scrollHeight;
 					}
-
-					try {
-						toolResult = await agentTools.execute(toolCall.name, toolCall.arguments, this.activeSession.id);
-					} catch (e) {
-						toolResult = `Error executing tool: ${e.message}`;
-					}
-
-					progressMsg.remove();
-				} else {
-					toolResult = `Error: User rejected the change to ${toolCall.arguments.path}.`;
 				}
 
-				// Append tool result as a user response to feed back into conversation
-				const toolResponseMessage = {
-					id: crypto.randomUUID(),
-					role: "user",
-					type: "tool_response",
-					content: `[Tool Response: ${toolCall.name}]\n\n${toolResult}`,
-					timestamp: Date.now()
-				};
-				this.activeSession.messages.push(toolResponseMessage);
-				this.activeSession.lastModified = Date.now();
-				await workspaceClient.setSession(this.activeSession.id, this.activeSession);
+				// Append all accumulated tool results as a single user response to feed back into conversation
+				if (accumulatedResponses.length > 0) {
+					const toolResponseMessage = {
+						id: crypto.randomUUID(),
+						role: "user",
+						type: "tool_response",
+						content: accumulatedResponses.join("\n\n---\n\n"),
+						timestamp: Date.now()
+					};
+					this.activeSession.messages.push(toolResponseMessage);
+					this.activeSession.lastModified = Date.now();
+					await workspaceClient.setSession(this.activeSession.id, this.activeSession);
+				}
+
+				if (hasPlan) {
+					this._isProcessing = false;
+				}
 
 				// Update the model message block in the DOM to reflect the actual tool execution status (failed or invoked)
 				const modelMessage = this.activeSession.messages.find(m => m.id === modelMessageId);
@@ -1781,17 +1743,11 @@ class AIManager {
 					this.messageRenderer.addCodeBlockButtons(responseBlock, modelMessage);
 				}
 
-				// Render simple system or message confirmation of tool run in the chat
-				const toolConfBlock = document.createElement("div");
-				toolConfBlock.className = "agent-tool-finished";
-				toolConfBlock.innerHTML = `
-					<ui-icon>${approved ? 'done' : 'close'}</ui-icon>
-					<span>Tool <code>${toolCall.name}</code> finished.</span>
-				`;
-				const shouldScroll = this._shouldAutoScroll();
-				this.conversationArea.append(toolConfBlock);
-				if (shouldScroll && this.conversationArea) {
-					this.conversationArea.scrollTop = this.conversationArea.scrollHeight;
+				// If the agent created a plan, we stop the loop to wait for user feedback.
+				if (hasPlan) {
+					this._setButtonsDisabledState(false);
+					this._dispatchContextUpdate("append_model");
+					break;
 				}
 
 			} catch (e) {
@@ -1807,14 +1763,141 @@ class AIManager {
 			}
 		}
 
-		if (loopCount >= maxLoops) {
-			const warningBlock = document.createElement("div");
-			warningBlock.className = "response-block warning-block";
-			warningBlock.innerHTML = `Agent Loop stopped: Maximum iteration limit reached (${maxLoops} steps).`;
-			this.conversationArea.append(warningBlock);
-			this._isProcessing = false;
-			this._setButtonsDisabledState(false);
+		if (throttleBar) {
+			throttleBar.remove();
 		}
+	}
+
+	async _finalizeModelMessage(fullResponse, forcedReason, callbacks, modelMessageId, responseBlock) {
+		let finalizedResponse = fullResponse;
+		if (forcedReason) {
+			if (forcedReason === "tool_call_closed") {
+				const closedIdx = finalizedResponse.indexOf("</tool_call>");
+				if (closedIdx !== -1) {
+					finalizedResponse = finalizedResponse.substring(0, closedIdx + 12);
+				}
+			} else if (forcedReason === "secondary_thought") {
+				let lastIdx = -1;
+				for (const tag of ["<thought>", "<think>", "<|channel>thought"]) {
+					const idx = finalizedResponse.lastIndexOf(tag);
+					if (idx > lastIdx) {
+						lastIdx = idx;
+					}
+				}
+				if (lastIdx !== -1) {
+					finalizedResponse = finalizedResponse.substring(0, lastIdx).trim();
+				}
+			} else if (forcedReason === "secondary_tool_call") {
+				const lastIdx = finalizedResponse.lastIndexOf("<tool_call");
+				if (lastIdx !== -1) {
+					finalizedResponse = finalizedResponse.substring(0, lastIdx).trim();
+				}
+			}
+		}
+
+		// Check and prune duplicate raw toolCalls in callbacks
+		if (callbacks.toolCalls && callbacks.toolCalls.length > 0) {
+			const parsedToolCalls = this._parseAllToolCalls(finalizedResponse);
+			if (parsedToolCalls.length > 0) {
+				const parsedNames = new Set(parsedToolCalls.map(ptc => ptc.name));
+				callbacks.toolCalls = callbacks.toolCalls.filter(call => {
+					// Keep any raw calls whose names exist in our set of parsed parallel tool calls
+					return call.functionCall && parsedNames.has(call.functionCall.name);
+				});
+			} else {
+				// No parsed tool call remains in the finalized text, meaning it was fully truncated.
+				callbacks.toolCalls = undefined;
+			}
+		}
+
+		const modelMessage = {
+			id: modelMessageId,
+			role: "model",
+			type: "model",
+			content: finalizedResponse,
+			diffStatuses: [],
+			timestamp: Date.now()
+		};
+		if (callbacks.thoughtSignature) {
+			modelMessage.thoughtSignature = callbacks.thoughtSignature;
+		}
+		if (callbacks.toolCalls && callbacks.toolCalls.length > 0) {
+			modelMessage.toolCalls = callbacks.toolCalls;
+		}
+
+		const existingIndex = this.activeSession.messages.findIndex(m => m.id === modelMessage.id);
+		if (existingIndex !== -1) {
+			this.activeSession.messages[existingIndex] = modelMessage;
+		} else {
+			this.activeSession.messages.push(modelMessage);
+		}
+		this.activeSession.lastModified = Date.now();
+		await workspaceClient.setSession(this.activeSession.id, this.activeSession);
+
+		responseBlock.innerHTML = this.messageRenderer.renderResponseContent(finalizedResponse, modelMessage);
+		this.messageRenderer.addCodeBlockButtons(responseBlock, modelMessage);
+
+		if (forcedReason === "secondary_thought" || forcedReason === "secondary_tool_call") {
+			const blockType = forcedReason === "secondary_thought" ? "thought" : "tool call";
+			this.historyManager.addMessage({
+				type: "system_message",
+				content: `⚠️ **Agent Protocol Flag:** The model attempted to generate a secondary **${blockType}** block. The stream was forcibly truncated to enforce single-turn execution structure.`,
+				timestamp: Date.now()
+			});
+		}
+
+		return finalizedResponse;
+	}
+
+	_checkStreamingResponse(fullResponse) {
+		if (!fullResponse) return { shouldAbort: false, reason: "" };
+
+		// 1. Check if the first tool_call block has successfully closed
+		if (fullResponse.includes("</tool_call>")) {
+			return { shouldAbort: true, reason: "tool_call_closed" };
+		}
+
+		// 2. Count occurrences of thought-starts and tool-call-starts
+		let thoughtCount = 0;
+		// Count "<thought>"
+		let idx = 0;
+		while ((idx = fullResponse.indexOf("<thought>", idx)) !== -1) {
+			thoughtCount++;
+			idx += 9;
+		}
+		// Count "<think>"
+		idx = 0;
+		while ((idx = fullResponse.indexOf("<think>", idx)) !== -1) {
+			thoughtCount++;
+			idx += 7;
+		}
+		// Count "<|channel>thought"
+		idx = 0;
+		while ((idx = fullResponse.indexOf("<|channel>thought", idx)) !== -1) {
+			thoughtCount++;
+			idx += 17;
+		}
+
+		// Count "<tool_call"
+		let toolCallCount = 0;
+		idx = 0;
+		while ((idx = fullResponse.indexOf("<tool_call", idx)) !== -1) {
+			toolCallCount++;
+			idx += 10;
+		}
+
+		if (thoughtCount > 1) {
+			return { shouldAbort: true, reason: "secondary_thought" };
+		}
+
+		if (toolCallCount > 1) {
+			const supportsNativeTools = this.ai.config && this.ai.config.model && this.ai.config.model.toLowerCase().includes('gemini');
+			if (!supportsNativeTools) {
+				return { shouldAbort: true, reason: "secondary_tool_call" };
+			}
+		}
+
+		return { shouldAbort: false, reason: "" };
 	}
 
 

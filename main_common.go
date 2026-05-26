@@ -79,6 +79,11 @@ func runCadenceServer(block bool) {
 	if block {
 		err := http.ListenAndServe(":"+port, activityMiddleware(corsMiddleware(mux)))
 		if err != nil {
+			if browserFlag {
+				log.Printf("Server likely already running (%v). Opening browser and exiting.", err)
+				openBrowser("http://localhost:" + port + "/")
+				os.Exit(0)
+			}
 			log.Fatal("ListenAndServe: ", err)
 		}
 	} else {
@@ -133,11 +138,17 @@ func createServerMux() *http.ServeMux {
 		log.Printf("Serving live frontend from: %s", serveFlag)
 		mux.Handle("/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			http.SetCookie(w, &http.Cookie{Name: "cadence_dev", Value: "true", Path: "/"})
+			w.Header().Set("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate")
+			w.Header().Set("Pragma", "no-cache")
+			w.Header().Set("Expires", "0")
 			http.FileServer(http.Dir(serveFlag)).ServeHTTP(w, r)
 		}))
 	} else {
 		mux.Handle("/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			http.SetCookie(w, &http.Cookie{Name: "cadence_dev", Value: "false", Path: "/", MaxAge: -1})
+			w.Header().Set("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate")
+			w.Header().Set("Pragma", "no-cache")
+			w.Header().Set("Expires", "0")
 			http.FileServer(http.FS(getAppFS())).ServeHTTP(w, r)
 		}))
 	}

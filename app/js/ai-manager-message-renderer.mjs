@@ -260,10 +260,7 @@ export default class AIManagerMessageRenderer {
             const planText = content.substring(parsed.planBlock.contentStartIdx, parsed.planBlock.contentEndIdx).trim();
             if (planText && this.aiManager.activeSession && this.aiManager.activeSession.implementationPlan !== planText) {
                 this.aiManager.activeSession.implementationPlan = planText;
-                this.aiManager._updateAgentProgressPanel();
-                if (this.aiManager.historyManager && typeof this.aiManager.historyManager.updateImplementationPlanTrigger === 'function') {
-                    this.aiManager.historyManager.updateImplementationPlanTrigger();
-                }
+
                 workspaceClient.setSession(this.aiManager.activeSession.id, this.aiManager.activeSession);
 
                 if (window.ui.openPlanAndTaskList) {
@@ -342,10 +339,144 @@ export default class AIManagerMessageRenderer {
             while ((tagMatch = tagRegex.exec(toolArgs)) !== null) {
                 const key = tagMatch[1];
                 let val = tagMatch[2];
-                if (key !== 'search' && key !== 'replace' && key !== 'content') {
+                if (key !== 'search' && key !== 'replace' && key !== 'content' && key !== 'plan' && key !== 'tasks') {
                     val = val.trim();
                 }
                 args[key] = val;
+            }
+
+            // Handle Project Management Tools
+            if (toolName === "create_implementation_plan" || toolName === "update_task_list" || toolName === "complete_task") {
+                if (toolName === "create_implementation_plan" && args.plan) {
+                    let planChanged = false;
+                    let tasksChanged = false;
+
+                    if (this.aiManager.activeSession && this.aiManager.activeSession.implementationPlan !== args.plan) {
+                        this.aiManager.activeSession.implementationPlan = args.plan;
+                        planChanged = true;
+                    }
+
+                    if (args.tasks && this.aiManager.activeSession && this.aiManager.activeSession.taskList !== args.tasks) {
+                        this.aiManager.activeSession.taskList = args.tasks;
+                        tasksChanged = true;
+                    }
+
+                    if (planChanged || tasksChanged) {
+                        this.aiManager._updateAgentProgressPanel();
+                        workspaceClient.setSession(this.aiManager.activeSession.id, this.aiManager.activeSession);
+        
+                        if (window.ui.openPlanAndTaskList) {
+                            const isOpen = (window.ui.leftTabs?.tabs?.some(t => t.config?.path === "plan_tasks")) ||
+                                (window.ui.rightTabs?.tabs?.some(t => t.config?.path === "plan_tasks"));
+                            if (!isOpen) {
+                                window.ui.openPlanAndTaskList();
+                            }
+                        }
+                    }
+                } else if (toolName === "update_task_list" && args.tasks) {
+                    if (this.aiManager.activeSession && this.aiManager.activeSession.taskList !== args.tasks) {
+                        this.aiManager.activeSession.taskList = args.tasks;
+                        this.aiManager._updateAgentProgressPanel();
+                        workspaceClient.setSession(this.aiManager.activeSession.id, this.aiManager.activeSession);
+                    }
+                } else if (toolName === "complete_task" && args.taskName) {
+                    if (this.aiManager.activeSession && this.aiManager.activeSession.taskList) {
+                        const escapedTaskText = args.taskName.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
+                        const checkboxRegex = new RegExp(`([\\-*]\\s*\\[\\s*\\]\\s*)${escapedTaskText}`, 'i');
+                        if (checkboxRegex.test(this.aiManager.activeSession.taskList)) {
+                            this.aiManager.activeSession.taskList = this.aiManager.activeSession.taskList.replace(checkboxRegex, (match, bulletGroup) => {
+                                return bulletGroup.replace(/\[\s*\]/, '[x]') + args.taskName;
+                            });
+                            this.aiManager._updateAgentProgressPanel();
+                            workspaceClient.setSession(this.aiManager.activeSession.id, this.aiManager.activeSession);
+                        }
+                    }
+                }
+
+                const beforeText = mainContent.substring(0, tc.startIdx) || "";
+                const afterText = mainContent.substring(tc.endIdx) || "";
+                if (beforeText.trim()) finalHtml += this.aiManager.md.render(beforeText);
+                
+                if (toolName === "create_implementation_plan") {
+                    const messages = this.aiManager.activeSession?.messages || [];
+                    let isPending = false;
+                    
+                    if (message) {
+                        isPending = !message.planStatus || message.planStatus === "pending";
+                    } else {
+                        // Fallback: find the message in activeSession by content match
+                        const matchingMsg = messages.find(m => m.type === "model" && m.content === content);
+                        if (matchingMsg) {
+                            isPending = !matchingMsg.planStatus || matchingMsg.planStatus === "pending";
+                        } else {
+                            // During active streaming before finalizing
+                            isPending = false;
+                        }
+                    }
+
+                    console.log("[Plan Render Debug] isPending calculation:", {
+                        isProcessing: this.aiManager._isProcessing,
+                        messageId: message?.id,
+                        planStatus: message ? message.planStatus : (messages.find(m => m.type === "model" && m.content === content)?.planStatus),
+                        isPending,
+                        messagesCount: messages.length
+                    });
+
+                    const status = message ? message.planStatus : (messages.find(m => m.type === "model" && m.content === content)?.planStatus);
+                    let cardBg = "color-mix(in srgb, var(--theme) 8%, transparent)";
+                    let cardBorder = "1px solid color-mix(in srgb, var(--theme) 25%, transparent)";
+                    let cardColor = "var(--theme)";
+                    let iconName = "assignment";
+                    let titleText = "Implementation Plan Proposed";
+
+                    if (status === "accepted") {
+                        cardBg = "rgba(45, 164, 78, 0.1)"; // translucent green (the current implementation green)
+                        cardBorder = "1px solid rgba(45, 164, 78, 0.25)";
+                        cardColor = "#2da44e";
+                        iconName = "check_circle";
+                        titleText = "Implementation Plan Accepted";
+                    } else if (status === "rejected") {
+                        cardBg = "rgba(244, 67, 54, 0.08)"; // translucent red/orange
+                        cardBorder = "1px solid rgba(244, 67, 54, 0.25)";
+                        cardColor = "var(--error-color, #f44336)";
+                        iconName = "cancel";
+                        titleText = "Implementation Plan Refined / Rejected";
+                    }
+
+                    let planHtml = `
+                    <div class="inline-implementation-plan-card" style="display: flex; flex-direction: column; gap: 8px; margin: 10px 0; background: ${cardBg}; border: ${cardBorder}; border-radius: var(--radius); padding: 12px; transition: all 0.2s ease;">
+                        <div style="display: flex; justify-content: space-between; align-items: center;">
+                            <div class="banner-left" style="display: flex; align-items: center; gap: 8px; color: ${cardColor};">
+                                <ui-icon style="color: ${cardColor}; font-size: 20px;">${iconName}</ui-icon>
+                                <span style="font-weight: 600; font-size: 13px;">${titleText}</span>
+                            </div>
+                            <button class="open-plan-btn" style="display: flex; align-items: center; gap: 4px; background: transparent; border: 1px solid ${cardColor}; padding: 4px 8px; border-radius: 4px; cursor: pointer; color: ${cardColor}; font-weight: 600; font-size: 11px; transition: all 0.2s;" onclick="if(window.ui && window.ui.openPlanAndTaskList) window.ui.openPlanAndTaskList();" onmouseover="this.style.background='color-mix(in srgb, ${cardColor} 8%, transparent)'" onmouseout="this.style.background='transparent'">
+                                <span>View Plan</span><ui-icon style="font-size: 14px;">open_in_new</ui-icon>
+                            </button>
+                        </div>
+                    `;
+
+                    if (isPending) {
+                        planHtml += `
+                        <div style="display: flex; flex-direction: column; gap: 8px; margin-top: 8px;">
+                            <textarea placeholder="Optional prompt/clarification for the agent..." style="width: 100%; min-height: 60px; padding: 8px; resize: vertical; background-color: var(--bg-body); color: var(--text-primary); border: 1px solid var(--border-color); border-radius: var(--radius); font-family: inherit; box-sizing: border-box;"></textarea>
+                            <div class="banner-actions" style="display: flex; justify-content: flex-end; gap: 8px;">
+                                <button class="reject-plan-btn" style="display: flex; align-items: center; gap: 4px; background: transparent; color: var(--error-color, #f44336); border: 1px solid color-mix(in srgb, var(--error-color, #f44336) 50%, transparent); padding: 6px 12px; border-radius: 4px; cursor: pointer;" onclick="const comment = this.parentElement.previousElementSibling.value.trim(); if(window.ui && window.ui.aiManager) window.ui.aiManager.proceedWithImplementationPlan(comment, false);">
+                                    <ui-icon style="font-size: 16px;">close</ui-icon><span>Reject / Refine</span>
+                                </button>
+                                <button class="proceed-plan-btn" style="display: flex; align-items: center; gap: 4px; background: color-mix(in srgb, var(--theme) 15%, transparent); color: var(--text-primary); border: 1px solid var(--theme); padding: 6px 12px; border-radius: 4px; cursor: pointer;" onclick="const comment = this.parentElement.previousElementSibling.value.trim(); if(window.ui && window.ui.aiManager) window.ui.aiManager.proceedWithImplementationPlan(comment, true);">
+                                    <ui-icon style="font-size: 16px;">check</ui-icon><span>Accept Plan</span>
+                                </button>
+                            </div>
+                        </div>
+                        `;
+                    }
+                    planHtml += `</div>`;
+                    finalHtml += planHtml;
+                }
+
+                if (afterText.trim()) finalHtml += this.aiManager.md.render(afterText);
+                return finalHtml;
             }
 
             let icon = "extension";
@@ -357,11 +488,27 @@ export default class AIManagerMessageRenderer {
             else if (toolName.includes("open")) icon = "launch";
 
             let label = `<code>${toolName}</code>`;
-            const fileActions = ["edit_file", "read_file", "create_file", "find_file", "open_file"];
+            const fileActions = ["edit_file", "read_file", "create_file", "find_file", "open_file", "search_in_file"];
             if (args.path) {
                 if (fileActions.includes(toolName)) {
                     const shortFile = args.path.split('/').pop() || args.path;
-                    label = `<code>${toolName}:</code> <ui-filechip filename="${this._escapeHtml(shortFile)}" path="${this._escapeHtml(args.path)}"></ui-filechip>`;
+                    let fileChipHtml = `<ui-filechip filename="${this._escapeHtml(shortFile)}" path="${this._escapeHtml(args.path)}"></ui-filechip>`;
+                    
+                    if (toolName === "read_file") {
+                        const start = parseInt(args.startLine || args.startline, 10);
+                        const count = parseInt(args.lineCount || args.linecount, 10);
+                        if (!isNaN(start) && !isNaN(count)) {
+                            fileChipHtml += ` #L${start}-${start + count}`;
+                        }
+                    } else if (toolName === "search_in_file") {
+                        const queryText = args.query || "";
+                        const truncatedQuery = queryText.length > 20 ? queryText.substring(0, 20) + "..." : queryText;
+                        if (truncatedQuery) {
+                            fileChipHtml += ` <span class="tool-call-query">"${this._escapeHtml(truncatedQuery)}"</span>`;
+                        }
+                    }
+                    
+                    label = `<code>${toolName}:</code> ${fileChipHtml}`;
                 } else {
                     label = `<code>${toolName}:</code> <span class="tool-call-path" title="${this._escapeHtml(args.path)}">${this._escapeHtml(args.path)}</span>`;
                 }
@@ -477,12 +624,12 @@ export default class AIManagerMessageRenderer {
                         i += 8;
                         continue;
                     }
-                    if (activeBlock.subType === 'channel' && content.startsWith("\\n", i)) {
-                        activeBlock.endIdx = i + 1;
+                    if (activeBlock.subType === 'channel' && content.startsWith("<channel|>", i)) {
+                        activeBlock.endIdx = i + 10;
                         activeBlock.contentEndIdx = i;
                         activeBlock.closed = true;
                         activeBlock = null;
-                        i += 1;
+                        i += 10;
                         continue;
                     }
                 } else if (activeBlock.type === 'plan') {
@@ -539,10 +686,10 @@ export default class AIManagerMessageRenderer {
                     i += 7;
                     continue;
                 }
-                if (content.startsWith("<|channel>thought <channel|>", i)) {
-                    thoughtBlock = { type: 'thought', subType: 'channel', startIdx: i, contentStartIdx: i + 28, closed: false };
+                if (content.startsWith("<|channel>thought", i)) {
+                    thoughtBlock = { type: 'thought', subType: 'channel', startIdx: i, contentStartIdx: i + 17, closed: false };
                     activeBlock = thoughtBlock;
-                    i += 28;
+                    i += 17;
                     continue;
                 }
             }

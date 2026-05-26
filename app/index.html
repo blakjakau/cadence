@@ -63,8 +63,9 @@
 		} else {
 			/* Only register a service worker if it's supported AND we are not in Native/Wails mode */
 			if ('serviceWorker' in navigator) {
-				if (window.runtime) {
-					// In Native mode, unregister any existing workers to clear cache
+				const isLocalServer = window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1" || window.location.hostname.endsWith(".localhost");
+				if (window.runtime || isLocalServer) {
+					// In Native mode or local server, unregister any existing workers to clear cache
 					navigator.serviceWorker.getRegistrations().then(registrations => {
 						for (let registration of registrations) { registration.unregister(); }
 					});

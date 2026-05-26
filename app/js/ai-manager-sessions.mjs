@@ -86,70 +86,98 @@ class AIManagerSessions {
 		newTab.click();
 	}
 
-	/**
-	 * Creates a new implementation session pre-populated with the active session's 
-	 * implementation plan, task list, and evergreen files in a clean environment.
-	 */
-	async proceedWithImplementationPlan() {
+	async proceedWithImplementationPlan(comment = "", isAccepted = true) {
 		if (!this.activeSession) return;
 		const sourceSession = this.activeSession;
 		const plan = sourceSession.implementationPlan || "";
-		const tasklist = sourceSession.taskList || "";
-		const files = sourceSession.evergreenFiles ? [...sourceSession.evergreenFiles] : [];
 
 		if (!plan) {
 			window.modal.notice("No active implementation plan found in this session.", "Cannot Proceed");
 			return;
 		}
 
-		// 1. Save the current active session state first
-		this.activeSession.promptInput = this.manager.promptEditor.getValue();
-		this.activeSession.scrollTop = this.manager.conversationArea.scrollTop;
-		const currentSessionMeta = this.allSessionMetadata.find(s => s.id === this.activeSession.id);
-		if (currentSessionMeta) currentSessionMeta.lastModified = Date.now();
-		await workspaceClient.setSession(this.activeSession.id, this.activeSession);
-
-		// 2. Initialize new session data
-		const newId = `ai-session-${crypto.randomUUID()}`;
-		let baseName = sourceSession.name || "Chat";
-		if (baseName.startsWith("Implementation:")) {
-			baseName = baseName.replace("Implementation:", "").trim();
+		// Find the model message that contains this plan and tag it
+		const planMessage = [...sourceSession.messages].reverse().find(m => 
+			m.type === "model" && 
+			m.content && 
+			(m.content.includes("create_implementation_plan") || m.content.includes("create_implementation_plan")) &&
+			(!m.planStatus || m.planStatus === "pending")
+		);
+		if (planMessage) {
+			planMessage.planStatus = isAccepted ? "accepted" : "rejected";
+			await workspaceClient.setSession(sourceSession.id, sourceSession);
 		}
-		const newName = `Implementation: ${baseName}`;
+
+		let promptText = "";
+		if (isAccepted) {
+			promptText = "Let's proceed with the implementation plan. Please execute the checklist step-by-step.";
+			if (comment) promptText += `\n\nAdditional Instructions:\n${comment}`;
+		} else {
+			if (comment) {
+				promptText = `The proposed implementation plan has been rejected. Please review the feedback and formulate a new plan.\n\nFeedback:\n${comment}`;
+			} else {
+				promptText = "The proposed implementation plan has been rejected. Please await further instruction from the user.";
+			}
+		}
+
+		// Set the prompt in the editor
+		this.manager.promptEditor.setValue(promptText, -1);
 		
-		const newSessionData = {
-			id: newId,
-			name: newName,
-			createdAt: Date.now(),
-			lastModified: Date.now(),
-			messages: [],
-			promptInput: "Let's proceed with the implementation plan. Please execute the checklist step-by-step.",
-			promptHistory: [],
-			scrollTop: 0,
-			evergreenFiles: files,
-			implementationPlan: plan,
-			taskList: tasklist,
-		};
+		// Immediately update the latest plan card UI in the DOM (no wait for redraw)
+		const cards = this.manager.conversationArea.querySelectorAll('.inline-implementation-plan-card, .ai-implementation-plan-banner');
+		if (cards.length > 0) {
+			const latestCard = cards[cards.length - 1];
+			
+			// Dynamic colors based on decision
+			if (isAccepted) {
+				latestCard.style.background = "rgba(45, 164, 78, 0.1)";
+				latestCard.style.borderColor = "rgba(45, 164, 78, 0.25)";
+				const left = latestCard.querySelector('.banner-left');
+				if (left) {
+					left.style.color = "#2da44e";
+					const icon = left.querySelector('ui-icon');
+					if (icon) {
+						icon.innerText = "check_circle";
+						icon.style.color = "#2da44e";
+					}
+					const title = left.querySelector('span');
+					if (title) title.innerText = "Implementation Plan Accepted";
+				}
+				const btn = latestCard.querySelector('.open-plan-btn');
+				if (btn) {
+					btn.style.color = "#2da44e";
+					btn.style.borderColor = "#2da44e";
+				}
+			} else {
+				latestCard.style.background = "rgba(244, 67, 54, 0.08)";
+				latestCard.style.borderColor = "rgba(244, 67, 54, 0.25)";
+				const left = latestCard.querySelector('.banner-left');
+				if (left) {
+					left.style.color = "var(--error-color, #f44336)";
+					const icon = left.querySelector('ui-icon');
+					if (icon) {
+						icon.innerText = "cancel";
+						icon.style.color = "var(--error-color, #f44336)";
+					}
+					const title = left.querySelector('span');
+					if (title) title.innerText = "Implementation Plan Refined / Rejected";
+				}
+				const btn = latestCard.querySelector('.open-plan-btn');
+				if (btn) {
+					btn.style.color = "var(--error-color, #f44336)";
+					btn.style.borderColor = "var(--error-color, #f44336)";
+				}
+			}
 
-		// 3. Create a helpful initial system message in history explaining the context
-		const initialMessage = {
-			role: "system",
-			type: "system_message",
-			content: `🚀 **New clean implementation environment created from "${baseName}"**\n\nThis thread is pre-populated with the approved **Implementation Plan** and **Task Checklist**. It has a completely clean conversational history to ensure the model focuses on implementation without historical distractions.\n\n${files.length > 0 ? `📁 *Evergreen files attached:* ${files.map(f => `\`${f.filename}\``).join(', ')}` : 'No files attached yet.'}`,
-			timestamp: Date.now(),
-		};
-		newSessionData.messages.push(initialMessage);
+			// Hide controls immediately to prevent double clicks and clutter
+			const actions = latestCard.querySelector('.banner-actions');
+			if (actions) actions.style.display = 'none';
+			const input = latestCard.querySelector('textarea');
+			if (input) input.style.display = 'none';
+		}
 
-		// 4. Save new session to database
-		await workspaceClient.setSession(newId, newSessionData);
-		this.allSessionMetadata.push({ id: newId, name: newName, createdAt: newSessionData.createdAt, lastModified: newSessionData.lastModified });
-
-		// 5. Add the new tab to the UI and register double-click for renaming
-		const newTab = this.manager.sessionTabBar.add({ name: newName, id: newId, defaultStatusIcon: 'playlist_add_check' });
-		newTab.on('dblclick', () => this.renameCurrentSession());
-
-		// 6. Switch to it
-		newTab.click();
+		// Submit the prompt immediately in the same session
+		this.manager.generate();
 	}
 
 	/**
@@ -492,7 +520,11 @@ class AIManagerSessions {
 			});
 			
 			if (fullResponse) {
-				const newName = fullResponse.replace(/["']/g, '').trim();
+				let cleanResponse = fullResponse.replace(/<thought>[\s\S]*?<\/thought>/gi, '');
+				cleanResponse = cleanResponse.replace(/<think>[\s\S]*?<\/think>/gi, '');
+				cleanResponse = cleanResponse.replace(/<\|channel>thought[\s\S]*?<channel\|>/gi, '');
+				
+				const newName = cleanResponse.replace(/["']/g, '').trim();
 				
 				this.activeSession.name = newName;
 				const meta = this.allSessionMetadata.find(s => s.id === this.activeSession.id);

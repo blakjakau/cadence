@@ -2,7 +2,7 @@ import conduit from '../conduit-client.mjs';
 import AgentBackup from './agent-backup.mjs';
 
 /**
- * Implements the core tools for the CodeAgent.
+ * Implements the core tools for Cadence.
  * Prioritizes Conduit for access, with fallback to browser APIs where possible.
  */
 class AgentTools {
@@ -151,11 +151,55 @@ class AgentTools {
     }
 
     /**
+     * Helper to verify if the agent is permitted to interact with the file.
+     * Enforces size limits: max 1MB generally, max 0.5MB for binaries.
+     * @param {string} path 
+     * @returns {boolean|string} Returns true if permitted, or an error string if blocked.
+     */
+    _checkFilePermitted(path) {
+        if (!window.ui?.fileList?.index?.files) return true; 
+
+        try {
+            const resolvedPath = this._resolveAndValidatePath(path);
+            
+            const file = window.ui.fileList.index.files.find(f => {
+                const fPath = f.path.replace(/\\/g, '/').replace(/\/+/g, '/').toLowerCase();
+                const rPath = resolvedPath.replace(/\\/g, '/').replace(/\/+/g, '/').toLowerCase();
+                return fPath === rPath || fPath.endsWith('/' + rPath) || rPath.endsWith('/' + fPath);
+            });
+
+            if (!file) return true; 
+
+            const size = file.size || 0;
+            const ONE_MB = 1024 * 1024;
+            const HALF_MB = 512 * 1024;
+
+            if (size > ONE_MB) {
+                return `Error: Agent interaction blocked. File is ${(size / ONE_MB).toFixed(2)}MB, exceeding the 1MB safety limit.`;
+            }
+
+            const extension = resolvedPath.split('.').pop().toLowerCase();
+            const binaryExtensions = ['png', 'jpg', 'jpeg', 'gif', 'ico', 'pdf', 'zip', 'gz', 'tar', 'exe', 'bin', 'dll', 'mp4', 'webm', 'mp3', 'wav', 'ogg', 'wasm', 'woff', 'woff2', 'ttf', 'eot'];
+            
+            if (binaryExtensions.includes(extension) && size > HALF_MB) {
+                return `Error: Agent interaction blocked. Binary file is ${(size / 1024).toFixed(2)}KB, exceeding the 0.5MB safety limit for binary files.`;
+            }
+
+            return true;
+        } catch (error) {
+            return true; // Let it fail normally later if path is invalid
+        }
+    }
+
+    /**
      * Reads a file's content.
      * @param {string} path 
      */
     async readFile(path) {
         try {
+            const permitted = this._checkFilePermitted(path);
+            if (permitted !== true) return permitted;
+
             const resolvedPath = this._resolveAndValidatePath(path);
             
             // Try to find if the file is open in the editor
@@ -286,6 +330,9 @@ class AgentTools {
      */
     async readFileOutline(path) {
         try {
+            const permitted = this._checkFilePermitted(path);
+            if (permitted !== true) return permitted;
+
             const resolvedPath = this._resolveAndValidatePath(path);
             if (this.conduit.isConnected) {
                 const result = await this.conduit.wsGetOutline(resolvedPath);
@@ -443,6 +490,9 @@ class AgentTools {
      */
     async searchInFile(path, query) {
         try {
+            const permitted = this._checkFilePermitted(path);
+            if (permitted !== true) return permitted;
+
             const resolvedPath = this._resolveAndValidatePath(path);
             if (!query) return "Error: Query is empty.";
 
@@ -539,6 +589,9 @@ class AgentTools {
      */
     async editFile(path, searchString, replacementString, sourceId) {
         try {
+            const permitted = this._checkFilePermitted(path);
+            if (permitted !== true) return permitted;
+
             const resolvedPath = this._resolveAndValidatePath(path);
             
             // 1. Ensure the file is open in the editor
@@ -685,6 +738,9 @@ class AgentTools {
      */
     async openFile(path) {
         try {
+            const permitted = this._checkFilePermitted(path);
+            if (permitted !== true) return permitted;
+
             const resolvedPath = this._resolveAndValidatePath(path);
             if (window.ui?.fileList?.open) {
                 await window.ui.fileList.open(resolvedPath);
@@ -739,6 +795,12 @@ class AgentTools {
                 return await this.findFile(args.path);
             case 'exec_command':
                 return await this.execCommand(args.command);
+            case 'create_implementation_plan':
+                return "Successfully created implementation plan. The user is reviewing it.";
+            case 'update_task_list':
+                return "Successfully updated task list.";
+            case 'complete_task':
+                return `Successfully marked task as complete: ${args.taskName}`;
             default:
                 throw new Error(`Tool '${name}' is not recognized.`);
         }

@@ -17,6 +17,7 @@ let claudeModels = [...fallbackClaudeModels]; // Start with fallback models
 class Claude extends AI {
     constructor() {
         super();
+        this.providerId = 'claude';
         this.config = {
             apiKey: "",
             model: "claude-3-5-sonnet-20240620", 
@@ -222,6 +223,7 @@ class Claude extends AI {
                 onContextRatioUpdate(contextRatio);
             }
 
+            const requestStartTime = Date.now();
             const response = await fetch(this._apiUrl, {
                 method: 'POST',
                 headers: {
@@ -242,14 +244,18 @@ class Claude extends AI {
 
             const reader = response.body.getReader();
             const fullResponse = await this._processApiResponseStream(reader, callbacks);
+            const requestEndTime = Date.now();
             
             messages.push({ role: "model", content: fullResponse });
 
             const finalTokens = await this._countTokens(messages);
+            const outputTokens = Math.max(0, finalTokens - currentTokens);
             const finalContextRatio = finalTokens / this.MAX_CONTEXT_TOKENS;
             if (onContextRatioUpdate) {
                 onContextRatioUpdate(finalContextRatio);
             }
+
+            this.recordTelemetry(currentTokens, outputTokens, requestEndTime - requestStartTime, 0);
 
             if (onDone) {
                 onDone(fullResponse, Math.round(finalContextRatio * 100));

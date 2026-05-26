@@ -1,6 +1,7 @@
 // ai-gemini.mjs
 import AI from './ai.mjs';
 import systemPrompt from "./geminiSystemPrompt.mjs"
+import { tools as cadenceTools } from "./ai-manager-tools-schema.mjs";
 
 class Gemini extends AI {
     constructor() {
@@ -11,8 +12,19 @@ class Gemini extends AI {
             server: "https://generativelanguage.googleapis.com", 
             system: "",
             stripCodeBlocksFromContext: false, // New setting to control code block stripping
+            rpmLimit: 15,
+            tpmLimit: 250000,
+            rpdLimit: 500
         };
         this.MAX_CONTEXT_TOKENS = 32768; 
+
+        try {
+            this.requestTimestamps = JSON.parse(localStorage.getItem('gemini_request_timestamps') || '[]');
+            this.tokenTimestamps = JSON.parse(localStorage.getItem('gemini_token_timestamps') || '[]');
+        } catch(e) {
+            this.requestTimestamps = [];
+            this.tokenTimestamps = [];
+        }
 
         this._settingsSchema = {
             apiKey: { type: "string", label: "Gemini API Key", default: "" },
@@ -24,6 +36,9 @@ class Gemini extends AI {
                 lookupCallback: this._getAvailableModels.bind(this) 
             },
             stripCodeBlocksFromContext: { type: "boolean", label: "Strip Code Blocks from Context", default: false },
+            rpmLimit: { type: "number", label: "RPM Limit (Requests/Min)", default: 15 },
+            tpmLimit: { type: "number", label: "TPM Limit (Tokens/Min)", default: 250000 },
+            rpdLimit: { type: "number", label: "RPD Limit (Requests/Day)", default: 500 }
             //system: { type: "string", label: "System Prompt", default: systemPrompt, multiline: true },
         };
     }
@@ -36,15 +51,116 @@ class Gemini extends AI {
         return modelName;
     }
     
-    stop() {
+    stop(reason) {
         if (this.abortController) {
-            this.abortController.abort();
+            this.abortReason = reason;
+            this.abortController.abort(reason);
             this.abortController = null;
         }
     }
 
     isConfigured() {
     	return this.config.apiKey != "" && this.config.model != ""
+    }
+
+    async _enforceRateLimits(estimatedTokens) {
+        const rpmLimit = this.config.rpmLimit || 15;
+        const tpmLimit = this.config.tpmLimit || 250000;
+        const rpdLimit = this.config.rpdLimit || 500;
+
+        const now = Date.now();
+        const oneMinuteAgo = now - 60000;
+        const oneDayAgo = now - 86400000;
+
+        this.requestTimestamps = this.requestTimestamps.filter(t => t > oneDayAgo);
+        this.tokenTimestamps = this.tokenTimestamps.filter(t => t.time > oneMinuteAgo);
+
+        let delayMs = 0;
+        let limitHit = "";
+
+        // 1. Baseline RPM Spacing
+        const baselineSpacingMs = 60000 / rpmLimit;
+        if (this.requestTimestamps.length > 0) {
+            const timeSinceLastRequest = now - this.requestTimestamps[this.requestTimestamps.length - 1];
+            if (timeSinceLastRequest < baselineSpacingMs) {
+                const spacingDelay = baselineSpacingMs - timeSinceLastRequest;
+                if (spacingDelay > delayMs) {
+                    delayMs = spacingDelay;
+                    limitHit = "RPM (Baseline Pacing)";
+                }
+            }
+        }
+
+        // 2. Predictive TPM Throttling
+        const currentTps = this.tokensPerSec; // From base AI class
+        if (currentTps > 0) {
+            const projectedTpm = currentTps * 60;
+            if (projectedTpm > tpmLimit) {
+                const last = this._telemetryTokens[this._telemetryTokens.length - 1];
+                if (last && last.tokens > 0) {
+                    const targetTps = tpmLimit / 60;
+                    const requiredTotalTime = last.tokens / targetTps;
+                    const elapsedSecs = last.elapsedMs / 1000;
+                    const requiredDelaySecs = requiredTotalTime - elapsedSecs;
+                    if (requiredDelaySecs > 0) {
+                        const predictiveDelayMs = requiredDelaySecs * 1000;
+                        if (predictiveDelayMs > delayMs) {
+                            delayMs = predictiveDelayMs;
+                            limitHit = "Predictive TPM Spacing";
+                        }
+                    }
+                }
+            }
+        }
+
+        // 3. Hard Limit: RPD
+        if (this.requestTimestamps.length >= rpdLimit) {
+            const timeToWait = this.requestTimestamps[0] - oneDayAgo;
+            if (timeToWait > delayMs) {
+                delayMs = timeToWait;
+                limitHit = "RPD (Requests per day)";
+            }
+        }
+
+        // 4. Hard Limit: RPM
+        const requestsLastMinute = this.requestTimestamps.filter(t => t > oneMinuteAgo);
+        if (requestsLastMinute.length >= rpmLimit) {
+            const timeToWait = requestsLastMinute[0] - oneMinuteAgo;
+            if (timeToWait > delayMs) {
+                delayMs = timeToWait;
+                limitHit = "RPM (Requests per minute)";
+            }
+        }
+
+        // 5. Hard Limit: TPM
+        const tokensLastMinute = this.tokenTimestamps.reduce((sum, entry) => sum + entry.tokens, 0);
+        if (tokensLastMinute + estimatedTokens > tpmLimit) {
+            let tokensToFree = (tokensLastMinute + estimatedTokens) - tpmLimit;
+            let timeToWait = 0;
+            let tokensFreed = 0;
+            
+            for (const entry of this.tokenTimestamps) {
+                tokensFreed += entry.tokens;
+                if (tokensFreed >= tokensToFree) {
+                    timeToWait = entry.time - oneMinuteAgo;
+                    break;
+                }
+            }
+            if (timeToWait > delayMs) {
+                delayMs = timeToWait;
+                limitHit = "TPM (Tokens per minute)";
+            }
+        }
+
+        if (delayMs > 0) {
+            delayMs += 50; 
+            console.info(`⏳ [Gemini] API request delayed for ${(delayMs / 1000).toFixed(1)} seconds to avoid hitting rate limit for ${limitHit}`);
+            await new Promise(resolve => setTimeout(resolve, delayMs));
+        }
+
+        const finalTime = Date.now();
+        this.requestTimestamps.push(finalTime);
+        localStorage.setItem('gemini_request_timestamps', JSON.stringify(this.requestTimestamps));
     }
 
     async _getAvailableModels() {
@@ -192,6 +308,56 @@ class Gemini extends AI {
         const contents = [];
         for (const msg of messages) {
             if (msg.role === 'user' || msg.role === 'model') {
+                if (msg.role === 'user' && msg.content.startsWith('[Tool Response: ')) {
+                    const match = msg.content.match(/\[Tool Response: ([^\]]+)\]\n\n([\s\S]*)/);
+                    if (match) {
+                        const toolName = match[1];
+                        const toolResponse = match[2];
+                        contents.push({
+                            role: 'function',
+                            parts: [{
+                                functionResponse: {
+                                    name: toolName,
+                                    response: { result: toolResponse }
+                                }
+                            }]
+                        });
+                        continue;
+                    }
+                }
+                
+                if (msg.role === 'model') {
+                    if (msg.toolCalls && msg.toolCalls.length > 0) {
+                        const parts = [];
+                        
+                        // Extract any leading text (e.g., thoughts) before the first tool call from the content
+                        let textPart = msg.content;
+                        const toolCallIdx = msg.content.indexOf('<tool_call');
+                        if (toolCallIdx !== -1) {
+                            textPart = msg.content.substring(0, toolCallIdx).trim();
+                        }
+                        if (textPart) {
+                            parts.push({ text: textPart });
+                        }
+
+                        for (const rawCall of msg.toolCalls) {
+                            const functionCallPart = {
+                                functionCall: rawCall.functionCall || rawCall // Handle if rawCall is wrapped or native
+                            };
+                            if (rawCall.thoughtSignature) {
+                                functionCallPart.thoughtSignature = rawCall.thoughtSignature;
+                            }
+                            parts.push(functionCallPart);
+                        }
+
+                        contents.push({
+                            role: 'model',
+                            parts: parts
+                        });
+                        continue;
+                    }
+                }
+
                 contents.push({ role: msg.role, parts: [{ text: msg.content }] });
             } else if (msg.type === 'file_context') {
                 const fileContent = `--- File: ${msg.filename} ---\n\`\`\`${msg.language}\n${msg.content}\n\`\`\``;
@@ -244,6 +410,9 @@ class Gemini extends AI {
         const decoder = new TextDecoder('utf-8');
         let fullResponseAccumulator = '';
         let processedIndex = 0;
+        let isReasoning = false;
+        let thinkingStartTime = 0;
+        let totalThinkingMs = 0;
 
         try {
             while (true) {
@@ -300,15 +469,67 @@ class Gemini extends AI {
                             throw new Error(errorMessage); // This will be caught by the outer try/catch of the function.
                         }
 
-                        if (parsed.candidates && parsed.candidates[0].content && parsed.candidates[0].content.parts) {
-                            for (const part of parsed.candidates[0].content.parts) {
-                                if (part.text) {
-                                    fullResponseAccumulator += part.text;
-                                }
+                        if (parsed.candidates && parsed.candidates[0]) {
+                            const candidate = parsed.candidates[0];
+                            
+                            if (candidate.finishReason && candidate.finishReason !== "STOP") {
+                                const msg = candidate.finishMessage || candidate.finishReason;
+                                throw new Error(`Gemini stream aborted by API (finishReason: ${msg})`);
                             }
-                            if (onUpdate) onUpdate(fullResponseAccumulator);
+
+                            if (candidate.content && candidate.content.parts) {
+                                for (const part of candidate.content.parts) {
+                                    if (part.thoughtSignature) {
+                                        callbacks.thoughtSignature = part.thoughtSignature;
+                                    }
+                                    if (part.text || part.thought) {
+                                        const partThought = !!part.thought;
+                                        const partText = part.text || '';
+                                        if (partThought && !isReasoning) {
+                                            isReasoning = true;
+                                            thinkingStartTime = Date.now();
+                                            fullResponseAccumulator += "<thought>\n" + partText;
+                                        } else if (partThought && isReasoning) {
+                                            if (partText) {
+                                                fullResponseAccumulator += partText;
+                                            }
+                                        } else if (!partThought && isReasoning) {
+                                            isReasoning = false;
+                                            totalThinkingMs += Date.now() - thinkingStartTime;
+                                            fullResponseAccumulator += "\n</thought>\n" + partText;
+                                        } else if (!partThought && !isReasoning) {
+                                            if (partText) {
+                                                fullResponseAccumulator += partText;
+                                            }
+                                        }
+                                    } else if (part.functionCall) {
+                                        if (isReasoning) {
+                                            isReasoning = false;
+                                            totalThinkingMs += Date.now() - thinkingStartTime;
+                                            fullResponseAccumulator += "\n</thought>\n";
+                                        }
+
+                                        if (!callbacks.toolCalls) callbacks.toolCalls = [];
+                                        const rawCall = { functionCall: part.functionCall };
+                                        if (part.thoughtSignature) {
+                                            rawCall.thoughtSignature = part.thoughtSignature;
+                                        }
+                                        callbacks.toolCalls.push(rawCall);
+
+                                        const toolName = part.functionCall.name;
+                                        const args = part.functionCall.args || {};
+                                        let xmlToolCall = `\n<tool_call name="${toolName}">\n`;
+                                        for (const [key, value] of Object.entries(args)) {
+                                            const stringValue = typeof value === 'object' ? JSON.stringify(value) : value;
+                                            xmlToolCall += `  <${key}>${stringValue}</${key}>\n`;
+                                        }
+                                        xmlToolCall += `</tool_call>\n`;
+                                        fullResponseAccumulator += xmlToolCall;
+                                    }
+                                }
+                                if (onUpdate) onUpdate(fullResponseAccumulator);
+                            }
                         }
-                        
                         processedIndex = objectEndIndex + 1;
                     } else {
                         break;
@@ -316,13 +537,22 @@ class Gemini extends AI {
                 }
 
                 if (done) {
+                    if (isReasoning) {
+                        isReasoning = false;
+                        totalThinkingMs += Date.now() - thinkingStartTime;
+                        fullResponseAccumulator += "\n</thought>";
+                        if (onUpdate) onUpdate(fullResponseAccumulator);
+                    }
                     buffer = ''; 
                     processedIndex = 0;
                     break;
                 }
             }
-            return fullResponseAccumulator;
+            return { fullResponseAccumulator, totalThinkingMs };
         } catch (error) {
+            if (error && error.name === 'AbortError') {
+                throw error; // Let the outer functions handle intentional aborts cleanly
+            }
             console.error("[Gemini] Error processing API response stream:", error);
             if (onError) onError(error);
             throw error;
@@ -345,13 +575,34 @@ class Gemini extends AI {
                 requestBody.systemInstruction = { parts: [{ text: this.config.system }] };
             }
 
-            if (this.config.model.includes('thinking') || this.config.model.includes('pro')) {
+            const supportsThinking = this.config.model.includes('thinking') || this.config.model.includes('pro') || this.config.model.includes('2.0') || this.config.model.includes('2.5') || this.config.model.includes('3.1') || this.config.model.includes('3.5');
+            if (supportsThinking) {
                 requestBody.generationConfig = {
-                    thinkingConfig: { thinkingLevel: "LOW" }
+                    thinkingConfig: { 
+                        includeThoughts: true,
+                        thinkingLevel: "medium" 
+                    }
                 };
             }
 
             requestBody.contents = [{ role: "user", parts: [{ text: userPromptContent }] }];
+            
+            const geminiTools = cadenceTools.map(t => {
+                const properties = {};
+                for (const [k, v] of Object.entries(t.parameters.properties)) {
+                    properties[k] = { ...v, type: v.type.toUpperCase() };
+                }
+                return {
+                    name: t.name,
+                    description: t.description,
+                    parameters: {
+                        type: t.parameters.type.toUpperCase(),
+                        properties,
+                        required: t.parameters.required
+                    }
+                };
+            });
+            requestBody.tools = [{ functionDeclarations: geminiTools }];
 
             requestBody.safetySettings = [
                 { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_NONE" },
@@ -367,7 +618,9 @@ class Gemini extends AI {
                 onContextRatioUpdate(contextRatio);
             }
 
+            await this._enforceRateLimits(currentTokens);
 
+            const requestStartTime = Date.now();
             const response = await fetch(this._streamApiUrl, {
                 method: 'POST',
                 headers: {
@@ -384,18 +637,33 @@ class Gemini extends AI {
             }
 
             const reader = response.body.getReader();
-            const fullResponse = await this._processApiResponseStream(reader, callbacks);
+            const { fullResponseAccumulator: fullResponse, totalThinkingMs } = await this._processApiResponseStream(reader, callbacks);
+            const requestEndTime = Date.now();
             
             const finalTokens = await this._countTokens([{ role: "user", content: prompt }, { role: "model", content: fullResponse }]);
+            const outputTokens = Math.max(0, finalTokens - currentTokens);
             const finalContextRatio = finalTokens / this.MAX_CONTEXT_TOKENS;
+
+            this.tokenTimestamps.push({ time: Date.now(), tokens: finalTokens });
+            localStorage.setItem('gemini_token_timestamps', JSON.stringify(this.tokenTimestamps));
+
+            this.recordTelemetry(currentTokens, outputTokens, requestEndTime - requestStartTime, Math.round(totalThinkingMs / 1000));
 
             if (onDone) {
                 onDone(fullResponse, Math.round(finalContextRatio * 100));
             }
 
         } catch (error) {
-            console.error("[Gemini] Error in generate:", error);
-            if (onError) onError(error);
+            if (error && error.name === 'AbortError') {
+                const reasonStr = this.abortReason ? `: ${this.abortReason}` : " by Cadence Agent Protocol.";
+                console.info(`⏸️ [Gemini] Generate intentionally halted${reasonStr}`);
+                this.abortReason = null;
+            } else if (typeof error === 'string') {
+                console.info(`⏸️ [Gemini] Generate intentionally halted: ${error}`);
+            } else {
+                console.error("[Gemini] Error in generate:", error);
+                if (onError) onError(error);
+            }
         }
     }
 
@@ -424,13 +692,34 @@ class Gemini extends AI {
                 }
             }
 
-            if (this.config.model.includes('thinking') || this.config.model.includes('pro')) {
+            const supportsThinking = this.config.model.includes('thinking') || this.config.model.includes('pro') || this.config.model.includes('2.0') || this.config.model.includes('2.5') || this.config.model.includes('3.1') || this.config.model.includes('3.5');
+            if (supportsThinking) {
                 requestBody.generationConfig = {
-                    thinkingConfig: { thinkingLevel: "LOW" }
+                    thinkingConfig: { 
+                        includeThoughts: true,
+                        thinkingLevel: "medium" 
+                    }
                 };
             }
 
             requestBody.contents = this._toGeminiContents(processedMessages);
+            
+            const geminiTools = cadenceTools.map(t => {
+                const properties = {};
+                for (const [k, v] of Object.entries(t.parameters.properties)) {
+                    properties[k] = { ...v, type: v.type.toUpperCase() };
+                }
+                return {
+                    name: t.name,
+                    description: t.description,
+                    parameters: {
+                        type: t.parameters.type.toUpperCase(),
+                        properties,
+                        required: t.parameters.required
+                    }
+                };
+            });
+            requestBody.tools = [{ functionDeclarations: geminiTools }];
 
             requestBody.safetySettings = [
                 { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_NONE" },
@@ -446,8 +735,11 @@ class Gemini extends AI {
                 onContextRatioUpdate(contextRatio);
             }
 
+            await this._enforceRateLimits(currentTokens);
+
             this.abortController = new AbortController();
             
+            const requestStartTime = Date.now();
             const response = await fetch(this._streamApiUrl, {
                 method: 'POST',
                 headers: {
@@ -465,23 +757,38 @@ class Gemini extends AI {
             }
 
             const reader = response.body.getReader();
-            const fullResponse = await this._processApiResponseStream(reader, callbacks);
+            const { fullResponseAccumulator: fullResponse, totalThinkingMs } = await this._processApiResponseStream(reader, callbacks);
+            const requestEndTime = Date.now();
             
             messages.push({ role: "model", content: fullResponse });
 
             const finalTokens = await this._countTokens(messages);
+            const outputTokens = Math.max(0, finalTokens - currentTokens);
             const finalContextRatio = finalTokens / this.MAX_CONTEXT_TOKENS;
             if (onContextRatioUpdate) {
                 onContextRatioUpdate(finalContextRatio);
             }
+
+            this.tokenTimestamps.push({ time: Date.now(), tokens: finalTokens });
+            localStorage.setItem('gemini_token_timestamps', JSON.stringify(this.tokenTimestamps));
+
+            this.recordTelemetry(currentTokens, outputTokens, requestEndTime - requestStartTime, Math.round(totalThinkingMs / 1000));
 
             if (onDone) {
                 onDone(fullResponse, Math.round(finalContextRatio * 100));
             }
 
         } catch (error) {
-            console.error("[Gemini] Error in chat:", error);
-            if (onError) onError(error);
+            if (error && error.name === 'AbortError') {
+                const reasonStr = this.abortReason ? `: ${this.abortReason}` : " by Cadence Agent Protocol.";
+                console.info(`⏸️ [Gemini] Stream generation intentionally halted${reasonStr}`);
+                this.abortReason = null;
+            } else if (typeof error === 'string') {
+                console.info(`⏸️ [Gemini] Stream generation intentionally halted: ${error}`);
+            } else {
+                console.error("[Gemini] Error in chat:", error);
+                if (onError) onError(error);
+            }
         }
     }
     
@@ -500,13 +807,13 @@ class Gemini extends AI {
 	        }
 	    }
 	
-	    const selectedModelInfo = this._settingsSchema.model.enum.find(
+	    const selectedModelInfo = this._settingsSchema.model.enum?.find(
             model => model.value === this.config.model
         );
         if (selectedModelInfo && selectedModelInfo.maxTokens) {
             this.MAX_CONTEXT_TOKENS = selectedModelInfo.maxTokens;
         } else {
-            const defaultModelInfo = this._settingsSchema.model.enum.find(m => m.value === this._settingsSchema.model.default);
+            const defaultModelInfo = this._settingsSchema.model.enum?.find(m => m.value === this._settingsSchema.model.default);
             if (defaultModelInfo && defaultModelInfo.maxTokens) {
                 this.MAX_CONTEXT_TOKENS = defaultModelInfo.maxTokens;
             } else {

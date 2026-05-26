@@ -15,6 +15,7 @@ const defaultModels = [
 class Ollama extends AI {
 	constructor() {
 		super();
+        this.providerId = 'ollama';
 		this.config = {
 			server: "http://localhost:11434",
 			model: null, // Initial model is null, not an empty string
@@ -257,20 +258,24 @@ class Ollama extends AI {
 			const decoder = new TextDecoder();
 
 			let partialResponse = '', lastChunk, fullResponse = '';
+            const requestStartTime = Date.now();
 
 			while (true) {
 				const { done, value } = await reader.read();
 				if (done) {
                     let finalContextRatioPercent = null; 
 
-                    if (lastChunk?.eval_count !== undefined && lastChunk?.prompt_eval_count !== undefined && this.MAX_CONTEXT_TOKENS > 0) {
+                    if (lastChunk?.eval_count !== undefined && lastChunk?.prompt_eval_count !== undefined) {
                         const totalTokensUsedInThisRequest = lastChunk.eval_count + lastChunk.prompt_eval_count;
-                        this.contextUsed = Math.round((totalTokensUsedInThisRequest / this.MAX_CONTEXT_TOKENS) * 100);
-                        finalContextRatioPercent = this.contextUsed;
-
-                        if (onContextRatioUpdate) {
-                            onContextRatioUpdate(finalContextRatioPercent / 100); 
+                        if (this.MAX_CONTEXT_TOKENS > 0) {
+                            this.contextUsed = Math.round((totalTokensUsedInThisRequest / this.MAX_CONTEXT_TOKENS) * 100);
+                            finalContextRatioPercent = this.contextUsed;
+                            if (onContextRatioUpdate) {
+                                onContextRatioUpdate(finalContextRatioPercent / 100); 
+                            }
                         }
+                        const requestEndTime = Date.now();
+                        this.recordTelemetry(lastChunk.prompt_eval_count, lastChunk.eval_count, requestEndTime - requestStartTime, 0);
                     } else if (this.MAX_CONTEXT_TOKENS > 0) { 
                         this.contextUsed = 0; 
                         finalContextRatioPercent = 0; 
@@ -398,12 +403,16 @@ class Ollama extends AI {
             const reader = response.body.getReader();
             const decoder = new TextDecoder();
 
-            let partialResponse = '', fullResponse = '';
+            let partialResponse = '', lastChunk, fullResponse = '';
+            const requestStartTime = Date.now();
 
             while (true) {
                 const { done, value } = await reader.read();
                 if (done) {
-                    // Call onDone with the full response and null for context ratio
+                    if (lastChunk?.eval_count !== undefined && lastChunk?.prompt_eval_count !== undefined) {
+                        const requestEndTime = Date.now();
+                        this.recordTelemetry(lastChunk.prompt_eval_count, lastChunk.eval_count, requestEndTime - requestStartTime, 0);
+                    }
                     if (onDone) onDone(fullResponse, null); 
                     break;
                 }
@@ -417,6 +426,7 @@ class Ollama extends AI {
                     if (jsonObject) {
                         try {
                             const parsed = JSON.parse(jsonObject);
+                            lastChunk = parsed;
                             if (parsed.message?.content) {
                                 fullResponse += parsed.message.content;
                                 if (onUpdate) onUpdate(fullResponse);

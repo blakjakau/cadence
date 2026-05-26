@@ -5,10 +5,93 @@ export default class AI {
 		this.config = {}; // Internal configuration object
 		this._settingsSchema = {}; // Schema for settings metadata
         this._settingsSource = 'global'; // 'global' or 'workspace'
+		this.providerId = 'generic'; // Override in subclasses
+		this._telemetryRequests = []; 
+		this._telemetryTokens = []; 
+		this._totalTokensIn = 0;
+		this._totalTokensOut = 0;
 	}
 	
 	async init() {
-		
+		this._loadTelemetry();
+	}
+
+	_loadTelemetry() {
+		try {
+			const data = localStorage.getItem(`telemetry_${this.providerId}`);
+			if (data) {
+				const parsed = JSON.parse(data);
+				this._telemetryRequests = parsed.requests || [];
+				this._telemetryTokens = parsed.tokens || [];
+				this._totalTokensIn = parsed.totalTokensIn || 0;
+				this._totalTokensOut = parsed.totalTokensOut || 0;
+			}
+		} catch (e) {
+			console.warn("Failed to load telemetry data", e);
+		}
+	}
+
+	_saveTelemetry() {
+		try {
+			// Clean up old telemetry data (older than 1 minute)
+			const oneMinuteAgo = Date.now() - 60000;
+			this._telemetryRequests = this._telemetryRequests.filter(t => t > oneMinuteAgo);
+			this._telemetryTokens = this._telemetryTokens.filter(t => t.time > oneMinuteAgo);
+
+			localStorage.setItem(`telemetry_${this.providerId}`, JSON.stringify({
+				requests: this._telemetryRequests,
+				tokens: this._telemetryTokens,
+				totalTokensIn: this._totalTokensIn,
+				totalTokensOut: this._totalTokensOut
+			}));
+		} catch (e) {
+			console.warn("Failed to save telemetry data", e);
+		}
+	}
+
+	recordTelemetry(tokensIn, tokensOut, elapsedMs = 0, secondsThinking = 0) {
+		const now = Date.now();
+		this._telemetryRequests.push(now);
+		this._telemetryTokens.push({ time: now, tokens: tokensIn + tokensOut, elapsedMs, secondsThinking });
+		this._totalTokensIn += tokensIn;
+		this._totalTokensOut += tokensOut;
+		this._saveTelemetry();
+	}
+
+	get tokensPerSec() {
+		if (this._telemetryTokens.length > 0) {
+			const last = this._telemetryTokens[this._telemetryTokens.length - 1];
+			if (last.elapsedMs > 0) {
+				return Math.round((last.tokens) / (last.elapsedMs / 1000));
+			}
+		}
+		return 0;
+	}
+
+	get tokensPerMin() {
+		const now = Date.now();
+		const oneMinuteAgo = now - 60000;
+		return this._telemetryTokens.filter(t => t.time > oneMinuteAgo).reduce((sum, t) => sum + t.tokens, 0);
+	}
+
+	get requestsPerMin() {
+		const now = Date.now();
+		const oneMinuteAgo = now - 60000;
+		return this._telemetryRequests.filter(t => t > oneMinuteAgo).length;
+	}
+
+	get secondsPerRequest() {
+		const rpm = this.requestsPerMin;
+		if (rpm === 0) return 0;
+		return 60 / rpm;
+	}
+
+	get secondsThinking() {
+		if (this._telemetryTokens.length > 0) {
+			const last = this._telemetryTokens[this._telemetryTokens.length - 1];
+			return last.secondsThinking || 0;
+		}
+		return 0;
 	}
 
 	set editor(editor) {

@@ -1238,11 +1238,11 @@ const renderPlanTasksView = (container) => {
 
 	const planHtml = session.implementationPlan 
 		? ui.aiManager.md.render(session.implementationPlan)
-		: `<span class="empty-state">No implementation plan defined. CodeAgent will outline one once active.</span>`
+		: `<span class="empty-state">No implementation plan defined. Cadence will outline one once active.</span>`
 
 	const tasksHtml = session.taskList
 		? ui.aiManager.md.render(session.taskList)
-		: `<span class="empty-state">No task list defined. CodeAgent will build one once active.</span>`
+		: `<span class="empty-state">No task list defined. Cadence will build one once active.</span>`
 
 	container.innerHTML = `
 		<div class="plan-tasks-split-container">
