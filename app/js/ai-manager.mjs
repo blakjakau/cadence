@@ -109,6 +109,8 @@ class AIManager {
 		this.planningMode = false; // NEW: Toggle planning mode
 		this.planningModeToggle = null;
 		this.isPaused = false; // NEW: Track if agent is paused
+		this.rawViewMode = false; // NEW: Tracks alternate expander raw view
+		this.rawViewButton = null;
 	}
 
 	async init(panel) {
@@ -159,7 +161,8 @@ class AIManager {
 	getSystemPrompt() {
 		if (this.agentMode) {
 			const modelName = (this.ai && this.ai.config && this.ai.config.model) ? this.ai.config.model.toLowerCase() : '';
-			return getAgentSystemPrompt(modelName);
+			const supportsJSONTools = this.ai && this.ai.supportsJSONTools;
+			return getAgentSystemPrompt(modelName, supportsJSONTools);
 		}
 		return systemPromptBuilder(this.getSystemPromptConfig());
 	}
@@ -263,6 +266,12 @@ class AIManager {
 		this.settingsButton.icon = "settings";
 		this.settingsButton.classList.add("settings-button");
 		this.settingsButton.onclick = () => this.toggleSettingsPanel();
+
+		this.rawViewButton = new Button("");
+		this.rawViewButton.icon = "unfold_more";
+		this.rawViewButton.title = "Toggle Raw / Expander View";
+		this.rawViewButton.classList.add("raw-view-button");
+		this.rawViewButton.onclick = () => this.toggleRawView();
 
 		this.sessionTabBar.append(this.historyButton, this.newSessionButton)
 
@@ -507,6 +516,7 @@ class AIManager {
 		buttonContainer.append(this.agentModeToggle) // Add agent mode toggle
 		buttonContainer.append(this.planningModeToggle) // Add planning mode toggle
 		buttonContainer.append(this.aiInfoDisplay); // Element is created, but content will be set by _updateAIInfoDisplay()
+		buttonContainer.append(this.rawViewButton); // Add raw view button
 		buttonContainer.append(this.settingsButton);
 		this.stopButton = document.createElement("button");
 		this.stopButton.className = "agentic-stop-btn";
@@ -972,6 +982,13 @@ class AIManager {
 		this._updatePromptAreaPlaceholder(); // Update placeholder
 	}
 
+	toggleRawView() {
+		this.rawViewMode = !this.rawViewMode;
+		this.rawViewButton.icon = this.rawViewMode ? "unfold_less" : "unfold_more";
+		this.rawViewButton.classList.toggle("active", this.rawViewMode);
+		this.historyManager.render();
+	}
+
 	// --- Session Management Delegation ---
 	get allSessionMetadata() { return this.sessionsManager.allSessionMetadata; }
 	set allSessionMetadata(val) { this.sessionsManager.allSessionMetadata = val; }
@@ -1090,18 +1107,27 @@ class AIManager {
 		}
 
 		this._abortAgent = false;
-		// Check if AI is configured and activeSession exists before proceeding with generation
-		if (!this.ai || !this.ai.isConfigured() || !this.activeSession) {
-			console.warn("AI is not configured or no active session. Cannot generate response.");
-			this.historyManager.addMessage({
-				type: "system_message",
-				content: `AI is not configured or no active session. Please set up your AI provider in the settings or create a new chat.`,
-				timestamp: Date.now(),
-			}, false);
-			this._dispatchContextUpdate("generation_error_not_configured");
+		if (!this.ai || !this.ai.isConfigured()) {
+			console.warn("AI is not configured. Cannot generate response.");
+			window.modal.notice("AI provider is not configured. Please open the Settings panel (gear icon) to set up your API keys and select a model.", "AI Not Configured");
 			this._isProcessing = false;
 			this._setButtonsDisabledState(false);
 			return;
+		}
+
+		if (!this.activeSession) {
+			console.log("No active session found. Automatically creating a new session...");
+			const promptValue = this.promptEditor.getValue();
+			await this.createNewSession();
+			// Wait a brief moment for the tab switch and activeSession setup to complete
+			await new Promise(resolve => setTimeout(resolve, 200));
+			if (!this.activeSession) {
+				window.modal.notice("No active chat session. Please click the '+' icon or select a tab to start chatting.", "No Active Session");
+				this._isProcessing = false;
+				this._setButtonsDisabledState(false);
+				return;
+			}
+			this.promptEditor.setValue(promptValue, -1);
 		}
 
 		// Clear min-height from all previous response blocks to let them reflow naturally.
@@ -1588,6 +1614,9 @@ class AIManager {
 			let streamForciblyEnded = false;
 			let forcedReason = "";
 
+			let messagesForAI = null;
+			let systemPrompt = null;
+
 			const runPromise = new Promise((resolve, reject) => {
 				const callbacks = {
 					onUpdate: (fullResponse) => {
@@ -1631,8 +1660,8 @@ class AIManager {
 					}
 				};
 
-				const messagesForAI = this.historyManager.prepareMessagesForAI();
-				const systemPrompt = this.getSystemPrompt();
+				messagesForAI = this.historyManager.prepareMessagesForAI();
+				systemPrompt = this.getSystemPrompt();
 				this.ai.chat(messagesForAI, callbacks, systemPrompt);
 			});
 
@@ -1650,6 +1679,14 @@ class AIManager {
 						warnBlock.className = "response-block warning-block";
 						warnBlock.innerHTML = `⚠️ <b>Agent Loop Halted:</b> The model stopped generating without producing a tool call or completing a task.`;
 						this.conversationArea.append(warnBlock);
+
+						// LOG the last request to console.warn() for troubleshooting
+						console.warn("⚠️ [Agent Loop Halted] The model stopped generating without producing a tool call or completing a task. Last Request Details:", {
+							systemPrompt,
+							messages: messagesForAI,
+							modelResponse: responseContent
+						});
+
 						const shouldScroll = this._shouldAutoScroll();
 						if (shouldScroll && this.conversationArea) {
 							this.conversationArea.scrollTop = this.conversationArea.scrollHeight;
@@ -1854,7 +1891,10 @@ class AIManager {
 
 		// 1. Check if the first tool_call block has successfully closed
 		if (fullResponse.includes("</tool_call>")) {
-			return { shouldAbort: true, reason: "tool_call_closed" };
+			const supportsJSONTools = this.ai && this.ai.supportsJSONTools;
+			if (!supportsJSONTools) {
+				return { shouldAbort: true, reason: "tool_call_closed" };
+			}
 		}
 
 		// 2. Count occurrences of thought-starts and tool-call-starts
@@ -1887,12 +1927,15 @@ class AIManager {
 		}
 
 		if (thoughtCount > 1) {
-			return { shouldAbort: true, reason: "secondary_thought" };
+			const supportsReasoning = this.ai && this.ai.supportsReasoning;
+			if (!supportsReasoning) {
+				return { shouldAbort: true, reason: "secondary_thought" };
+			}
 		}
 
 		if (toolCallCount > 1) {
-			const supportsNativeTools = this.ai.config && this.ai.config.model && this.ai.config.model.toLowerCase().includes('gemini');
-			if (!supportsNativeTools) {
+			const supportsParallelTools = this.ai && this.ai.supportsParallelTools;
+			if (!supportsParallelTools) {
 				return { shouldAbort: true, reason: "secondary_tool_call" };
 			}
 		}

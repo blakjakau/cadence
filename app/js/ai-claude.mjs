@@ -44,6 +44,11 @@ class Claude extends AI {
     	return this.config.apiKey !== "" && this.config.model !== "";
     }
 
+    get supportsReasoning() {
+        const model = (this.config.model || "").toLowerCase();
+        return model.includes('thinking') || model.includes('reasoning');
+    }
+
     async _getAvailableModels() {
         // Try to fetch models from the API, fall back to static list if it fails
         try {

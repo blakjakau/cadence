@@ -43,6 +43,11 @@ class Ollama extends AI {
     	return this.config.server !== "" && this.config.model !== null && this.config.model !== "";
     }
 
+    get supportsReasoning() {
+        const model = (this.config.model || "").toLowerCase();
+        return model.includes('r1') || model.includes('reasoning') || model.includes('deepseek') || model.includes('think');
+    }
+
 
     async _getAvailableModels() {
         try {

@@ -135,7 +135,11 @@ class AIManagerHistory {
 		for (let i = 0; i < this.chatHistory.length; i++) {
 			const message = this.chatHistory[i];
 			if (message.type === 'file_context') continue;
-			const element = this._createMessageElement(message, i); // No isNewMessage for full render
+			
+			const element = this.manager.rawViewMode
+				? this._createExpanderMessageElement(message, i)
+				: this._createMessageElement(message, i); // No isNewMessage for full render
+
 			if (element) this.conversationArea.append(element);
 		}
 	}
@@ -162,7 +166,10 @@ class AIManagerHistory {
 		// This is important for _createMessageElement to determine if a delete button should be added.
 		const index = this.chatHistory.findIndex(m => m.id === message.id);
 
-		const element = this._createMessageElement(message, index, true); // Always new when appended
+		const element = this.manager.rawViewMode
+			? this._createExpanderMessageElement(message, index)
+			: this._createMessageElement(message, index, true); // Always new when appended
+
 		if (element) {
 			this.conversationArea.append(element);
 		}
@@ -237,6 +244,75 @@ class AIManagerHistory {
 		}
 
 		return element;
+	}
+
+	_createExpanderMessageElement(message, index) {
+		const expanderBlock = new Block();
+		expanderBlock.classList.add("chat-turn-expander");
+		expanderBlock.dataset.messageId = message.id;
+
+		const header = document.createElement("div");
+		header.className = "expander-header";
+
+		// Determine icon and label based on message role/type
+		let iconName = "info";
+		let roleLabel = "system";
+
+		if (message.type === "user") {
+			iconName = "person";
+			roleLabel = "User";
+		} else if (message.type === "model") {
+			iconName = "smart_toy";
+			roleLabel = "AI Assistant";
+		} else if (message.type === "error") {
+			iconName = "error";
+			roleLabel = "Error";
+		} else if (message.type === "task_state") {
+			iconName = "assignment";
+			roleLabel = "Task State";
+		} else if (message.type === "system_message") {
+			iconName = "info";
+			roleLabel = "System";
+		}
+
+		// First 40 characters for preview
+		const previewText = message.content ? message.content.substring(0, 40).replace(/\n/g, " ") : "";
+		const previewSuffix = (message.content && message.content.length > 40) ? "..." : "";
+
+		header.innerHTML = `
+			<ui-icon>${iconName}</ui-icon>
+			<span class="role-label">${roleLabel}</span>
+			<span class="content-preview">${this._escapeHtml(previewText)}${previewSuffix}</span>
+			<ui-icon class="expand-arrow">expand_more</ui-icon>
+		`;
+
+		const contentDiv = document.createElement("div");
+		contentDiv.className = "expander-content";
+		contentDiv.style.display = "none";
+
+		const pre = document.createElement("pre");
+		pre.className = "raw-content-block";
+		pre.textContent = message.content || "";
+		contentDiv.append(pre);
+
+		header.onclick = () => {
+			const isExpanded = contentDiv.style.display !== "none";
+			contentDiv.style.display = isExpanded ? "none" : "block";
+			header.querySelector(".expand-arrow").textContent = isExpanded ? "expand_more" : "expand_less";
+			expanderBlock.classList.toggle("expanded", !isExpanded);
+		};
+
+		expanderBlock.append(header, contentDiv);
+		return expanderBlock;
+	}
+
+	_escapeHtml(unsafe) {
+		return unsafe
+			.replace(/&/g, "&amp;")
+			.replace(/</g, "&lt;")
+			.replace(/>/g, "&gt;")
+			.replace(/"/g, "&quot;")
+			.replace(/'/g, "&#039;");
 	}
 
 	/**

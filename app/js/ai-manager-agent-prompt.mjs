@@ -15,10 +15,10 @@ function generateXmlToolDocs() {
     return xml.trim();
 }
 
-export default function getAgentSystemPrompt(modelName = '') {
+export default function getAgentSystemPrompt(modelName = '', supportsNativeToolsOverride = null) {
     const isNativeReasoning = modelName.includes('gemma') || modelName.includes('deepseek') || modelName.includes('r1') || modelName.includes('gemini');
-    // If a model supports native function calling (currently just Gemini), we omit the XML tools documentation entirely.
-    const supportsNativeTools = modelName.includes('gemini');
+    // If a model supports native function calling, we omit the XML tools documentation entirely.
+    const supportsNativeTools = supportsNativeToolsOverride !== null ? supportsNativeToolsOverride : modelName.includes('gemini');
     
     let exampleTurn = "";
     if (isNativeReasoning) {
@@ -29,6 +29,7 @@ I am reading app.js to locate the issue.
   <path>app.js</path>
 </tool_call>
 `;
+
     } else {
         exampleTurn = `
 # Example Turn
@@ -88,9 +89,9 @@ ${taskFocusRule}
 ${loopingRule}
 - Always report your intentions to the user BEFORE you start making tools calls
 - Always create an implementation plan and task list BEFORE using edit or create tools
-- Tools: Use AT MOST ONE tool call per turn. Wait for the host to provide the result.
+- Tools: Use AT MOST ONE <tool_call> block per turn. Wait for the host to provide the result.
 - Always choose the least impactful tool (don't read the whole file if you only need a lines of function)
-- Context Limits: ALWAYS explore files by reading their outlines first using read_file_outline. Outlines provide symbol line numbers and lengths. NEVER read a full file if you can extract just the function you need using the <startLine> and <lineCount> parameters of read_file. If you need to find exact text inside a file, use search_in_file to locate the exact line numbers and surrounding context. This saves token context window.`+(!supportsNativeTools)?`
+- Context Limits: ALWAYS explore files by reading their outlines first using read_file_outline. Outlines provide symbol line numbers and lengths. NEVER read a full file if you can extract just the function you need using the <startLine> and <lineCount> parameters of read_file. If you need to find exact text inside a file, use search_in_file to locate the exact line numbers and surrounding context. This saves token context window.` + (!supportsNativeTools ? `
 - Strict XML: Use only the exact tags provided. Do not invent new tools.
-- NEVER use control or tool tags to discuss or think about your actions, only to perform them.`:'';
+- NEVER use control or tool tags to discuss or think about your actions, only to perform them.` : '');
 }

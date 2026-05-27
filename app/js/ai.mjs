@@ -130,6 +130,18 @@ export default class AI {
 		return false
 	}
 
+	get supportsJSONTools() {
+		return false;
+	}
+
+	get supportsReasoning() {
+		return false;
+	}
+
+	get supportsParallelTools() {
+		return false;
+	}
+
 	setOption(name, value) {
 		if (this._settingsSchema[name]) {
 			this.config[name] = value;

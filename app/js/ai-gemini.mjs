@@ -63,6 +63,19 @@ class Gemini extends AI {
     	return this.config.apiKey != "" && this.config.model != ""
     }
 
+    get supportsJSONTools() {
+        return true;
+    }
+
+    get supportsReasoning() {
+        const model = (this.config.model || "").toLowerCase();
+        return model.includes('thinking') || model.includes('pro') || model.includes('2.0') || model.includes('2.5') || model.includes('3.1') || model.includes('3.5');
+    }
+
+    get supportsParallelTools() {
+        return true;
+    }
+
     async _enforceRateLimits(estimatedTokens) {
         const rpmLimit = this.config.rpmLimit || 15;
         const tpmLimit = this.config.tpmLimit || 250000;

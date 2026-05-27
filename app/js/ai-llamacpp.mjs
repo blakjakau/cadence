@@ -42,6 +42,15 @@ class LlamaCpp extends AI {
         return this.config.server !== "";
     }
 
+    get supportsJSONTools() {
+        return true;
+    }
+
+    get supportsReasoning() {
+        const model = (this.config.model || "").toLowerCase();
+        return model.includes('r1') || model.includes('reasoning') || model.includes('deepseek') || model.includes('think');
+    }
+
     async init() {
         await super.init();
         await this._queryModelInfo();
@@ -71,7 +80,12 @@ class LlamaCpp extends AI {
      */
     _formatChatMessages(messages, systemPromptOverride = null) {
         const formattedMessages = [];
-        const activeSystemPrompt = systemPromptOverride || this.config.system || systemPrompt;
+        let activeSystemPrompt = systemPromptOverride || this.config.system || systemPrompt;
+
+        const modelName = (this.config.model || "").toLowerCase();
+        if (modelName.includes("gemma")) {
+            activeSystemPrompt = "<|think|>" + (activeSystemPrompt || "");
+        }
 
         if (activeSystemPrompt) {
             formattedMessages.push({ role: "system", content: activeSystemPrompt });
@@ -99,7 +113,9 @@ class LlamaCpp extends AI {
 
         try {
             const formattedMessages = this._formatChatMessages(messages, systemPromptOverride);
-            
+            let stopTokens = Array.isArray(this.config.stop) ? [...this.config.stop] : ["</s>", "<|end|>", "<|im_end|>", "Llama:", "User:", "Assistant:"];
+            stopTokens = stopTokens.filter(token => token !== "</tool_call>");
+
             const requestBody = {
                 messages: formattedMessages,
                 stream: true,
@@ -107,7 +123,7 @@ class LlamaCpp extends AI {
                 top_k: this.config.top_k,
                 top_p: this.config.top_p,
                 max_tokens: this.config.n_predict,
-                stop: this.config.stop
+                stop: stopTokens
             };
 
             if (cadenceTools && cadenceTools.length > 0) {
@@ -263,6 +279,9 @@ class LlamaCpp extends AI {
     async setOptions(newConfig, onErrorCallback, onSuccessCallback, useWorkspaceSettings, source = 'global') {
         for (const name in newConfig) {
             this.config[name] = newConfig[name];
+        }
+        if (Array.isArray(this.config.stop)) {
+            this.config.stop = this.config.stop.filter(token => token !== "</tool_call>");
         }
         this._settingsSource = source;
 

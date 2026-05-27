@@ -1832,3 +1832,82 @@ ui-tab-item.plan-tasks-tab.active .status-icon {
 .agent-throttle-bar .throttle-text {
     flex-grow: 1;
 }
+
+/* Expander view styles for raw/alternate mode */
+.chat-turn-expander {
+    background-color: var(--bg-secondary);
+    border: 1px solid var(--border-primary);
+    border-radius: var(--borderRadius);
+    margin-bottom: 8px;
+    overflow: hidden;
+    transition: box-shadow 0.2s ease-in-out;
+}
+
+.chat-turn-expander:hover {
+    box-shadow: 0 2px 6px var(--shadow-color);
+}
+
+.chat-turn-expander .expander-header {
+    display: flex;
+    align-items: center;
+    padding: 8px 12px;
+    cursor: pointer;
+    user-select: none;
+    gap: 8px;
+    font-size: 0.9em;
+    background-color: var(--bg-tertiary);
+}
+
+.chat-turn-expander .expander-header:hover {
+    filter: brightness(0.95);
+}
+
+.chat-turn-expander .expander-header ui-icon {
+    font-size: 16px;
+    color: var(--text-secondary);
+    flex-shrink: 0;
+}
+
+.chat-turn-expander .expander-header .role-label {
+    font-weight: 600;
+    color: var(--text-primary);
+    text-transform: capitalize;
+    flex-shrink: 0;
+}
+
+.chat-turn-expander .expander-header .content-preview {
+    color: var(--text-secondary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    flex-grow: 1;
+}
+
+.chat-turn-expander .expander-header .expand-arrow {
+    transition: transform 0.2s ease;
+    margin-left: auto;
+}
+
+.chat-turn-expander.expanded .expander-header .expand-arrow {
+    transform: rotate(180deg);
+}
+
+.chat-turn-expander .expander-content {
+    border-top: 1px solid var(--border-primary);
+    padding: 12px;
+    background-color: var(--bg-primary);
+}
+
+.chat-turn-expander .raw-content-block {
+    margin: 0;
+    padding: 12px;
+    background-color: var(--bg-code);
+    border: 1px solid var(--border-primary);
+    border-radius: var(--borderRadius);
+    font-family: var(--font-mono);
+    font-size: 0.85em;
+    white-space: pre-wrap;
+    word-break: break-all;
+    overflow-x: auto;
+    color: var(--text-primary);
+}
