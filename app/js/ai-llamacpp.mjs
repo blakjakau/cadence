@@ -25,6 +25,8 @@ class LlamaCpp extends AI {
             model: { type: "string", label: "Current Model", default: "unknown", readonly: true },
             n_ctx: { type: "number", label: "Context Window (Detected)", default: 0, readonly: true },
             temperature: { type: "number", label: "Temperature", default: 0.7 },
+            top_p: { type: "number", label: "Top P", default: 0.9 },
+            top_k: { type: "number", label: "Top K", default: 40 },
             n_predict: { type: "number", label: "Max Tokens (n_predict)", default: 4096 },
             system: { type: "textarea", label: "System Prompt Override", default: "", multiline: true }
         };

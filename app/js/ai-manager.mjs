@@ -111,6 +111,9 @@ class AIManager {
 		this.isPaused = false; // NEW: Track if agent is paused
 		this.rawViewMode = false; // NEW: Tracks alternate expander raw view
 		this.rawViewButton = null;
+		this.autoContinue = localStorage.getItem("aiAutoContinue") === "true"; // NEW: Auto-continue on agent loop halt
+		this.consecutiveHaltCount = 0; // NEW: Track consecutive loop halts
+		this.haltBar = null; // NEW: Persistent halt notification bar
 	}
 
 	async init(panel) {
@@ -1086,6 +1089,11 @@ class AIManager {
 		}
 		this._isProcessing = false;
 		this._setButtonsDisabledState(false);
+		this.consecutiveHaltCount = 0;
+		if (this.haltBar) {
+			this.haltBar.remove();
+			this.haltBar = null;
+		}
 	}
 
 	pauseAgent() {
@@ -1100,12 +1108,108 @@ class AIManager {
 		this.pauseButton.classList.replace("resume-btn", "pause-btn");
 	}
 
+	_showHaltBar(modelMessageId, responseBlock, warnBlock) {
+		if (this.haltBar) {
+			this.haltBar.remove();
+		}
+
+		const haltBar = document.createElement("div");
+		haltBar.className = "agent-halt-bar";
+		if (this.autoContinue) {
+			haltBar.classList.add("auto-continue-enabled");
+		}
+
+		haltBar.innerHTML = `
+			<ui-icon style="vertical-align: middle; margin-right: 8px; font-size: 16px;">warning</ui-icon>
+			<span class="halt-text">⚠️ Agent Loop Halted: No tool calls generated. There may be an issue.</span>
+			<div class="halt-actions" style="display: flex; gap: 8px; align-items: center; margin-left: 12px;">
+				<button class="halt-toggle theme-button secondary" style="padding: 4px 8px; font-size: 11px; min-width: 120px; background: rgba(255, 255, 255, 0.2); color: inherit; border: 1px solid rgba(255, 255, 255, 0.4); border-radius: var(--borderRadius); cursor: pointer; font-weight: 600;">
+					Auto-Continue: \${this.autoContinue ? 'ON' : 'OFF'}
+				</button>
+				<button class="halt-continue theme-button" style="padding: 4px 8px; font-size: 11px; min-width: 80px; border-radius: var(--borderRadius); cursor: pointer; font-weight: 600;">Continue &gt;</button>
+			</div>
+		`;
+
+		const toggleBtn = haltBar.querySelector(".halt-toggle");
+		const continueBtn = haltBar.querySelector(".halt-continue");
+
+		const warnContinueBtn = warnBlock ? warnBlock.querySelector(".warn-continue-btn") : null;
+		const warnAutoToggle = warnBlock ? warnBlock.querySelector(".warn-auto-toggle") : null;
+
+		const syncUIState = () => {
+			toggleBtn.innerText = `Auto-Continue: \${this.autoContinue ? 'ON' : 'OFF'}`;
+			if (this.autoContinue) {
+				haltBar.classList.add("auto-continue-enabled");
+			} else {
+				haltBar.classList.remove("auto-continue-enabled");
+			}
+			if (warnAutoToggle) {
+				warnAutoToggle.checked = this.autoContinue;
+			}
+		};
+
+		const handleToggle = () => {
+			this.autoContinue = !this.autoContinue;
+			localStorage.setItem("aiAutoContinue", this.autoContinue);
+			syncUIState();
+			if (this.autoContinue) {
+				handleContinue();
+			}
+		};
+
+		const handleContinue = async () => {
+			if (this.haltBar) {
+				this.haltBar.remove();
+				this.haltBar = null;
+			}
+			if (warnBlock && warnBlock.parentNode) {
+				warnBlock.remove();
+			}
+			if (responseBlock && responseBlock.parentNode) {
+				responseBlock.remove();
+			}
+
+			// Strip last model message
+			if (this.activeSession && this.activeSession.messages) {
+				this.activeSession.messages = this.activeSession.messages.filter(m => m.id !== modelMessageId);
+				this.activeSession.lastModified = Date.now();
+				await workspaceClient.setSession(this.activeSession.id, this.activeSession);
+			}
+
+			this.consecutiveHaltCount = 0; // Reset manual continue count
+			this._isProcessing = true;
+			this._setButtonsDisabledState(true);
+			await this._runAgentLoop(null, null);
+		};
+
+		toggleBtn.onclick = handleToggle;
+		continueBtn.onclick = handleContinue;
+
+		if (warnContinueBtn) {
+			warnContinueBtn.onclick = handleContinue;
+		}
+		if (warnAutoToggle) {
+			warnAutoToggle.onchange = (e) => {
+				this.autoContinue = e.target.checked;
+				localStorage.setItem("aiAutoContinue", this.autoContinue);
+				syncUIState();
+				if (this.autoContinue) {
+					handleContinue();
+				}
+			};
+		}
+
+		this.chatContainer.append(haltBar);
+		this.haltBar = haltBar;
+	}
+
 	async generate() {
 		if (this._isProcessing) {
 			console.warn("AI is currently processing another request. Please wait.")
 			return
 		}
 
+		this.consecutiveHaltCount = 0; // Reset on new user prompt submission
 		this._abortAgent = false;
 		if (!this.ai || !this.ai.isConfigured()) {
 			console.warn("AI is not configured. Cannot generate response.");
@@ -1675,9 +1779,57 @@ class AIManager {
 				if (toolCalls.length === 0) {
 					// No more tool calls: agent is done!
 					if (!responseContent.includes("<complete_task>")) {
+						// Auto-continue logic
+						if (this.autoContinue && this.consecutiveHaltCount < 3) {
+							this.consecutiveHaltCount++;
+							console.warn(`⚠️ [Agent Loop Halted] Auto-continuing (Attempt ${this.consecutiveHaltCount} of 3)...`);
+
+							// Strip the last model turn
+							if (this.activeSession && this.activeSession.messages) {
+								this.activeSession.messages = this.activeSession.messages.filter(m => m.id !== modelMessageId);
+								this.activeSession.lastModified = Date.now();
+								await workspaceClient.setSession(this.activeSession.id, this.activeSession);
+							}
+							if (responseBlock && responseBlock.parentNode) {
+								responseBlock.remove();
+							}
+
+							// Render temporary auto-continue indicator
+							const autoMsg = document.createElement("div");
+							autoMsg.className = "agent-tool-progress";
+							autoMsg.innerHTML = `<ui-icon class="spin">cached</ui-icon> Agent loop halted. Auto-continuing (Attempt ${this.consecutiveHaltCount} of 3)...`;
+							this.conversationArea.append(autoMsg);
+							if (this._shouldAutoScroll() && this.conversationArea) {
+								this.conversationArea.scrollTop = this.conversationArea.scrollHeight;
+							}
+							await new Promise(r => setTimeout(r, 1200));
+							autoMsg.remove();
+
+							loopCount--; // Decrement since we stripped this turn and want to retry
+							continue; // Go to next loop iteration
+						}
+
+						// Manual Continue and Halt Bar logic
 						const warnBlock = document.createElement("div");
 						warnBlock.className = "response-block warning-block";
-						warnBlock.innerHTML = `⚠️ <b>Agent Loop Halted:</b> The model stopped generating without producing a tool call or completing a task.`;
+						warnBlock.style.border = "1px solid var(--color-warning, #b58900)";
+						warnBlock.style.background = "var(--bg-secondary)";
+						warnBlock.style.padding = "12px 16px";
+						warnBlock.style.borderRadius = "var(--borderRadius)";
+						warnBlock.style.margin = "8px 0 16px 0";
+						warnBlock.innerHTML = `
+							<div style="font-weight: 500; display: flex; align-items: center; gap: 8px;">
+								<ui-icon style="color: var(--color-warning, #b58900);">warning</ui-icon>
+								<span>⚠️ <b>Agent Loop Halted:</b> The model stopped generating without producing a tool call or completing a task.</span>
+							</div>
+							<div style="margin-top: 8px; display: flex; gap: 12px; align-items: center; margin-left: 24px;">
+								<button class="warn-continue-btn theme-button" style="padding: 4px 10px; font-size: 11px; font-weight: 600; min-width: 80px; cursor: pointer; border-radius: var(--borderRadius); border: none;">Continue</button>
+								<label style="font-size: 11px; font-weight: 500; display: flex; align-items: center; gap: 6px; cursor: pointer; user-select: none; color: var(--text-secondary);">
+									<input type="checkbox" class="warn-auto-toggle" ${this.autoContinue ? 'checked' : ''} style="cursor: pointer; width: 13px; height: 13px;">
+									Auto-Continue
+								</label>
+							</div>
+						`;
 						this.conversationArea.append(warnBlock);
 
 						// LOG the last request to console.warn() for troubleshooting
@@ -1691,6 +1843,9 @@ class AIManager {
 						if (shouldScroll && this.conversationArea) {
 							this.conversationArea.scrollTop = this.conversationArea.scrollHeight;
 						}
+
+						// Show the persistent bottom halt bar
+						this._showHaltBar(modelMessageId, responseBlock, warnBlock);
 					}
 
 					this._isProcessing = false;
@@ -1698,6 +1853,9 @@ class AIManager {
 					this._dispatchContextUpdate("append_model");
 					break;
 				}
+
+				// Reset consecutive halt count since the agent generated valid tool calls
+				this.consecutiveHaltCount = 0;
 
 				// Execute all parsed tool calls sequentially
 				let accumulatedResponses = [];
