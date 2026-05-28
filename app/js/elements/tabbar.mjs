@@ -349,20 +349,27 @@ export class TabBar extends Block {
 
 	enforceTabOrder() {
 		const planTab = this._tabs.find(t => t.config?.path === "plan_tasks");
-		if (planTab) {
-			const firstTab = Array.from(this.children).find(child => child.tagName === "UI-TAB-ITEM" && child !== planTab);
-			if (firstTab) {
-				this.insertBefore(planTab, firstTab);
+		const diffTabs = this._tabs.filter(t => t.config?.path && t.config.path.startsWith("diff_"));
+		const otherTabs = this._tabs.filter(t => t !== planTab && !diffTabs.includes(t));
+
+		const orderedTabs = [];
+		if (planTab) orderedTabs.push(planTab);
+		orderedTabs.push(...diffTabs);
+		orderedTabs.push(...otherTabs);
+
+		// Find the last ui-button element to ensure tabs are inserted after it
+		const buttons = Array.from(this.querySelectorAll('ui-button'));
+		let ref = buttons.length > 0 ? buttons[buttons.length - 1].nextSibling : this.firstChild;
+
+		orderedTabs.forEach(tab => {
+			if (tab !== ref) {
+				this.insertBefore(tab, ref);
+				ref = tab.nextSibling; // Update ref to maintain order
 			} else {
-				const lastControl = Array.from(this.children).reverse().find(child => child.tagName !== "UI-TAB-ITEM");
-				if (lastControl) {
-					this.insertBefore(planTab, lastControl.nextSibling);
-				} else {
-					this.insertBefore(planTab, this.firstChild);
-				}
+				ref = ref.nextSibling;
 			}
-			this._tabs = [planTab, ...this._tabs.filter(t => t !== planTab)];
-		}
+		});
+		this._tabs = orderedTabs;
 	}
 
 	add(config) {

@@ -608,22 +608,24 @@ class Gemini extends AI {
 
                 requestBody.contents = [{ role: "user", parts: [{ text: userPromptContent }] }];
                 
-                const geminiTools = cadenceTools.map(t => {
-                    const properties = {};
-                    for (const [k, v] of Object.entries(t.parameters.properties)) {
-                        properties[k] = { ...v, type: v.type.toUpperCase() };
-                    }
-                    return {
-                        name: t.name,
-                        description: t.description,
-                        parameters: {
-                            type: t.parameters.type.toUpperCase(),
-                            properties,
-                            required: t.parameters.required
+                if (window.ui?.aiManager?.agentMode) {
+                    const geminiTools = cadenceTools.map(t => {
+                        const properties = {};
+                        for (const [k, v] of Object.entries(t.parameters.properties)) {
+                            properties[k] = { ...v, type: v.type.toUpperCase() };
                         }
-                    };
-                });
-                requestBody.tools = [{ functionDeclarations: geminiTools }];
+                        return {
+                            name: t.name,
+                            description: t.description,
+                            parameters: {
+                                type: t.parameters.type.toUpperCase(),
+                                properties,
+                                required: t.parameters.required
+                            }
+                        };
+                    });
+                    requestBody.tools = [{ functionDeclarations: geminiTools }];
+                }
 
                 requestBody.safetySettings = [
                     { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_NONE" },
@@ -757,22 +759,24 @@ class Gemini extends AI {
 
                 requestBody.contents = this._toGeminiContents(processedMessages);
                 
-                const geminiTools = cadenceTools.map(t => {
-                    const properties = {};
-                    for (const [k, v] of Object.entries(t.parameters.properties)) {
-                        properties[k] = { ...v, type: v.type.toUpperCase() };
-                    }
-                    return {
-                        name: t.name,
-                        description: t.description,
-                        parameters: {
-                            type: t.parameters.type.toUpperCase(),
-                            properties,
-                            required: t.parameters.required
+                if (window.ui?.aiManager?.agentMode) {
+                    const geminiTools = cadenceTools.map(t => {
+                        const properties = {};
+                        for (const [k, v] of Object.entries(t.parameters.properties)) {
+                            properties[k] = { ...v, type: v.type.toUpperCase() };
                         }
-                    };
-                });
-                requestBody.tools = [{ functionDeclarations: geminiTools }];
+                        return {
+                            name: t.name,
+                            description: t.description,
+                            parameters: {
+                                type: t.parameters.type.toUpperCase(),
+                                properties,
+                                required: t.parameters.required
+                            }
+                        };
+                    });
+                    requestBody.tools = [{ functionDeclarations: geminiTools }];
+                }
 
                 requestBody.safetySettings = [
                     { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_NONE" },

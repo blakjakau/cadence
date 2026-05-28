@@ -109,7 +109,7 @@ class AIManagerHistory {
 	render({ isNewMessage = false } = {}) {
 		if (!this.conversationArea) return;
 
-		console.log("[History Render Debug] rendering messages:", this.chatHistory.map(m => ({ id: m.id, role: m.role, type: m.type, contentPreview: m.content ? m.content.substring(0, 60) : "" })));
+		// console.debug("[History Render Debug] rendering messages:", this.chatHistory.map(m => ({ id: m.id, role: m.role, type: m.type, contentPreview: m.content ? m.content.substring(0, 60) : "" })));
 
 		this.conversationArea.innerHTML = ""; // Clear existing messages
 		this.populateFileBar(); // Always populate file bar

@@ -26,7 +26,7 @@ class AIManagerSessions {
 		let idToActivate = activeSessionId;
 
 		// 2. Determine which session to activate.
-		// If the intended active session doesn't exist in the metadata, fall back to the most recent.
+		// If the intended active session doesn't exist in the metadata, fall back to the most recent (last modified).
 		if (!this.allSessionMetadata.some(s => s.id === idToActivate)) {
 			const sortedSessions = [...this.allSessionMetadata].sort((a, b) => b.lastModified - a.lastModified);
 			idToActivate = sortedSessions.length > 0 ? sortedSessions[0].id : null;
@@ -46,19 +46,24 @@ class AIManagerSessions {
 	}
 
 	/**
-	 * Populates the TabBar with tabs from the metadata.
+	 * Populates the TabBar with tabs from the metadata, preserving the order.
 	 * This is only for the initial setup.
 	 */
 	_populateInitialTabs() {
-		// Clear existing tabs without triggering active clicks
-		while (this.manager.sessionTabBar._tabs && this.manager.sessionTabBar._tabs.length > 0) {
-			const tab = this.manager.sessionTabBar._tabs.pop();
-			tab.remove();
-		}
+		const tabBar = this.manager.sessionTabBar;
+		if (!tabBar._tabs) return;
 
-		const sortedSessions = [...this.allSessionMetadata].sort((a, b) => b.lastModified - a.lastModified);
-		sortedSessions.forEach(meta => {
-			const tab = this.manager.sessionTabBar.add({ name: meta.name, id: meta.id, defaultStatusIcon: 'developer_board' });
+		// Only remove tabs that are session tabs. 
+		// Sessions have IDs that start with 'ai-session-'.
+		const sessionTabs = tabBar._tabs.filter(t => t.config && t.config.id && t.config.id.startsWith('ai-session-'));
+		
+		sessionTabs.forEach(tab => {
+			tabBar.remove(tab);
+		});
+
+		// Add them back in the order of metadata
+		this.allSessionMetadata.forEach(meta => {
+			const tab = tabBar.add({ name: meta.name, id: meta.id, defaultStatusIcon: 'developer_board' });
 			tab.on('dblclick', () => this.renameCurrentSession());
 		});
 	}

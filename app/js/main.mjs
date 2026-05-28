@@ -1230,407 +1230,9 @@ const setCurrentEditor = (editor) => {
 }
 
 const renderPlanTasksView = (container) => {
-	const session = ui.aiManager.activeSession
-	if (!session) {
-		container.innerHTML = `<div class="plan-tasks-empty">No active session found. Open the Agent panel to begin.</div>`
-		return
+	if (container && typeof container.update === "function") {
+		container.update();
 	}
-
-	// Initialize accordion expand/collapse state tracking
-	session._accordionStates = session._accordionStates || { settings: false, plan: true, tasks: true, backups: true };
-	const isExpanded = (section) => session._accordionStates[section] !== false;
-
-
-	const settingsExpanded = isExpanded("settings");
-	const planExpanded = isExpanded("plan");
-	const tasksExpanded = isExpanded("tasks");
-	const backupsExpanded = isExpanded("backups");
-
-	const planHtml = session.implementationPlan 
-		? ui.aiManager.md.render(session.implementationPlan)
-		: `<span class="empty-state">No implementation plan defined. Cadence will outline one once active.</span>`
-
-	const tasksHtml = session.taskList
-		? ui.aiManager.md.render(session.taskList)
-		: `<span class="empty-state">No task list defined. Cadence will build one once active.</span>`
-
-	// Generate history & rollback rows if modifiedFiles is populated
-	const modifiedFiles = session.modifiedFiles || {};
-	const filePaths = Object.keys(modifiedFiles);
-	let backupsHtml = "";
-
-	if (filePaths.length === 0) {
-		backupsHtml = `<div class="plan-tasks-empty" style="padding: 16px 0;">No file modifications recorded in this session yet.</div>`;
-	} else {
-		backupsHtml = `<div class="backups-list" style="display: flex; flex-direction: column; gap: 8px;">`;
-		filePaths.forEach(path => {
-			const list = modifiedFiles[path];
-			const filename = path.split('/').pop();
-			const relativePath = path; 
-			const latestBackup = list[list.length - 1];
-			const formatTime = (ts) => {
-				const diff = Date.now() - ts;
-				if (diff < 60000) return "Just now";
-				const mins = Math.floor(diff / 60000);
-				if (mins < 60) return `${mins}m ago`;
-				const hours = Math.floor(mins / 60);
-				if (hours < 24) return `${hours}h ago`;
-				return new Date(ts).toLocaleDateString();
-			};
-
-			backupsHtml += `
-				<div class="backup-row" style="display: flex; align-items: center; justify-content: space-between; padding: 10px 14px; background: var(--bg-secondary); border: 1px solid var(--border-primary); border-radius: var(--borderRadius); gap: 16px;">
-					<div class="backup-info" style="display: flex; flex-direction: column; gap: 2px; overflow: hidden; flex: 1;">
-						<span class="backup-file" style="font-family: var(--font-mono); font-size: 13px; font-weight: 600; color: var(--text-primary); text-overflow: ellipsis; overflow: hidden; white-space: nowrap;">${filename}</span>
-						<span class="backup-path" style="font-size: 10.5px; color: var(--text-secondary); text-overflow: ellipsis; overflow: hidden; white-space: nowrap;">${relativePath}</span>
-					</div>
-					<div class="backup-actions" style="display: flex; align-items: center; gap: 8px;">
-						<span style="font-size: 11px; color: var(--text-secondary);">${formatTime(latestBackup.timestamp)}</span>
-						<button class="rollback-btn theme-button secondary" data-backup-id="${latestBackup.backupId}" data-path="${path}" style="padding: 4px 10px; font-size: 11.5px; display: flex; align-items: center; gap: 4px; border-radius: 4px; cursor: pointer; border: 1px solid var(--border-primary); color: var(--text-primary); background: var(--bg-primary);">
-							<ui-icon style="font-size: 14px;">undo</ui-icon>
-							<span>Rollback</span>
-						</button>
-					</div>
-				</div>
-			`;
-		});
-		backupsHtml += `</div>`;
-	}
-
-	container.innerHTML = `
-		<div class="artifacts-accordion-container" style="display: flex; flex-direction: column; width: 100%; height: 100%; overflow-y: auto; padding: 16px 20px; gap: 12px; box-sizing: border-box; background: var(--bg-primary);">
-			
-			<!-- Accordion Item 1: Session Settings -->
-			<div class="accordion-item settings-section ${settingsExpanded ? 'expanded' : ''}" style="display: flex; flex-direction: column; border: 1px solid var(--border-primary); border-radius: var(--borderRadius); overflow: hidden; background: var(--bg-primary);">
-				<div class="accordion-header" style="display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; background: var(--bg-secondary); cursor: pointer; user-select: none;">
-					<div class="header-left" style="display: flex; align-items: center; gap: 8px; font-size: 13.5px; font-weight: 600; color: var(--text-primary);">
-						<ui-icon style="color: var(--theme);">settings</ui-icon>
-						<span>Session Settings</span>
-					</div>
-					<ui-icon class="expand-arrow" style="font-size: 16px; transition: transform 0.2s ease; ${settingsExpanded ? '' : 'transform: rotate(180deg);'}">${settingsExpanded ? 'expand_less' : 'expand_more'}</ui-icon>
-				</div>
-				<div class="accordion-content" style="${settingsExpanded ? '' : 'display: none; '}padding: 16px; border-top: 1px solid var(--border-primary); background: var(--bg-primary);">
-					<div class="settings-grid" style="display: flex; flex-direction: column; gap: 16px;">
-						<div class="agent-toggle-wrapper" style="display: flex; align-items: flex-start; gap: 12px; margin-right: 0;">
-							<label class="switch" title="Agent Mode: Allow Cadence to call tools to read/edit code" style="flex-shrink: 0;">
-								<input type="checkbox" id="accordion-agent-mode">
-								<span class="slider round"></span>
-							</label>
-							<div class="setting-meta" style="display: flex; flex-direction: column; gap: 2px;">
-								<span class="toggle-label" style="font-size: 12.5px; font-weight: 600; color: var(--text-primary); cursor: pointer; user-select: none;">Agent Mode</span>
-								<span class="setting-desc" style="font-size: 11px; color: var(--text-secondary);">Allow Cadence to automatically read, write, and manage workspace files.</span>
-							</div>
-						</div>
-						<div class="planning-toggle-wrapper" style="display: flex; align-items: flex-start; gap: 12px; margin-right: 0;">
-							<label class="switch" title="Planning Mode: Focus on generating implementation plans" style="flex-shrink: 0;">
-								<input type="checkbox" id="accordion-planning-mode">
-								<span class="slider round"></span>
-							</label>
-							<div class="setting-meta" style="display: flex; flex-direction: column; gap: 2px;">
-								<span class="toggle-label" style="font-size: 12.5px; font-weight: 600; color: var(--text-primary); cursor: pointer; user-select: none;">Planning Mode</span>
-								<span class="setting-desc" style="font-size: 11px; color: var(--text-secondary);">Focus Cadence on generating structured implementation plans before applying edits.</span>
-							</div>
-						</div>
-						<div class="agent-toggle-wrapper" style="display: flex; align-items: flex-start; gap: 12px; margin-right: 0;">
-							<label class="switch" title="Forgiveness Mode: Commit edits immediately" style="flex-shrink: 0;">
-								<input type="checkbox" id="accordion-forgiveness-mode">
-								<span class="slider round"></span>
-							</label>
-							<div class="setting-meta" style="display: flex; flex-direction: column; gap: 2px;">
-								<span class="toggle-label" style="font-size: 12.5px; font-weight: 600; color: var(--text-primary); cursor: pointer; user-select: none;">Forgiveness Mode</span>
-								<span class="setting-desc" style="font-size: 11px; color: var(--text-secondary);">Commit edits immediately to disk with robust single-click rollback safety.</span>
-							</div>
-						</div>
-					</div>
-				</div>
-			</div>
-
-			<!-- Accordion Item 2: Implementation Plan -->
-			<div class="accordion-item plan-section ${planExpanded ? 'expanded' : ''}" style="display: flex; flex-direction: column; border: 1px solid var(--border-primary); border-radius: var(--borderRadius); overflow: hidden; background: var(--bg-primary);">
-				<div class="accordion-header" style="display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; background: var(--bg-secondary); cursor: pointer; user-select: none;">
-					<div class="header-left" style="display: flex; align-items: center; gap: 8px; font-size: 13.5px; font-weight: 600; color: var(--text-primary);">
-						<ui-icon style="color: #d19a66;">assignment</ui-icon>
-						<span>Implementation Plan</span>
-					</div>
-					<div style="display: flex; align-items: center; gap: 8px;">
-						<button class="edit-plan-btn" style="display: flex; align-items: center; gap: 4px; padding: 3px 8px; font-size: 11px; cursor: pointer; font-weight: 600; border-radius: var(--borderRadius); border: 1px solid var(--border-primary); background: var(--bg-primary); color: var(--text-secondary);">
-							<ui-icon style="font-size: 14px;">edit</ui-icon>
-							<span>Edit</span>
-						</button>
-						<ui-icon class="expand-arrow" style="font-size: 16px; transition: transform 0.2s ease; ${planExpanded ? '' : 'transform: rotate(180deg);'}">${planExpanded ? 'expand_less' : 'expand_more'}</ui-icon>
-					</div>
-				</div>
-				<div class="accordion-content" style="${planExpanded ? '' : 'display: none; '}border-top: 1px solid var(--border-primary); background: var(--bg-primary); position: relative; min-height: 100px;">
-					<div class="pane-content markdown-body" style="padding: 16px 20px; line-height: 1.6; font-size: 13px; color: var(--text-secondary);">${planHtml}</div>
-				</div>
-			</div>
-
-			<!-- Accordion Item 3: Task Checklist -->
-			<div class="accordion-item tasks-section ${tasksExpanded ? 'expanded' : ''}" style="display: flex; flex-direction: column; border: 1px solid var(--border-primary); border-radius: var(--borderRadius); overflow: hidden; background: var(--bg-primary);">
-				<div class="accordion-header" style="display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; background: var(--bg-secondary); cursor: pointer; user-select: none;">
-					<div class="header-left" style="display: flex; align-items: center; gap: 8px; font-size: 13.5px; font-weight: 600; color: var(--text-primary);">
-						<ui-icon style="color: #2da44e;">playlist_add_check</ui-icon>
-						<span>Task Checklist</span>
-					</div>
-					<div style="display: flex; align-items: center; gap: 8px;">
-						<button class="edit-tasks-btn" style="display: flex; align-items: center; gap: 4px; padding: 3px 8px; font-size: 11px; cursor: pointer; font-weight: 600; border-radius: var(--borderRadius); border: 1px solid var(--border-primary); background: var(--bg-primary); color: var(--text-secondary);">
-							<ui-icon style="font-size: 14px;">edit</ui-icon>
-							<span>Edit</span>
-						</button>
-						<ui-icon class="expand-arrow" style="font-size: 16px; transition: transform 0.2s ease; ${tasksExpanded ? '' : 'transform: rotate(180deg);'}">${tasksExpanded ? 'expand_less' : 'expand_more'}</ui-icon>
-					</div>
-				</div>
-				<div class="accordion-content" style="${tasksExpanded ? '' : 'display: none; '}border-top: 1px solid var(--border-primary); background: var(--bg-primary); position: relative; min-height: 100px;">
-					<div class="pane-content markdown-body tasks-content" style="padding: 16px 20px; line-height: 1.6; font-size: 13px; color: var(--text-secondary);">${tasksHtml}</div>
-				</div>
-			</div>
-
-			<!-- Accordion Item 4: Edit History & Rollbacks -->
-			<div class="accordion-item backups-section ${backupsExpanded ? 'expanded' : ''}" style="display: flex; flex-direction: column; border: 1px solid var(--border-primary); border-radius: var(--borderRadius); overflow: hidden; background: var(--bg-primary);">
-				<div class="accordion-header" style="display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; background: var(--bg-secondary); cursor: pointer; user-select: none;">
-					<div class="header-left" style="display: flex; align-items: center; gap: 8px; font-size: 13.5px; font-weight: 600; color: var(--text-primary);">
-						<ui-icon style="color: var(--color-error, #ea4335);">history</ui-icon>
-						<span>Edit History & Rollbacks</span>
-					</div>
-					<ui-icon class="expand-arrow" style="font-size: 16px; transition: transform 0.2s ease; ${backupsExpanded ? '' : 'transform: rotate(180deg);'}">${backupsExpanded ? 'expand_less' : 'expand_more'}</ui-icon>
-				</div>
-				<div class="accordion-content" style="${backupsExpanded ? '' : 'display: none; '}padding: 16px; border-top: 1px solid var(--border-primary); background: var(--bg-primary);">
-					${backupsHtml}
-				</div>
-			</div>
-
-		</div>
-	`
-
-	// Toggles expand/collapse on headers
-	container.querySelectorAll(".accordion-header").forEach(header => {
-		header.onclick = (e) => {
-			if (e.target.closest("button") || e.target.closest(".header-actions")) return;
-			const item = header.closest(".accordion-item");
-			const content = item.querySelector(".accordion-content");
-			const arrow = header.querySelector(".expand-arrow");
-			const isExpanded = item.classList.toggle("expanded");
-			
-			// Save the expanded state in session
-			let sectionKey = "";
-			if (item.classList.contains("settings-section")) sectionKey = "settings";
-			else if (item.classList.contains("plan-section")) sectionKey = "plan";
-			else if (item.classList.contains("tasks-section")) sectionKey = "tasks";
-			else if (item.classList.contains("backups-section")) sectionKey = "backups";
-			
-			if (sectionKey) {
-				session._accordionStates[sectionKey] = isExpanded;
-			}
-			
-			if (isExpanded) {
-				content.style.display = "";
-				arrow.style.transform = "rotate(0deg)";
-				arrow.textContent = "expand_less";
-			} else {
-				content.style.display = "none";
-				arrow.style.transform = "rotate(180deg)";
-				arrow.textContent = "expand_more";
-			}
-		};
-	});
-
-	// Sync checkbox values & wire change events for Settings Toggles
-	const agentModeCheckbox = container.querySelector("#accordion-agent-mode");
-	const planningModeCheckbox = container.querySelector("#accordion-planning-mode");
-	const forgivenessModeCheckbox = container.querySelector("#accordion-forgiveness-mode");
-
-	if (agentModeCheckbox) {
-		agentModeCheckbox.checked = ui.aiManager.agentMode || false;
-		agentModeCheckbox.addEventListener("change", (e) => {
-			const checked = e.target.checked;
-			ui.aiManager.agentMode = checked;
-			localStorage.setItem("aiAgentMode", checked);
-			
-			const mainCheck = document.querySelector("#agent-mode-checkbox");
-			if (mainCheck) mainCheck.checked = checked;
-			
-			ui.aiManager._updatePromptAreaPlaceholder();
-			// Avoid full re-render of tab on setting toggle
-		});
-	}
-
-	if (planningModeCheckbox) {
-		planningModeCheckbox.checked = ui.aiManager.planningMode || false;
-		planningModeCheckbox.addEventListener("change", (e) => {
-			const checked = e.target.checked;
-			ui.aiManager.planningMode = checked;
-			localStorage.setItem("aiPlanningMode", checked);
-			
-			const mainCheck = document.querySelector("#planning-mode-checkbox");
-			if (mainCheck) mainCheck.checked = checked;
-			
-			ui.aiManager._updatePromptAreaPlaceholder();
-		});
-	}
-
-	if (forgivenessModeCheckbox) {
-		forgivenessModeCheckbox.checked = ui.aiManager.forgivenessMode || false;
-		forgivenessModeCheckbox.addEventListener("change", (e) => {
-			const checked = e.target.checked;
-			ui.aiManager.forgivenessMode = checked;
-			localStorage.setItem("aiForgivenessMode", checked);
-		});
-	}
-
-	// Save/edit logic for Implementation Plan
-	const planBtn = container.querySelector(".edit-plan-btn")
-	const planContent = container.querySelector(".plan-section .pane-content")
-	let planEditorInstance = null
-
-	planBtn.onclick = async (e) => {
-		if (e) e.stopPropagation();
-		if (!planEditorInstance) {
-			planBtn.innerHTML = `<ui-icon>save</ui-icon><span>Save</span>`
-			planBtn.style.color = "var(--theme)"
-			planBtn.style.borderColor = "var(--theme)"
-
-			const currentHeight = planContent.offsetHeight;
-			const rawMarkdown = session.implementationPlan || ""
-			const editorHeight = Math.max(currentHeight, 150);
-			planContent.style.padding = "0";
-			planContent.innerHTML = `<div class="plan-ace-editor" style="height: ${editorHeight}px; width: 100%; position: relative;"></div>`
-			const editorDiv = planContent.querySelector(".plan-ace-editor")
-
-			planEditorInstance = window.ace.edit(editorDiv)
-			const theme = window.leftEdit?.renderer?.getTheme() || "ace/theme/tomorrow_night"
-			planEditorInstance.setTheme(theme)
-			planEditorInstance.session.setMode("ace/mode/markdown")
-			planEditorInstance.setValue(rawMarkdown, -1)
-			planEditorInstance.setFontSize(12)
-			planEditorInstance.setShowPrintMargin(false)
-			planEditorInstance.renderer.setShowGutter(true)
-			planEditorInstance.focus()
-		} else {
-			const newValue = planEditorInstance.getValue()
-			session.implementationPlan = newValue
-
-			planEditorInstance.destroy()
-			planEditorInstance = null
-
-			try {
-				await workspaceClient.setSession(session.id, session)
-			} catch (e) {
-				console.error("[PlanTasksView] Error saving session plan:", e)
-			}
-
-			planContent.style.padding = "16px 20px"
-			planContent.innerHTML = newValue 
-				? ui.aiManager.md.render(newValue)
-				: `<span class="empty-state">No implementation plan defined. Cadence will outline one once active.</span>`
-			
-			planBtn.innerHTML = `<ui-icon style="font-size: 14px;">edit</ui-icon><span>Edit</span>`
-			planBtn.style.color = "var(--text-secondary)"
-			planBtn.style.borderColor = "var(--border-primary)"
-		}
-	}
-
-	// Save/edit logic for Task Checklist
-	const tasksBtn = container.querySelector(".edit-tasks-btn")
-	const tasksContent = container.querySelector(".tasks-section .pane-content")
-	let tasksEditorInstance = null
-
-	tasksBtn.onclick = async (e) => {
-		if (e) e.stopPropagation();
-		if (!tasksEditorInstance) {
-			tasksBtn.innerHTML = `<ui-icon>save</ui-icon><span>Save</span>`
-			tasksBtn.style.color = "var(--theme)"
-			tasksBtn.style.borderColor = "var(--theme)"
-
-			const currentHeight = tasksContent.offsetHeight;
-			const rawMarkdown = session.taskList || ""
-			const editorHeight = Math.max(currentHeight, 150);
-			tasksContent.style.padding = "0";
-			tasksContent.innerHTML = `<div class="tasks-ace-editor" style="height: ${editorHeight}px; width: 100%; position: relative;"></div>`
-			const editorDiv = tasksContent.querySelector(".tasks-ace-editor")
-
-			tasksEditorInstance = window.ace.edit(editorDiv)
-			const theme = window.leftEdit?.renderer?.getTheme() || "ace/theme/tomorrow_night"
-			tasksEditorInstance.setTheme(theme)
-			tasksEditorInstance.session.setMode("ace/mode/markdown")
-			tasksEditorInstance.setValue(rawMarkdown, -1)
-			tasksEditorInstance.setFontSize(12)
-			tasksEditorInstance.setShowPrintMargin(false)
-			tasksEditorInstance.renderer.setShowGutter(true)
-			tasksEditorInstance.focus()
-		} else {
-			const newValue = tasksEditorInstance.getValue()
-			session.taskList = newValue
-
-			tasksEditorInstance.destroy()
-			tasksEditorInstance = null
-
-			try {
-				await workspaceClient.setSession(session.id, session)
-			} catch (e) {
-				console.error("[PlanTasksView] Error saving session tasks:", e)
-			}
-
-			tasksContent.style.padding = "16px 20px"
-			tasksContent.innerHTML = newValue 
-				? ui.aiManager.md.render(newValue)
-				: `<span class="empty-state">No task list defined. Cadence will build one once active.</span>`
-			
-			tasksBtn.innerHTML = `<ui-icon style="font-size: 14px;">edit</ui-icon><span>Edit</span>`
-			tasksBtn.style.color = "var(--text-secondary)"
-			tasksBtn.style.borderColor = "var(--border-primary)"
-		}
-	}
-
-
-	// Rollback action logic
-	container.querySelectorAll(".rollback-btn").forEach(btn => {
-		btn.onclick = async () => {
-			const backupId = btn.getAttribute("data-backup-id");
-			const path = btn.getAttribute("data-path");
-			
-			try {
-				btn.disabled = true;
-				btn.innerHTML = `<ui-icon class="spinner">sync</ui-icon><span>Rolling back...</span>`;
-
-				// 1. Revert content in AgentBackup
-				const { default: AgentBackup } = await import('./agent/agent-backup.mjs');
-				const content = await AgentBackup.rollback(backupId);
-
-				// 2. Write content directly to disk via Conduit
-				const base64Content = btoa(unescape(encodeURIComponent(content)));
-				const result = await conduitClient.wsWrite(path, base64Content);
-				if (result.error) throw new Error(result.error);
-
-				// 3. Update active editor session if currently open in tabs
-				const clean = (p) => p ? p.replace(/\\/g, '/') : '';
-				const normPath = clean(path);
-				const allOpenTabs = [...(ui.leftTabs?.tabs || []), ...(ui.rightTabs?.tabs || [])];
-				const tab = allOpenTabs.find(t => clean(t.config?.path) === normPath);
-				if (tab && tab.config.session) {
-					tab.config.session.setValue(content);
-					tab.config.session.baseValue = content;
-					tab.changed = false;
-				}
-
-				// 4. Mark backup as rolled back in the session state so it doesn't clutter
-				if (session.modifiedFiles && session.modifiedFiles[path]) {
-					session.modifiedFiles[path] = session.modifiedFiles[path].filter(b => b.backupId !== backupId);
-					if (session.modifiedFiles[path].length === 0) {
-						delete session.modifiedFiles[path];
-					}
-					await workspaceClient.setSession(session.id, session);
-				}
-
-				window.modal.toast(`Successfully rolled back ${path.split('/').pop()} to original state.`);
-				renderPlanTasksView(container); 
-			} catch (err) {
-				console.error("Rollback failed:", err);
-				window.modal.notice(`Rollback failed:<br><small>${err.message}</small>`, "Rollback Error");
-				btn.disabled = false;
-				btn.innerHTML = `<ui-icon>undo</ui-icon><span>Rollback</span>`;
-			}
-		};
-	});
 }
 
 const openPlanAndTaskList = (targetEditor = leftEdit) => {
@@ -1668,8 +1270,52 @@ const openPlanAndTaskList = (targetEditor = leftEdit) => {
 	tab.click()
 }
 
+const openDiffTab = (filePath, backupId, targetEditor = leftEdit) => {
+	const clean = (p) => p ? p.replace(/\\/g, '/') : '';
+	const normPath = clean(filePath);
+	const filename = normPath.split("/").pop();
+	const diffTabPath = `diff_${backupId}`;
+
+	// Don't add a new tab if it's already open
+	{
+		const findOpenTab = (tabBar) => {
+			for (const tab of tabBar.tabs) {
+				if (tab.config?.path === diffTabPath) {
+					return tab;
+				}
+			}
+			return null;
+		};
+
+		let tab = findOpenTab(leftTabs)
+		if (tab) return tab.click()
+		tab = findOpenTab(rightTabs)
+		if (tab) return tab.click()
+	}
+
+	const tab = targetEditor.tabs.add({
+		name: `Diff: ${filename}`,
+		path: diffTabPath,
+		mode: { 
+			mode: "diff",
+			backupId: backupId,
+			filePath: filePath
+		},
+		session: null,
+		side: targetEditor === leftEdit ? "left" : "right",
+		handle: diffTabPath,
+		folder: "",
+		fileModified: false,
+		defaultStatusIcon: "difference",
+	})
+	
+	tab.classList.add("diff-tab")
+	tab.click()
+}
+
 ui.renderPlanTasksView = renderPlanTasksView
 ui.openPlanAndTaskList = openPlanAndTaskList
+ui.openDiffTab = openDiffTab
 
 const openFileHandle = async (handle, knownPath = null, targetEditor = currentEditor) => {
 	let path = typeof handle === "string" ? handle : handle.path || knownPath
@@ -1933,12 +1579,22 @@ fileList.expand = (item) => {
 const updateEditorUI = async (targetEditor, targetMediaView, tab) => {
 	const holder = targetEditor === leftEdit ? ui.leftHolder : ui.rightHolder
 	
+	if (holder.diffView) holder.diffView.style.display = "none"
+
 	if (tab.config.mode.mode === "plan_tasks") {
 		targetEditor.container.style.display = "none"
 		targetMediaView.style.display = "none"
 		if (holder.planTasksView) {
 			holder.planTasksView.style.display = "block"
 			renderPlanTasksView(holder.planTasksView)
+		}
+	} else if (tab.config.mode.mode === "diff") {
+		targetEditor.container.style.display = "none"
+		targetMediaView.style.display = "none"
+		if (holder.planTasksView) holder.planTasksView.style.display = "none"
+		if (holder.diffView) {
+			holder.diffView.style.display = "block"
+			holder.diffView.update(tab.config.mode.filePath, tab.config.mode.backupId)
 		}
 	} else if (tab.config.mode.mode === "media") {
 		targetEditor.container.style.display = "none"
@@ -2110,6 +1766,7 @@ const restoreWorkspaceContent = async () => {
 			const missingFiles = []
 			for (const file of workspace.files) {
 				try {
+					console.debug(`restoreWorkspaceContent: Opening ${file.path} on ${file.side}`)
 					await openFileHandle(file.handle, file.path, file.side === "right" ? rightEdit : leftEdit)
 					fileList.active = file.handle
 				} catch (e) {
@@ -2117,9 +1774,16 @@ const restoreWorkspaceContent = async () => {
 					missingFiles.push(file.path)
 				}
 			}
+            console.debug("restoreWorkspaceContent: Finished opening files.")
 
 			// Restore the open/edited status icons for all tabs
 			for (const tab of leftTabs.tabs) {
+				fileList.active = tab.config.handle
+				if (tab.changed && fileList.activeItem) {
+					fileList.activeItem.changed = true
+				}
+			}
+			for (const tab of rightTabs.tabs) {
 				fileList.active = tab.config.handle
 				if (tab.changed && fileList.activeItem) {
 					fileList.activeItem.changed = true

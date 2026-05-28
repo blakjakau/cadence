@@ -128,7 +128,7 @@ class LlamaCpp extends AI {
                 stop: stopTokens
             };
 
-            if (cadenceTools && cadenceTools.length > 0) {
+            if (window.ui?.aiManager?.agentMode && cadenceTools && cadenceTools.length > 0) {
                 requestBody.tools = cadenceTools.map(t => ({
                     type: "function",
                     function: {

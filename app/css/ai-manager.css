@@ -1481,9 +1481,11 @@ ui-tab-item.plan-tasks-tab.active .status-icon {
     left: 0;
     right: 0;
     bottom: 0;
-    overflow: hidden;
+    overflow-y: auto;
     background: var(--bg-primary);
     z-index: 2;
+    scrollbar-width: thin;
+    scrollbar-color: var(--border-primary) transparent;
 }
 
 .plan-tasks-split-container {
@@ -1983,6 +1985,10 @@ ui-tab-item.plan-tasks-tab.active .status-icon {
 }
 
 .accordion-header {
+    height: var(--menuHeight);
+    min-height: var(--menuHeight);
+    box-sizing: border-box;
+    padding: 0 16px !important;
     transition: background-color 0.2s ease;
 }
 
@@ -1995,7 +2001,7 @@ ui-tab-item.plan-tasks-tab.active .status-icon {
 }
 
 .accordion-content {
-    max-height: 60vh;
+    max-height: 40vh;
     overflow-y: auto;
     transition: opacity 0.2s ease;
 }

@@ -2,6 +2,8 @@ import { Panel } from './panel.mjs';
 import { MediaView } from './mediaview.mjs';
 import { TabItem } from './tabitem.mjs';
 import { TabBar } from './tabbar.mjs';
+import { SessionArtifactsPanel } from './session-artifacts-panel.mjs';
+import { DiffViewPanel } from './diff-view-panel.mjs';
 
 export class EditorHolder extends Panel {
     constructor() {
@@ -11,12 +13,14 @@ export class EditorHolder extends Panel {
         this.editorElement.style.display = "block";
         this.mediaView = new MediaView();
         this.mediaView.style.display = "block";
-        this.planTasksView = document.createElement("div");
-        this.planTasksView.className = "plan-tasks-view";
+        this.planTasksView = new SessionArtifactsPanel();
         this.planTasksView.style.display = "none";
+        this.diffView = new DiffViewPanel();
+        this.diffView.style.display = "none";
         this.appendChild(this.editorElement);
         this.appendChild(this.mediaView);
         this.appendChild(this.planTasksView);
+        this.appendChild(this.diffView);
 
         this.dragCounter = 0;
         this.dragLogging = (event)=>{
@@ -155,6 +159,7 @@ export class EditorHolder extends Panel {
             this.editorElement.style.display = 'none';
             this.mediaView.style.display = 'none';
             if (this.planTasksView) this.planTasksView.style.display = 'none';
+            if (this.diffView) this.diffView.style.display = 'none';
         } else {
             const activeTab = this._tabs.activeTab;
             // if (activeTab && activeTab.config && activeTab.config.mode === "media") {
