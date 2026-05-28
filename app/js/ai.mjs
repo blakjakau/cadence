@@ -468,6 +468,45 @@ export default class AI {
         return 0;
     }
 
+	_isTemporaryUnavailableError(error) {
+		if (!error || !error.message) return false;
+		const msg = error.message.toUpperCase();
+		
+		// Exclude rate limit and access denied explicitly
+		if (msg.includes("429") || msg.includes("RESOURCE_EXHAUSTED") || msg.includes("RATE_LIMIT")) {
+			return false;
+		}
+		if (msg.includes("403") || msg.includes("401") || msg.includes("ACCESS_DENIED") || msg.includes("PERMISSION_DENIED") || msg.includes("API_KEY")) {
+			return false;
+		}
+		
+		// Include 503 or UNAVAILABLE
+		if (msg.includes("503") || msg.includes("UNAVAILABLE")) {
+			return true;
+		}
+		
+		return false;
+	}
+
+	_sleep(ms, signal) {
+		return new Promise((resolve, reject) => {
+			const onAbort = () => {
+				clearTimeout(timeout);
+				reject(new DOMException("Aborted", "AbortError"));
+			};
+			if (signal?.aborted) {
+				return onAbort();
+			}
+			const timeout = setTimeout(() => {
+				if (signal) signal.removeEventListener("abort", onAbort);
+				resolve();
+			}, ms);
+			if (signal) {
+				signal.addEventListener("abort", onAbort);
+			}
+		});
+	}
+
 	generate(messages, callbacks) {
 		throw new Error("Not implemented");
 	}

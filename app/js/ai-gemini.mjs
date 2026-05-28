@@ -576,106 +576,138 @@ class Gemini extends AI {
         const { onStart, onError, onDone, onContextRatioUpdate } = callbacks;
         if (onStart) onStart();
 
-        try {
-            const isGemmaModel = this.config.model.includes('gemma');
-            let userPromptContent = prompt;
-            const requestBody = {};
+        const maxAttempts = 3;
+        const backoffs = [10000, 15000, 20000];
+        let attempt = 0;
 
-            // Gemma models do not support `systemInstruction`; prepend to prompt instead.
-            if (this.config.system && isGemmaModel) {
-                userPromptContent = `${this.config.system}\n\n${prompt}`;
-            } else if (this.config.system) {
-                requestBody.systemInstruction = { parts: [{ text: this.config.system }] };
-            }
+        while (attempt < maxAttempts) {
+            attempt++;
+            this.abortController = new AbortController();
 
-            const supportsThinking = this.config.model.includes('thinking') || this.config.model.includes('pro') || this.config.model.includes('2.0') || this.config.model.includes('2.5') || this.config.model.includes('3.1') || this.config.model.includes('3.5');
-            if (supportsThinking) {
-                requestBody.generationConfig = {
-                    thinkingConfig: { 
-                        includeThoughts: true,
-                        thinkingLevel: "medium" 
-                    }
-                };
-            }
+            try {
+                const isGemmaModel = this.config.model.includes('gemma');
+                let userPromptContent = prompt;
+                const requestBody = {};
 
-            requestBody.contents = [{ role: "user", parts: [{ text: userPromptContent }] }];
-            
-            const geminiTools = cadenceTools.map(t => {
-                const properties = {};
-                for (const [k, v] of Object.entries(t.parameters.properties)) {
-                    properties[k] = { ...v, type: v.type.toUpperCase() };
+                // Gemma models do not support `systemInstruction`; prepend to prompt instead.
+                if (this.config.system && isGemmaModel) {
+                    userPromptContent = `${this.config.system}\n\n${prompt}`;
+                } else if (this.config.system) {
+                    requestBody.systemInstruction = { parts: [{ text: this.config.system }] };
                 }
-                return {
-                    name: t.name,
-                    description: t.description,
-                    parameters: {
-                        type: t.parameters.type.toUpperCase(),
-                        properties,
-                        required: t.parameters.required
+
+                const supportsThinking = this.config.model.includes('thinking') || this.config.model.includes('pro') || this.config.model.includes('2.0') || this.config.model.includes('2.5') || this.config.model.includes('3.1') || this.config.model.includes('3.5');
+                if (supportsThinking) {
+                    requestBody.generationConfig = {
+                        thinkingConfig: { 
+                            includeThoughts: true,
+                            thinkingLevel: "medium" 
+                        }
+                    };
+                }
+
+                requestBody.contents = [{ role: "user", parts: [{ text: userPromptContent }] }];
+                
+                const geminiTools = cadenceTools.map(t => {
+                    const properties = {};
+                    for (const [k, v] of Object.entries(t.parameters.properties)) {
+                        properties[k] = { ...v, type: v.type.toUpperCase() };
                     }
-                };
-            });
-            requestBody.tools = [{ functionDeclarations: geminiTools }];
+                    return {
+                        name: t.name,
+                        description: t.description,
+                        parameters: {
+                            type: t.parameters.type.toUpperCase(),
+                            properties,
+                            required: t.parameters.required
+                        }
+                    };
+                });
+                requestBody.tools = [{ functionDeclarations: geminiTools }];
 
-            requestBody.safetySettings = [
-                { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_NONE" },
-                { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "BLOCK_NONE" },
-                { category: "HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold: "BLOCK_NONE" },
-                { category: "HARM_CATEGORY_DANGEROUS_CONTENT", threshold: "BLOCK_NONE" },
-            ];
+                requestBody.safetySettings = [
+                    { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_NONE" },
+                    { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "BLOCK_NONE" },
+                    { category: "HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold: "BLOCK_NONE" },
+                    { category: "HARM_CATEGORY_DANGEROUS_CONTENT", threshold: "BLOCK_NONE" },
+                ];
 
-            const currentTokens = await this._countTokens([{ role: "user", content: prompt }]);
-            const contextRatio = currentTokens / this.MAX_CONTEXT_TOKENS;
+                const currentTokens = await this._countTokens([{ role: "user", content: prompt }]);
+                const contextRatio = currentTokens / this.MAX_CONTEXT_TOKENS;
 
-            if (onContextRatioUpdate) {
-                onContextRatioUpdate(contextRatio);
-            }
+                if (onContextRatioUpdate) {
+                    onContextRatioUpdate(contextRatio);
+                }
 
-            await this._enforceRateLimits(currentTokens);
+                await this._enforceRateLimits(currentTokens);
 
-            const requestStartTime = Date.now();
-            const response = await fetch(this._streamApiUrl, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify(requestBody),
-            });
+                const requestStartTime = Date.now();
+                const response = await fetch(this._streamApiUrl, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify(requestBody),
+                    signal: this.abortController.signal
+                });
 
-            if (!response.ok) {
-                const errorText = await response.text();
-                const httpError = new Error(`HTTP error! Status: ${response.status}, Message: ${errorText}`);
-                if (onError) onError(httpError);
-                return;
-            }
+                if (!response.ok) {
+                    const errorText = await response.text();
+                    throw new Error(`HTTP error! Status: ${response.status}, Message: ${errorText}`);
+                }
 
-            const reader = response.body.getReader();
-            const { fullResponseAccumulator: fullResponse, totalThinkingMs } = await this._processApiResponseStream(reader, callbacks);
-            const requestEndTime = Date.now();
-            
-            const finalTokens = await this._countTokens([{ role: "user", content: prompt }, { role: "model", content: fullResponse }]);
-            const outputTokens = Math.max(0, finalTokens - currentTokens);
-            const finalContextRatio = finalTokens / this.MAX_CONTEXT_TOKENS;
+                const reader = response.body.getReader();
+                const { fullResponseAccumulator: fullResponse, totalThinkingMs } = await this._processApiResponseStream(reader, callbacks);
+                const requestEndTime = Date.now();
+                
+                const finalTokens = await this._countTokens([{ role: "user", content: prompt }, { role: "model", content: fullResponse }]);
+                const outputTokens = Math.max(0, finalTokens - currentTokens);
+                const finalContextRatio = finalTokens / this.MAX_CONTEXT_TOKENS;
 
-            this.tokenTimestamps.push({ time: Date.now(), tokens: finalTokens });
-            localStorage.setItem('gemini_token_timestamps', JSON.stringify(this.tokenTimestamps));
+                this.tokenTimestamps.push({ time: Date.now(), tokens: finalTokens });
+                localStorage.setItem('gemini_token_timestamps', JSON.stringify(this.tokenTimestamps));
 
-            this.recordTelemetry(currentTokens, outputTokens, requestEndTime - requestStartTime, Math.round(totalThinkingMs / 1000));
+                this.recordTelemetry(currentTokens, outputTokens, requestEndTime - requestStartTime, Math.round(totalThinkingMs / 1000));
 
-            if (onDone) {
-                onDone(fullResponse, Math.round(finalContextRatio * 100));
-            }
+                if (onDone) {
+                    onDone(fullResponse, Math.round(finalContextRatio * 100));
+                }
 
-        } catch (error) {
-            if (error && error.name === 'AbortError') {
-                const reasonStr = this.abortReason ? `: ${this.abortReason}` : " by Cadence Agent Protocol.";
-                console.info(`⏸️ [Gemini] Generate intentionally halted${reasonStr}`);
-                this.abortReason = null;
-            } else if (typeof error === 'string') {
-                console.info(`⏸️ [Gemini] Generate intentionally halted: ${error}`);
-            } else {
-                console.error("[Gemini] Error in generate:", error);
+                return; // Success! Exit the function
+
+            } catch (error) {
+                if (error && error.name === 'AbortError') {
+                    const reasonStr = this.abortReason ? `: ${this.abortReason}` : " by Cadence Agent Protocol.";
+                    console.info(`⏸️ [Gemini] Generate intentionally halted${reasonStr}`);
+                    this.abortReason = null;
+                    return;
+                }
+                
+                if (typeof error === 'string') {
+                    console.info(`⏸️ [Gemini] Generate intentionally halted: ${error}`);
+                    return;
+                }
+
+                // Check if we can retry on temporary unavailable (503/UNAVAILABLE) errors
+                const isUnavailable = this._isTemporaryUnavailableError(error);
+                if (isUnavailable && attempt < maxAttempts) {
+                    const delay = backoffs[attempt - 1] || 10000;
+                    console.warn(`⏳ [Gemini] Temporary unavailable error (attempt ${attempt}/${maxAttempts}). Retrying in ${delay / 1000}s... Error: ${error.message}`);
+                    try {
+                        await this._sleep(delay, this.abortController.signal);
+                        continue; // Proceed to next attempt
+                    } catch (sleepErr) {
+                        if (sleepErr.name === 'AbortError') {
+                            console.info("⏸️ [Gemini] Retry sleep aborted.");
+                            return;
+                        }
+                    }
+                }
+
+                // If not retryable, or we ran out of attempts, raise to the caller
+                console.error(`[Gemini] Error in generate after attempt ${attempt}/${maxAttempts}:`, error);
                 if (onError) onError(error);
+                return;
             }
         }
     }
@@ -684,123 +716,152 @@ class Gemini extends AI {
         const { onStart, onError, onDone, onContextRatioUpdate } = callbacks;
         if (onStart) onStart();
 
-        try {
-            const isGemmaModel = this.config.model.includes('gemma');
-            const effectiveSystemPrompt = systemPrompt || this.config.system;
-            let processedMessages = messages;
-            const requestBody = {};
+        const maxAttempts = 3;
+        const backoffs = [10000, 15000, 20000];
+        let attempt = 0;
 
-            if (effectiveSystemPrompt) {
-                if (isGemmaModel) {
-                    // For Gemma, inject system prompt into the first user message.
-                    // Create a copy to avoid mutating the original history array.
-                    processedMessages = JSON.parse(JSON.stringify(messages));
-                    const firstUserMessageIndex = processedMessages.findIndex(m => m.role === 'user');
-                    if (firstUserMessageIndex !== -1) {
-                        processedMessages[firstUserMessageIndex].content = `${effectiveSystemPrompt}\n\n${processedMessages[firstUserMessageIndex].content}`;
-                    }
-                } else {
-                    // For other models, use the standard systemInstruction field.
-                    requestBody.systemInstruction = { parts: [{ text: effectiveSystemPrompt }] };
-                }
-            }
-
-            const supportsThinking = this.config.model.includes('thinking') || this.config.model.includes('pro') || this.config.model.includes('2.0') || this.config.model.includes('2.5') || this.config.model.includes('3.1') || this.config.model.includes('3.5');
-            if (supportsThinking) {
-                requestBody.generationConfig = {
-                    thinkingConfig: { 
-                        includeThoughts: true,
-                        thinkingLevel: "medium" 
-                    }
-                };
-            }
-
-            requestBody.contents = this._toGeminiContents(processedMessages);
-            
-            const geminiTools = cadenceTools.map(t => {
-                const properties = {};
-                for (const [k, v] of Object.entries(t.parameters.properties)) {
-                    properties[k] = { ...v, type: v.type.toUpperCase() };
-                }
-                return {
-                    name: t.name,
-                    description: t.description,
-                    parameters: {
-                        type: t.parameters.type.toUpperCase(),
-                        properties,
-                        required: t.parameters.required
-                    }
-                };
-            });
-            requestBody.tools = [{ functionDeclarations: geminiTools }];
-
-            requestBody.safetySettings = [
-                { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_NONE" },
-                { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "BLOCK_NONE" },
-                { category: "HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold: "BLOCK_NONE" },
-                { category: "HARM_CATEGORY_DANGEROUS_CONTENT", threshold: "BLOCK_NONE" },
-            ];
-
-            const currentTokens = await this._countTokens(messages);
-            const contextRatio = currentTokens / this.MAX_CONTEXT_TOKENS;
-
-            if (onContextRatioUpdate) {
-                onContextRatioUpdate(contextRatio);
-            }
-
-            await this._enforceRateLimits(currentTokens);
-
+        while (attempt < maxAttempts) {
+            attempt++;
             this.abortController = new AbortController();
             
-            const requestStartTime = Date.now();
-            const response = await fetch(this._streamApiUrl, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify(requestBody),
-                signal: this.abortController.signal
-            });
+            try {
+                const isGemmaModel = this.config.model.includes('gemma');
+                const effectiveSystemPrompt = systemPrompt || this.config.system;
+                let processedMessages = messages;
+                const requestBody = {};
 
-            if (!response.ok) {
-                const errorText = await response.text();
-                const httpError = new Error(`HTTP error! Status: ${response.status}, Message: ${errorText}`);
-                if (onError) onError(httpError);
-                return;
-            }
+                if (effectiveSystemPrompt) {
+                    if (isGemmaModel) {
+                        // For Gemma, inject system prompt into the first user message.
+                        // Create a copy to avoid mutating the original history array.
+                        processedMessages = JSON.parse(JSON.stringify(messages));
+                        const firstUserMessageIndex = processedMessages.findIndex(m => m.role === 'user');
+                        if (firstUserMessageIndex !== -1) {
+                            processedMessages[firstUserMessageIndex].content = `${effectiveSystemPrompt}\n\n${processedMessages[firstUserMessageIndex].content}`;
+                        }
+                    } else {
+                        // For other models, use the standard systemInstruction field.
+                        requestBody.systemInstruction = { parts: [{ text: effectiveSystemPrompt }] };
+                    }
+                }
 
-            const reader = response.body.getReader();
-            const { fullResponseAccumulator: fullResponse, totalThinkingMs } = await this._processApiResponseStream(reader, callbacks);
-            const requestEndTime = Date.now();
-            
-            messages.push({ role: "model", content: fullResponse });
+                const supportsThinking = this.config.model.includes('thinking') || this.config.model.includes('pro') || this.config.model.includes('2.0') || this.config.model.includes('2.5') || this.config.model.includes('3.1') || this.config.model.includes('3.5');
+                if (supportsThinking) {
+                    requestBody.generationConfig = {
+                        thinkingConfig: { 
+                            includeThoughts: true,
+                            thinkingLevel: "medium" 
+                        }
+                    };
+                }
 
-            const finalTokens = await this._countTokens(messages);
-            const outputTokens = Math.max(0, finalTokens - currentTokens);
-            const finalContextRatio = finalTokens / this.MAX_CONTEXT_TOKENS;
-            if (onContextRatioUpdate) {
-                onContextRatioUpdate(finalContextRatio);
-            }
+                requestBody.contents = this._toGeminiContents(processedMessages);
+                
+                const geminiTools = cadenceTools.map(t => {
+                    const properties = {};
+                    for (const [k, v] of Object.entries(t.parameters.properties)) {
+                        properties[k] = { ...v, type: v.type.toUpperCase() };
+                    }
+                    return {
+                        name: t.name,
+                        description: t.description,
+                        parameters: {
+                            type: t.parameters.type.toUpperCase(),
+                            properties,
+                            required: t.parameters.required
+                        }
+                    };
+                });
+                requestBody.tools = [{ functionDeclarations: geminiTools }];
 
-            this.tokenTimestamps.push({ time: Date.now(), tokens: finalTokens });
-            localStorage.setItem('gemini_token_timestamps', JSON.stringify(this.tokenTimestamps));
+                requestBody.safetySettings = [
+                    { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_NONE" },
+                    { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "BLOCK_NONE" },
+                    { category: "HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold: "BLOCK_NONE" },
+                    { category: "HARM_CATEGORY_DANGEROUS_CONTENT", threshold: "BLOCK_NONE" },
+                ];
 
-            this.recordTelemetry(currentTokens, outputTokens, requestEndTime - requestStartTime, Math.round(totalThinkingMs / 1000));
+                const currentTokens = await this._countTokens(messages);
+                const contextRatio = currentTokens / this.MAX_CONTEXT_TOKENS;
 
-            if (onDone) {
-                onDone(fullResponse, Math.round(finalContextRatio * 100));
-            }
+                if (onContextRatioUpdate) {
+                    onContextRatioUpdate(contextRatio);
+                }
 
-        } catch (error) {
-            if (error && error.name === 'AbortError') {
-                const reasonStr = this.abortReason ? `: ${this.abortReason}` : " by Cadence Agent Protocol.";
-                console.info(`⏸️ [Gemini] Stream generation intentionally halted${reasonStr}`);
-                this.abortReason = null;
-            } else if (typeof error === 'string') {
-                console.info(`⏸️ [Gemini] Stream generation intentionally halted: ${error}`);
-            } else {
-                console.error("[Gemini] Error in chat:", error);
+                await this._enforceRateLimits(currentTokens);
+
+                const requestStartTime = Date.now();
+                const response = await fetch(this._streamApiUrl, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify(requestBody),
+                    signal: this.abortController.signal
+                });
+
+                if (!response.ok) {
+                    const errorText = await response.text();
+                    throw new Error(`HTTP error! Status: ${response.status}, Message: ${errorText}`);
+                }
+
+                const reader = response.body.getReader();
+                const { fullResponseAccumulator: fullResponse, totalThinkingMs } = await this._processApiResponseStream(reader, callbacks);
+                const requestEndTime = Date.now();
+                
+                messages.push({ role: "model", content: fullResponse });
+
+                const finalTokens = await this._countTokens(messages);
+                const outputTokens = Math.max(0, finalTokens - currentTokens);
+                const finalContextRatio = finalTokens / this.MAX_CONTEXT_TOKENS;
+                if (onContextRatioUpdate) {
+                    onContextRatioUpdate(finalContextRatio);
+                }
+
+                this.tokenTimestamps.push({ time: Date.now(), tokens: finalTokens });
+                localStorage.setItem('gemini_token_timestamps', JSON.stringify(this.tokenTimestamps));
+
+                this.recordTelemetry(currentTokens, outputTokens, requestEndTime - requestStartTime, Math.round(totalThinkingMs / 1000));
+
+                if (onDone) {
+                    onDone(fullResponse, Math.round(finalContextRatio * 100));
+                }
+
+                return; // Success! Exit the function
+
+            } catch (error) {
+                if (error && error.name === 'AbortError') {
+                    const reasonStr = this.abortReason ? `: ${this.abortReason}` : " by Cadence Agent Protocol.";
+                    console.info(`⏸️ [Gemini] Stream generation intentionally halted${reasonStr}`);
+                    this.abortReason = null;
+                    return;
+                }
+                
+                if (typeof error === 'string') {
+                    console.info(`⏸️ [Gemini] Stream generation intentionally halted: ${error}`);
+                    return;
+                }
+
+                // Check if we can retry on temporary unavailable (503/UNAVAILABLE) errors
+                const isUnavailable = this._isTemporaryUnavailableError(error);
+                if (isUnavailable && attempt < maxAttempts) {
+                    const delay = backoffs[attempt - 1] || 10000;
+                    console.warn(`⏳ [Gemini] Temporary unavailable error (attempt ${attempt}/${maxAttempts}). Retrying in ${delay / 1000}s... Error: ${error.message}`);
+                    try {
+                        await this._sleep(delay, this.abortController.signal);
+                        continue; // Proceed to next attempt
+                    } catch (sleepErr) {
+                        if (sleepErr.name === 'AbortError') {
+                            console.info("⏸️ [Gemini] Retry sleep aborted.");
+                            return;
+                        }
+                    }
+                }
+
+                // If not retryable, or we ran out of attempts, raise to the caller
+                console.error(`[Gemini] Error in chat after attempt ${attempt}/${maxAttempts}:`, error);
                 if (onError) onError(error);
+                return;
             }
         }
     }

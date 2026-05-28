@@ -1981,6 +1981,16 @@ class AIManager {
 
 			} catch (e) {
 				console.error("Agent Loop Error:", e);
+
+				// Check if this is a temporary unavailable (503/UNAVAILABLE) error
+				const isUnavailable = this.ai && typeof this.ai._isTemporaryUnavailableError === 'function' && this.ai._isTemporaryUnavailableError(e);
+				if (isUnavailable) {
+					this._showTryAgainBanner(e);
+					this._isProcessing = false;
+					this._setButtonsDisabledState(false);
+					break;
+				}
+
 				const errBlock = document.createElement("div");
 				errBlock.className = "response-block error-block";
 				errBlock.innerHTML = `Agent Execution Error: ${e.message}`;
@@ -1995,6 +2005,42 @@ class AIManager {
 		if (throttleBar) {
 			throttleBar.remove();
 		}
+	}
+
+	_showTryAgainBanner(error) {
+		if (this.haltBar) {
+			this.haltBar.remove();
+			this.haltBar = null;
+		}
+
+		const banner = document.createElement("div");
+		banner.className = "agent-halt-bar try-again-banner";
+		
+		const providerName = this.aiProvider ? this.aiProvider.charAt(0).toUpperCase() + this.aiProvider.slice(1) : "AI Provider";
+		const errorMessage = error.message || "Model currently experiencing high demand.";
+
+		banner.innerHTML = `
+			<ui-icon style="vertical-align: middle; margin-right: 8px; font-size: 16px;">history</ui-icon>
+			<span class="halt-text"><b>${providerName}:</b> ${errorMessage}</span>
+			<div class="halt-actions" style="display: flex; gap: 8px; align-items: center; margin-left: 12px;">
+				<button class="try-again-btn theme-button primary" style="padding: 4px 10px; font-size: 11px; min-width: 80px; border-radius: var(--borderRadius); cursor: pointer; font-weight: 600; display: flex; align-items: center; gap: 4px;">
+					<ui-icon style="font-size: 12px;">refresh</ui-icon> Try Again
+				</button>
+			</div>
+		`;
+
+		const tryAgainBtn = banner.querySelector(".try-again-btn");
+		tryAgainBtn.onclick = () => {
+			banner.remove();
+			if (this.haltBar === banner) {
+				this.haltBar = null;
+			}
+			this.promptEditor.setValue("please resume");
+			this.generate();
+		};
+
+		this.chatContainer.append(banner);
+		this.haltBar = banner;
 	}
 
 	async _finalizeModelMessage(fullResponse, forcedReason, callbacks, modelMessageId, responseBlock) {
