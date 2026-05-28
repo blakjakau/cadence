@@ -179,28 +179,40 @@ export class SessionArtifactsPanel extends Block {
         this.forgivenessModeCheckbox = createToggleRow("accordion-forgiveness-mode", "Forgiveness Mode", "Commit edits immediately to disk with robust single-click rollback safety.", "agent-toggle-wrapper");
 
         // Listeners
-        this.agentModeCheckbox.addEventListener("change", (e) => {
+        this.agentModeCheckbox.addEventListener("change", async (e) => {
             const checked = e.target.checked;
             ui.aiManager.agentMode = checked;
             localStorage.setItem("aiAgentMode", checked);
+            if (ui.aiManager.activeSession) {
+                ui.aiManager.activeSession.agentMode = checked;
+                await workspaceClient.setSession(ui.aiManager.activeSession.id, ui.aiManager.activeSession);
+            }
             const mainCheck = document.querySelector("#agent-mode-checkbox");
             if (mainCheck) mainCheck.checked = checked;
             ui.aiManager._updatePromptAreaPlaceholder();
         });
 
-        this.planningModeCheckbox.addEventListener("change", (e) => {
+        this.planningModeCheckbox.addEventListener("change", async (e) => {
             const checked = e.target.checked;
             ui.aiManager.planningMode = checked;
             localStorage.setItem("aiPlanningMode", checked);
+            if (ui.aiManager.activeSession) {
+                ui.aiManager.activeSession.planningMode = checked;
+                await workspaceClient.setSession(ui.aiManager.activeSession.id, ui.aiManager.activeSession);
+            }
             const mainCheck = document.querySelector("#planning-mode-checkbox");
             if (mainCheck) mainCheck.checked = checked;
             ui.aiManager._updatePromptAreaPlaceholder();
         });
 
-        this.forgivenessModeCheckbox.addEventListener("change", (e) => {
+        this.forgivenessModeCheckbox.addEventListener("change", async (e) => {
             const checked = e.target.checked;
             ui.aiManager.forgivenessMode = checked;
             localStorage.setItem("aiForgivenessMode", checked);
+            if (ui.aiManager.activeSession) {
+                ui.aiManager.activeSession.forgivenessMode = checked;
+                await workspaceClient.setSession(ui.aiManager.activeSession.id, ui.aiManager.activeSession);
+            }
         });
     }
 

@@ -1,6 +1,7 @@
 // ai-manager-settings.mjs
 import { Block, Button } from "./elements.mjs"
 import { SettingsPanel } from "./elements/settings-panel.mjs"
+import workspaceClient from "./workspace-client.mjs";
 
 /**
  * Manages the UI and logic for the AIManager's settings panel.
@@ -192,6 +193,10 @@ class AIManagerSettings {
         // --- Save Forgiveness Mode ---
         aiManager.forgivenessMode = !!values.forgivenessMode;
         localStorage.setItem("aiForgivenessMode", aiManager.forgivenessMode);
+        if (aiManager.activeSession) {
+            aiManager.activeSession.forgivenessMode = aiManager.forgivenessMode;
+            await workspaceClient.setSession(aiManager.activeSession.id, aiManager.activeSession);
+        }
 
         // --- Save System Prompt Settings ---
         const systemPromptConfig = {

@@ -74,10 +74,14 @@ class AIManagerSessions {
 	async createNewSession() {
 		const newId = `ai-session-${crypto.randomUUID()}`;
 		const newName = `Chat ${this.allSessionMetadata.length + 1}`;
+		const lastForgivenessMode = this.activeSession ? (this.activeSession.forgivenessMode ?? false) : (this.manager.forgivenessMode ?? false);
 		const newSessionData = {
 			id: newId, name: newName, createdAt: Date.now(), lastModified: Date.now(),
 			messages: [], promptInput: "", promptHistory: [], scrollTop: 0,
 			evergreenFiles: [], modifiedFiles: {},
+			agentMode: false,
+			planningMode: true,
+			forgivenessMode: lastForgivenessMode,
 		};
 
 		await workspaceClient.setSession(newId, newSessionData);
@@ -196,6 +200,9 @@ class AIManagerSessions {
 		if (this.activeSession && this.activeSession.id) {
 			this.activeSession.promptInput = this.manager.promptEditor.getValue();
 			this.activeSession.scrollTop = this.manager.conversationArea.scrollTop; // Save current scroll position
+			this.activeSession.agentMode = this.manager.agentMode;
+			this.activeSession.planningMode = this.manager.planningMode;
+			this.activeSession.forgivenessMode = this.manager.forgivenessMode;
 			const currentSessionMeta = this.allSessionMetadata.find(s => s.id === this.activeSession.id);
 			if (currentSessionMeta) currentSessionMeta.lastModified = Date.now();
 			await workspaceClient.setSession(this.activeSession.id, this.activeSession);
@@ -214,6 +221,9 @@ class AIManagerSessions {
 		// Update manager's state
 		this.activeSession = newSessionData;
 		this.activeSessionId = sessionId;
+		this.manager.agentMode = newSessionData.agentMode ?? false;
+		this.manager.planningMode = newSessionData.planningMode ?? true;
+		this.manager.forgivenessMode = newSessionData.forgivenessMode ?? false;
 		this._unsentPromptBuffer = null; // Clear any pending unsent prompt from the previous session
 
 		// disappear the panel first
@@ -241,6 +251,13 @@ class AIManagerSessions {
 		this.manager._setButtonsDisabledState(this.manager._isProcessing);
 		this.manager._updatePromptAreaPlaceholder(); // Update placeholder after session switch
 		this.manager._updateAgentProgressPanel();
+		
+		// Force redraw the Plan/Tasks view to align checkboxes
+		if (window.ui?.renderPlanTasksView) {
+			const containers = document.querySelectorAll(".plan-tasks-view");
+			containers.forEach(c => window.ui.renderPlanTasksView(c));
+		}
+
 		this.manager._dispatchContextUpdate("session_switched");
 		this.manager.promptEditor.focus(); // Ensure focus returns to the prompt editor after a switch
 	}
