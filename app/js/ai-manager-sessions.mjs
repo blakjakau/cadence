@@ -72,7 +72,7 @@ class AIManagerSessions {
 		const newSessionData = {
 			id: newId, name: newName, createdAt: Date.now(), lastModified: Date.now(),
 			messages: [], promptInput: "", promptHistory: [], scrollTop: 0,
-			evergreenFiles: [],
+			evergreenFiles: [], modifiedFiles: {},
 		};
 
 		await workspaceClient.setSession(newId, newSessionData);

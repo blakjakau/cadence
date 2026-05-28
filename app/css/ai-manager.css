@@ -1880,6 +1880,7 @@ ui-tab-item.plan-tasks-tab.active .status-icon {
     margin-bottom: 8px;
     overflow: hidden;
     transition: box-shadow 0.2s ease-in-out;
+    flex-shrink: 0;
 }
 
 .chat-turn-expander:hover {
@@ -1948,5 +1949,169 @@ ui-tab-item.plan-tasks-tab.active .status-icon {
     white-space: pre-wrap;
     word-break: break-all;
     overflow-x: auto;
+    overflow-y: auto;
+    max-height: 25em;
     color: var(--text-primary);
 }
+
+/* ========================================== */
+/* Premium Accordion & Rollback UI Styles   */
+/* ========================================== */
+
+.artifacts-accordion-container {
+    scrollbar-width: thin;
+    scrollbar-color: var(--border-primary) transparent;
+}
+
+.artifacts-accordion-container::-webkit-scrollbar {
+    width: 6px;
+}
+
+.artifacts-accordion-container::-webkit-scrollbar-thumb {
+    background-color: var(--border-primary);
+    border-radius: 3px;
+}
+
+.accordion-item {
+    transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+}
+
+.accordion-item:hover {
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+    border-color: var(--theme) !important;
+}
+
+.accordion-header {
+    transition: background-color 0.2s ease;
+}
+
+.accordion-header:hover {
+    background-color: color-mix(in srgb, var(--text-primary) 2%, var(--bg-secondary)) !important;
+}
+
+.accordion-item.expanded .accordion-header {
+    border-bottom: none;
+}
+
+.accordion-content {
+    max-height: 60vh;
+    overflow-y: auto;
+    transition: opacity 0.2s ease;
+}
+
+.setting-row {
+    transition: background-color 0.2s ease;
+    padding: 4px 8px;
+    border-radius: 6px;
+}
+
+.setting-row:hover {
+    background-color: color-mix(in srgb, var(--text-primary) 1.5%, transparent);
+}
+
+.setting-row .switch {
+    margin-top: 2px;
+}
+
+/* Accordion Switch Toggles */
+.accordion-content .switch {
+    position: relative;
+    display: inline-block;
+    width: 28px;
+    height: 16px;
+}
+
+.accordion-content .switch input {
+    opacity: 0;
+    width: 0;
+    height: 0;
+}
+
+.accordion-content .slider {
+    position: absolute;
+    cursor: pointer;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background-color: var(--border-primary);
+    transition: .3s;
+    border-radius: 16px;
+}
+
+.accordion-content .slider:before {
+    position: absolute;
+    content: "";
+    height: 10px;
+    width: 10px;
+    left: 3px;
+    bottom: 3px;
+    background-color: #ffffff;
+    transition: .3s;
+    border-radius: 50%;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+}
+
+.accordion-content input:checked + .slider {
+    background-color: var(--theme);
+}
+
+.accordion-content input:checked + .slider:before {
+    transform: translateX(12px);
+}
+
+/* Rollback & Backup UI */
+.backup-row {
+    transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+
+.backup-row:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.05);
+}
+
+.rollback-btn {
+    transition: all 0.2s ease !important;
+}
+
+.rollback-btn:hover {
+    background-color: var(--theme) !important;
+    color: #ffffff !important;
+    border-color: var(--theme) !important;
+}
+
+.rollback-badge-success {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 11px;
+    font-weight: 600;
+    color: #2da44e;
+    background-color: rgba(45, 164, 78, 0.08);
+    padding: 4px 8px;
+    border-radius: 4px;
+    border: 1px solid rgba(45, 164, 78, 0.2);
+}
+
+.rollback-badge-success ui-icon {
+    font-size: 13px;
+    color: #2da44e;
+}
+
+@keyframes spin {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+}
+
+.rollback-btn .spinner {
+    animation: spin 1s linear infinite;
+}
+
+/* Specificity override to ensure Ace editors inside the settings/artifacts tab start at top: 0px */
+ui-editor-holder .artifacts-accordion-container .ace_editor,
+.artifacts-accordion-container .ace_editor {
+    top: 0px !important;
+}
+
+

@@ -148,5 +148,13 @@ export const tools = [
             },
             required: ["taskName"]
         }
+    },
+    {
+        name: "done",
+        description: "Signal that you have completed all tasks and do not intend to call any more tools.",
+        parameters: {
+            type: "object",
+            properties: {}
+        }
     }
 ];

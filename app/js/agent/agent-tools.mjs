@@ -1,5 +1,7 @@
 import conduit from '../conduit-client.mjs';
 import AgentBackup from './agent-backup.mjs';
+import { tools } from "../ai-manager-tools-schema.mjs";
+import workspaceClient from '../workspace-client.mjs';
 
 /**
  * Implements the core tools for Cadence.
@@ -12,6 +14,9 @@ class AgentTools {
     }
 
     _resolveAndValidatePath(targetPath) {
+        if (typeof targetPath !== 'string') {
+            throw new Error("Path must be a string");
+        }
         const folders = window.workspace?.folders || [];
         if (folders.length === 0) {
             throw new Error("No workspace folders are open. Cannot validate paths.");
@@ -371,6 +376,9 @@ class AgentTools {
      */
     async searchFiles(query) {
         try {
+            if (typeof query !== 'string') {
+                return "Error: Query must be a string.";
+            }
             const matches = [];
             const lowercaseQuery = query.toLowerCase();
             const searchedPaths = new Set();
@@ -610,6 +618,62 @@ class AgentTools {
 
             // 2. Perform the edit ON THE ACE SESSION
             const session = targetTab.config.session;
+
+            const isForgivenessMode = window.ui?.aiManager?.forgivenessMode === true;
+            if (isForgivenessMode) {
+                const originalContent = session.getValue();
+                const cleanStartIndex = originalContent.indexOf(searchString);
+                if (cleanStartIndex === -1) {
+                    throw new Error(`Target string not found in ${path}. Ensure the search string matches exactly, including whitespace.`);
+                }
+                
+                // 1. Create backup
+                let backupId = "";
+                try {
+                    const actId = sourceId || window.ui?.aiManager?.activeSession?.id || "default";
+                    backupId = await AgentBackup.create(resolvedPath, originalContent, actId);
+                    
+                    const activeSession = window.ui?.aiManager?.activeSession;
+                    if (activeSession) {
+                        activeSession.modifiedFiles = activeSession.modifiedFiles || {};
+                        if (!activeSession.modifiedFiles[resolvedPath]) {
+                            activeSession.modifiedFiles[resolvedPath] = [];
+                        }
+                        activeSession.modifiedFiles[resolvedPath].push({
+                            backupId: backupId,
+                            timestamp: Date.now(),
+                            sourceId: actId
+                        });
+                        await workspaceClient.setSession(activeSession.id, activeSession);
+                    }
+                } catch (e) {
+                    console.error("[AgentTools] Failed to create backup:", e);
+                }
+
+                // 2. Perform the clean edit on Ace session
+                const doc = session.getDocument();
+                const startPos = doc.indexToPosition(cleanStartIndex);
+                const endPos = doc.indexToPosition(cleanStartIndex + searchString.length);
+                const Range = window.ace.require("ace/range").Range;
+                const rangeToReplace = new Range(startPos.row, startPos.column, endPos.row, endPos.column);
+                session.replace(rangeToReplace, replacementString);
+
+                // 3. Save to disk immediately
+                if (window.saveFileTab) {
+                    await window.saveFileTab(targetTab);
+                    session.baseValue = session.getValue();
+                }
+
+                // 4. Focus & Redraw
+                targetTab.click();
+                if (window.ui?.renderPlanTasksView) {
+                    const containers = document.querySelectorAll('.plan-tasks-view');
+                    containers.forEach(c => window.ui.renderPlanTasksView(c));
+                }
+
+                return `Successfully edited ${path} in Forgiveness Mode. The change has been committed directly to the file and a rollback backup was created.`;
+            }
+
             const edits = this.editBuffer[resolvedPath]?.edits || [];
             const cleanContent = this._getCleanContentOfSession(session, edits);
 
@@ -757,6 +821,9 @@ class AgentTools {
      * Executes a terminal command.
      */
     async execCommand(command) {
+        if (typeof command !== 'string') {
+            return "Error: Command must be a string.";
+        }
         return `Executing: ${command}\nOutput: (Terminal execution via agent is not supported directly for security reasons. Please use the terminal tab instead.)`;
     }
 
@@ -767,6 +834,16 @@ class AgentTools {
      * @param {string} [sourceId] - Optional session ID for tracking
      */
     async execute(name, args = {}, sourceId = null) {
+        // Fallback required parameter check
+        const toolDef = tools.find(t => t.name === name);
+        if (toolDef && toolDef.parameters && Array.isArray(toolDef.parameters.required)) {
+            for (const reqParam of toolDef.parameters.required) {
+                if (args[reqParam] === undefined || args[reqParam] === null || args[reqParam] === "") {
+                    return `Tool Error: ${name} requires "${reqParam}" parameter`;
+                }
+            }
+        }
+
         switch (name) {
             case 'list_files':
                 return await this.listFiles(args.path);
@@ -801,6 +878,8 @@ class AgentTools {
                 return "Successfully updated task list.";
             case 'complete_task':
                 return `Successfully marked task as complete: ${args.taskName}`;
+            case 'done':
+                return "Agent successfully completed the execution loop.";
             default:
                 throw new Error(`Tool '${name}' is not recognized.`);
         }
@@ -935,6 +1014,9 @@ class AgentTools {
      */
     async findFile(searchPath) {
         try {
+            if (typeof searchPath !== 'string') {
+                return "Error: Path must be a string.";
+            }
             if (!window.ui?.fileList?.index?.files) {
                 return "Error: File list index is not loaded.";
             }

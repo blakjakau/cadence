@@ -16,6 +16,7 @@ import DiffHandler from "./tools/diff-handler.mjs"
 import systemPromptBuilder from './genericSystemPrompt.mjs'; // NEW: For building prompts
 import getAgentSystemPrompt from './ai-manager-agent-prompt.mjs'; // NEW: For building agent prompts
 import hljs from "./tools/highlightjs.mjs"
+import { tools } from "./ai-manager-tools-schema.mjs"
 const MAX_PROMPT_HISTORY = 50 // This is now PER-SESSION
 
 const promptEditorSettings = {
@@ -108,6 +109,7 @@ class AIManager {
 		this.agentModeToggle = null;
 		this.planningMode = false; // NEW: Toggle planning mode
 		this.planningModeToggle = null;
+		this.forgivenessMode = false; // NEW: Toggle Permission vs Forgiveness mode
 		this.isPaused = false; // NEW: Track if agent is paused
 		this.rawViewMode = false; // NEW: Tracks alternate expander raw view
 		this.rawViewButton = null;
@@ -161,13 +163,37 @@ class AIManager {
 		window.addEventListener('setting-changed', this._handleSettingChangedExternally.bind(this));
 	}
 
-	getSystemPrompt() {
+	async getSystemPrompt() {
+		let basePrompt = "";
 		if (this.agentMode) {
 			const modelName = (this.ai && this.ai.config && this.ai.config.model) ? this.ai.config.model.toLowerCase() : '';
 			const supportsJSONTools = this.ai && this.ai.supportsJSONTools;
-			return getAgentSystemPrompt(modelName, supportsJSONTools);
+			basePrompt = getAgentSystemPrompt(modelName, supportsJSONTools);
+		} else {
+			basePrompt = systemPromptBuilder(this.getSystemPromptConfig());
 		}
-		return systemPromptBuilder(this.getSystemPromptConfig());
+
+		// Persistent memory scratch-pad: read .cadence.md from active workspace roots
+		const folders = window.workspace?.folders || [];
+		const hints = [];
+		for (const folder of folders) {
+			try {
+				const filePath = `${folder}/.cadence.md`;
+				const fileData = await window.conduit.wsRead(filePath);
+				if (fileData && !fileData.error && fileData.content) {
+					hints.push(fileData.content.trim());
+				}
+			} catch (e) {
+				// Ignore if file doesn't exist or is unreachable
+			}
+		}
+
+		if (hints.length > 0) {
+			const compiledHints = hints.join("\n\n---\n\n");
+			basePrompt += `\n\n=== USER PERSISTENT HINTS & MEMORY SCRATCH-PAD ===\nThe following persistent memory and hints have been pre-loaded by the user. Adhere to any instructions, style guidelines, project information, rules, or preferences specified below:\n\n${compiledHints}\n=================================================`;
+		}
+
+		return basePrompt;
 	}
 
 	/**
@@ -461,53 +487,21 @@ class AIManager {
 		const buttonContainer = new Block()
 		buttonContainer.classList.add("button-container");
 		
-		this.agentModeToggle = document.createElement("div");
-		this.agentModeToggle.className = "agent-toggle-wrapper";
-		this.agentModeToggle.innerHTML = `
-			<label class="switch" title="Agent Mode: Cadence can call tools to read/edit code">
-				<input type="checkbox" id="agent-mode-checkbox">
-				<span class="slider round"></span>
-			</label>
-			<span class="toggle-label" style="font-size: 11.5px; margin-left: 6px; font-weight: 600; color: var(--text-secondary); cursor: pointer; user-select: none;">Agent</span>
-		`;
-
-		const checkbox = this.agentModeToggle.querySelector('input');
-		checkbox.checked = this.agentMode || false;
-		checkbox.addEventListener('change', (e) => {
-			this.agentMode = e.target.checked;
-			localStorage.setItem("aiAgentMode", this.agentMode);
-			this._updatePromptAreaPlaceholder();
-			this._updateAgentProgressPanel();
-		});
-
-		// Clicking the label also toggles the checkbox
-		const label = this.agentModeToggle.querySelector('.toggle-label');
-		label.addEventListener('click', () => {
-			checkbox.click();
-		});
-
-		this.planningModeToggle = document.createElement("div");
-		this.planningModeToggle.className = "planning-toggle-wrapper";
-		this.planningModeToggle.innerHTML = `
-			<label class="switch" title="Planning Mode: Focus on generating implementation plans">
-				<input type="checkbox" id="planning-mode-checkbox">
-				<span class="slider round"></span>
-			</label>
-			<span class="toggle-label" style="font-size: 11.5px; margin-left: 6px; font-weight: 600; color: var(--text-secondary); cursor: pointer; user-select: none;">Plan</span>
-		`;
-
-		const pCheckbox = this.planningModeToggle.querySelector('input');
-		pCheckbox.checked = this.planningMode || false;
-		pCheckbox.addEventListener('change', (e) => {
-			this.planningMode = e.target.checked;
-			localStorage.setItem("aiPlanningMode", this.planningMode);
-			this._updatePromptAreaPlaceholder();
-		});
-
-		const pLabel = this.planningModeToggle.querySelector('.toggle-label');
-		pLabel.addEventListener('click', () => {
-			pCheckbox.click();
-		});
+		this.artifactsButton = document.createElement("button");
+		this.artifactsButton.className = "artifacts-tab-btn theme-button secondary";
+		this.artifactsButton.title = "Open Session Settings & Artifacts";
+		this.artifactsButton.innerHTML = `<ui-icon style="font-size: 14px; margin-right: 4px;">playlist_add_check</ui-icon>Settings & Artifacts`;
+		this.artifactsButton.style.display = "flex";
+		this.artifactsButton.style.alignItems = "center";
+		this.artifactsButton.style.fontSize = "11.5px";
+		this.artifactsButton.style.fontWeight = "600";
+		this.artifactsButton.style.padding = "3px 8px";
+		this.artifactsButton.style.borderRadius = "var(--borderRadius)";
+		this.artifactsButton.onclick = () => {
+			if (window.ui?.openPlanAndTaskList) {
+				window.ui.openPlanAndTaskList();
+			}
+		};
 
 		this.aiInfoDisplay = document.createElement("select");
 		this.aiInfoDisplay.classList.add("ai-info-display", "ai-provider-select");
@@ -516,8 +510,7 @@ class AIManager {
 		});
 
 
-		buttonContainer.append(this.agentModeToggle) // Add agent mode toggle
-		buttonContainer.append(this.planningModeToggle) // Add planning mode toggle
+		buttonContainer.append(this.artifactsButton);
 		buttonContainer.append(this.aiInfoDisplay); // Element is created, but content will be set by _updateAIInfoDisplay()
 		buttonContainer.append(this.rawViewButton); // Add raw view button
 		buttonContainer.append(this.settingsButton);
@@ -1124,7 +1117,7 @@ class AIManager {
 			<span class="halt-text">⚠️ Agent Loop Halted: No tool calls generated. There may be an issue.</span>
 			<div class="halt-actions" style="display: flex; gap: 8px; align-items: center; margin-left: 12px;">
 				<button class="halt-toggle theme-button secondary" style="padding: 4px 8px; font-size: 11px; min-width: 120px; background: rgba(255, 255, 255, 0.2); color: inherit; border: 1px solid rgba(255, 255, 255, 0.4); border-radius: var(--borderRadius); cursor: pointer; font-weight: 600;">
-					Auto-Continue: \${this.autoContinue ? 'ON' : 'OFF'}
+					Auto-Continue: ${this.autoContinue ? 'ON' : 'OFF'}
 				</button>
 				<button class="halt-continue theme-button" style="padding: 4px 8px; font-size: 11px; min-width: 80px; border-radius: var(--borderRadius); cursor: pointer; font-weight: 600;">Continue &gt;</button>
 			</div>
@@ -1137,7 +1130,7 @@ class AIManager {
 		const warnAutoToggle = warnBlock ? warnBlock.querySelector(".warn-auto-toggle") : null;
 
 		const syncUIState = () => {
-			toggleBtn.innerText = `Auto-Continue: \${this.autoContinue ? 'ON' : 'OFF'}`;
+			toggleBtn.innerText = `Auto-Continue: ${this.autoContinue ? 'ON' : 'OFF'}`;
 			if (this.autoContinue) {
 				haltBar.classList.add("auto-continue-enabled");
 			} else {
@@ -1486,7 +1479,7 @@ class AIManager {
 
 		// Since we now return early if `processedPrompt` is empty, we can unconditionally call the AI here.
 		const messagesForAI = this.historyManager.prepareMessagesForAI()
-		const systemPrompt = this.getSystemPrompt();
+		const systemPrompt = await this.getSystemPrompt();
 		this.ai.chat(messagesForAI, callbacks, systemPrompt)
 	}
 
@@ -1546,6 +1539,20 @@ class AIManager {
 				raw: content.substring(tc.startIdx, tc.endIdx)
 			};
 		});
+	}
+
+	_validateToolArguments(toolCall) {
+		if (!toolCall) return null;
+		const toolDef = tools.find(t => t.name === toolCall.name);
+		if (toolDef && toolDef.parameters && Array.isArray(toolDef.parameters.required)) {
+			const args = toolCall.arguments || {};
+			for (const reqParam of toolDef.parameters.required) {
+				if (args[reqParam] === undefined || args[reqParam] === null || args[reqParam] === "") {
+					return `Tool Error: ${toolCall.name} requires "${reqParam}" parameter`;
+				}
+			}
+		}
+		return null;
 	}
 
 	_showAgentApprovalCard(toolCall) {
@@ -1765,8 +1772,10 @@ class AIManager {
 				};
 
 				messagesForAI = this.historyManager.prepareMessagesForAI();
-				systemPrompt = this.getSystemPrompt();
-				this.ai.chat(messagesForAI, callbacks, systemPrompt);
+				this.getSystemPrompt().then(sysPrompt => {
+					systemPrompt = sysPrompt;
+					this.ai.chat(messagesForAI, callbacks, systemPrompt);
+				}).catch(reject);
 			});
 
 			try {
@@ -1860,10 +1869,31 @@ class AIManager {
 				// Execute all parsed tool calls sequentially
 				let accumulatedResponses = [];
 				let hasPlan = false;
+				let hasDone = false;
 
 				for (const toolCall of toolCalls) {
 					let toolResult = "";
 					let approved = true;
+
+					// Validate required arguments before executing or showing approvals
+					const validationError = this._validateToolArguments(toolCall);
+					if (validationError) {
+						accumulatedResponses.push(`[Tool Response: ${toolCall.name}]\n\n${validationError}`);
+
+						// Render tool finished/failed block in the chat
+						const toolConfBlock = document.createElement("div");
+						toolConfBlock.className = "agent-tool-finished";
+						toolConfBlock.innerHTML = `
+							<ui-icon style="color: var(--color-error, #dc3545);">close</ui-icon>
+							<span>Tool <code>${toolCall.name}</code> failed validation.</span>
+						`;
+						const shouldScroll = this._shouldAutoScroll();
+						this.conversationArea.append(toolConfBlock);
+						if (shouldScroll && this.conversationArea) {
+							this.conversationArea.scrollTop = this.conversationArea.scrollHeight;
+						}
+						continue;
+					}
 
 					// Identify if tool is destructive
 					const isDestructive = ["create_file"].includes(toolCall.name);
@@ -1899,6 +1929,10 @@ class AIManager {
 						hasPlan = true;
 					}
 
+					if (toolCall.name === "done") {
+						hasDone = true;
+					}
+
 					// Render simple system or message confirmation of tool run in the chat
 					const toolConfBlock = document.createElement("div");
 					toolConfBlock.className = "agent-tool-finished";
@@ -1927,7 +1961,7 @@ class AIManager {
 					await workspaceClient.setSession(this.activeSession.id, this.activeSession);
 				}
 
-				if (hasPlan) {
+				if (hasPlan || hasDone) {
 					this._isProcessing = false;
 				}
 
@@ -1938,8 +1972,8 @@ class AIManager {
 					this.messageRenderer.addCodeBlockButtons(responseBlock, modelMessage);
 				}
 
-				// If the agent created a plan, we stop the loop to wait for user feedback.
-				if (hasPlan) {
+				// If the agent created a plan or finished, we stop the loop to wait for user feedback/actions.
+				if (hasPlan || hasDone) {
 					this._setButtonsDisabledState(false);
 					this._dispatchContextUpdate("append_model");
 					break;
@@ -2247,6 +2281,11 @@ class AIManager {
 		const storedAgentMode = localStorage.getItem("aiAgentMode")
 		if (storedAgentMode !== null) {
 			this.agentMode = storedAgentMode === "true"
+		}
+
+		const storedForgivenessMode = localStorage.getItem("aiForgivenessMode")
+		if (storedForgivenessMode !== null) {
+			this.forgivenessMode = storedForgivenessMode === "true"
 		}
 	}
 }

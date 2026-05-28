@@ -52,8 +52,10 @@ var saveSidepanelWidth
 
 let isResizingSidebar = false; // Flag to hide panel content during manual resize to prevent jank
 const uiManager = {
+	_isDrawerTransitioningToClosed: false,
+
 	isDrawerOpen: () => {
-		return drawer && drawer.offsetHeight > 40;
+		return drawer && drawer.offsetHeight > 40 && !uiManager._isDrawerTransitioningToClosed;
 	},
 
 	toggleDrawer: (forceState) => {
@@ -62,6 +64,7 @@ const uiManager = {
 
 		if (targetState) {
 			// Opening
+			uiManager._isDrawerTransitioningToClosed = false;
 			drawer.style.height = drawerLastHeight + "px";
 			const drawerToggle = document.querySelector("#drawerToggle");
 			if (drawerToggle) drawerToggle.icon = "expand_more";
@@ -71,6 +74,7 @@ const uiManager = {
 			}
 		} else {
 			// Closing
+			uiManager._isDrawerTransitioningToClosed = true;
 			if (isOpen) {
 				drawerLastHeight = drawer.offsetHeight - 4; // Subtract border/handle visual
 			}
@@ -192,11 +196,17 @@ const uiManager = {
 			mainContent.style.bottom = drawer.offsetHeight + "px"
 			saveSidepanelWidth()
 			if (window.terminalManager && uiManager.isDrawerOpen()) {
-				window.terminalManager.fit();
+				setTimeout(() => {
+					if (uiManager.isDrawerOpen()) window.terminalManager.fit();
+				}, 100);
 				// Ensure fit after sidebar transition
 				sidebar.removeEventListener("transitionend", uiManager._sidebarFitTerminalAfterTransition); // Prevent duplicate listeners
 				uiManager._sidebarFitTerminalAfterTransition = () => {
-					if (uiManager.isDrawerOpen()) window.terminalManager.fit();
+					if (uiManager.isDrawerOpen()) {
+						setTimeout(() => {
+							if (uiManager.isDrawerOpen()) window.terminalManager.fit();
+						}, 100);
+					}
 				};
 				sidebar.addEventListener("transitionend", uiManager._sidebarFitTerminalAfterTransition, { once: true });
 			}

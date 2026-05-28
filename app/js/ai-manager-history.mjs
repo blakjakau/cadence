@@ -638,7 +638,7 @@ class AIManagerHistory {
 					newContent = newContent.replace(/<task_list>[\s\S]*?<\/task_list>/gi, '');
 					// Strip JSON project management tools (if they leaked in as native tool calls)
 					// (These shouldn't be in msg.content if they are native, but if they were serialized, strip them)
-					newContent = newContent.replace(/<tool_call\s+name=["'](create_implementation_plan|update_task_list|complete_task)["']\s*>[\s\S]*?<\/tool_call>/gi, '');
+					newContent = newContent.replace(/<tool_call\s+name=["'](create_implementation_plan|update_task_list|complete_task|done)["']\s*>[\s\S]*?<\/tool_call>/gi, '');
 					// Strip legacy task completion signals
 					// Strip task completion signals
 					newContent = newContent.replace(/<complete_task>[\s\S]*?<\/complete_task>/gi, '');

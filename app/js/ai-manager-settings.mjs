@@ -76,6 +76,7 @@ class AIManagerSettings {
             systemPromptAvoidedTechnologies: (systemPromptConfig.avoidedTechnologies || []).join(", "),
             systemPromptTone: (systemPromptConfig.tone || ["warm", "playful", "cheeky"]).join(", "),
             "ai-provider": aiManager.aiProvider,
+            forgivenessMode: aiManager.forgivenessMode,
         }
         for (const key in providerOptions) {
             values[`${aiManager.aiProvider}-${key}`] = providerOptions[key].value
@@ -84,6 +85,7 @@ class AIManagerSettings {
         // Build the schema that defines the form structure
         const schema = [
             { type: "checkbox", id: "use-workspace-settings", label: "Use workspace-specific settings" },
+            { type: "checkbox", id: "forgivenessMode", label: "Forgiveness Mode (Apply edits immediately, rollback anytime)" },
             { type: "number", id: "summarizeThreshold", label: "Summarize History When Context Reaches (%)" },
             { type: "number", id: "summarizeTargetPercentage", label: "Percentage of Old History to Summarize" },
             { type: "heading", label: "Prompt Customisation" },
@@ -186,6 +188,10 @@ class AIManagerSettings {
         aiManager.config.summarizeTargetPercentage = parseInt(values.summarizeTargetPercentage);
         localStorage.setItem("summarizeThreshold", aiManager.config.summarizeThreshold);
         localStorage.setItem("summarizeTargetPercentage", aiManager.config.summarizeTargetPercentage);
+
+        // --- Save Forgiveness Mode ---
+        aiManager.forgivenessMode = !!values.forgivenessMode;
+        localStorage.setItem("aiForgivenessMode", aiManager.forgivenessMode);
 
         // --- Save System Prompt Settings ---
         const systemPromptConfig = {
