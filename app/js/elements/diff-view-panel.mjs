@@ -5,132 +5,79 @@ import workspaceClient from '../workspace-client.mjs';
 export class DiffViewPanel extends Block {
     constructor() {
         super();
-        this.style.cssText = "display: flex; flex-direction: column; position: absolute; top: var(--tabHeight); left: 0; right: 0; bottom: 0; overflow: hidden; background: var(--bg-primary); z-index: 2; pointer-events: auto !important;";
-
-        // 0. Programmatically inject CSS styles for diff markers and gutter decorations
-        if (!document.getElementById("diff-view-panel-styles")) {
-            const style = document.createElement("style");
-            style.id = "diff-view-panel-styles";
-            style.textContent = `
-                .diff-marker-addition {
-                    position: absolute;
-                    background-color: rgba(46, 160, 67, 0.18) !important;
-                    z-index: 20;
-                }
-                .diff-marker-deletion {
-                    position: absolute;
-                    background-color: rgba(248, 81, 73, 0.18) !important;
-                    z-index: 20;
-                }
-                .diff-marker-empty {
-                    position: absolute;
-                    background-color: rgba(128, 128, 128, 0.05) !important;
-                    background-image: repeating-linear-gradient(45deg, rgba(0,0,0,0.03), rgba(0,0,0,0.03) 10px, transparent 10px, transparent 20px) !important;
-                    z-index: 20;
-                }
-                .diff-gutter-addition {
-                    background-color: rgba(46, 160, 67, 0.3) !important;
-                    color: #2da44e !important;
-                    font-weight: bold;
-                }
-                .diff-gutter-deletion {
-                    background-color: rgba(248, 81, 73, 0.3) !important;
-                    color: #cf222e !important;
-                    font-weight: bold;
-                }
-                .diff-gutter-empty {
-                    background-color: rgba(128, 128, 128, 0.1) !important;
-                    opacity: 0.5;
-                }
-                .diff-scrollbar-marker-overlay {
-                    position: absolute;
-                    right: 0;
-                    top: 0;
-                    bottom: 0;
-                    pointer-events: none;
-                    z-index: 100;
-                }
-                .diff-scrollbar-marker {
-                    position: absolute;
-                    left: 0;
-                    right: 0;
-                    height: 3px;
-                    border-radius: 1px;
-                    z-index: 101;
-                    box-shadow: 0 0.5px 1px rgba(0, 0, 0, 0.4);
-                }
-            `;
-            document.head.appendChild(style);
-        }
 
         // 1. Header Bar
         this.header = document.createElement("div");
         this.header.className = "diff-header";
-        this.header.style.cssText = "display: flex; align-items: center; justify-content: space-between; padding: 8px 16px; background: var(--bg-secondary); border-bottom: 1px solid var(--border-primary); height: var(--menuHeight); min-height: var(--menuHeight); box-sizing: border-box;";
 
         const headerLeft = document.createElement("div");
-        headerLeft.style.cssText = "display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600; color: var(--text-primary); overflow: hidden;";
+        headerLeft.className = "diff-header-left";
 
         const icon = document.createElement("ui-icon");
         icon.textContent = "difference";
-        icon.style.color = "var(--theme)";
 
         this.titleSpan = document.createElement("span");
-        this.titleSpan.style.cssText = "text-overflow: ellipsis; overflow: hidden; white-space: nowrap;";
+        this.titleSpan.className = "diff-header-title";
 
         headerLeft.appendChild(icon);
         headerLeft.appendChild(this.titleSpan);
+
+        // Jump to nearest edits navigation buttons
+        this.navContainer = document.createElement("div");
+        this.navContainer.className = "diff-header-nav";
+        this.navContainer.style.display = "none";
+
+        this.prevBtn = document.createElement("button");
+        this.prevBtn.className = "nav-btn";
+        this.prevBtn.innerHTML = "<ui-icon>chevron_left</ui-icon>";
+        this.prevBtn.title = "Previous Edit";
+
+        this.nextBtn = document.createElement("button");
+        this.nextBtn.className = "nav-btn";
+        this.nextBtn.innerHTML = "<ui-icon>chevron_right</ui-icon>";
+        this.nextBtn.title = "Next Edit";
+
+        this.navContainer.appendChild(this.prevBtn);
+        this.navContainer.appendChild(this.nextBtn);
+        headerLeft.appendChild(this.navContainer);
+
         this.header.appendChild(headerLeft);
 
-        const headerRight = document.createElement("div");
-        headerRight.style.cssText = "display: flex; align-items: center; gap: 12px;";
-
-        this.rollbackBtn = document.createElement("button");
-        this.rollbackBtn.className = "rollback-btn theme-button primary";
-        this.rollbackBtn.style.cssText = "padding: 4px 12px; font-size: 11px; display: flex; align-items: center; gap: 4px; border-radius: 4px; cursor: pointer; font-weight: 600; background: var(--theme); color: #ffffff; border: none;";
-        this.rollbackBtn.innerHTML = "<ui-icon style='font-size: 13px; color: #ffffff;'>undo</ui-icon><span>Rollback Changes</span>";
-
-        headerRight.appendChild(this.rollbackBtn);
-        this.header.appendChild(headerRight);
+        this.headerRight = document.createElement("div");
+        this.headerRight.className = "diff-header-right";
+        this.header.appendChild(this.headerRight);
         this.appendChild(this.header);
 
         // 2. Split Body Container
         this.body = document.createElement("div");
         this.body.className = "diff-split-container";
-        this.body.style.cssText = "display: flex; height: calc(100% - var(--menuHeight)); width: 100%; overflow: hidden; position: relative; pointer-events: auto !important;";
 
         // Left Panel (Original)
         this.leftPane = document.createElement("div");
         this.leftPane.className = "diff-pane left-pane";
-        this.leftPane.style.cssText = "flex: 1; height: 100%; border-right: 1px solid var(--border-primary); display: flex; flex-direction: column; position: relative; pointer-events: auto !important;";
 
-        const leftLabel = document.createElement("div");
-        leftLabel.className = "pane-label";
-        leftLabel.style.cssText = "padding: 6px 12px; font-size: 11px; font-weight: 600; background: var(--bg-secondary); color: var(--text-secondary); border-bottom: 1px solid var(--border-primary); text-transform: uppercase; letter-spacing: 0.5px;";
-        leftLabel.textContent = "Original (Backup)";
+        this.leftLabel = document.createElement("div");
+        this.leftLabel.className = "diff-pane-label";
+        this.leftLabel.textContent = "Original (Backup)";
 
         this.leftEditorDiv = document.createElement("div");
         this.leftEditorDiv.className = "diff-ace-editor-left";
-        this.leftEditorDiv.style.cssText = "position: absolute !important; top: 28px !important; bottom: 0px !important; left: 0px !important; right: 4px !important; pointer-events: auto !important;";
 
-        this.leftPane.appendChild(leftLabel);
+        this.leftPane.appendChild(this.leftLabel);
         this.leftPane.appendChild(this.leftEditorDiv);
 
         // Right Panel (Current)
         this.rightPane = document.createElement("div");
         this.rightPane.className = "diff-pane right-pane";
-        this.rightPane.style.cssText = "flex: 1; height: 100%; display: flex; flex-direction: column; position: relative; pointer-events: auto !important;";
 
-        const rightLabel = document.createElement("div");
-        rightLabel.className = "pane-label";
-        rightLabel.style.cssText = "padding: 6px 12px; font-size: 11px; font-weight: 600; background: var(--bg-secondary); color: var(--text-secondary); border-bottom: 1px solid var(--border-primary); text-transform: uppercase; letter-spacing: 0.5px;";
-        rightLabel.textContent = "Modified (Current)";
+        this.rightLabel = document.createElement("div");
+        this.rightLabel.className = "diff-pane-label";
+        this.rightLabel.textContent = "Modified (Current)";
 
         this.rightEditorDiv = document.createElement("div");
         this.rightEditorDiv.className = "diff-ace-editor-right";
-        this.rightEditorDiv.style.cssText = "position: absolute !important; top: 28px !important; bottom: 0px !important; left: 0px !important; right: 4px !important; pointer-events: auto !important;";
 
-        this.rightPane.appendChild(rightLabel);
+        this.rightPane.appendChild(this.rightLabel);
         this.rightPane.appendChild(this.rightEditorDiv);
 
         this.body.appendChild(this.leftPane);
@@ -148,9 +95,17 @@ export class DiffViewPanel extends Block {
         this.activeFilePath = null;
     }
 
-    async update(filePath, backupId) {
+    async update(filePath, backupId, tab = null) {
         this.activeBackupId = backupId;
         this.activeFilePath = filePath;
+
+        const normalize = (p) => p ? p.replace(/\\/g, '/').replace(/\/+/g, '/').replace(/^\//, '').replace(/\/$/, '') : '';
+        const pathsMatch = (p1, p2) => {
+            const n1 = normalize(p1);
+            const n2 = normalize(p2);
+            if (!n1 || !n2) return false;
+            return n1 === n2 || n1.endsWith('/' + n2) || n2.endsWith('/' + n1);
+        };
 
         const filename = filePath.split('/').pop();
         this.titleSpan.textContent = `Review Changes: ${filename}`;
@@ -175,14 +130,44 @@ export class DiffViewPanel extends Block {
         this.rightMarkers = [];
 
         try {
-            // 1. Get original content
+            const isReloadDiff = tab && tab.config?.fileModified === true;
+            const isForgivenessMode = !isReloadDiff && !!backupId;
+            let originalContent = "";
+            let currentContent = "";
+            
             const { default: AgentBackup } = await import('../agent/agent-backup.mjs');
-            const originalContent = await AgentBackup.rollback(backupId);
 
-            // 2. Get current content from disk via Conduit
-            const fileData = await conduitClient.wsRead(filePath);
-            if (fileData.error) throw new Error(fileData.error);
-            const currentContent = decodeURIComponent(escape(atob(fileData.data)));
+            if (isReloadDiff) {
+                // Reload Diff Mode: Original is current editor content, Current is new content from disk
+                if (tab && tab.config?.session) {
+                    originalContent = tab.config.session.getValue();
+                } else {
+                    originalContent = "";
+                }
+
+                const fileData = await conduitClient.wsRead(filePath);
+                if (fileData.error) throw new Error(fileData.error);
+                currentContent = decodeURIComponent(escape(atob(fileData.data)));
+            } else if (isForgivenessMode) {
+                // Forgiveness Mode: Original is from backup, Current is on-disk
+                originalContent = await AgentBackup.rollback(backupId);
+
+                // Get current content from disk via Conduit (which has the committed edits)
+                const fileData = await conduitClient.wsRead(filePath);
+                if (fileData.error) throw new Error(fileData.error);
+                currentContent = decodeURIComponent(escape(atob(fileData.data)));
+            } else {
+                // Permission Mode / User Edits: Original is on-disk, Current is dirty/in-memory
+                const fileData = await conduitClient.wsRead(filePath);
+                if (fileData.error) throw new Error(fileData.error);
+                originalContent = decodeURIComponent(escape(atob(fileData.data)));
+
+                if (tab && tab.config?.session) {
+                    currentContent = tab.config.session.getValue();
+                } else {
+                    currentContent = originalContent; // Fallback
+                }
+            }
 
             // Determine Ace mode based on filename extension
             let mode = "ace/mode/text";
@@ -202,6 +187,43 @@ export class DiffViewPanel extends Block {
 
             // Run LCS line diffing algorithm
             const diff = diffLines(origLines, currLines);
+
+            // Calculate line counters for additions/deletions
+            let addedCount = 0;
+            let deletedCount = 0;
+            diff.forEach(item => {
+                if (item.type === 'delete') {
+                    deletedCount++;
+                } else if (item.type === 'add') {
+                    addedCount++;
+                }
+            });
+
+            let leftLabelText = "";
+            let rightLabelText = "";
+
+            if (isReloadDiff) {
+                leftLabelText = "Current Editor Content";
+                rightLabelText = "New Content on Disk";
+            } else if (isForgivenessMode) {
+                leftLabelText = "Original (Backup)";
+                rightLabelText = "Modified (Current)";
+            } else {
+                leftLabelText = "Original (On Disk)";
+                rightLabelText = "Modified (Current)";
+            }
+
+            if (deletedCount > 0) {
+                this.leftLabel.innerHTML = `<span>${leftLabelText}</span><span class="diff-counter diff-counter-delete">-${deletedCount}</span>`;
+            } else {
+                this.leftLabel.innerHTML = `<span>${leftLabelText}</span>`;
+            }
+
+            if (addedCount > 0) {
+                this.rightLabel.innerHTML = `<span>${rightLabelText}</span><span class="diff-counter diff-counter-add">+${addedCount}</span>`;
+            } else {
+                this.rightLabel.innerHTML = `<span>${rightLabelText}</span>`;
+            }
 
             // Build aligned padded text contents
             const leftContentLines = [];
@@ -246,6 +268,29 @@ export class DiffViewPanel extends Block {
             this.rightEditor.setTheme(theme);
             this.rightEditor.getSession().setMode(mode);
             this.rightEditor.setValue(rightContentText, -1);
+
+            // 5. Setup One-time Selection Syncing
+            if (!this._selectionSyncSetup && this.leftEditor && this.rightEditor) {
+                let isSyncingSelection = false;
+                
+                const syncSelection = (source, target) => {
+                    if (isSyncingSelection) return;
+                    isSyncingSelection = true;
+                    const range = source.selection.getRange();
+                    target.selection.setRange(range);
+                    isSyncingSelection = false;
+                };
+
+                this.leftEditor.selection.on("changeSelection", () => {
+                    syncSelection(this.leftEditor, this.rightEditor);
+                });
+
+                this.rightEditor.selection.on("changeSelection", () => {
+                    syncSelection(this.rightEditor, this.leftEditor);
+                });
+
+                this._selectionSyncSetup = true;
+            }
 
             // Clear old markers
             if (this.leftMarkers) {
@@ -334,6 +379,81 @@ export class DiffViewPanel extends Block {
                 this.leftEditor.getSession().setScrollLeft(scrollLeft);
             });
 
+            // Calculate contiguous modified blocks for prev/next jump navigation
+            const changeBlocks = [];
+            let currentBlock = null;
+
+            diff.forEach((item, row) => {
+                const isChange = (item.type === 'delete' || item.type === 'add');
+                if (isChange) {
+                    if (!currentBlock) {
+                        currentBlock = { start: row, end: row };
+                    } else {
+                        currentBlock.end = row;
+                    }
+                } else {
+                    if (currentBlock) {
+                        changeBlocks.push(currentBlock);
+                        currentBlock = null;
+                    }
+                }
+            });
+            if (currentBlock) {
+                changeBlocks.push(currentBlock);
+            }
+
+            if (changeBlocks.length > 0) {
+                this.navContainer.style.display = "flex";
+
+                const getNearestBlockIndex = (direction) => {
+                    if (changeBlocks.length === 0) return -1;
+                    const topRow = this.leftEditor.getFirstVisibleRow();
+                    const targetRow = topRow + 5;
+                    
+                    if (direction === 'next') {
+                        for (let i = 0; i < changeBlocks.length; i++) {
+                            if (changeBlocks[i].start > targetRow + 1) {
+                                return i;
+                            }
+                        }
+                        return 0; // Wrap around to first
+                    } else {
+                        for (let i = changeBlocks.length - 1; i >= 0; i--) {
+                            if (changeBlocks[i].start < targetRow - 1) {
+                                return i;
+                            }
+                        }
+                        return changeBlocks.length - 1; // Wrap around to last
+                    }
+                };
+
+                const jumpToBlock = (index) => {
+                    if (changeBlocks.length === 0 || index < 0 || index >= changeBlocks.length) return;
+                    const block = changeBlocks[index];
+                    const targetRow = Math.max(0, block.start - 5);
+                    this.leftEditor.scrollToRow(targetRow);
+                    this.rightEditor.scrollToRow(targetRow);
+                };
+
+                this.prevBtn.onclick = (e) => {
+                    e.stopPropagation();
+                    const idx = getNearestBlockIndex('prev');
+                    if (idx !== -1) {
+                        jumpToBlock(idx);
+                    }
+                };
+
+                this.nextBtn.onclick = (e) => {
+                    e.stopPropagation();
+                    const idx = getNearestBlockIndex('next');
+                    if (idx !== -1) {
+                        jumpToBlock(idx);
+                    }
+                };
+            } else {
+                this.navContainer.style.display = "none";
+            }
+
             // Trigger a deferred resize to ensure correct rendering and scroll behavior
             setTimeout(() => {
                 if (this.leftEditor) {
@@ -346,62 +466,253 @@ export class DiffViewPanel extends Block {
                 }
             }, 50);
 
-            // Wire Rollback Button
-            this.rollbackBtn.onclick = async () => {
-                const confirmed = await window.modal.confirm(`Are you sure you want to rollback all changes to ${filename}?`, "Rollback Changes");
-                if (!confirmed) return;
+            // Clear previous header buttons dynamically
+            this.headerRight.innerHTML = "";
 
-                try {
-                    this.rollbackBtn.disabled = true;
-                    this.rollbackBtn.innerHTML = "<ui-icon class='spinner' style='color:#ffffff;'>sync</ui-icon><span>Rolling back...</span>";
-
-                    // Apply rollback
-                    const content = await AgentBackup.rollback(backupId);
-                    const base64Content = btoa(unescape(encodeURIComponent(content)));
-                    const result = await conduitClient.wsWrite(filePath, base64Content);
-                    if (result.error) throw new Error(result.error);
-
-                    // Update active editor tab session if open
-                    const clean = (p) => p ? p.replace(/\\/g, '/') : '';
-                    const normPath = clean(filePath);
-                    const allOpenTabs = [...(ui.leftTabs?.tabs || []), ...(ui.rightTabs?.tabs || [])];
-                    const tab = allOpenTabs.find(t => clean(t.config?.path) === normPath);
-                    if (tab && tab.config.session) {
-                        tab.config.session.setValue(content);
-                        tab.config.session.baseValue = content;
-                        tab.changed = false;
+            if (isReloadDiff) {
+                // Reload Diff Mode: Render Reload & Dismiss buttons
+                const dismissBtn = document.createElement("button");
+                dismissBtn.className = "cancel";
+                dismissBtn.innerHTML = "<ui-icon>close</ui-icon><span>Dismiss</span>";
+                dismissBtn.onclick = () => {
+                    tab.config.fileModified = false;
+                    const isDirty = tab.config.session.getValue() !== tab.config.session.baseValue;
+                    tab.changed = isDirty;
+                    
+                    const side = tab.config.side || 'left';
+                    if (window.ui && window.ui.hideFileModifiedNotice) {
+                        window.ui.hideFileModifiedNotice(side);
                     }
+                    tab.config.viewMode = "edit";
+                    tab.click();
+                };
 
-                    // Mark as rolled back in the session modifiedFiles state
-                    const session = ui.aiManager.activeSession;
-                    if (session && session.modifiedFiles && session.modifiedFiles[filePath]) {
-                        session.modifiedFiles[filePath] = session.modifiedFiles[filePath].filter(b => b.backupId !== backupId);
-                        if (session.modifiedFiles[filePath].length === 0) {
-                            delete session.modifiedFiles[filePath];
+                const reloadBtn = document.createElement("button");
+                reloadBtn.className = "apply";
+                reloadBtn.innerHTML = "<ui-icon>sync</ui-icon><span>Reload File</span>";
+                reloadBtn.onclick = async () => {
+                    if (window.ui && window.ui.reloadFile) {
+                        await window.ui.reloadFile(tab);
+                    }
+                    const side = tab.config.side || 'left';
+                    if (window.ui && window.ui.hideFileModifiedNotice) {
+                        window.ui.hideFileModifiedNotice(side);
+                    }
+                    tab.config.viewMode = "edit";
+                    tab.click();
+                };
+
+                this.headerRight.appendChild(reloadBtn);
+                this.headerRight.appendChild(dismissBtn);
+            } else if (isForgivenessMode) {
+                // Forgiveness Mode: Render Rollback button
+                const rollbackBtn = document.createElement("button");
+                rollbackBtn.className = "rollback";
+                rollbackBtn.innerHTML = "<ui-icon>undo</ui-icon><span>Rollback Changes</span>";
+                
+                rollbackBtn.onclick = async () => {
+                    const confirmed = await window.modal.confirm(`Are you sure you want to rollback all changes to ${filename}?`, "Rollback Changes");
+                    if (!confirmed) return;
+
+                    try {
+                        rollbackBtn.disabled = true;
+                        rollbackBtn.innerHTML = "<ui-icon class='spinner'>sync</ui-icon><span>Rolling back...</span>";
+
+                        // Apply rollback
+                        const content = await AgentBackup.rollback(backupId);
+                        const base64Content = btoa(unescape(encodeURIComponent(content)));
+                        const result = await conduitClient.wsWrite(filePath, base64Content);
+                        if (result.error) throw new Error(result.error);
+
+                        // Update active editor tab session if open
+                        const allOpenTabs = [...(ui.leftTabs?.tabs || []), ...(ui.rightTabs?.tabs || [])];
+                        const targetTab = allOpenTabs.find(t => pathsMatch(t.config?.path, filePath));
+                        if (targetTab && targetTab.config.session) {
+                            targetTab.config.session.setValue(content);
+                            targetTab.config.session.baseValue = content;
+                            targetTab.changed = false;
                         }
-                        await workspaceClient.setSession(session.id, session);
-                    }
 
-                    window.modal.toast(`Successfully rolled back ${filename} to original state.`);
+                        // Mark as rolled back in the session modifiedFiles state
+                        const session = ui.aiManager.activeSession;
+                        if (session && session.modifiedFiles) {
+                            const matchedKey = Object.keys(session.modifiedFiles).find(k => pathsMatch(k, filePath));
+                            if (matchedKey) {
+                                session.modifiedFiles[matchedKey] = session.modifiedFiles[matchedKey].filter(b => b.backupId !== backupId);
+                                if (session.modifiedFiles[matchedKey].length === 0) {
+                                    delete session.modifiedFiles[matchedKey];
+                                }
+                                await workspaceClient.setSession(session.id, session);
+                            }
+                        }
 
-                    // Close current diff tab
-                    const diffTab = allOpenTabs.find(t => t.config?.path === `diff_${backupId}`);
-                    if (diffTab) {
-                        diffTab.tabBar.remove(diffTab, true);
-                    }
+                        window.modal.toast(`Successfully rolled back ${filename} to original state.`);
 
-                    // Trigger a redraw of Settings and Artifacts view
-                    if (window.ui?.renderPlanTasksView) {
-                        const containers = document.querySelectorAll(".plan-tasks-view");
-                        containers.forEach(c => window.ui.renderPlanTasksView(c));
+                        if (tab) {
+                            tab.config.viewMode = "edit";
+                            tab.click();
+                        } else {
+                            // Close standalone diff tab if any
+                            const diffTab = allOpenTabs.find(t => t.config?.path === `diff_${backupId}`);
+                            if (diffTab) {
+                                diffTab.tabBar.remove(diffTab, true);
+                            }
+                        }
+
+                        // Trigger a redraw of Settings and Artifacts view
+                        if (window.ui?.renderPlanTasksView) {
+                            const containers = document.querySelectorAll(".plan-tasks-view");
+                            containers.forEach(c => window.ui.renderPlanTasksView(c));
+                        }
+                    } catch (err) {
+                        console.error("Rollback failed:", err);
+                        window.modal.notice(`Rollback failed:<br><small>${err.message}</small>`, "Rollback Error");
+                        rollbackBtn.disabled = false;
+                        rollbackBtn.innerHTML = "<ui-icon>undo</ui-icon><span>Rollback Changes</span>";
                     }
-                } catch (err) {
-                    console.error("Rollback failed:", err);
-                    window.modal.notice(`Rollback failed:<br><small>${err.message}</small>`, "Rollback Error");
-                    this.rollbackBtn.disabled = false;
-                    this.rollbackBtn.innerHTML = "<ui-icon style='font-size: 13px; color: #ffffff;'>undo</ui-icon><span>Rollback Changes</span>";
+                };
+                const cancelBtn = document.createElement("button");
+                cancelBtn.className = "cancel";
+                cancelBtn.innerHTML = "<ui-icon>close</ui-icon><span>Cancel</span>";
+                cancelBtn.onclick = () => {
+                    if (tab) {
+                        tab.config.viewMode = "edit";
+                        tab.click();
+                    }
+                };
+                this.headerRight.appendChild(rollbackBtn);
+                this.headerRight.appendChild(cancelBtn);
+            } else {
+                // Determine if this is an AI-driven pending edit (Permission Mode) or a standard User manual edit
+                const isAIPendingEdits = (() => {
+                    const activeSession = window.ui?.aiManager?.activeSession;
+                    if (activeSession && activeSession.pendingEdits) {
+                        return !!Object.keys(activeSession.pendingEdits).find(k => pathsMatch(k, filePath));
+                    }
+                    return false;
+                })();
+
+                if (isAIPendingEdits) {
+                    // AI Permission Mode: Render Discard & Apply buttons
+                    const discardBtn = document.createElement("button");
+                    discardBtn.className = "discard";
+                    discardBtn.innerHTML = "<ui-icon>close</ui-icon><span>Discard</span>";
+                    
+                    discardBtn.onclick = async () => {
+                        const confirmed = await window.modal.confirm(`Are you sure you want to discard all pending changes to ${filename}?`, "Discard Changes");
+                        if (!confirmed) return;
+
+                        const activeSession = window.ui?.aiManager?.activeSession;
+                        if (activeSession && activeSession.pendingEdits) {
+                            const matchedKey = Object.keys(activeSession.pendingEdits).find(k => pathsMatch(k, filePath));
+                            if (matchedKey) {
+                                delete activeSession.pendingEdits[matchedKey];
+                                await workspaceClient.setSession(activeSession.id, activeSession);
+                            }
+                        }
+
+                        if (tab && tab.config?.session) {
+                            tab.config.session.setValue(originalContent);
+                            tab.changed = false;
+                            tab.config.viewMode = "edit";
+                            tab.click();
+                        }
+                    };
+
+                    const applyBtn = document.createElement("button");
+                    applyBtn.className = "apply";
+                    applyBtn.innerHTML = "<ui-icon>check</ui-icon><span>Apply Changes</span>";
+                    
+                    applyBtn.onclick = async () => {
+                        try {
+                            applyBtn.disabled = true;
+                            applyBtn.innerHTML = "<ui-icon class='spinner'>sync</ui-icon><span>Applying...</span>";
+
+                            if (tab && window.saveFileTab) {
+                                await window.saveFileTab(tab);
+                                tab.config.session.baseValue = tab.config.session.getValue();
+                                tab.changed = false;
+
+                                const activeSession = window.ui?.aiManager?.activeSession;
+                                if (activeSession && activeSession.pendingEdits) {
+                                    const matchedKey = Object.keys(activeSession.pendingEdits).find(k => pathsMatch(k, filePath));
+                                    if (matchedKey) {
+                                        delete activeSession.pendingEdits[matchedKey];
+                                        await workspaceClient.setSession(activeSession.id, activeSession);
+                                    }
+                                }
+
+                                tab.config.viewMode = "edit";
+                                tab.click();
+                                window.modal.toast(`Successfully applied and saved changes to ${filename}.`);
+                            }
+                        } catch (err) {
+                            console.error("Apply changes failed:", err);
+                            window.modal.notice(`Apply changes failed:<br><small>${err.message}</small>`, "Apply Error");
+                            applyBtn.disabled = false;
+                            applyBtn.innerHTML = "<ui-icon>check</ui-icon><span>Apply Changes</span>";
+                        }
+                    };
+
+                    this.headerRight.appendChild(discardBtn);
+                    this.headerRight.appendChild(applyBtn);
+                } else {
+                    // User Local Edits Mode: Render Save, Keep Editing, and Revert buttons
+                    const revertBtn = document.createElement("button");
+                    revertBtn.className = "cancel";
+                    revertBtn.innerHTML = "<ui-icon>undo</ui-icon><span>Revert</span>";
+                    revertBtn.onclick = async () => {
+                        const confirmed = await window.modal.confirm(`Are you sure you want to revert all unsaved local changes to ${filename}?`, "Revert Changes");
+                        if (!confirmed) return;
+
+                        if (tab && tab.config?.session) {
+                            tab.config.session.setValue(originalContent);
+                            tab.changed = false;
+                            tab.config.viewMode = "edit";
+                            tab.click();
+                        }
+                    };
+
+                    const keepEditingBtn = document.createElement("button");
+                    keepEditingBtn.className = "cancel";
+                    keepEditingBtn.innerHTML = "<ui-icon>edit</ui-icon><span>Keep Editing</span>";
+                    keepEditingBtn.onclick = () => {
+                        if (tab) {
+                            tab.config.viewMode = "edit";
+                            tab.click();
+                        }
+                    };
+
+                    const saveBtn = document.createElement("button");
+                    saveBtn.className = "apply";
+                    saveBtn.innerHTML = "<ui-icon>save</ui-icon><span>Save</span>";
+                    saveBtn.onclick = async () => {
+                        try {
+                            saveBtn.disabled = true;
+                            saveBtn.innerHTML = "<ui-icon class='spinner'>sync</ui-icon><span>Saving...</span>";
+
+                            if (tab && window.saveFileTab) {
+                                await window.saveFileTab(tab);
+                                tab.config.session.baseValue = tab.config.session.getValue();
+                                tab.changed = false;
+
+                                tab.config.viewMode = "edit";
+                                tab.click();
+                                window.modal.toast(`Successfully saved changes to ${filename}.`);
+                            }
+                        } catch (err) {
+                            console.error("Save changes failed:", err);
+                            window.modal.notice(`Save changes failed:<br><small>${err.message}</small>`, "Save Error");
+                            saveBtn.disabled = false;
+                            saveBtn.innerHTML = "<ui-icon>save</ui-icon><span>Save</span>";
+                        }
+                    };
+
+                    this.headerRight.appendChild(saveBtn);
+                    this.headerRight.appendChild(keepEditingBtn);
+                    this.headerRight.appendChild(revertBtn);
                 }
-            };
+            }
         } catch (err) {
             console.error("Error loading diff view:", err);
             window.modal.notice(`Error loading diff view:<br><small>${err.message}</small>`, "Diff Loading Error");
@@ -515,16 +826,7 @@ function drawScrollbarMarkers(editor, rows, color) {
 
     overlay = document.createElement("div");
     overlay.className = "diff-scrollbar-marker-overlay";
-    overlay.style.cssText = `
-        position: absolute;
-        right: 8px;
-        top: 0;
-        bottom: 0;
-        width: 3px;
-        pointer-events: none;
-        z-index: 100;
-        display: ${scrollbarEl.style.display === 'none' ? 'none' : 'block'};
-    `;
+    overlay.style.display = scrollbarEl.style.display === 'none' ? 'none' : 'block';
 
     const totalRows = editor.getSession().getLength();
     if (totalRows <= 0) return;

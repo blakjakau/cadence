@@ -148,7 +148,12 @@ export class EditorHolder extends Panel {
         return this._side;
     }
 
-    
+    _adjustEditorTop() {
+		const offset = this.tabs.offsetHeight + this.editorHeaderBar.offsetHeight
+        this.editorElement.style.top = `${offset}px`;
+        this.editorElement.style.height = `calc(100% - ${offset}px)`;
+        if (this.editor && typeof this.editor.resize === "function") this.editor.resize();
+    }
 
     _updateContentVisibility(isEmpty) {
         console.debug(`EditorHolder ${this.id}: _updateContentVisibility called with isEmpty: ${isEmpty}`);
@@ -190,15 +195,33 @@ export class EditorHolder extends Panel {
         overlay.classList.add("holder-overlay");
         this.appendChild(overlay);
 
-        // Add file modified notice bar
+        // Add unified premium header notice bar
         const noticeBar = document.createElement("div");
         noticeBar.setAttribute("id", `${this.id}FileModifiedNotice`);
-        noticeBar.classList.add("notice-bar");
-        noticeBar.style.display = "none";
-        noticeBar.innerHTML = `
-            <span>This file has been modified outside the editor.</span>
-            <button rel="reload">Reload</button> <button rel="dismiss">X</button> `;
+        noticeBar.className = "editor-header-bar";
+        
+        const leftSide = document.createElement("div");
+        leftSide.className = "left-side";
+        
+        const statusIcon = document.createElement("ui-icon");
+        
+        const statusText = document.createElement("span");
+        
+        leftSide.appendChild(statusIcon);
+        leftSide.appendChild(statusText);
+        noticeBar.appendChild(leftSide);
+        
+        const rightSide = document.createElement("div");
+        rightSide.className = "right-side";
+        noticeBar.appendChild(rightSide);
+        
         this.appendChild(noticeBar);
+        
+        this.editorHeaderBar = noticeBar;
+        this.editorHeaderLeft = leftSide;
+        this.editorHeaderRight = rightSide;
+        this.editorHeaderIcon = statusIcon;
+        this.editorHeaderText = statusText;
 
         // Add agent edits notice bar
         const agentEditsBar = document.createElement("div");
@@ -219,6 +242,198 @@ export class EditorHolder extends Panel {
             </div>
         `;
         this.appendChild(agentEditsBar);
+    }
+
+    async updateNoticeBar(tab) {
+        if (!tab || !tab.config || tab.config.viewMode === "diff") {
+            this.editorHeaderBar.style.display = "none";
+            this.editorElement.style.top = "";
+            this.editorElement.style.height = "";
+            if (this.editor && typeof this.editor.resize === "function") this.editor.resize();
+            return;
+        }
+
+        const path = tab.config.path;
+        const side = tab.config.side || (this.id === 'leftHolder' ? 'left' : 'right');
+
+        // Check 1: Reload Notification (File modified outside)
+        if (tab.config.fileModified) {
+            this.editorHeaderBar.style.display = "flex";
+            this.editorHeaderBar.className = "editor-header-bar modified-external";
+            this.editorHeaderIcon.textContent = "warning";
+            this.editorHeaderIcon.style.color = "";
+            this.editorHeaderText.textContent = "This file has been modified outside the editor.";
+            
+            // Rebuild buttons
+            this.editorHeaderRight.innerHTML = "";
+            
+            const reloadBtn = document.createElement("button");
+            reloadBtn.className = "primary";
+            reloadBtn.textContent = "Reload";
+            reloadBtn.setAttribute("rel", "reload");
+            reloadBtn.onclick = async () => {
+                if (window.ui && window.ui.reloadFile) {
+                    await window.ui.reloadFile(tab);
+                }
+                if (window.ui && window.ui.hideFileModifiedNotice) {
+                    window.ui.hideFileModifiedNotice(side);
+                }
+            };
+
+            const diffBtn = document.createElement("button");
+            diffBtn.className = "secondary";
+            diffBtn.innerHTML = `<ui-icon style="font-size: 13px;">difference</ui-icon> Show Diff`;
+            diffBtn.onclick = () => {
+                tab.config.viewMode = "diff";
+                tab.click();
+            };
+            
+            const dismissBtn = document.createElement("button");
+            dismissBtn.className = "cancel";
+            dismissBtn.textContent = "Dismiss";
+            dismissBtn.setAttribute("rel", "dismiss");
+            dismissBtn.onclick = () => {
+                tab.config.fileModified = false;
+                const isDirty = tab.config.session.getValue() !== tab.config.session.baseValue;
+                tab.changed = isDirty;
+                if (window.ui && window.ui.fileList) {
+                    const fileItem = window.ui.fileList.find(tab.config.handle);
+                    if (fileItem && fileItem.length > 0) {
+                        fileItem[0].changed = isDirty;
+                    }
+                }
+                if (window.ui && window.ui.hideFileModifiedNotice) {
+                    window.ui.hideFileModifiedNotice(side);
+                }
+            };
+            
+            this.editorHeaderRight.appendChild(reloadBtn);
+            this.editorHeaderRight.appendChild(diffBtn);
+            this.editorHeaderRight.appendChild(dismissBtn);
+
+            this._adjustEditorTop()
+            return;
+        }
+
+        const normalize = (p) => p ? p.replace(/\\/g, '/').replace(/\/+/g, '/').replace(/^\//, '').replace(/\/$/, '') : '';
+        const pathsMatch = (p1, p2) => {
+            const n1 = normalize(p1);
+            const n2 = normalize(p2);
+            if (!n1 || !n2) return false;
+            return n1 === n2 || n1.endsWith('/' + n2) || n2.endsWith('/' + n1);
+        };
+
+        // Check 2: Active AI session states (purely state-driven based on active session backups and pending edits)
+        let hasBackups = false;
+        let latestBackup = null;
+        const session = window.ui?.aiManager?.activeSession;
+        
+        let backups = [];
+        if (session && session.modifiedFiles) {
+            const matchedKey = Object.keys(session.modifiedFiles).find(k => pathsMatch(k, path));
+            if (matchedKey) backups = session.modifiedFiles[matchedKey];
+        }
+        
+        if (backups.length > 0) {
+            hasBackups = true;
+            latestBackup = backups[backups.length - 1];
+        }
+
+        // Check if there are dirty pending changes in memory from the AI session (Permission Mode)
+        let hasPendingChanges = false;
+        if (session && session.pendingEdits) {
+            const matchedKey = Object.keys(session.pendingEdits).find(k => pathsMatch(k, path));
+            hasPendingChanges = tab.changed && matchedKey && !!session.pendingEdits[matchedKey];
+        }
+
+        if (hasPendingChanges) {
+            this.editorHeaderBar.style.display = "flex";
+            this.editorHeaderBar.className = "editor-header-bar pending-changes";
+            this.editorHeaderIcon.textContent = "edit";
+            this.editorHeaderIcon.style.color = "";
+            this.editorHeaderText.innerHTML = `Pending AI edits in memory. <span style="font-size: 11.5px; font-weight: normal; margin-left: 6px;">(Permission Mode)</span>`;
+            
+            this.editorHeaderRight.innerHTML = "";
+            
+            const diffBtn = document.createElement("button");
+            diffBtn.className = "primary";
+            diffBtn.innerHTML = `<ui-icon style="font-size: 13px;">difference</ui-icon> Show Diff`;
+            diffBtn.onclick = () => {
+                tab.config.viewMode = "diff";
+                tab.click();
+            };
+            
+            this.editorHeaderRight.appendChild(diffBtn);
+
+            this._adjustEditorTop()
+            return;
+        }
+
+        if (hasBackups && latestBackup) {
+            this.editorHeaderBar.style.display = "flex";
+            this.editorHeaderBar.className = "editor-header-bar rollback-protected";
+            this.editorHeaderIcon.textContent = "check_circle";
+            this.editorHeaderIcon.style.color = "";
+            this.editorHeaderText.innerHTML = `File edited by AI. Rollback protected. <span style="font-size: 11.5px; font-weight: normal; margin-left: 6px;">(Forgiveness Mode)</span>`;
+            
+            this.editorHeaderRight.innerHTML = "";
+            
+            const diffBtn = document.createElement("button");
+            diffBtn.className = "secondary";
+            diffBtn.innerHTML = `<ui-icon style="font-size: 13px;">difference</ui-icon> Show Diff`;
+            diffBtn.onclick = () => {
+                tab.config.viewMode = "diff";
+                tab.config.backupId = latestBackup.backupId;
+                tab.click();
+            };
+            
+            this.editorHeaderRight.appendChild(diffBtn);
+
+            this._adjustEditorTop()
+            return;
+        }
+
+        // Check if there are unsaved local user edits (since last save)
+        const isDirty = tab.config.session && tab.config.session.getValue() !== tab.config.session.baseValue;
+        if (!hasPendingChanges && isDirty) {
+            this.editorHeaderBar.style.display = "flex";
+            this.editorHeaderBar.className = "editor-header-bar user-changes";
+            this.editorHeaderIcon.textContent = "edit";
+            this.editorHeaderIcon.style.color = "";
+            this.editorHeaderText.innerHTML = `Unsaved local changes. <span style="color: var(--text-secondary); font-size: 11.5px; font-weight: normal; margin-left: 6px;">(User Edits)</span>`;
+            
+            this.editorHeaderRight.innerHTML = "";
+            
+            const diffBtn = document.createElement("button");
+            diffBtn.className = "primary";
+            diffBtn.innerHTML = `<ui-icon style="font-size: 13px;">difference</ui-icon> Show Diff`;
+            diffBtn.onclick = () => {
+                tab.config.viewMode = "diff";
+                tab.click();
+            };
+            
+            this.editorHeaderRight.appendChild(diffBtn);
+
+            this._adjustEditorTop()
+            return;
+        }
+
+        // Check 3: Fallback to hiding if agent edits notice bar is shown
+        const agentEditsBarId = (side === 'left') ? "leftHolderAgentEditsNotice" : "rightHolderAgentEditsNotice";
+        const agentEditsBar = document.getElementById(agentEditsBarId);
+        if (agentEditsBar && agentEditsBar.style.display === "flex") {
+            this.editorHeaderBar.style.display = "none";
+            this.editorElement.style.top = "";
+            this.editorElement.style.height = "";
+            if (this.editor && typeof this.editor.resize === "function") this.editor.resize();
+            return;
+        }
+
+        // Hide bar if no modifications or notifications
+        this.editorHeaderBar.style.display = "none";
+        this.editorElement.style.top = "";
+        this.editorElement.style.height = "";
+        if (this.editor && typeof this.editor.resize === "function") this.editor.resize();
     }
 }
 

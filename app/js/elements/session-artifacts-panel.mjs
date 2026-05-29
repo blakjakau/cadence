@@ -207,14 +207,23 @@ export class SessionArtifactsPanel extends Block {
 
         this.forgivenessModeCheckbox.addEventListener("change", async (e) => {
             const checked = e.target.checked;
-            ui.aiManager.forgivenessMode = checked;
+            window.ui.aiManager.forgivenessMode = checked;
             localStorage.setItem("aiForgivenessMode", checked);
-            if (ui.aiManager.activeSession) {
-                ui.aiManager.activeSession.forgivenessMode = checked;
-                await workspaceClient.setSession(ui.aiManager.activeSession.id, ui.aiManager.activeSession);
+            if (window.ui.aiManager.activeSession) {
+                window.ui.aiManager.activeSession.forgivenessMode = checked;
+                await workspaceClient.setSession(window.ui.aiManager.activeSession.id, window.ui.aiManager.activeSession);
             }
-        });
-    }
+            if (window.ui) {
+                const leftActive = window.ui.leftTabs?.activeTab;
+                if (leftActive && window.ui.leftHolder?.updateNoticeBar) {
+                    window.ui.leftHolder.updateNoticeBar(leftActive);
+                }
+                const rightActive = window.ui.rightTabs?.activeTab;
+                if (rightActive && window.ui.rightHolder?.updateNoticeBar) {
+                    window.ui.rightHolder.updateNoticeBar(rightActive);
+                }
+            }
+        });    }
 
     _buildPlanAccordion() {
         const shell = this._createAccordionShell("plan", "Implementation Plan", "assignment", "#d19a66", true, "edit-plan-btn");
@@ -515,11 +524,25 @@ export class SessionArtifactsPanel extends Block {
                 reviewBtn.appendChild(reviewBtnIcon);
                 reviewBtn.appendChild(reviewBtnLabel);
 
-                reviewBtn.onclick = () => {
-                    if (window.ui && window.ui.openDiffTab) {
-                        window.ui.openDiffTab(path, latestBackup.backupId);
+                reviewBtn.onclick = async () => {
+                    if (window.ui && window.ui.fileList && window.ui.fileList.open) {
+                        await window.ui.fileList.open(path, path);
+                        const normalize = (p) => p ? p.replace(/\\/g, '/').replace(/\/+/g, '/').replace(/^\//, '').replace(/\/$/, '') : '';
+                        const pathsMatch = (p1, p2) => {
+                            const n1 = normalize(p1);
+                            const n2 = normalize(p2);
+                            if (!n1 || !n2) return false;
+                            return n1 === n2 || n1.endsWith('/' + n2) || n2.endsWith('/' + n1);
+                        };
+                        const allOpenTabs = [...(window.ui.leftTabs?.tabs || []), ...(window.ui.rightTabs?.tabs || [])];
+                        const tab = allOpenTabs.find(t => pathsMatch(t.config?.path, path));
+                        if (tab) {
+                            tab.config.viewMode = "diff";
+                            tab.config.backupId = latestBackup.backupId;
+                            tab.click();
+                        }
                     } else {
-                        console.error("window.ui.openDiffTab is not defined");
+                        console.error("window.ui.fileList.open is not defined");
                     }
                 };
 
@@ -540,10 +563,15 @@ export class SessionArtifactsPanel extends Block {
                         if (result.error) throw new Error(result.error);
 
                         // 3. Update active editor session if currently open in tabs
-                        const clean = (p) => p ? p.replace(/\\/g, '/') : '';
-                        const normPath = clean(path);
+                        const normalize = (p) => p ? p.replace(/\\/g, '/').replace(/\/+/g, '/').replace(/^\//, '').replace(/\/$/, '') : '';
+                        const pathsMatch = (p1, p2) => {
+                            const n1 = normalize(p1);
+                            const n2 = normalize(p2);
+                            if (!n1 || !n2) return false;
+                            return n1 === n2 || n1.endsWith('/' + n2) || n2.endsWith('/' + n1);
+                        };
                         const allOpenTabs = [...(ui.leftTabs?.tabs || []), ...(ui.rightTabs?.tabs || [])];
-                        const tab = allOpenTabs.find(t => clean(t.config?.path) === normPath);
+                        const tab = allOpenTabs.find(t => pathsMatch(t.config?.path, path));
                         if (tab && tab.config.session) {
                             tab.config.session.setValue(content);
                             tab.config.session.baseValue = content;

@@ -983,3 +983,330 @@ ui-input input:focus {
     border-color: var(--theme);
     box-shadow: 0 0 0 2px color-mix(in srgb, var(--theme) 30%, transparent);
 }
+
+/* --- ui-editor-holder (EditorHolder) unified notice and header bar --- */
+.editor-header-bar {
+    display: none;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 16px;
+    background: var(--theme);
+    border-bottom: 1px solid var(--border-primary);
+    height: var(--menuHeight);
+    min-height: var(--menuHeight);
+    box-sizing: border-box;
+    position: absolute;
+    top: var(--tabHeight);
+    left: 0;
+    right: 0;
+    z-index: 10;
+}
+
+.editor-header-bar .left-side {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-primary);
+    overflow: hidden;
+}
+
+.editor-header-bar .left-side ui-icon {
+    font-size: 16px;
+}
+
+.editor-header-bar .left-side span {
+    text-overflow: ellipsis;
+    overflow: hidden;
+    white-space: nowrap;
+    font-size: 13px;
+}
+
+.editor-header-bar .right-side {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.editor-header-bar button {
+    padding: 4px 12px;
+    font-size: 11px;
+    cursor: pointer;
+    border-radius: 4px;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    box-sizing: border-box;
+}
+
+.editor-header-bar button.primary {
+    background: var(--theme-dark);
+    color: #ffffff;
+    border: none;
+}
+
+.editor-header-bar button.secondary {
+    background: rgba(0,0,0,0.33);
+    color: #ffffff;
+    border: none;
+}
+
+.editor-header-bar button.cancel {
+    background: rgba(0,0,0,0.66);
+    color: var(--text-primary);
+    border: 1px solid var(--border-primary);
+}
+
+/* --- ui-diff-view-panel (DiffViewPanel) --- */
+ui-diff-view-panel {
+    display: flex;
+    flex-direction: column;
+    position: absolute;
+    top: var(--tabHeight);
+    left: 0;
+    right: 0;
+    bottom: 0;
+    overflow: hidden;
+    background: var(--bg-primary);
+    z-index: 2;
+    pointer-events: auto !important;
+}
+
+ui-diff-view-panel .diff-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 16px;
+    background: var(--theme);
+    border-bottom: 1px solid var(--border-primary);
+    height: var(--menuHeight);
+    min-height: var(--menuHeight);
+    box-sizing: border-box;
+}
+
+ui-diff-view-panel .diff-header-left {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-primary);
+    overflow: hidden;
+}
+
+ui-diff-view-panel .diff-header-left ui-icon {
+    color: var(--theme);
+}
+
+ui-diff-view-panel .diff-header-title {
+    text-overflow: ellipsis;
+    overflow: hidden;
+    white-space: nowrap;
+}
+
+ui-diff-view-panel .diff-header-right {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+ui-diff-view-panel .diff-header-right button {
+    padding: 4px 12px;
+    font-size: 11px;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-weight: 600;
+}
+
+ui-diff-view-panel .diff-header-right button.rollback {
+    background: var(--theme-dark, rgba(0,0,0,0.33));
+    color: #ffffff;
+    border: none;
+}
+
+ui-diff-view-panel .diff-header-right button.discard,
+ui-diff-view-panel .diff-header-right button.cancel {
+    background: var(--bg-tertiary, rgba(0,0,0,0.66));
+    color: var(--text-primary);
+    border: 1px solid var(--border-primary);
+}
+
+ui-diff-view-panel .diff-header-right button.apply {
+    background: #2da44e;
+    color: #ffffff;
+    border: none;
+}
+
+ui-diff-view-panel .diff-split-container {
+    display: flex;
+    height: calc(100% - var(--menuHeight));
+    width: 100%;
+    overflow: hidden;
+    position: relative;
+    pointer-events: auto !important;
+}
+
+ui-diff-view-panel .diff-pane {
+    flex: 1;
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    position: relative;
+    pointer-events: auto !important;
+}
+
+ui-diff-view-panel .diff-pane.left-pane {
+    border-right: 1px solid var(--border-primary);
+}
+
+ui-diff-view-panel .diff-pane-label {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 6px 12px;
+    font-size: 11px;
+    font-weight: 600;
+    background: var(--bg-secondary);
+    color: var(--text-secondary);
+    border-bottom: 1px solid var(--border-primary);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+ui-diff-view-panel .diff-header-nav {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    margin-left: 12px;
+}
+
+ui-diff-view-panel .diff-header-nav button.nav-btn {
+    background: rgba(0, 0, 0, 0.33);
+    color: var(--text-primary);
+    border: 1px solid var(--border-primary);
+    padding: 2px 4px;
+    border-radius: 4px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 20px;
+    min-width: 24px;
+    font-size: 10px;
+}
+
+ui-diff-view-panel .diff-header-nav button.nav-btn:hover {
+    background: var(--bg-tertiary);
+}
+
+ui-diff-view-panel .diff-header-nav button.nav-btn ui-icon {
+    font-size: 16px !important;
+    color: var(--text-primary) !important;
+}
+
+ui-diff-view-panel .diff-ace-editor-left,
+ui-diff-view-panel .diff-ace-editor-right {
+    position: absolute !important;
+    top: 28px !important;
+    bottom: 0px !important;
+    left: 0px !important;
+    right: 4px !important;
+    pointer-events: auto !important;
+}
+
+ui-diff-view-panel .diff-marker-addition {
+    position: absolute;
+    background-color: rgba(46, 160, 67, 0.18) !important;
+    z-index: 20;
+}
+
+ui-diff-view-panel .diff-marker-deletion {
+    position: absolute;
+    background-color: rgba(248, 81, 73, 0.18) !important;
+    z-index: 20;
+}
+
+ui-diff-view-panel .diff-marker-empty {
+    position: absolute;
+    background-color: rgba(128, 128, 128, 0.05) !important;
+    background-image: repeating-linear-gradient(45deg, rgba(0,0,0,0.03), rgba(0,0,0,0.03) 10px, transparent 10px, transparent 20px) !important;
+    z-index: 20;
+}
+
+ui-diff-view-panel .diff-gutter-addition {
+    background-color: rgba(46, 160, 67, 0.3) !important;
+    color: #2da44e !important;
+    font-weight: bold;
+}
+
+ui-diff-view-panel .diff-gutter-deletion {
+    background-color: rgba(248, 81, 73, 0.3) !important;
+    color: #cf222e !important;
+    font-weight: bold;
+}
+
+ui-diff-view-panel .diff-gutter-empty {
+    background-color: rgba(128, 128, 128, 0.1) !important;
+    opacity: 0.5;
+}
+
+ui-diff-view-panel .diff-scrollbar-marker-overlay {
+    position: absolute;
+    right: 8px;
+    top: 0;
+    bottom: 0;
+    width: 3px;
+    pointer-events: none;
+    z-index: 100;
+}
+
+ui-diff-view-panel .diff-scrollbar-marker {
+    position: absolute;
+    left: 0;
+    right: 0;
+    height: 3px;
+    border-radius: 1px;
+    z-index: 101;
+    box-shadow: 0 0.5px 1px rgba(0, 0, 0, 0.4);
+}
+
+ui-diff-view-panel .diff-counter {
+    font-size: 10px;
+    font-family: var(--font-mono);
+    font-weight: 700;
+    padding: 1px 5px;
+    border-radius: 3px;
+    margin-left: 6px;
+    display: inline-block;
+    vertical-align: middle;
+}
+
+ui-diff-view-panel .diff-counter-delete {
+    background-color: rgba(248, 81, 73, 0.15);
+    color: #f85149;
+    border: 1px solid rgba(248, 81, 73, 0.2);
+}
+
+ui-diff-view-panel .diff-counter-add {
+    background-color: rgba(46, 160, 67, 0.15);
+    color: #3fb950;
+    border: 1px solid rgba(46, 160, 67, 0.2);
+}
+
+.editor-header-bar.modified-external {
+    border-bottom: 1px solid #d97706;
+}
+
+.editor-header-bar.pending-changes {
+    border-bottom: 1px solid #10b981;
+}
+
+.editor-header-bar.rollback-protected,
+.editor-header-bar.user-changes {
+    border-bottom: 1px solid var(--theme);
+}

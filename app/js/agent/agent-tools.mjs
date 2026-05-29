@@ -664,108 +664,49 @@ class AgentTools {
                     session.baseValue = session.getValue();
                 }
 
-                // 4. Focus & Redraw
+                // 4. Set tab to diff view mode automatically for implicit review
+                targetTab.config.viewMode = "diff";
+                targetTab.config.backupId = backupId;
+
+                // 5. Focus & Redraw
                 targetTab.click();
                 if (window.ui?.renderPlanTasksView) {
                     const containers = document.querySelectorAll('.plan-tasks-view');
                     containers.forEach(c => window.ui.renderPlanTasksView(c));
                 }
 
-                return `Successfully edited ${path} in Forgiveness Mode. The change has been committed directly to the file and a rollback backup was created.`;
+                return `Successfully edited ${path} in Forgiveness Mode. The change has been committed directly to the file and a rollback backup was created. The tab has switched to the side-by-side Diff view for your review.`;
             }
 
-            const edits = this.editBuffer[resolvedPath]?.edits || [];
-            const cleanContent = this._getCleanContentOfSession(session, edits);
-
-            const cleanStartIndex = cleanContent.indexOf(searchString);
+            // Permission Mode: clean replacement in memory
+            const originalContent = session.getValue();
+            const cleanStartIndex = originalContent.indexOf(searchString);
             if (cleanStartIndex === -1) {
-                throw new Error(`Target string not found in the clean view of ${path}. Ensure the search string matches exactly, including whitespace.`);
+                throw new Error(`Target string not found in ${path}. Ensure the search string matches exactly, including whitespace.`);
             }
 
+            // Perform clean, in-memory replacement on Ace session
             const doc = session.getDocument();
-            const dirtyStartIndex = this._mapCleanToDirtyOffset(session, edits, cleanStartIndex);
-            const dirtyEndIndex = this._mapCleanToDirtyOffset(session, edits, cleanStartIndex + searchString.length);
-
-            const startPos = doc.indexToPosition(dirtyStartIndex);
-            const endPos = doc.indexToPosition(dirtyEndIndex);
-            
+            const startPos = doc.indexToPosition(cleanStartIndex);
+            const endPos = doc.indexToPosition(cleanStartIndex + searchString.length);
             const Range = window.ace.require("ace/range").Range;
             const rangeToReplace = new Range(startPos.row, startPos.column, endPos.row, endPos.column);
-            
-            // Perform review replacement: show search string and replacement string inline separated by a newline
-            const combinedString = searchString + "\n" + replacementString;
-            session.replace(rangeToReplace, combinedString);
-            
-            // Create dynamic Anchors that track the edited range dynamically
-            const newContent = session.getValue();
-            const startDeletedPos = doc.indexToPosition(dirtyStartIndex);
-            const endDeletedPos = doc.indexToPosition(dirtyStartIndex + searchString.length);
-            const startAddedPos = doc.indexToPosition(dirtyStartIndex + searchString.length + 1);
-            const endAddedPos = doc.indexToPosition(dirtyStartIndex + searchString.length + 1 + replacementString.length);
+            session.replace(rangeToReplace, replacementString);
+            // Set tab to diff view mode automatically for implicit review
+            targetTab.config.viewMode = "diff";
+            delete targetTab.config.backupId;
 
-            const startDeletedAnchor = doc.createAnchor(startDeletedPos.row, startDeletedPos.column);
-            const endDeletedAnchor = doc.createAnchor(endDeletedPos.row, endDeletedPos.column);
-            const startAddedAnchor = doc.createAnchor(startAddedPos.row, startAddedPos.column);
-            const endAddedAnchor = doc.createAnchor(endAddedPos.row, endAddedPos.column);
-
-            // Add a dynamic marker to annotate the change in the editor (red for deleted, green for added)
-            const dynamicMarker = {
-                update: function(html, markerLayer, session, config) {
-                    const startDel = startDeletedAnchor.getPosition();
-                    const endDel = endDeletedAnchor.getPosition();
-                    const startAdd = startAddedAnchor.getPosition();
-                    const endAdd = endAddedAnchor.getPosition();
-                    
-                    const Range = window.ace.require("ace/range").Range;
-                    
-                    // Draw deleted marker (red)
-                    const rangeDel = new Range(startDel.row, 0, endDel.row, Infinity);
-                    markerLayer.drawFullLineMarker(html, rangeDel, "agent-edit-deleted", config);
-                    
-                    // Draw added marker (green)
-                    const rangeAdd = new Range(startAdd.row, 0, endAdd.row, Infinity);
-                    markerLayer.drawFullLineMarker(html, rangeAdd, "agent-edit-added", config);
-                }
-            };
-            session.addDynamicMarker(dynamicMarker);
-            
-            // Track in edit buffer
-            if (!this.editBuffer[resolvedPath]) {
-                this.editBuffer[resolvedPath] = {
-                    edits: [],
-                    currentIndex: 0
-                };
-            }
-            
-            const edit = {
-                id: dynamicMarker.id,
-                startDeletedAnchor: startDeletedAnchor,
-                endDeletedAnchor: endDeletedAnchor,
-                startAddedAnchor: startAddedAnchor,
-                endAddedAnchor: endAddedAnchor,
-                // Fallbacks for backward compatibility
-                startAnchor: startDeletedAnchor,
-                endAnchor: endAddedAnchor,
-                originalText: searchString,
-                replacementText: replacementString,
-                status: "pending"
-            };
-            
-            this.editBuffer[resolvedPath].edits.push(edit);
-
-            if (window.ui?.aiManager?._renderEditBuffer) {
-                window.ui.aiManager._renderEditBuffer();
+            // Track pending AI edits in active session
+            const activeSession = window.ui?.aiManager?.activeSession;
+            if (activeSession) {
+                activeSession.pendingEdits = activeSession.pendingEdits || {};
+                activeSession.pendingEdits[resolvedPath] = true;
+                await workspaceClient.setSession(activeSession.id, activeSession);
             }
 
-            // Focus the tab
+            // Focus & Redraw
             targetTab.click();
-
-            // Refresh UI notice bar if active
-            if (window.ui?.updateAgentEditsNotice) {
-                window.ui.updateAgentEditsNotice(targetTab);
-            }
-
-            return `Successfully edited ${path} in the editor. The changes are pending user review and save.`;
+            return `Successfully edited ${path} in memory (Permission Mode). The tab has switched to the side-by-side Diff view for your review. Please click 'Apply Changes' at the top to save to disk or 'Discard' to revert.`;
         } catch (error) {
             return `Error editing file: ${error.message}`;
         }
@@ -777,7 +718,12 @@ class AgentTools {
     async createFile(path, content, sourceId) {
         try {
             const resolvedPath = this._resolveAndValidatePath(path);
-            if (this.conduit.isConnected) {
+            if (!this.conduit.isConnected) {
+                return "Error: Conduit not connected.";
+            }
+
+            const isForgivenessMode = window.ui?.aiManager?.forgivenessMode === true;
+            if (isForgivenessMode) {
                 const base64Content = btoa(unescape(encodeURIComponent(content))); // Safe base64 encoding
                 const result = await this.conduit.wsWrite(resolvedPath, base64Content);
                 if (result.error) throw new Error(result.error);
@@ -788,9 +734,40 @@ class AgentTools {
                 }
                 
                 return `Successfully created ${path}.`;
-            } else {
-                return "Error: Conduit not connected.";
             }
+
+            // Permission Mode: Create empty on disk, open, set content in memory, show diff
+            const result = await this.conduit.wsWrite(resolvedPath, "");
+            if (result.error) throw new Error(result.error);
+
+            if (window.ui?.fileList?.refreshFolders) {
+                window.ui.fileList.refreshFolders();
+            }
+
+            if (window.ui?.fileList?.open) {
+                await window.ui.fileList.open(resolvedPath, resolvedPath);
+            }
+
+            const targetTab = this._findOpenTab(resolvedPath);
+            if (!targetTab) {
+                throw new Error(`Failed to open new file ${resolvedPath} in the editor.`);
+            }
+            // Populate modified content in memory
+            targetTab.config.session.setValue(content);
+            targetTab.config.viewMode = "diff";
+            delete targetTab.config.backupId;
+
+            // Track pending AI edits in active session
+            const activeSession = window.ui?.aiManager?.activeSession;
+            if (activeSession) {
+                activeSession.pendingEdits = activeSession.pendingEdits || {};
+                activeSession.pendingEdits[resolvedPath] = true;
+                await workspaceClient.setSession(activeSession.id, activeSession);
+            }
+
+            // Trigger click to render side-by-side diff review showing all lines added!
+            targetTab.click();
+            return `Successfully created empty file ${path} on disk. The tab has switched to the side-by-side Diff view to review the pending content in memory. Please click 'Apply Changes' at the top to save to disk or 'Discard' to delete/revert.`;
         } catch (error) {
             return `Error creating file: ${error.message}`;
         }

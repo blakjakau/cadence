@@ -1302,6 +1302,9 @@ const uiManager = {
 	get currentMediaView() { return currentMediaView },
 	set currentMediaView(v) { currentMediaView = v },
 
+	get reloadFile() {
+		return uiManager._reloadFile
+	},
 	set reloadFile(v) {
 		if ("function" == typeof v) {
 			uiManager._reloadFile = v
@@ -1309,39 +1312,29 @@ const uiManager = {
 	},
 
 	showFileModifiedNotice: (tab, side) => {
-
-		const noticeBarId = (side === 'left') ? "leftHolderFileModifiedNotice" : "rightHolderFileModifiedNotice";
-		const noticeBar = document.getElementById(noticeBarId);
-		const reloadBtn = noticeBar.querySelector("button[rel=reload]");
-		const dismissBtn = noticeBar.querySelector("button[rel=dismiss]");
-
-		// Store the tab reference on the notice bar for event handlers
-		noticeBar.currentTab = tab;
-
-		reloadBtn.onclick = () => {
-			console.debug("Reload button clicked for tab:", tab.config.name);
-			uiManager._reloadFile(tab)
-			uiManager.hideFileModifiedNotice(side); // Pass side
-		};
-		dismissBtn.onclick = () => {
-			tab.config.fileModified = false; // Clear the flag
-			const isDirty = tab.config.session.getValue() !== tab.config.session.baseValue;
-			tab.changed = isDirty; // Update the UI to reset the sync icon back to close
-			const fileItem = fileList.find(tab.config.handle);
-			if (fileItem && fileItem.length > 0) {
-				fileItem[0].changed = isDirty;
-			}
-			uiManager.hideFileModifiedNotice(side); // Pass side
-		};
-
-		noticeBar.style.display = "flex"; // Show the notice bar
+		tab.config.fileModified = true;
+		const holder = (side === 'left') ? leftHolder : rightHolder;
+		if (holder && holder.updateNoticeBar) {
+			holder.updateNoticeBar(tab);
+		}
 	},
 
 	hideFileModifiedNotice: (side) => {
-		const noticeBarId = (side === 'left') ? "leftHolderFileModifiedNotice" : "rightHolderFileModifiedNotice";
-		const noticeBar = document.getElementById(noticeBarId);
-		noticeBar.style.display = "none"; // Hide the notice bar
-		noticeBar.currentTab = null; // Clear the tab reference
+		const holder = (side === 'left') ? leftHolder : rightHolder;
+		if (holder && holder.tabs && holder.tabs.activeTab) {
+			holder.tabs.activeTab.config.fileModified = false;
+			if (holder.updateNoticeBar) {
+				holder.updateNoticeBar(holder.tabs.activeTab);
+			}
+		} else if (holder) {
+			const noticeBar = holder.querySelector(".editor-header-bar");
+			if (noticeBar) {
+				noticeBar.style.display = "none";
+				holder.editorElement.style.top = "";
+				holder.editorElement.style.height = "";
+				if (holder.editor && typeof holder.editor.resize === "function") holder.editor.resize();
+			}
+		}
 	},
 
 	updateAgentEditsNotice: (tab) => {
@@ -1455,6 +1448,34 @@ const uiManager = {
 		if (noticeBar) {
 			noticeBar.style.display = "none";
 		}
+	},
+
+	clearAgentEdits: (path) => {
+		if (!path) return;
+		const resolvedPath = agentTools._resolveAndValidatePath(path);
+		const info = agentTools.editBuffer[resolvedPath];
+		if (info && info.edits) {
+			info.edits.forEach(edit => {
+				const session = edit.startAnchor ? edit.startAnchor.session : null;
+				if (session) {
+					try {
+						session.removeMarker(edit.id);
+					} catch(e) {}
+				}
+				try {
+					if (edit.startDeletedAnchor) edit.startDeletedAnchor.detach();
+					if (edit.endDeletedAnchor) edit.endDeletedAnchor.detach();
+					if (edit.startAddedAnchor) edit.startAddedAnchor.detach();
+					if (edit.endAddedAnchor) edit.endAddedAnchor.detach();
+					if (edit.startAnchor) edit.startAnchor.detach();
+					if (edit.endAnchor) edit.endAnchor.detach();
+				} catch(e) {}
+			});
+		}
+		delete agentTools.editBuffer[resolvedPath];
+		
+		const side = window.ui?.leftTabs?.tabs.find(t => t.config.path === path) ? 'left' : 'right';
+		uiManager.hideAgentEditsNotice(side);
 	},
 }
 

@@ -294,8 +294,23 @@ const saveFile = async (tab) => {
 	try {
 		const base64Content = btoa(unescape(encodeURIComponent(text)))
 		await conduitClient.wsWrite(path, base64Content)
+		
+		if (tab.config.session) {
+			tab.config.session.baseValue = text
+		}
 		tab.config.fileModified = false
 		tab.changed = false
+
+		if (window.ui && window.ui.clearAgentEdits) {
+			window.ui.clearAgentEdits(path)
+		}
+
+		// Refresh/hide the notice bar immediately after save
+		const side = tab.config.side
+		const holder = side === "left" ? window.ui?.leftHolder : window.ui?.rightHolder
+		if (holder && holder.updateNoticeBar) {
+			holder.updateNoticeBar(tab)
+		}
 	} catch (error) {
 		console.error("Error saving file:", error)
 		window.modal.notice(`Failed to save ${path}:<br><small>${error.message}</small>`, "Save Error")
@@ -1110,7 +1125,7 @@ const execCommandNewWindow = async () => {
 
 // Function to reload a file from disk
 const reloadFile = async (tab) => {
-	const handle = tab.config.handle
+	const handle = tab.config.path || tab.config.handle
 	if (!handle || typeof handle !== "string") {
 		console.warn("No valid file handle found for tab:", tab.config.name)
 		return
@@ -1129,15 +1144,28 @@ const reloadFile = async (tab) => {
 		}
 
 		// Update the session with the new content
+		tab.config.session.baseValue = text // Set baseValue FIRST to avoid dirty state in change event
 		tab.config.session.setValue(text)
-		tab.config.session.baseValue = text // Reset baseValue to current content
 		tab.config.fileModified = false // Clear the file modified flag
 		tab.changed = false // Clear unsaved changes flag
 
-		// If the reloaded tab is the active tab, ensure the editor updates
-		if (tab === currentTabs.activeTab) {
-			currentEditor.setSession(tab.config.session)
-			currentEditor.focus()
+		if (window.ui && window.ui.fileList) {
+			const fileItem = window.ui.fileList.find(handle)
+			if (fileItem && fileItem.length > 0) {
+				fileItem[0].changed = false
+			}
+		}
+
+		if (window.ui && window.ui.hideFileModifiedNotice) {
+			window.ui.hideFileModifiedNotice(tab.config.side)
+		}
+
+		// Target the side-specific editor to avoid focus/session mixups in split pane mode
+		const targetEditor = tab.config.side === "right" ? rightEdit : leftEdit;
+		const targetTabs = tab.config.side === "right" ? window.ui?.rightTabs : window.ui?.leftTabs;
+		if (targetTabs && targetTabs.activeTab === tab) {
+			targetEditor.setSession(tab.config.session);
+			targetEditor.focus();
 		}
 	} catch (error) {
 		console.error("Error reloading file:", tab.config.name, error)
@@ -1199,8 +1227,16 @@ const setupSessionChangeListener = (session, tab) => {
 				fileItem.changed = isDirty
 			}
 		}
+
+		// Update notice bar dynamically for in-place diff toggling
+		const side = tab.config.side;
+		const holder = side === "left" ? ui.leftHolder : ui.rightHolder;
+		if (holder && holder.updateNoticeBar) {
+			holder.updateNoticeBar(tab);
+		}
 	})
 }
+
 let currentEditor = leftEdit
 let currentTabs = leftEdit
 let currentMediaView = ui.leftMedia
@@ -1581,6 +1617,17 @@ const updateEditorUI = async (targetEditor, targetMediaView, tab) => {
 	
 	if (holder.diffView) holder.diffView.style.display = "none"
 
+	if (tab.config.viewMode === "diff") {
+		targetEditor.container.style.display = "none"
+		targetMediaView.style.display = "none"
+		if (holder.planTasksView) holder.planTasksView.style.display = "none"
+		if (holder.diffView) {
+			holder.diffView.style.display = "block"
+			holder.diffView.update(tab.config.path, tab.config.backupId, tab)
+		}
+		return;
+	}
+
 	if (tab.config.mode.mode === "plan_tasks") {
 		targetEditor.container.style.display = "none"
 		targetMediaView.style.display = "none"
@@ -1624,7 +1671,6 @@ const updateEditorUI = async (targetEditor, targetMediaView, tab) => {
 		fileList.activeItem.changed = true
 	}
 }
-
 leftTabs.click = async (event) => {
 	const tab = event.tab
 	setCurrentEditor(leftEdit)
@@ -1636,6 +1682,9 @@ leftTabs.click = async (event) => {
 	} else {
 		ui.hideFileModifiedNotice("left") // Hide if not modified
 		ui.updateAgentEditsNotice(tab)
+	}
+	if (ui.leftHolder && ui.leftHolder.updateNoticeBar) {
+		await ui.leftHolder.updateNoticeBar(tab)
 	}
 }
 
@@ -1650,6 +1699,9 @@ rightTabs.click = async (event) => {
 	} else {
 		ui.hideFileModifiedNotice("right") // Hide if not modified
 		ui.updateAgentEditsNotice(tab)
+	}
+	if (ui.rightHolder && ui.rightHolder.updateNoticeBar) {
+		await ui.rightHolder.updateNoticeBar(tab)
 	}
 }
 

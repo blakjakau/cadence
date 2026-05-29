@@ -78,7 +78,7 @@ class AIManagerSessions {
 		const newSessionData = {
 			id: newId, name: newName, createdAt: Date.now(), lastModified: Date.now(),
 			messages: [], promptInput: "", promptHistory: [], scrollTop: 0,
-			evergreenFiles: [], modifiedFiles: {},
+			evergreenFiles: [], modifiedFiles: {}, pendingEdits: {},
 			agentMode: false,
 			planningMode: true,
 			forgivenessMode: lastForgivenessMode,
@@ -251,11 +251,22 @@ class AIManagerSessions {
 		this.manager._setButtonsDisabledState(this.manager._isProcessing);
 		this.manager._updatePromptAreaPlaceholder(); // Update placeholder after session switch
 		this.manager._updateAgentProgressPanel();
-		
 		// Force redraw the Plan/Tasks view to align checkboxes
 		if (window.ui?.renderPlanTasksView) {
 			const containers = document.querySelectorAll(".plan-tasks-view");
 			containers.forEach(c => window.ui.renderPlanTasksView(c));
+		}
+
+		// Trigger notice bar updates on active editor tabs when active AI session changes
+		if (window.ui) {
+			const leftActive = window.ui.leftTabs?.activeTab;
+			if (leftActive && window.ui.leftHolder?.updateNoticeBar) {
+				window.ui.leftHolder.updateNoticeBar(leftActive);
+			}
+			const rightActive = window.ui.rightTabs?.activeTab;
+			if (rightActive && window.ui.rightHolder?.updateNoticeBar) {
+				window.ui.rightHolder.updateNoticeBar(rightActive);
+			}
 		}
 
 		this.manager._dispatchContextUpdate("session_switched");
