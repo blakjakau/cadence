@@ -251,7 +251,10 @@ export class DiffViewPanel extends Block {
                 this.leftEditor.setReadOnly(true);
                 this.leftEditor.setShowPrintMargin(false);
                 this.leftEditor.renderer.setShowGutter(true);
-                this.leftEditor.setFontSize(12);
+                
+                if (window.editors && !window.editors.includes(this.leftEditor)) {
+                    window.editors.push(this.leftEditor);
+                }
             }
             this.leftEditor.setTheme(theme);
             this.leftEditor.getSession().setMode(mode);
@@ -263,11 +266,25 @@ export class DiffViewPanel extends Block {
                 this.rightEditor.setReadOnly(true);
                 this.rightEditor.setShowPrintMargin(false);
                 this.rightEditor.renderer.setShowGutter(true);
-                this.rightEditor.setFontSize(12);
+                
+                if (window.editors && !window.editors.includes(this.rightEditor)) {
+                    window.editors.push(this.rightEditor);
+                }
             }
             this.rightEditor.setTheme(theme);
             this.rightEditor.getSession().setMode(mode);
             this.rightEditor.setValue(rightContentText, -1);
+
+            // Configure diff editors using global options to ensure matched font size, theme, styling, etc.
+            const appConfig = window.app || {};
+            if (appConfig.sessionOptions) {
+                this.leftEditor.session.setOptions(appConfig.sessionOptions);
+                this.rightEditor.session.setOptions(appConfig.sessionOptions);
+            }
+            if (appConfig.rendererOptions) {
+                this.leftEditor.renderer.setOptions(appConfig.rendererOptions);
+                this.rightEditor.renderer.setOptions(appConfig.rendererOptions);
+            }
 
             // 5. Setup One-time Selection Syncing
             if (!this._selectionSyncSetup && this.leftEditor && this.rightEditor) {

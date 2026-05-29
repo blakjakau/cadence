@@ -692,7 +692,7 @@ prefersDarkMode.addEventListener("change", () => {
 const updateThemeAndMode = (doSave = false) => {
 	ui.updateThemeAndMode()
 
-	if (leftEdit.getOption("mode") in canPrettify) {
+	if (currentEditor.getOption("mode") in canPrettify) {
 		prettify.removeAttribute("disabled")
 	} else {
 		prettify.setAttribute("disabled", "disabled")
@@ -1615,6 +1615,16 @@ fileList.expand = (item) => {
 const updateEditorUI = async (targetEditor, targetMediaView, tab) => {
 	const holder = targetEditor === leftEdit ? ui.leftHolder : ui.rightHolder
 	
+	const outgoingViewMode = tab.config._lastViewMode || "edit";
+	tab.config._lastViewMode = tab.config.viewMode;
+	
+	let scrollPosition = null;
+	if (outgoingViewMode === "edit" && tab.config.session) {
+		scrollPosition = targetEditor.getSession().getScrollTop();
+	} else if (outgoingViewMode === "diff" && holder.diffView && holder.diffView.leftEditor) {
+		scrollPosition = holder.diffView.leftEditor.getSession().getScrollTop();
+	}
+
 	if (holder.diffView) holder.diffView.style.display = "none"
 
 	if (tab.config.viewMode === "diff") {
@@ -1623,7 +1633,14 @@ const updateEditorUI = async (targetEditor, targetMediaView, tab) => {
 		if (holder.planTasksView) holder.planTasksView.style.display = "none"
 		if (holder.diffView) {
 			holder.diffView.style.display = "block"
-			holder.diffView.update(tab.config.path, tab.config.backupId, tab)
+			await holder.diffView.update(tab.config.path, tab.config.backupId, tab)
+			
+			if (scrollPosition !== null && holder.diffView.leftEditor) {
+				holder.diffView.leftEditor.getSession().setScrollTop(scrollPosition);
+				if (holder.diffView.rightEditor) {
+					holder.diffView.rightEditor.getSession().setScrollTop(scrollPosition);
+				}
+			}
 		}
 		return;
 	}
@@ -1641,7 +1658,7 @@ const updateEditorUI = async (targetEditor, targetMediaView, tab) => {
 		if (holder.planTasksView) holder.planTasksView.style.display = "none"
 		if (holder.diffView) {
 			holder.diffView.style.display = "block"
-			holder.diffView.update(tab.config.mode.filePath, tab.config.mode.backupId)
+			await holder.diffView.update(tab.config.mode.filePath, tab.config.mode.backupId)
 		}
 	} else if (tab.config.mode.mode === "media") {
 		targetEditor.container.style.display = "none"
@@ -1661,6 +1678,12 @@ const updateEditorUI = async (targetEditor, targetMediaView, tab) => {
 		if (holder.planTasksView) holder.planTasksView.style.display = "none"
 		targetEditor.setSession(tab.config.session)
 		targetEditor.focus()
+
+		if (scrollPosition !== null) {
+			setTimeout(() => {
+				targetEditor.getSession().setScrollTop(scrollPosition);
+			}, 10);
+		}
 	}
 	// setCurrentEditor(targetEditor);
 	fileList.active = tab.config.handle
