@@ -106,7 +106,7 @@ class AIManagerHistory {
 	 * The main render method, used when loading a full session history.
 	 * Clears the existing UI and rebuilds it from the current chatHistory.
 	 */
-	render({ isNewMessage = false } = {}) {
+	async render({ isNewMessage = false } = {}) {
 		if (!this.conversationArea) return;
 
 		// console.debug("[History Render Debug] rendering messages:", this.chatHistory.map(m => ({ id: m.id, role: m.role, type: m.type, contentPreview: m.content ? m.content.substring(0, 60) : "" })));
@@ -130,6 +130,26 @@ class AIManagerHistory {
 		// If we have history, hide empty state and render messages.
 		this.manager._emptyStateElement.style.display = 'none';
 
+		// In raw history view, prepend the active system prompt
+		if (this.manager.rawViewMode) {
+			try {
+				const systemPromptContent = await this.manager.getSystemPrompt();
+				if (systemPromptContent) {
+					const sysMessage = {
+						id: "system-prompt-raw-expander",
+						type: "system_prompt_raw",
+						content: systemPromptContent
+					};
+					const element = this._createExpanderMessageElement(sysMessage, -1);
+					if (element) {
+						element.style.border = "1px dashed var(--theme)";
+						this.conversationArea.append(element);
+					}
+				}
+			} catch (e) {
+				console.warn("Failed to get system prompt for raw view:", e);
+			}
+		}
 
 		// Use the new element factory for each message in the history
 		for (let i = 0; i < this.chatHistory.length; i++) {
@@ -176,6 +196,62 @@ class AIManagerHistory {
 		return element;
 	}
 
+	createStreamingBlock(messageId, type = "model") {
+		if (this.manager.rawViewMode) {
+			const message = { id: messageId, type, content: "" };
+			const element = this._createExpanderMessageElement(message, this.chatHistory.length);
+			// Open the expander by default for active streaming
+			const contentDiv = element.querySelector(".expander-content");
+			if (contentDiv) contentDiv.style.display = "block";
+			const expandArrow = element.querySelector(".expand-arrow");
+			if (expandArrow) expandArrow.textContent = "expand_less";
+			element.classList.add("expanded");
+			
+			// Attach dynamic content updater
+			element.updateContent = (fullResponse) => {
+				const pre = element.querySelector(".raw-content-block");
+				if (pre) pre.textContent = fullResponse;
+				
+				const previewText = fullResponse ? fullResponse.substring(0, 40).replace(/\n/g, " ") : "";
+				const previewSuffix = (fullResponse && fullResponse.length > 40) ? "..." : "";
+				const previewSpan = element.querySelector(".content-preview");
+				if (previewSpan) previewSpan.textContent = this._escapeHtml(previewText) + previewSuffix;
+			};
+			
+			element.finalize = (fullResponse, finalizedMessage) => {
+				element.updateContent(fullResponse);
+				const deleteIcon = element.querySelector(".delete-raw-item");
+				if (deleteIcon) {
+					deleteIcon.onclick = (e) => {
+						e.stopPropagation();
+						if (confirm("Are you sure you want to permanently delete this item from the history?")) {
+							this._handleDeleteSingleMessage(messageId);
+						}
+					};
+				}
+			};
+			return element;
+		} else {
+			const responseBlock = new Block();
+			responseBlock.classList.add("response-block");
+			if (type === "error") responseBlock.classList.add("error-block");
+			responseBlock.dataset.messageId = messageId;
+			
+			responseBlock.updateContent = (fullResponse) => {
+				responseBlock.innerHTML = this.manager.messageRenderer.renderResponseContent(fullResponse);
+				this.manager.messageRenderer.addCodeBlockButtons(responseBlock);
+			};
+			
+			responseBlock.finalize = (fullResponse, finalizedMessage) => {
+				responseBlock.innerHTML = this.manager.messageRenderer.renderResponseContent(fullResponse, finalizedMessage);
+				this.manager.messageRenderer.addCodeBlockButtons(responseBlock, finalizedMessage);
+				const deleteButton = this._createSingleDeleteButton(messageId);
+				responseBlock.append(deleteButton);
+			};
+			return responseBlock;
+		}
+	}
+
 	/**
 	 * NEW: Factory method to create a DOM element for any given message object.
 	 * This centralizes UI creation logic for individual messages.
@@ -183,55 +259,53 @@ class AIManagerHistory {
 	 * @param {number} index The message's index in the chat history array (needed for delete button logic).
 	 * @returns {HTMLElement|null} The generated DOM element or null if message is invalid.
 	 */
-	_createMessageElement(message, index, isNew = false) { // Add isNew parameter here
-		if (!message.id) { // If message doesn't have an ID (e.g., loaded from old session data)
-			message.id = crypto.randomUUID(); // Assign a new one
+	_createMessageElement(message, index, isNew = false) {
+		if (!message.id) {
+			message.id = crypto.randomUUID();
 		}
 
 		let element;
 
 		if (message.type === "user") {
-			// Check if this user prompt is followed by a model response.
-			// We only add the delete button if the pair exists.
-			const nextMessageIsModel = index >= 0 && (index + 1) < this.chatHistory.length && this.chatHistory[index + 1].type === "model";
-			
 			const wrapper = new Block();
 			wrapper.classList.add("prompt-pill-wrapper");
-			wrapper.dataset.messageId = message.id; // Store message ID on the wrapper
+			wrapper.dataset.messageId = message.id;
 
 			const messageBlock = new Block();
 			messageBlock.classList.add("prompt-pill");
 			messageBlock.innerHTML = this.md.render(message.content);
 			wrapper.append(messageBlock);
 
-			if (nextMessageIsModel) {
-				const deleteButton = this._createDeleteButton(message.id);
-				wrapper.append(deleteButton);
-			}
+			const deleteButton = this._createSingleDeleteButton(message.id);
+			wrapper.append(deleteButton);
 			element = wrapper;
 
 		} else if (message.type === "model" || message.type === "error") {
 			element = new Block();
 			element.classList.add("response-block");
-			if (message.type === "error") element.classList.add("error-block"); // Add a specific class for error styling
-			element.dataset.messageId = message.id; // Store message ID on the response block
-			element.innerHTML = this.manager.messageRenderer.renderResponseContent(message.content, message); // Render content
-			if (message.type === "model") this.manager.messageRenderer.addCodeBlockButtons(element, message); // Add buttons for model messages, passing the message object
+			if (message.type === "error") element.classList.add("error-block");
+			element.dataset.messageId = message.id;
+			element.innerHTML = this.manager.messageRenderer.renderResponseContent(message.content, message);
+			
+			const deleteButton = this._createSingleDeleteButton(message.id);
+			element.append(deleteButton);
+			
+			if (message.type === "model") this.manager.messageRenderer.addCodeBlockButtons(element, message);
 
 		} else if (message.type === "system_message") {
 			element = new Block();
 			element.classList.add("system-message-block");
-			element.dataset.messageId = message.id; // Store message ID on system message
+			element.dataset.messageId = message.id;
 			element.innerHTML = this.md.render(message.content);
 
-			// If this render was triggered by a new message, and this is that new message, make it sticky.
-			if (isNew && message.type === 'system_message' && index === this.chatHistory.length - 1) {
+			const deleteButton = this._createSingleDeleteButton(message.id);
+			element.append(deleteButton);
+
+			if (isNew && index === this.chatHistory.length - 1) {
 				element.classList.add("system-message-sticky-fade");
-				// When the animation completes, remove the class to revert its position.
 				element.addEventListener('animationend', () => {
 					element.classList.remove('system-message-sticky-fade');
 				}, { once: true });
-				// Also add a click listener to dismiss the notice immediately.
 				element.addEventListener('click', () => {
 					element.classList.remove('system-message-sticky-fade');
 				}, { once: true });
@@ -241,6 +315,9 @@ class AIManagerHistory {
 			element.classList.add("task-state-block");
 			element.dataset.messageId = message.id;
 			element.innerHTML = `<strong>Current Task:</strong><br>${this.md.render(message.content)}`;
+
+			const deleteButton = this._createSingleDeleteButton(message.id);
+			element.append(deleteButton);
 		}
 
 		return element;
@@ -273,6 +350,9 @@ class AIManagerHistory {
 		} else if (message.type === "system_message") {
 			iconName = "info";
 			roleLabel = "System";
+		} else if (message.type === "system_prompt_raw") {
+			iconName = "settings_suggest";
+			roleLabel = "System Prompt";
 		}
 
 		// First 40 characters for preview
@@ -283,7 +363,8 @@ class AIManagerHistory {
 			<ui-icon>${iconName}</ui-icon>
 			<span class="role-label">${roleLabel}</span>
 			<span class="content-preview">${this._escapeHtml(previewText)}${previewSuffix}</span>
-			<ui-icon class="expand-arrow">expand_more</ui-icon>
+			<ui-icon class="delete-raw-item" title="Delete this turn permanently" style="font-size: 16px; color: var(--text-secondary); cursor: pointer; margin-left: auto; margin-right: 8px; transition: color 0.2s;" onmouseover="this.style.color='var(--color-error)'" onmouseout="this.style.color='var(--text-secondary)'">delete</ui-icon>
+			<ui-icon class="expand-arrow" style="margin-left: 0;">expand_more</ui-icon>
 		`;
 
 		const contentDiv = document.createElement("div");
@@ -301,6 +382,18 @@ class AIManagerHistory {
 			header.querySelector(".expand-arrow").textContent = isExpanded ? "expand_more" : "expand_less";
 			expanderBlock.classList.toggle("expanded", !isExpanded);
 		};
+
+		const deleteIcon = header.querySelector(".delete-raw-item");
+		if (message.type === "system_prompt_raw" && deleteIcon) {
+			deleteIcon.remove();
+		} else if (deleteIcon) {
+			deleteIcon.onclick = (e) => {
+				e.stopPropagation();
+				if (confirm("Are you sure you want to permanently delete this item from the history?")) {
+					this._handleDeleteSingleMessage(message.id);
+				}
+			};
+		}
 
 		expanderBlock.append(header, contentDiv);
 		return expanderBlock;
@@ -338,56 +431,36 @@ class AIManagerHistory {
 		this.manager._dispatchContextUpdate("task_state_updated");
 	}
 
-	/**
-	 * NEW: Helper to consistently create a delete button for a user/model message pair.
-	 * This button's click handler will use the message's actual index for deletion.
-	 * @param {number} userPromptIndex - The index of the user prompt in the `chatHistory` array.
-	 * @returns {Button} The configured delete button element.
-	 */
-	_createDeleteButton(userMessageId) {
+	_createSingleDeleteButton(messageId) {
 		const deleteButton = new Button();
 		deleteButton.classList.add("delete-history-button");
 		deleteButton.icon = "delete";
-		deleteButton.title = "Delete this prompt and response";
-		deleteButton.on("click", () => this._handleDeleteHistoryItem(userMessageId));
+		deleteButton.title = "Delete this message permanently";
+		deleteButton.on("click", (e) => {
+			e.stopPropagation();
+			if (confirm("Are you sure you want to permanently delete this item from the history?")) {
+				this._handleDeleteSingleMessage(messageId);
+			}
+		});
 		return deleteButton;
 	}
 
-	/**
-	 * Handles the deletion of a user prompt and its subsequent model response.
-	 * This now uses the message ID to find the item dynamically, preventing issues with stale indices.
-	 * @param {string} userMessageId - The ID of the user prompt to remove.
-	 */
-	_handleDeleteHistoryItem(userMessageId) {
+	_handleDeleteSingleMessage(messageId) {
 		if (!this.manager.activeSession) return;
 
-		// Dynamically find the index of the message at click time to avoid stale references.
-		const userPromptIndex = this.chatHistory.findIndex(msg => msg.id === userMessageId);
-		if (userPromptIndex === -1) {
-			console.warn(`Attempted to delete a message with ID ${userMessageId} that was not found.`);
+		const msgIndex = this.chatHistory.findIndex(msg => msg.id === messageId);
+		if (msgIndex === -1) {
+			console.warn(`Attempted to delete a message with ID ${messageId} that was not found.`);
 			return;
 		}
 
-		// Get the IDs of the messages to remove from the DOM
-		const userMessage = this.chatHistory[userPromptIndex];
-		const modelMessage = this.chatHistory[userPromptIndex + 1]; // Guaranteed to exist by _createMessageElement logic
+		this.manager.activeSession.messages.splice(msgIndex, 1);
+		this.manager.activeSession.lastModified = Date.now();
 
-		if (userMessage?.id) {
-			const userElement = this.conversationArea.querySelector(`[data-message-id="${userMessage.id}"]`);
-			if (userElement) userElement.remove();
-		}
-		if (modelMessage?.id) {
-			const modelElement = this.conversationArea.querySelector(`[data-message-id="${modelMessage.id}"]`);
-			if (modelElement) modelElement.remove();
-		}
+		this.render();
 
-		// Now update the data array
-		this.manager.activeSession.messages.splice(userPromptIndex, 2); // Removes 2 items
-		this.manager.activeSession.lastModified = Date.now(); // Update last modified timestamp
-		
-		// Re-enable buttons state as history has changed
 		this.manager._setButtonsDisabledState(this.manager._isProcessing);
-		this.manager._dispatchContextUpdate("delete_item"); // Dispatch update to save changes
+		this.manager._dispatchContextUpdate("delete_item");
 	}
 
 	/**
@@ -430,7 +503,7 @@ class AIManagerHistory {
 			if (!userElement.querySelector(".delete-history-button")) {
 				const userPromptIndex = this.chatHistory.findIndex(msg => msg.id === userMessage.id);
 				if (userPromptIndex !== -1) { // Check that message is still in history
-					const deleteButton = this._createDeleteButton(userMessage.id);
+					const deleteButton = this._createSingleDeleteButton(userMessage.id);
 					userElement.append(deleteButton);
 				}
 			}

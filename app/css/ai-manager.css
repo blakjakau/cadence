@@ -349,7 +349,10 @@
 }
 
 .prompt-pill-wrapper:hover .delete-history-button,
-.context-file-wrapper:hover .delete-history-button {
+.context-file-wrapper:hover .delete-history-button,
+.response-block:hover .delete-history-button,
+.system-message-block:hover .delete-history-button,
+.task-state-block:hover .delete-history-button {
     opacity: 1;
 }
 
@@ -433,13 +436,24 @@
 
 .system-message-block {
     margin-bottom: 8px;
-    padding: 8px 16px; /* A system message block should have 8px top and bottom padding, and 16px left and right padding. */
+    padding: 8px 16px;
     background: rgba(var(--text-color-rgb), 0.05);
     border-radius: var(--borderRadius);
     color: var(--text-color-secondary);
     font-style: italic;
     font-size: 0.9em;
     text-align: center;
+    position: relative;
+}
+
+.task-state-block {
+    margin-bottom: 8px;
+    padding: 8px 16px;
+    background: rgba(var(--text-color-rgb), 0.03);
+    border-radius: var(--borderRadius);
+    color: var(--text-color-secondary);
+    font-size: 0.95em;
+    position: relative;
 }
 
 /* Collapse vertical space between adjacent system message blocks */
@@ -2117,6 +2131,178 @@ ui-tab-item.plan-tasks-tab.active .status-icon {
 ui-editor-holder .artifacts-accordion-container .ace_editor,
 .artifacts-accordion-container .ace_editor {
     top: 0px !important;
+}
+
+/* --- Session Artifacts Accordion Styles --- */
+.artifacts-accordion-container {
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+    overflow-y: auto;
+    padding: 8px;
+    gap: 12px;
+    box-sizing: border-box;
+    background: var(--bg-primary);
+}
+
+.accordion-item {
+    display: flex;
+    flex-direction: column;
+    border: 1px solid var(--border-primary);
+    border-radius: var(--borderRadius);
+    overflow: hidden;
+    background: var(--bg-primary);
+}
+
+.accordion-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 16px;
+    background: var(--bg-secondary);
+    cursor: pointer;
+    user-select: none;
+}
+
+.accordion-header .header-left {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13.5px;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.accordion-header .header-right {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.accordion-header button.edit-btn {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 3px 8px;
+    font-size: 11px;
+    cursor: pointer;
+    font-weight: 600;
+    border-radius: var(--borderRadius);
+    border: 1px solid var(--border-primary);
+    background: var(--bg-primary);
+    color: var(--text-secondary);
+}
+
+.accordion-header .expand-arrow {
+    font-size: 16px;
+    transition: transform 0.2s ease;
+}
+
+.accordion-content {
+	padding:8px;
+    border-top: 1px solid var(--border-primary);
+    background: var(--bg-primary);
+}
+
+.artifacts-accordion-container .settings-grid {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+}
+
+.artifacts-accordion-container .toggle-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    margin-right: 0;
+}
+
+.artifacts-accordion-container .setting-meta {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.artifacts-accordion-container .toggle-label {
+    font-size: 12.5px;
+    font-weight: 600;
+    color: var(--text-primary);
+    cursor: pointer;
+    user-select: none;
+}
+
+.artifacts-accordion-container .setting-desc {
+    font-size: 11px;
+    color: var(--text-secondary);
+}
+
+.artifacts-accordion-container .pane-content {
+    padding: 16px 20px;
+    line-height: 1.6;
+    font-size: 13px;
+    color: var(--text-secondary);
+}
+
+.artifacts-accordion-container .backups-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.artifacts-accordion-container .backup-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 14px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-primary);
+    border-radius: var(--borderRadius);
+    gap: 16px;
+}
+
+.artifacts-accordion-container .backup-info {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    overflow: hidden;
+    flex: 1;
+}
+
+.artifacts-accordion-container .backup-file {
+    font-family: var(--font-mono);
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-primary);
+    text-overflow: ellipsis;
+    overflow: hidden;
+    white-space: nowrap;
+}
+
+.artifacts-accordion-container .backup-path {
+    font-size: 10.5px;
+    color: var(--text-secondary);
+    text-overflow: ellipsis;
+    overflow: hidden;
+    white-space: nowrap;
+}
+
+.artifacts-accordion-container .backup-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.artifacts-accordion-container .backup-actions button {
+    padding: 4px 10px;
+    font-size: 11.5px;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    border-radius: 4px;
+    cursor: pointer;
+    border: 1px solid var(--border-primary);
+    color: var(--text-primary);
+    background: var(--bg-primary);
 }
 
 

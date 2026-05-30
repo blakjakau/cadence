@@ -2,6 +2,90 @@ import { Block } from './element.mjs';
 import conduitClient from '../conduit-client.mjs';
 import workspaceClient from '../workspace-client.mjs';
 
+export class UIAccordion extends Block {
+    constructor(sectionKey, titleText, iconText, iconColor = null, hasEditButton = false, editBtnClass = "") {
+        super();
+        this.sectionKey = sectionKey;
+        this.classList.add("accordion-item");
+        this.classList.add(`${sectionKey}-section`);
+
+        this.header = document.createElement("div");
+        this.header.className = "accordion-header";
+
+        const headerLeft = document.createElement("div");
+        headerLeft.className = "header-left";
+
+        const icon = document.createElement("ui-icon");
+        icon.textContent = iconText;
+        if (iconColor) icon.style.color = iconColor;
+
+        const titleSpan = document.createElement("span");
+        titleSpan.textContent = titleText;
+
+        headerLeft.appendChild(icon);
+        headerLeft.appendChild(titleSpan);
+        this.header.appendChild(headerLeft);
+
+        this.rightContainer = document.createElement("div");
+        this.rightContainer.className = "header-right";
+
+        this.editBtn = null;
+        if (hasEditButton) {
+            this.editBtn = document.createElement("button");
+            this.editBtn.className = `${editBtnClass} theme-button secondary edit-btn`;
+
+            const editIcon = document.createElement("ui-icon");
+            editIcon.textContent = "edit";
+            const editLabel = document.createElement("span");
+            editLabel.textContent = "Edit";
+
+            this.editBtn.appendChild(editIcon);
+            this.editBtn.appendChild(editLabel);
+            this.rightContainer.appendChild(this.editBtn);
+        }
+
+        this.arrow = document.createElement("ui-icon");
+        this.arrow.className = "expand-arrow";
+        this.arrow.textContent = "expand_less";
+        this.rightContainer.appendChild(this.arrow);
+        this.header.appendChild(this.rightContainer);
+
+        this.content = document.createElement("div");
+        this.content.className = "accordion-content";
+
+        this.appendChild(this.header);
+        this.appendChild(this.content);
+
+        // Click handler to expand/collapse
+        this.header.onclick = (e) => {
+            if (e.target.closest("button") || e.target.closest(".header-actions")) return;
+            const session = ui.aiManager.activeSession;
+            if (!session) return;
+            session._accordionStates = session._accordionStates || { settings: false, plan: true, tasks: true, backups: true };
+
+            const isExpanded = this.classList.toggle("expanded");
+            session._accordionStates[this.sectionKey] = isExpanded;
+
+            this.applyState(isExpanded);
+        };
+    }
+
+    applyState(isExpanded) {
+        if (isExpanded) {
+            this.classList.add("expanded");
+            this.content.style.display = "";
+            this.arrow.style.transform = "rotate(0deg)";
+            this.arrow.textContent = "expand_less";
+        } else {
+            this.classList.remove("expanded");
+            this.content.style.display = "none";
+            this.arrow.style.transform = "rotate(180deg)";
+            this.arrow.textContent = "expand_more";
+        }
+    }
+}
+customElements.define("ui-accordion", UIAccordion);
+
 export class SessionArtifactsPanel extends Block {
     constructor() {
         super();
@@ -14,130 +98,41 @@ export class SessionArtifactsPanel extends Block {
         // Build the outer scroll container programmatically
         this.container = document.createElement("div");
         this.container.className = "artifacts-accordion-container";
-        this.container.style.cssText = "display: flex; flex-direction: column; width: 100%; overflow-y: auto; padding: 8px; gap: 12px; box-sizing: border-box; background: var(--bg-primary);";
         this.appendChild(this.container);
 
         // 1. Session Settings Accordion
         this._buildSettingsAccordion();
 
-        // 4. Edit History & Rollbacks Accordion
+        // 2. Edit History & Rollbacks Accordion
         this._buildBackupsAccordion();
 
         // 3. Task Checklist Accordion
         this._buildTasksAccordion();
 
-        // 2. Implementation Plan Accordion
+        // 4. Implementation Plan Accordion
         this._buildPlanAccordion();
-
-
-    }
-
-    _createAccordionShell(sectionKey, titleText, iconText, iconColor, hasEditButton = false, editBtnClass = "") {
-        const item = document.createElement("div");
-        item.className = `accordion-item ${sectionKey}-section`;
-        item.style.cssText = "display: flex; flex-direction: column; border: 1px solid var(--border-primary); border-radius: var(--borderRadius); overflow: hidden; background: var(--bg-primary);";
-
-        const header = document.createElement("div");
-        header.className = "accordion-header";
-        header.style.cssText = "display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; background: var(--bg-secondary); cursor: pointer; user-select: none;";
-
-        const headerLeft = document.createElement("div");
-        headerLeft.className = "header-left";
-        headerLeft.style.cssText = "display: flex; align-items: center; gap: 8px; font-size: 13.5px; font-weight: 600; color: var(--text-primary);";
-
-        const icon = document.createElement("ui-icon");
-        icon.textContent = iconText;
-        if (iconColor) icon.style.color = iconColor;
-
-        const titleSpan = document.createElement("span");
-        titleSpan.textContent = titleText;
-
-        headerLeft.appendChild(icon);
-        headerLeft.appendChild(titleSpan);
-        header.appendChild(headerLeft);
-
-        const rightContainer = document.createElement("div");
-        rightContainer.style.cssText = "display: flex; align-items: center; gap: 8px;";
-
-        let editBtn = null;
-        if (hasEditButton) {
-            editBtn = document.createElement("button");
-            editBtn.className = `${editBtnClass} theme-button secondary`;
-            editBtn.style.cssText = "display: flex; align-items: center; gap: 4px; padding: 3px 8px; font-size: 11px; cursor: pointer; font-weight: 600; border-radius: var(--borderRadius); border: 1px solid var(--border-primary); background: var(--bg-primary); color: var(--text-secondary);";
-
-            const editIcon = document.createElement("ui-icon");
-            editIcon.textContent = "edit";
-            editIcon.style.fontSize = "14px";
-            const editLabel = document.createElement("span");
-            editLabel.textContent = "Edit";
-
-            editBtn.appendChild(editIcon);
-            editBtn.appendChild(editLabel);
-            rightContainer.appendChild(editBtn);
-        }
-
-        const arrow = document.createElement("ui-icon");
-        arrow.className = "expand-arrow";
-        arrow.style.cssText = "font-size: 16px; transition: transform 0.2s ease;";
-        arrow.textContent = "expand_less";
-        rightContainer.appendChild(arrow);
-        header.appendChild(rightContainer);
-
-        const content = document.createElement("div");
-        content.className = "accordion-content";
-        content.style.cssText = "border-top: 1px solid var(--border-primary); background: var(--bg-primary);";
-
-        item.appendChild(header);
-        item.appendChild(content);
-        this.container.appendChild(item);
-
-        // Click handler to expand/collapse
-        header.onclick = (e) => {
-            if (e.target.closest("button") || e.target.closest(".header-actions")) return;
-            const session = ui.aiManager.activeSession;
-            if (!session) return;
-            session._accordionStates = session._accordionStates || { settings: false, plan: true, tasks: true, backups: true };
-
-            const isExpanded = item.classList.toggle("expanded");
-            session._accordionStates[sectionKey] = isExpanded;
-
-            if (isExpanded) {
-                content.style.display = "";
-                arrow.style.transform = "rotate(0deg)";
-                arrow.textContent = "expand_less";
-            } else {
-                content.style.display = "none";
-                arrow.style.transform = "rotate(180deg)";
-                arrow.textContent = "expand_more";
-            }
-        };
-
-        return { item, header, content, arrow, editBtn };
     }
 
     _buildSettingsAccordion() {
-        const shell = this._createAccordionShell("settings", "Session Settings", "settings", "var(--theme)");
-        this.settingsContent = shell.content;
-        this.settingsItem = shell.item;
-        this.settingsArrow = shell.arrow;
+        this.settingsAccordion = new UIAccordion("settings", "Session Settings", "settings", "var(--theme)");
+        this.settingsContent = this.settingsAccordion.content;
+        this.settingsItem = this.settingsAccordion;
+        this.settingsArrow = this.settingsAccordion.arrow;
 
-        this.settingsContent.style.padding = "16px";
+        this.settingsContent.className = "accordion-content settings-content-wrapper";
 
         const grid = document.createElement("div");
         grid.className = "settings-grid";
-        grid.style.cssText = "display: flex; flex-direction: column; gap: 16px;";
         this.settingsContent.appendChild(grid);
 
         // Helper to construct a single toggle row programmatically
         const createToggleRow = (id, title, desc, wrapperClass) => {
             const wrapper = document.createElement("div");
-            wrapper.className = wrapperClass;
-            wrapper.style.cssText = "display: flex; align-items: flex-start; gap: 12px; margin-right: 0;";
+            wrapper.className = `toggle-row ${wrapperClass}`;
 
             const label = document.createElement("label");
             label.className = "switch";
             label.title = `${title}: ${desc}`;
-            label.style.cssText = "flex-shrink: 0;";
 
             const input = document.createElement("input");
             input.type = "checkbox";
@@ -151,17 +146,14 @@ export class SessionArtifactsPanel extends Block {
 
             const meta = document.createElement("div");
             meta.className = "setting-meta";
-            meta.style.cssText = "display: flex; flex-direction: column; gap: 2px;";
 
             const titleSpan = document.createElement("span");
             titleSpan.className = "toggle-label";
-            titleSpan.style.cssText = "font-size: 12.5px; font-weight: 600; color: var(--text-primary); cursor: pointer; user-select: none;";
             titleSpan.textContent = title;
             titleSpan.onclick = () => input.click();
 
             const descSpan = document.createElement("span");
             descSpan.className = "setting-desc";
-            descSpan.style.cssText = "font-size: 11px; color: var(--text-secondary);";
             descSpan.textContent = desc;
 
             meta.appendChild(titleSpan);
@@ -177,6 +169,8 @@ export class SessionArtifactsPanel extends Block {
         this.agentModeCheckbox = createToggleRow("accordion-agent-mode", "Agent Mode", "Allow Cadence to automatically read, write, and manage workspace files.", "agent-toggle-wrapper");
         this.planningModeCheckbox = createToggleRow("accordion-planning-mode", "Planning Mode", "Focus Cadence on generating structured implementation plans before applying edits.", "planning-toggle-wrapper");
         this.forgivenessModeCheckbox = createToggleRow("accordion-forgiveness-mode", "Forgiveness Mode", "Commit edits immediately to disk with robust single-click rollback safety.", "agent-toggle-wrapper");
+
+        this.container.appendChild(this.settingsAccordion);
 
         // Listeners
         this.agentModeCheckbox.addEventListener("change", async (e) => {
@@ -223,21 +217,23 @@ export class SessionArtifactsPanel extends Block {
                     window.ui.rightHolder.updateNoticeBar(rightActive);
                 }
             }
-        });    }
+        });
+    }
 
     _buildPlanAccordion() {
-        const shell = this._createAccordionShell("plan", "Implementation Plan", "assignment", "#d19a66", true, "edit-plan-btn");
-        this.planItem = shell.item;
-        this.planContentWrapper = shell.content;
-        this.planArrow = shell.arrow;
-        this.planBtn = shell.editBtn;
+        this.planAccordion = new UIAccordion("plan", "Implementation Plan", "assignment", "#d19a66", true, "edit-plan-btn");
+        this.planItem = this.planAccordion;
+        this.planContentWrapper = this.planAccordion.content;
+        this.planArrow = this.planAccordion.arrow;
+        this.planBtn = this.planAccordion.editBtn;
 
-        this.planContentWrapper.style.cssText += "position: relative; min-height: 100px;";
+        this.planContentWrapper.classList.add("plan-content-wrapper");
 
         this.planContent = document.createElement("div");
         this.planContent.className = "pane-content markdown-body";
-        this.planContent.style.cssText = "padding: 16px 20px; line-height: 1.6; font-size: 13px; color: var(--text-secondary);";
         this.planContentWrapper.appendChild(this.planContent);
+
+        this.container.appendChild(this.planAccordion);
 
         this.planBtn.onclick = async (e) => {
             if (e) e.stopPropagation();
@@ -245,7 +241,13 @@ export class SessionArtifactsPanel extends Block {
             if (!session) return;
 
             if (!this.planEditorInstance) {
-                this.planBtn.innerHTML = `<ui-icon>save</ui-icon><span>Save</span>`;
+                this.planBtn.innerHTML = "";
+                const saveIcon = document.createElement("ui-icon");
+                saveIcon.textContent = "save";
+                const saveLabel = document.createElement("span");
+                saveLabel.textContent = "Save";
+                this.planBtn.appendChild(saveIcon);
+                this.planBtn.appendChild(saveLabel);
                 this.planBtn.style.color = "var(--theme)";
                 this.planBtn.style.borderColor = "var(--theme)";
 
@@ -253,9 +255,14 @@ export class SessionArtifactsPanel extends Block {
                 const rawMarkdown = session.implementationPlan || "";
                 const editorHeight = Math.max(currentHeight, 150);
 
-                this.planContent.style.padding = "0";
-                this.planContent.innerHTML = `<div class="plan-ace-editor" style="height: ${editorHeight}px; width: 100%; position: relative;"></div>`;
-                const editorDiv = this.planContent.querySelector(".plan-ace-editor");
+                this.planContent.innerHTML = "";
+                
+                const editorDiv = document.createElement("div");
+                editorDiv.className = "plan-ace-editor";
+                editorDiv.style.height = `${editorHeight}px`;
+                editorDiv.style.width = "100%";
+                editorDiv.style.position = "relative";
+                this.planContent.appendChild(editorDiv);
 
                 this.planEditorInstance = window.ace.edit(editorDiv);
                 const theme = window.leftEdit?.renderer?.getTheme() || "ace/theme/tomorrow_night";
@@ -279,31 +286,37 @@ export class SessionArtifactsPanel extends Block {
                     console.error("[PlanTasksView] Error saving plan:", err);
                 }
 
-                this.planContent.style.padding = "16px 20px";
                 this.planContent.innerHTML = newValue 
                     ? ui.aiManager.md.render(newValue)
                     : `<span class="empty-state">No implementation plan defined. Cadence will outline one once active.</span>`;
 
-                this.planBtn.innerHTML = `<ui-icon style="font-size: 14px;">edit</ui-icon><span>Edit</span>`;
-                this.planBtn.style.color = "var(--text-secondary)";
-                this.planBtn.style.borderColor = "var(--border-primary)";
+                this.planBtn.innerHTML = "";
+                const editIcon = document.createElement("ui-icon");
+                editIcon.textContent = "edit";
+                const editLabel = document.createElement("span");
+                editLabel.textContent = "Edit";
+                this.planBtn.appendChild(editIcon);
+                this.planBtn.appendChild(editLabel);
+                this.planBtn.style.color = "";
+                this.planBtn.style.borderColor = "";
             }
         };
     }
 
     _buildTasksAccordion() {
-        const shell = this._createAccordionShell("tasks", "Task Checklist", "playlist_add_check", "#2da44e", true, "edit-tasks-btn");
-        this.tasksItem = shell.item;
-        this.tasksContentWrapper = shell.content;
-        this.tasksArrow = shell.arrow;
-        this.tasksBtn = shell.editBtn;
+        this.tasksAccordion = new UIAccordion("tasks", "Task Checklist", "playlist_add_check", "#2da44e", true, "edit-tasks-btn");
+        this.tasksItem = this.tasksAccordion;
+        this.tasksContentWrapper = this.tasksAccordion.content;
+        this.tasksArrow = this.tasksAccordion.arrow;
+        this.tasksBtn = this.tasksAccordion.editBtn;
 
-        this.tasksContentWrapper.style.cssText += "position: relative; min-height: 100px;";
+        this.tasksContentWrapper.classList.add("tasks-content-wrapper");
 
         this.tasksContent = document.createElement("div");
         this.tasksContent.className = "pane-content markdown-body tasks-content";
-        this.tasksContent.style.cssText = "padding: 16px 20px; line-height: 1.6; font-size: 13px; color: var(--text-secondary);";
         this.tasksContentWrapper.appendChild(this.tasksContent);
+
+        this.container.appendChild(this.tasksAccordion);
 
         this.tasksBtn.onclick = async (e) => {
             if (e) e.stopPropagation();
@@ -311,7 +324,13 @@ export class SessionArtifactsPanel extends Block {
             if (!session) return;
 
             if (!this.tasksEditorInstance) {
-                this.tasksBtn.innerHTML = `<ui-icon>save</ui-icon><span>Save</span>`;
+                this.tasksBtn.innerHTML = "";
+                const saveIcon = document.createElement("ui-icon");
+                saveIcon.textContent = "save";
+                const saveLabel = document.createElement("span");
+                saveLabel.textContent = "Save";
+                this.tasksBtn.appendChild(saveIcon);
+                this.tasksBtn.appendChild(saveLabel);
                 this.tasksBtn.style.color = "var(--theme)";
                 this.tasksBtn.style.borderColor = "var(--theme)";
 
@@ -319,9 +338,13 @@ export class SessionArtifactsPanel extends Block {
                 const rawMarkdown = session.taskList || "";
                 const editorHeight = Math.max(currentHeight, 150);
 
-                this.tasksContent.style.padding = "0";
-                this.tasksContent.innerHTML = `<div class="tasks-ace-editor" style="height: ${editorHeight}px; width: 100%; position: relative;"></div>`;
-                const editorDiv = this.tasksContent.querySelector(".tasks-ace-editor");
+                this.tasksContent.innerHTML = "";
+                const editorDiv = document.createElement("div");
+                editorDiv.className = "tasks-ace-editor";
+                editorDiv.style.height = `${editorHeight}px`;
+                editorDiv.style.width = "100%";
+                editorDiv.style.position = "relative";
+                this.tasksContent.appendChild(editorDiv);
 
                 this.tasksEditorInstance = window.ace.edit(editorDiv);
                 const theme = window.leftEdit?.renderer?.getTheme() || "ace/theme/tomorrow_night";
@@ -345,30 +368,36 @@ export class SessionArtifactsPanel extends Block {
                     console.error("[PlanTasksView] Error saving task checklist:", err);
                 }
 
-                this.tasksContent.style.padding = "16px 20px";
                 this.tasksContent.innerHTML = newValue 
                     ? ui.aiManager.md.render(newValue)
                     : `<span class="empty-state">No task list defined. Cadence will build one once active.</span>`;
 
-                this.tasksBtn.innerHTML = `<ui-icon style="font-size: 14px;">edit</ui-icon><span>Edit</span>`;
-                this.tasksBtn.style.color = "var(--text-secondary)";
-                this.tasksBtn.style.borderColor = "var(--border-primary)";
+                this.tasksBtn.innerHTML = "";
+                const editIcon = document.createElement("ui-icon");
+                editIcon.textContent = "edit";
+                const editLabel = document.createElement("span");
+                editLabel.textContent = "Edit";
+                this.tasksBtn.appendChild(editIcon);
+                this.tasksBtn.appendChild(editLabel);
+                this.tasksBtn.style.color = "";
+                this.tasksBtn.style.borderColor = "";
             }
         };
     }
 
     _buildBackupsAccordion() {
-        const shell = this._createAccordionShell("backups", "Edit History & Rollbacks", "history", "var(--color-error, #ea4335)");
-        this.backupsItem = shell.item;
-        this.backupsContent = shell.content;
-        this.backupsArrow = shell.arrow;
+        this.backupsAccordion = new UIAccordion("backups", "Edit History & Rollbacks", "history", "var(--color-error, #ea4335)");
+        this.backupsItem = this.backupsAccordion;
+        this.backupsContent = this.backupsAccordion.content;
+        this.backupsArrow = this.backupsAccordion.arrow;
 
-        this.backupsContent.style.padding = "16px";
+        this.backupsContent.className = "accordion-content backups-content-wrapper";
 
         this.backupsList = document.createElement("div");
         this.backupsList.className = "backups-list";
-        this.backupsList.style.cssText = "display: flex; flex-direction: column; gap: 8px;";
         this.backupsContent.appendChild(this.backupsList);
+
+        this.container.appendChild(this.backupsAccordion);
     }
 
     update() {
@@ -389,25 +418,11 @@ export class SessionArtifactsPanel extends Block {
 
         // Restore accordion expanded states
         session._accordionStates = session._accordionStates || { settings: false, plan: true, tasks: true, backups: true };
-        const applyState = (sectionKey, item, content, arrow) => {
-            const expanded = session._accordionStates[sectionKey] !== false;
-            if (expanded) {
-                item.classList.add("expanded");
-                content.style.display = "";
-                arrow.style.transform = "rotate(0deg)";
-                arrow.textContent = "expand_less";
-            } else {
-                item.classList.remove("expanded");
-                content.style.display = "none";
-                arrow.style.transform = "rotate(180deg)";
-                arrow.textContent = "expand_more";
-            }
-        };
-
-        applyState("settings", this.settingsItem, this.settingsContent, this.settingsArrow);
-        applyState("plan", this.planItem, this.planContentWrapper, this.planArrow);
-        applyState("tasks", this.tasksItem, this.tasksContentWrapper, this.tasksArrow);
-        applyState("backups", this.backupsItem, this.backupsContent, this.backupsArrow);
+        
+        this.settingsAccordion.applyState(session._accordionStates.settings !== false);
+        this.planAccordion.applyState(session._accordionStates.plan !== false);
+        this.tasksAccordion.applyState(session._accordionStates.tasks !== false);
+        this.backupsAccordion.applyState(session._accordionStates.backups !== false);
 
         // Update checkbox toggles
         this.agentModeCheckbox.checked = ui.aiManager.agentMode || false;
@@ -416,26 +431,36 @@ export class SessionArtifactsPanel extends Block {
 
         // Render implementation plan content if not editing
         if (!this.planEditorInstance) {
-            this.planContent.style.padding = "16px 20px";
             this.planContent.innerHTML = session.implementationPlan 
                 ? ui.aiManager.md.render(session.implementationPlan)
                 : `<span class="empty-state">No implementation plan defined. Cadence will outline one once active.</span>`;
 
-            this.planBtn.innerHTML = `<ui-icon style="font-size: 14px;">edit</ui-icon><span>Edit</span>`;
-            this.planBtn.style.color = "var(--text-secondary)";
-            this.planBtn.style.borderColor = "var(--border-primary)";
+            this.planBtn.innerHTML = "";
+            const editIcon = document.createElement("ui-icon");
+            editIcon.textContent = "edit";
+            const editLabel = document.createElement("span");
+            editLabel.textContent = "Edit";
+            this.planBtn.appendChild(editIcon);
+            this.planBtn.appendChild(editLabel);
+            this.planBtn.style.color = "";
+            this.planBtn.style.borderColor = "";
         }
 
         // Render tasks content if not editing
         if (!this.tasksEditorInstance) {
-            this.tasksContent.style.padding = "16px 20px";
             this.tasksContent.innerHTML = session.taskList
                 ? ui.aiManager.md.render(session.taskList)
                 : `<span class="empty-state">No task list defined. Cadence will build one once active.</span>`;
 
-            this.tasksBtn.innerHTML = `<ui-icon style="font-size: 14px;">edit</ui-icon><span>Edit</span>`;
-            this.tasksBtn.style.color = "var(--text-secondary)";
-            this.tasksBtn.style.borderColor = "var(--border-primary)";
+            this.tasksBtn.innerHTML = "";
+            const editIcon = document.createElement("ui-icon");
+            editIcon.textContent = "edit";
+            const editLabel = document.createElement("span");
+            editLabel.textContent = "Edit";
+            this.tasksBtn.appendChild(editIcon);
+            this.tasksBtn.appendChild(editLabel);
+            this.tasksBtn.style.color = "";
+            this.tasksBtn.style.borderColor = "";
         }
 
         // Render modified file backups list using programmatic DOM manipulation
@@ -447,7 +472,6 @@ export class SessionArtifactsPanel extends Block {
         if (filePaths.length === 0) {
             const emptyNotice = document.createElement("div");
             emptyNotice.className = "plan-tasks-empty";
-            emptyNotice.style.padding = "16px 0";
             emptyNotice.textContent = "No file modifications recorded in this session yet.";
             this.backupsList.appendChild(emptyNotice);
         } else {
@@ -469,20 +493,16 @@ export class SessionArtifactsPanel extends Block {
 
                 const row = document.createElement("div");
                 row.className = "backup-row";
-                row.style.cssText = "display: flex; align-items: center; justify-content: space-between; padding: 10px 14px; background: var(--bg-secondary); border: 1px solid var(--border-primary); border-radius: var(--borderRadius); gap: 16px;";
 
                 const info = document.createElement("div");
                 info.className = "backup-info";
-                info.style.cssText = "display: flex; flex-direction: column; gap: 2px; overflow: hidden; flex: 1;";
 
                 const fileSpan = document.createElement("span");
                 fileSpan.className = "backup-file";
-                fileSpan.style.cssText = "font-family: var(--font-mono); font-size: 13px; font-weight: 600; color: var(--text-primary); text-overflow: ellipsis; overflow: hidden; white-space: nowrap;";
                 fileSpan.textContent = filename;
 
                 const pathSpan = document.createElement("span");
                 pathSpan.className = "backup-path";
-                pathSpan.style.cssText = "font-size: 10.5px; color: var(--text-secondary); text-overflow: ellipsis; overflow: hidden; white-space: nowrap;";
                 pathSpan.textContent = relativePath;
 
                 info.appendChild(fileSpan);
@@ -490,19 +510,16 @@ export class SessionArtifactsPanel extends Block {
 
                 const actions = document.createElement("div");
                 actions.className = "backup-actions";
-                actions.style.cssText = "display: flex; align-items: center; gap: 8px;";
 
                 const timeSpan = document.createElement("span");
-                timeSpan.style.cssText = "font-size: 11px; color: var(--text-secondary);";
+                timeSpan.className = "backup-time";
                 timeSpan.textContent = formatTime(latestBackup.timestamp);
 
                 const btn = document.createElement("button");
                 btn.className = "rollback-btn theme-button secondary";
-                btn.style.cssText = "padding: 4px 10px; font-size: 11.5px; display: flex; align-items: center; gap: 4px; border-radius: 4px; cursor: pointer; border: 1px solid var(--border-primary); color: var(--text-primary); background: var(--bg-primary);";
 
                 const btnIcon = document.createElement("ui-icon");
                 btnIcon.textContent = "undo";
-                btnIcon.style.fontSize = "14px";
 
                 const btnLabel = document.createElement("span");
                 btnLabel.textContent = "Rollback";
@@ -512,11 +529,9 @@ export class SessionArtifactsPanel extends Block {
 
                 const reviewBtn = document.createElement("button");
                 reviewBtn.className = "review-btn theme-button secondary";
-                reviewBtn.style.cssText = "padding: 4px 10px; font-size: 11.5px; display: flex; align-items: center; gap: 4px; border-radius: 4px; cursor: pointer; border: 1px solid var(--border-primary); color: var(--text-primary); background: var(--bg-primary);";
 
                 const reviewBtnIcon = document.createElement("ui-icon");
                 reviewBtnIcon.textContent = "visibility";
-                reviewBtnIcon.style.fontSize = "14px";
 
                 const reviewBtnLabel = document.createElement("span");
                 reviewBtnLabel.textContent = "Review";

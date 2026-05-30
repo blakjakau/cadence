@@ -61,23 +61,4 @@ import { SessionArtifactsPanel } from './elements/session-artifacts-panel.mjs';
 import { DiffViewPanel } from './elements/diff-view-panel.mjs';
 import { LoaderBar } from "./elements/loader-bar.mjs"
 
-
 // export { modalInstance as Modal }; // Re-export the singleton instance
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

@@ -72,6 +72,8 @@ class AIManagerSettings {
             "use-workspace-settings": useWorkspaceSettings,
             summarizeThreshold: aiManager.config.summarizeThreshold,
             summarizeTargetPercentage: aiManager.config.summarizeTargetPercentage,
+            defaultAgentMode: aiManager.config.defaultAgentMode,
+            defaultPlanningMode: aiManager.config.defaultPlanningMode,
             systemPromptSpecialization: systemPromptConfig.specialization,
             systemPromptTechnologies: (systemPromptConfig.technologies || []).join(", "),
             systemPromptAvoidedTechnologies: (systemPromptConfig.avoidedTechnologies || []).join(", "),
@@ -87,6 +89,8 @@ class AIManagerSettings {
         const schema = [
             { type: "checkbox", id: "use-workspace-settings", label: "Use workspace-specific settings" },
             { type: "checkbox", id: "forgivenessMode", label: "Forgiveness Mode (Apply edits immediately, rollback anytime)" },
+            { type: "checkbox", id: "defaultAgentMode", label: "Default Agent Mode for New Chats" },
+            { type: "checkbox", id: "defaultPlanningMode", label: "Default Planning Mode for New Chats" },
             { type: "number", id: "summarizeThreshold", label: "Summarize History When Context Reaches (%)" },
             { type: "number", id: "summarizeTargetPercentage", label: "Percentage of Old History to Summarize" },
             { type: "heading", label: "Prompt Customisation" },
@@ -184,11 +188,15 @@ class AIManagerSettings {
     async saveSettings(values) {
         const { aiManager } = this;
 
-        // --- Save Generic Settings (Summarization) ---
+        // --- Save Generic Settings (Summarization, Defaults) ---
         aiManager.config.summarizeThreshold = parseInt(values.summarizeThreshold);
         aiManager.config.summarizeTargetPercentage = parseInt(values.summarizeTargetPercentage);
+        aiManager.config.defaultAgentMode = !!values.defaultAgentMode;
+        aiManager.config.defaultPlanningMode = !!values.defaultPlanningMode;
         localStorage.setItem("summarizeThreshold", aiManager.config.summarizeThreshold);
         localStorage.setItem("summarizeTargetPercentage", aiManager.config.summarizeTargetPercentage);
+        localStorage.setItem("defaultAgentMode", aiManager.config.defaultAgentMode);
+        localStorage.setItem("defaultPlanningMode", aiManager.config.defaultPlanningMode);
 
         // --- Save Forgiveness Mode ---
         aiManager.forgivenessMode = !!values.forgivenessMode;

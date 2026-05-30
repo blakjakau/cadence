@@ -75,12 +75,14 @@ class AIManagerSessions {
 		const newId = `ai-session-${crypto.randomUUID()}`;
 		const newName = `Chat ${this.allSessionMetadata.length + 1}`;
 		const lastForgivenessMode = this.activeSession ? (this.activeSession.forgivenessMode ?? false) : (this.manager.forgivenessMode ?? false);
+		const defaultAgent = this.manager.config.defaultAgentMode ?? false;
+		const defaultPlanning = this.manager.config.defaultPlanningMode ?? true;
 		const newSessionData = {
 			id: newId, name: newName, createdAt: Date.now(), lastModified: Date.now(),
 			messages: [], promptInput: "", promptHistory: [], scrollTop: 0,
 			evergreenFiles: [], modifiedFiles: {}, pendingEdits: {},
-			agentMode: false,
-			planningMode: true,
+			agentMode: defaultAgent,
+			planningMode: defaultPlanning,
 			forgivenessMode: lastForgivenessMode,
 		};
 

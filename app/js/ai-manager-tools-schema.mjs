@@ -11,6 +11,28 @@ export const tools = [
         }
     },
     {
+        name: "search_files",
+        description: "Search for an exact string across all files in the project.",
+        parameters: {
+            type: "object",
+            properties: {
+                query: { type: "string", description: "The exact text query to search for." }
+            },
+            required: ["query"]
+        }
+    },
+    {
+        name: "find_file",
+        description: "Search for a file path or filename within the project.",
+        parameters: {
+            type: "object",
+            properties: {
+                path: { type: "string", description: "The partial path or filename to search for." }
+            },
+            required: ["path"]
+        }
+    },
+    {
         name: "read_file",
         description: "Read the contents of a file. Use startLine and lineCount to read specific portions.",
         parameters: {
@@ -58,17 +80,6 @@ export const tools = [
         }
     },
     {
-        name: "search_files",
-        description: "Search for an exact string across all files in the project.",
-        parameters: {
-            type: "object",
-            properties: {
-                query: { type: "string", description: "The exact text query to search for." }
-            },
-            required: ["query"]
-        }
-    },
-    {
         name: "create_file",
         description: "Create a new file with the specified content.",
         parameters: {
@@ -87,17 +98,6 @@ export const tools = [
             type: "object",
             properties: {
                 path: { type: "string", description: "The path of the file to open." }
-            },
-            required: ["path"]
-        }
-    },
-    {
-        name: "find_file",
-        description: "Search for a file path or filename within the project.",
-        parameters: {
-            type: "object",
-            properties: {
-                path: { type: "string", description: "The partial path or filename to search for." }
             },
             required: ["path"]
         }

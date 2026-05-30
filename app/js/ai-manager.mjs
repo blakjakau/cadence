@@ -86,10 +86,12 @@ class AIManager {
 		this.aiInfoDisplay = null;
 		this.editBufferDisplay = null; // NEW: Edit buffer display
 
-		// Load summarization settings defaults
+		// Load summarization and mode settings defaults
 		this.config = {
 			summarizeThreshold: 85,
 			summarizeTargetPercentage: 50,
+			defaultAgentMode: false,
+			defaultPlanningMode: true,
 		}
 
 		// NEW: Session Management Properties
@@ -167,8 +169,24 @@ class AIManager {
 		let basePrompt = "";
 		if (this.agentMode) {
 			const modelName = (this.ai && this.ai.config && this.ai.config.model) ? this.ai.config.model.toLowerCase() : '';
-			const supportsJSONTools = this.ai && this.ai.supportsJSONTools;
-			basePrompt = getAgentSystemPrompt(modelName, supportsJSONTools);
+			const supportsJSONTools = !!(this.ai && this.ai.supportsJSONTools);
+			
+			const hasPlan = !!this.activeSession?.implementationPlan;
+			const hasTasks = !!this.activeSession?.taskList;
+			const hasAcceptedPlan = this.activeSession?.messages?.some(m => m.planStatus === "accepted") || false;
+			
+			let hasCompletedAllTasks = false;
+			if (hasTasks && this.activeSession.taskList) {
+				hasCompletedAllTasks = !this.activeSession.taskList.includes("- [ ]") && !this.activeSession.taskList.includes("* [ ]");
+			}
+
+			basePrompt = getAgentSystemPrompt(modelName, {
+				supportsJSONTools,
+				hasPlan,
+				hasTasks,
+				hasAcceptedPlan,
+				hasCompletedAllTasks
+			});
 		} else {
 			basePrompt = systemPromptBuilder(this.getSystemPromptConfig());
 		}
@@ -1396,11 +1414,11 @@ class AIManager {
 
 		// Prepare placeholder for AI response
 		const modelMessageId = crypto.randomUUID(); // Pre-generate ID for the upcoming model response
-		const responseBlock = new Block();
-		responseBlock.classList.add("response-block");
-		responseBlock.dataset.messageId = modelMessageId; // Assign ID for future reference
+		const responseBlock = this.historyManager.createStreamingBlock(modelMessageId);
 		const spinner = this._createSpinner(); // Create the new spinner
-		responseBlock.append(spinner); // Add spinner to the response block
+		if (!this.rawViewMode) {
+			responseBlock.append(spinner); // Add spinner to the response block only in standard mode
+		}
 		// NEW: Set a temporary min-height to ensure the scroll area is large enough
 		this.conversationArea.append(responseBlock);
 		responseBlock.style.minHeight = `${Math.max(50, availableHeightForResponse)}px`; // Ensure a minimum of 50px
@@ -1418,18 +1436,17 @@ class AIManager {
 			onUpdate: (fullResponse) => { // Update the responseBlock directly
 				if (spinner.parentNode) spinner.remove(); // Remove spinner on first stream chunk
 				const shouldScroll = this._shouldAutoScroll();
-				// NEW: _renderResponseContent handles <think> blocks
-				responseBlock.innerHTML = this.messageRenderer.renderResponseContent(fullResponse);
-				this.messageRenderer.addCodeBlockButtons(responseBlock)
+				responseBlock.updateContent(fullResponse);
 				if (shouldScroll && this.conversationArea) {
 					this.conversationArea.scrollTop = this.conversationArea.scrollHeight;
 				}
 			},
 			onDone: async (fullResponse, contextRatioPercent) => { // Mark async to await set
 				// First, update the session data and add the delete button to the user's prompt.
-				// This is safer than doing it after rendering, which could fail.
-				// The spinner is removed when innerHTML is set, so no explicit removal is needed here.
 				const modelMessage = { id: modelMessageId, role: "model", type: "model", content: fullResponse, diffStatuses: [], timestamp: Date.now() };
+				if (callbacks.toolCalls && callbacks.toolCalls.length > 0) {
+					modelMessage.toolCalls = callbacks.toolCalls;
+				}
 				if (callbacks.thoughtSignature) {
 					modelMessage.thoughtSignature = callbacks.thoughtSignature;
 				}
@@ -1438,11 +1455,8 @@ class AIManager {
 				this.activeSession.lastModified = Date.now();
 				await workspaceClient.setSession(this.activeSession.id, this.activeSession);
 
-				// Now, render the final response in the UI.
-				// DEV: For visual debugging, let's pop a loader bar on top of every model response.
-				responseBlock.innerHTML = this.messageRenderer.renderResponseContent(fullResponse, modelMessage);
-
-				this.messageRenderer.addCodeBlockButtons(responseBlock, modelMessage); // Pass the message object here to read/write persistent state
+				// Now, render the final response in the UI using finalize().
+				responseBlock.finalize(fullResponse, modelMessage);
 
 				this._dispatchContextUpdate("append_model") // Dispatch after model response
 
@@ -1452,7 +1466,11 @@ class AIManager {
 			onError: async (error) => { // Mark async to await set
 				// The spinner is also removed here when innerHTML is overwritten.
 				responseBlock.style.minHeight = ''; // Reset min-height on error too
-				responseBlock.innerHTML = `Error: ${error.message}`
+				if (typeof responseBlock.updateContent === 'function') {
+					responseBlock.updateContent(`Error: ${error.message}`);
+				} else {
+					responseBlock.innerHTML = `Error: ${error.message}`;
+				}
 				console.error(`Error calling ${this.ai.config.model} API:`, error);
 
 				const errorMessage = {
@@ -1706,13 +1724,12 @@ class AIManager {
 				}
 			}
 
-
 			const modelMessageId = crypto.randomUUID();
-			const responseBlock = new Block();
-			responseBlock.classList.add("response-block");
-			responseBlock.dataset.messageId = modelMessageId;
+			const responseBlock = this.historyManager.createStreamingBlock(modelMessageId);
 			const spinner = this._createSpinner();
-			responseBlock.append(spinner);
+			if (!this.rawViewMode) {
+				responseBlock.append(spinner);
+			}
 			const shouldScrollAtStart = this._shouldAutoScroll();
 			this.conversationArea.append(responseBlock);
 
@@ -1735,8 +1752,7 @@ class AIManager {
 						currentFullResponse = fullResponse;
 						if (spinner.parentNode) spinner.remove();
 						const shouldScroll = this._shouldAutoScroll();
-						responseBlock.innerHTML = this.messageRenderer.renderResponseContent(fullResponse);
-						this.messageRenderer.addCodeBlockButtons(responseBlock);
+						responseBlock.updateContent(fullResponse);
 						if (shouldScroll && this.conversationArea) {
 							this.conversationArea.scrollTop = this.conversationArea.scrollHeight;
 						}
@@ -1785,7 +1801,14 @@ class AIManager {
 
 				// Parse tool calls
 				const toolCalls = this._parseAllToolCalls(responseContent);
+				const regex = /<[^>]*>/g;
+				
 				if (toolCalls.length === 0) {
+					if(responseContent.replace(regex, "").length > 50) {
+						this._isProcessing = false;
+						this._setButtonsDisabledState(false);
+						return
+					}
 					// No more tool calls: agent is done!
 					if (!responseContent.includes("<complete_task>")) {
 						// Auto-continue logic
@@ -1829,7 +1852,7 @@ class AIManager {
 						warnBlock.innerHTML = `
 							<div style="font-weight: 500; display: flex; align-items: center; gap: 8px;">
 								<ui-icon style="color: var(--color-warning, #b58900);">warning</ui-icon>
-								<span>⚠️ <b>Agent Loop Halted:</b> The model stopped generating without producing a tool call or completing a task.</span>
+								<span><b>Agent Loop Halted:</b> The model stopped generating without producing a tool call or completing a task.</span>
 							</div>
 							<div style="margin-top: 8px; display: flex; gap: 12px; align-items: center; margin-left: 24px;">
 								<button class="warn-continue-btn theme-button" style="padding: 4px 10px; font-size: 11px; font-weight: 600; min-width: 80px; cursor: pointer; border-radius: var(--borderRadius); border: none;">Continue</button>
@@ -2109,8 +2132,12 @@ class AIManager {
 		this.activeSession.lastModified = Date.now();
 		await workspaceClient.setSession(this.activeSession.id, this.activeSession);
 
-		responseBlock.innerHTML = this.messageRenderer.renderResponseContent(finalizedResponse, modelMessage);
-		this.messageRenderer.addCodeBlockButtons(responseBlock, modelMessage);
+		if (typeof responseBlock.finalize === 'function') {
+			responseBlock.finalize(finalizedResponse, modelMessage);
+		} else {
+			responseBlock.innerHTML = this.messageRenderer.renderResponseContent(finalizedResponse, modelMessage);
+			this.messageRenderer.addCodeBlockButtons(responseBlock, modelMessage);
+		}
 
 		if (forcedReason === "secondary_thought" || forcedReason === "secondary_tool_call") {
 			const blockType = forcedReason === "secondary_thought" ? "thought" : "tool call";
@@ -2322,6 +2349,15 @@ class AIManager {
 		const storedSummarizeTargetPercentage = localStorage.getItem("summarizeTargetPercentage")
 		if (storedSummarizeTargetPercentage !== null) {
 			this.config.summarizeTargetPercentage = parseInt(storedSummarizeTargetPercentage)
+		}
+
+		const storedDefaultAgentMode = localStorage.getItem("defaultAgentMode")
+		if (storedDefaultAgentMode !== null) {
+			this.config.defaultAgentMode = storedDefaultAgentMode === "true"
+		}
+		const storedDefaultPlanningMode = localStorage.getItem("defaultPlanningMode")
+		if (storedDefaultPlanningMode !== null) {
+			this.config.defaultPlanningMode = storedDefaultPlanningMode === "true"
 		}
 
 		const storedAgentMode = localStorage.getItem("aiAgentMode")

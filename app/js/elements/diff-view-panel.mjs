@@ -117,15 +117,17 @@ export class DiffViewPanel extends Block {
             if (this.leftMarkers) {
                 this.leftMarkers.forEach(id => this.leftEditor.getSession().removeMarker(id));
             }
+            clearGutterDecorations(this.leftEditor.getSession());
         }
         this.leftMarkers = [];
-
+ 
         if (this.rightEditor) {
             const overlay = this.rightEditor.container.querySelector(".diff-scrollbar-marker-overlay");
             if (overlay) overlay.remove();
             if (this.rightMarkers) {
                 this.rightMarkers.forEach(id => this.rightEditor.getSession().removeMarker(id));
             }
+            clearGutterDecorations(this.rightEditor.getSession());
         }
         this.rightMarkers = [];
 
@@ -313,11 +315,13 @@ export class DiffViewPanel extends Block {
             if (this.leftMarkers) {
                 this.leftMarkers.forEach(id => this.leftEditor.getSession().removeMarker(id));
             }
+            clearGutterDecorations(this.leftEditor.getSession());
             this.leftMarkers = [];
 
             if (this.rightMarkers) {
                 this.rightMarkers.forEach(id => this.rightEditor.getSession().removeMarker(id));
             }
+            clearGutterDecorations(this.rightEditor.getSession());
             this.rightMarkers = [];
 
             // Add new markers and gutter decorations
@@ -857,4 +861,17 @@ function drawScrollbarMarkers(editor, rows, color) {
     });
 
     editor.container.appendChild(overlay);
+}
+
+/**
+ * Clears old diff gutter decorations from an Ace editor session.
+ */
+function clearGutterDecorations(session) {
+    if (!session) return;
+    const len = session.getLength();
+    for (let i = 0; i < len; i++) {
+        session.removeGutterDecoration(i, "diff-gutter-deletion");
+        session.removeGutterDecoration(i, "diff-gutter-addition");
+        session.removeGutterDecoration(i, "diff-gutter-empty");
+    }
 }

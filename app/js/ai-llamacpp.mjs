@@ -24,10 +24,10 @@ class LlamaCpp extends AI {
             server: { type: "string", label: "Llama.cpp Server", default: "http://localhost:8080" },
             model: { type: "string", label: "Current Model", default: "unknown", readonly: true },
             n_ctx: { type: "number", label: "Context Window (Detected)", default: 0, readonly: true },
+            n_predict: { type: "number", label: "Max Tokens (n_predict)", default: 4096 },
             temperature: { type: "number", label: "Temperature", default: 0.7 },
             top_p: { type: "number", label: "Top P", default: 0.9 },
             top_k: { type: "number", label: "Top K", default: 40 },
-            n_predict: { type: "number", label: "Max Tokens (n_predict)", default: 4096 },
             system: { type: "textarea", label: "System Prompt Override", default: "", multiline: true }
         };
     }
@@ -50,7 +50,7 @@ class LlamaCpp extends AI {
 
     get supportsReasoning() {
         const model = (this.config.model || "").toLowerCase();
-        return model.includes('r1') || model.includes('reasoning') || model.includes('deepseek') || model.includes('think');
+        return model.includes('r1') || model.includes('reasoning') || model.includes('deepseek') || model.includes('think') || model.includes("gemma-4");
     }
 
     async init() {
@@ -86,18 +86,105 @@ class LlamaCpp extends AI {
 
         const modelName = (this.config.model || "").toLowerCase();
         if (modelName.includes("gemma")) {
-            activeSystemPrompt = "<|think|>" + (activeSystemPrompt || "");
+            activeSystemPrompt = "" + (activeSystemPrompt || "");
         }
 
         if (activeSystemPrompt) {
             formattedMessages.push({ role: "system", content: activeSystemPrompt });
         }
 
+        let lastAssistantToolCalls = null;
+
         for (const msg of messages) {
             if (msg.type === 'file_context') {
                 formattedMessages.push({ role: "user", content: `--- File: ${msg.filename} ---\n\`\`\`${msg.language || ''}\n${msg.content}\n\`\`\`` });
+            } else if (msg.role === 'model') {
+                let toolCalls = msg.toolCalls || [];
+                
+                // Self-healing: if no toolCalls are explicitly saved on the message object,
+                // but the content contains XML <tool_call> tags, parse them dynamically!
+                if (toolCalls.length === 0 && msg.content && msg.content.includes('<tool_call')) {
+                    const parsedCalls = [];
+                    const tcRegex = /<tool_call\s+name=["']([^"']+)["']\s*>([\s\S]*?)<\/tool_call>/gi;
+                    let tcMatch;
+                    while ((tcMatch = tcRegex.exec(msg.content)) !== null) {
+                        const name = tcMatch[1];
+                        const innerArgs = tcMatch[2];
+                        const args = {};
+                        
+                        // Extract tag values
+                        const argRegex = /<([a-zA-Z0-9_-]+)>([\s\S]*?)<\/\1>/g;
+                        let argMatch;
+                        while ((argMatch = argRegex.exec(innerArgs)) !== null) {
+                            args[argMatch[1]] = argMatch[2].trim();
+                        }
+                        
+                        parsedCalls.push({
+                            id: `call_${crypto.randomUUID()}`,
+                            functionCall: { name, args }
+                        });
+                    }
+                    toolCalls = parsedCalls;
+                }
+
+                if (toolCalls.length > 0) {
+                    lastAssistantToolCalls = toolCalls;
+                    
+                    // Extract text before <tool_call
+                    let textPart = msg.content;
+                    const toolCallIdx = msg.content.indexOf('<tool_call');
+                    if (toolCallIdx !== -1) {
+                        textPart = msg.content.substring(0, toolCallIdx).trim();
+                    }
+                    
+                    // Also filter out any remaining tool_call blocks from textPart
+                    textPart = textPart.replace(/<tool_call[\s\S]*?<\/tool_call>/g, '').trim();
+
+                    formattedMessages.push({
+                        role: "assistant",
+                        content: textPart || null,
+                        tool_calls: toolCalls.map(tc => ({
+                            id: tc.id || `call_${crypto.randomUUID()}`,
+                            type: "function",
+                            function: {
+                                name: tc.functionCall.name,
+                                arguments: JSON.stringify(tc.functionCall.args || tc.functionCall.arguments || {})
+                            }
+                        }))
+                    });
+                } else {
+                    formattedMessages.push({ role: "assistant", content: msg.content });
+                }
+            } else if (msg.type === 'tool_response') {
+                const parts = msg.content.split(/\n\n---\n\n/);
+                for (const part of parts) {
+                    const match = part.match(/\[Tool Response: ([^\]]+)\]\n\n([\s\S]*)/);
+                    if (match) {
+                        const toolName = match[1];
+                        const toolResponse = match[2];
+                        
+                        // Find matching tool call to get the ID
+                        let toolCallId = `call_${crypto.randomUUID()}`;
+                        if (lastAssistantToolCalls) {
+                            const found = lastAssistantToolCalls.find(tc => tc.functionCall && tc.functionCall.name === toolName);
+                            if (found && found.id) {
+                                toolCallId = found.id;
+                            }
+                        }
+                        
+                        formattedMessages.push({
+                            role: "tool",
+                            tool_call_id: toolCallId,
+                            name: toolName,
+                            content: toolResponse
+                        });
+                    } else {
+                        // Fallback
+                        formattedMessages.push({ role: "user", content: part });
+                    }
+                }
             } else {
-                formattedMessages.push({ role: msg.role === 'model' ? 'assistant' : 'user', content: msg.content });
+                formattedMessages.push({ role: "user", content: msg.content });
             }
         }
 
@@ -127,6 +214,10 @@ class LlamaCpp extends AI {
                 max_tokens: this.config.n_predict,
                 stop: stopTokens
             };
+
+            if (this.supportsReasoning) {
+                requestBody.enable_thinking = true;
+            }
 
             if (window.ui?.aiManager?.agentMode && cadenceTools && cadenceTools.length > 0) {
                 requestBody.tools = cadenceTools.map(t => ({
@@ -166,6 +257,8 @@ class LlamaCpp extends AI {
             let isReasoning = false;
             let thinkingStartTime = 0;
             let totalThinkingMs = 0;
+            const streamedToolCalls = [];
+            let looseToolCallCount = 0;
 
             while (true) {
                 const { done, value } = await reader.read();
@@ -188,12 +281,15 @@ class LlamaCpp extends AI {
                             let chunkUpdate = '';
 
                             if (typeof delta.reasoning_content === 'string') {
+                                let reasoningPart = delta.reasoning_content;
+                                reasoningPart = reasoningPart.replace(/<[^>]*?\b(?:tool(?:_?call)?|thought|think|channel)\b[^>]*?>/gi, '');
+
                                 if (!isReasoning) {
                                     isReasoning = true;
                                     thinkingStartTime = Date.now();
                                     chunkUpdate += "<thought>\n";
                                 }
-                                chunkUpdate += delta.reasoning_content;
+                                chunkUpdate += reasoningPart;
                             }
 
                             if (typeof delta.content === 'string') {
@@ -213,31 +309,62 @@ class LlamaCpp extends AI {
                                 }
                                 if (!callbacks.toolCalls) callbacks.toolCalls = [];
                                 for (const call of delta.tool_calls) {
-                                    if (call.function) {
-                                        const rawCall = { functionCall: { name: call.function.name, args: {} } };
-                                        let parsedArgs = {};
-                                        try {
-                                            parsedArgs = JSON.parse(call.function.arguments);
-                                            rawCall.functionCall.args = parsedArgs;
-                                        } catch (e) {
-                                            // Handle partial JSON or unparseable JSON
-                                        }
-                                        callbacks.toolCalls.push(rawCall);
-
-                                        let xmlToolCall = `\n<tool_call name="${call.function.name}">\n`;
-                                        for (const [key, value] of Object.entries(parsedArgs)) {
-                                            const stringValue = typeof value === 'object' ? JSON.stringify(value) : value;
-                                            xmlToolCall += `  <${key}>${stringValue}</${key}>\n`;
-                                        }
-                                        xmlToolCall += `</tool_call>\n`;
-                                        chunkUpdate += xmlToolCall;
+                                    const idx = call.index !== undefined ? call.index : 0;
+                                    if (!streamedToolCalls[idx]) {
+                                        streamedToolCalls[idx] = {
+                                            id: call.id || "",
+                                            name: call.function?.name || "",
+                                            arguments: ""
+                                        };
                                     }
+                                    if (call.id) streamedToolCalls[idx].id = call.id;
+                                    if (call.function?.name) streamedToolCalls[idx].name = call.function.name;
+                                    if (call.function?.arguments) streamedToolCalls[idx].arguments += call.function.arguments;
+                                }
+
+                                // Update callbacks.toolCalls with current parsed state
+                                callbacks.toolCalls = [];
+                                for (const tc of streamedToolCalls) {
+                                    if (!tc || !tc.name) continue;
+                                    let parsedArgs = {};
+                                    try {
+                                        parsedArgs = JSON.parse(tc.arguments);
+                                    } catch (e) {
+                                        parsedArgs = parseRelaxedJson(tc.arguments);
+                                    }
+                                    callbacks.toolCalls.push({
+                                        id: tc.id || `call_${crypto.randomUUID()}`,
+                                        functionCall: {
+                                            name: tc.name,
+                                            args: parsedArgs
+                                        }
+                                    });
                                 }
                             }
 
-                            if (chunkUpdate) {
+                            if (chunkUpdate || delta.tool_calls) {
                                 fullResponse += chunkUpdate;
-                                if (onUpdate) onUpdate(fullResponse);
+
+                                // Loose tool call protection in content tokens
+                                const looseToolCallRegex = /<tool_call[\s\S]*?>|<\|tool[\s\S]*?>/gi;
+                                let match;
+                                while ((match = looseToolCallRegex.exec(fullResponse)) !== null) {
+                                    looseToolCallCount++;
+                                    console.warn(`[Llama.cpp] Loose tool call hit #${looseToolCallCount} detected in text: ${match[0]}`);
+
+                                    // Strip the loose tool call tag from fullResponse
+                                    fullResponse = fullResponse.substring(0, match.index) + fullResponse.substring(match.index + match[0].length);
+                                    looseToolCallRegex.lastIndex = 0; // Reset index since we modified the string
+
+                                    if (looseToolCallCount > 3) {
+                                        this.stop("Too many redundant/loose tool calls generated in text stream.");
+                                        break;
+                                    }
+                                }
+
+                                let processedResponse = translateGemmaToolCalls(fullResponse);
+                                processedResponse = getResponseWithToolCalls(processedResponse, streamedToolCalls);
+                                if (onUpdate) onUpdate(processedResponse);
                             }
                         }
                     } catch (e) {
@@ -250,11 +377,13 @@ class LlamaCpp extends AI {
                 isReasoning = false;
                 totalThinkingMs += Date.now() - thinkingStartTime;
                 fullResponse += "\n</thought>";
-                if (onUpdate) onUpdate(fullResponse);
             }
 
             const requestEndTime = Date.now();
-            const finalTokens = this.estimateTokens([...messages, { role: 'model', content: fullResponse }]);
+            let finalResponse = translateGemmaToolCalls(fullResponse);
+            finalResponse = getResponseWithToolCalls(finalResponse, streamedToolCalls);
+
+            const finalTokens = this.estimateTokens([...messages, { role: 'model', content: finalResponse }]);
             const outputTokens = Math.max(0, finalTokens - currentTokens);
             if (onContextRatioUpdate) {
                 onContextRatioUpdate(finalTokens / this.MAX_CONTEXT_TOKENS);
@@ -262,7 +391,7 @@ class LlamaCpp extends AI {
 
             this.recordTelemetry(currentTokens, outputTokens, requestEndTime - requestStartTime, Math.round(totalThinkingMs / 1000));
 
-            if (onDone) onDone(fullResponse, Math.round((finalTokens / this.MAX_CONTEXT_TOKENS) * 100));
+            if (onDone) onDone(finalResponse, Math.round((finalTokens / this.MAX_CONTEXT_TOKENS) * 100));
 
         } catch (error) {
             if (error && error.name === 'AbortError') {
@@ -317,6 +446,67 @@ class LlamaCpp extends AI {
         // llama.cpp server typically serves one model. We can just re-query info.
         await this._queryModelInfo();
     }
+}
+
+function parseRelaxedJson(str) {
+    let cleaned = str.replace(/<\|"\|>/g, '"');
+    try {
+        return JSON.parse(cleaned);
+    } catch (e) {}
+
+    try {
+        const fn = new Function(`return (${cleaned});`);
+        return fn();
+    } catch (e) {
+        console.warn("[Llama.cpp] Relaxed JSON parsing failed:", e);
+    }
+
+    const obj = {};
+    const pairRegex = /(?:["']?([a-zA-Z0-9_-]+)["']?\s*:\s*(?:"([^"]*)"|'([^']*)'|([a-zA-Z0-9_\.-]+)))/g;
+    let match;
+    while ((match = pairRegex.exec(cleaned)) !== null) {
+        const key = match[1];
+        const val = match[2] !== undefined ? match[3] || match[2] : match[4];
+        obj[key] = val;
+    }
+    return obj;
+}
+
+function getResponseWithToolCalls(baseContent, streamedToolCalls) {
+    let result = baseContent;
+    for (const tc of streamedToolCalls) {
+        if (!tc || !tc.name) continue;
+        let parsedArgs = {};
+        try {
+            parsedArgs = JSON.parse(tc.arguments);
+        } catch (e) {
+            parsedArgs = parseRelaxedJson(tc.arguments);
+        }
+        
+        let xmlToolCall = `\n<tool_call name="${tc.name}">\n`;
+        for (const [key, value] of Object.entries(parsedArgs)) {
+            const stringValue = typeof value === 'object' ? JSON.stringify(value) : value;
+            xmlToolCall += `  <${key}>${stringValue}</${key}>\n`;
+        }
+        xmlToolCall += `</tool_call>\n`;
+        result += xmlToolCall;
+    }
+    return result;
+}
+
+function translateGemmaToolCalls(text) {
+    if (!text) return text;
+    const gemmaRegex = /<\|tool>(?:declaration|call):([a-zA-Z0-9_-]+)\s*(\{[\s\S]*?\})(?:<\|?tool_call\|?>)?/g;
+    return text.replace(gemmaRegex, (match, toolName, argsStr) => {
+        const args = parseRelaxedJson(argsStr);
+        let xml = `<tool_call name="${toolName}">\n`;
+        for (const [key, value] of Object.entries(args)) {
+            const stringValue = typeof value === 'object' ? JSON.stringify(value) : value;
+            xml += `  <${key}>${stringValue}</${key}>\n`;
+        }
+        xml += `</tool_call>`;
+        return xml;
+    });
 }
 
 export default LlamaCpp;

@@ -144,9 +144,17 @@ class AgentTools {
             if (this.conduit.isConnected) {
                 const result = await this.conduit.wsList(resolvedPath);
                 if (result.error) throw new Error(result.error);
-                return Array.isArray(result.data) 
-                    ? result.data.map(f => `${f.is_dir ? '[DIR] ' : ''}${f.name}`).join('\n')
-                    : "No files found or invalid response.";
+                if (Array.isArray(result.data)) {
+                    const sorted = [...result.data].sort((a, b) => {
+                        const aDir = a.is_dir || a.isDir;
+                        const bDir = b.is_dir || b.isDir;
+                        if (aDir && !bDir) return -1;
+                        if (!aDir && bDir) return 1;
+                        return a.name.localeCompare(b.name);
+                    });
+                    return sorted.map(f => `${(f.is_dir || f.isDir) ? '📁 [DIR] ' : '📄 '}${f.name}`).join('\n');
+                }
+                return "No files found or invalid response.";
             } else {
                 return "Error: Conduit not connected. Manual listing via browser API not implemented for agent yet.";
             }
@@ -480,12 +488,91 @@ class AgentTools {
             }
 
             if (matches.length === 0) return "No matches found.";
-            return matches.map(m => {
+
+            // Group matches by path to count hits per file
+            const matchesByPath = {};
+            const filenameMatches = [];
+
+            for (const m of matches) {
                 if (m.type === "filename_match") {
-                    return `[Match in filename] ${m.path}`;
+                    filenameMatches.push(m);
+                } else {
+                    if (!matchesByPath[m.path]) {
+                        matchesByPath[m.path] = [];
+                    }
+                    matchesByPath[m.path].push(m);
                 }
-                return `${m.path}:${m.line}: ${m.content}`;
-            }).join('\n');
+            }
+
+            const lineData = [];
+            for (const m of filenameMatches) {
+                lineData.push({ text: `[Match in filename] ${m.path}`, path: m.path });
+            }
+
+            for (const path in matchesByPath) {
+                const fileMatches = matchesByPath[path];
+                if (fileMatches.length >= 3) {
+                    const first = fileMatches[0];
+                    lineData.push({ text: `${first.path}:${first.line}: ${first.content}`, path });
+                    lineData.push({
+                        text: `${path}: 1 of ${fileMatches.length} matches, use \`search_in_file\` for more`,
+                        path,
+                        isGate: true
+                    });
+                } else {
+                    for (const fm of fileMatches) {
+                        lineData.push({ text: `${fm.path}:${fm.line}: ${fm.content}`, path });
+                    }
+                }
+            }
+
+            const totalRawLength = lineData.map(ld => ld.text).join('\n').length;
+            const allPaths = new Set(lineData.map(ld => ld.path));
+            const Y = allPaths.size;
+
+            if (totalRawLength > 4096) {
+                let bestLines = [];
+                let bestX = 0;
+                let foundGate = false;
+
+                // Find the last isGate line that fits under 4KB with the header prepended
+                for (let i = lineData.length - 1; i >= 0; i--) {
+                    if (lineData[i].isGate) {
+                        const subList = lineData.slice(0, i + 1);
+                        const pathsInSubList = new Set(subList.map(ld => ld.path));
+                        const candidateX = pathsInSubList.size;
+                        const header = `Too many search matches, showing ${candidateX} of ${Y}\n\n`;
+                        const candidateText = header + subList.map(ld => ld.text).join('\n');
+                        if (candidateText.length <= 4096) {
+                            bestLines = subList;
+                            bestX = candidateX;
+                            foundGate = true;
+                            break;
+                        }
+                    }
+                }
+
+                // Fallback: if no gate line fits or exists, truncate to the maximum complete paths under 4KB
+                if (!foundGate) {
+                    for (let i = lineData.length - 1; i >= 0; i--) {
+                        const subList = lineData.slice(0, i + 1);
+                        const pathsInSubList = new Set(subList.map(ld => ld.path));
+                        const candidateX = pathsInSubList.size;
+                        const header = `Too many search matches, showing ${candidateX} of ${Y}\n\n`;
+                        const candidateText = header + subList.map(ld => ld.text).join('\n');
+                        if (candidateText.length <= 4096) {
+                            bestLines = subList;
+                            bestX = candidateX;
+                            break;
+                        }
+                    }
+                }
+
+                const header = `Too many search matches, showing ${bestX} of ${Y}\n\n`;
+                return header + bestLines.map(ld => ld.text).join('\n');
+            }
+
+            return lineData.map(ld => ld.text).join('\n');
         } catch (error) {
             return `Error searching files: ${error.message}`;
         }
