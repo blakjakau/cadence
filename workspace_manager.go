@@ -22,6 +22,7 @@ type AppConfig struct {
 	AiConfig                 map[string]interface{} `json:"aiConfig,omitempty"`
 	SystemPromptConfig       map[string]interface{} `json:"systemPromptConfig,omitempty"`
 	Workspace                string                 `json:"workspace,omitempty"`
+	Port                     string                 `json:"port,omitempty"`
 }
 
 type Workspace struct {
@@ -134,8 +135,11 @@ func appConfigHandler(w http.ResponseWriter, r *http.Request) {
 
 	if r.Method == http.MethodGet {
 		configMutex.Lock()
-		defer configMutex.Unlock()
+		appConfig.Port = port
+		configMutex.Unlock()
 		w.Header().Set("Content-Type", "application/json")
+		configMutex.Lock()
+		defer configMutex.Unlock()
 		json.NewEncoder(w).Encode(appConfig)
 	} else if r.Method == http.MethodPost {
 		var newConfig AppConfig
@@ -144,6 +148,7 @@ func appConfigHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		
+		newConfig.Port = "" // Do not persist port to disk
 		configMutex.Lock()
 		appConfig = newConfig
 		configMutex.Unlock()

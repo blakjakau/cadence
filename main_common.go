@@ -61,10 +61,6 @@ func runCadenceServer(block bool) {
 
 	mux := createServerMux()
 
-	if serveFlag != "" {
-		port = "3023"
-	}
-
 	log.Printf("File API Root: %s", fileAPIRoot)
 	log.Printf("Cadence v%s - listening for WS connections (localhost:%s)", version, port)
 	log.Println("------------------------------------------------------------")
@@ -168,6 +164,10 @@ func parseFlags() {
 	flag.BoolVar(&webviewFlag, "webview", false, "Open using the lightweight webview_go renderer instead of Wails.")
 	flag.BoolVar(&wailsFlag, "wails", false, "Force opening using the Wails rendering engine (if compiled).")
 	flag.Parse()
+
+	if serveFlag != "" {
+		port = "3023"
+	}
 
 	if keyFlag {
 		manageAPIKey(keyFlag)

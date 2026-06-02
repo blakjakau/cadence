@@ -2535,6 +2535,13 @@ setTimeout(async () => {
 			console.warn("Failed to load app config", e);
 		}
 
+		if (stored && stored.port) {
+			conduitClient.configure({ port: parseInt(stored.port) });
+			if (window.terminalManager) {
+				window.terminalManager.setPort(stored.port);
+			}
+		}
+
 		app.darkmode = stored?.darkmode || "system"
 		app.sessionOptions = stored?.sessionOptions || null
 		app.rendererOptions = stored?.rendererOptions || null
