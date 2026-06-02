@@ -423,7 +423,7 @@ const onFileModified = (path) => {
 	}
 }
 
-const saveWorkspace = async () => {
+const _saveWorkspace = async () => {
 	if (workspaceUnloading || restoreInProgress) return
 
 	const orderedFiles = []
@@ -478,6 +478,14 @@ const saveWorkspace = async () => {
 	if (workspace.folders) {
 		conduitClient.wsSetActiveRoots(workspace.folders).catch(e => console.warn(e));
 	}
+}
+
+let saveWorkspaceTimeout;
+const saveWorkspace = () => {
+	clearTimeout(saveWorkspaceTimeout);
+	saveWorkspaceTimeout = setTimeout(() => {
+		_saveWorkspace().catch(e => console.warn("Error running debounced saveWorkspace:", e));
+	}, 250);
 }
 window.saveWorkspace = saveWorkspace
 
