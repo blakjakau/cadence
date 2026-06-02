@@ -569,7 +569,7 @@ export class SessionArtifactsPanel extends Block {
                         btnLabel.textContent = "Rolling back...";
 
                         // 1. Revert content in AgentBackup
-                        const { default: AgentBackup } = await import('./agent/agent-backup.mjs');
+                        const { default: AgentBackup } = await import('../agent/agent-backup.mjs');
                         const content = await AgentBackup.rollback(latestBackup.backupId);
 
                         // 2. Write content directly to disk via Conduit

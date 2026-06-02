@@ -245,7 +245,7 @@ export class EditorHolder extends Panel {
     }
 
     async updateNoticeBar(tab) {
-        if (!tab || !tab.config || tab.config.viewMode === "diff") {
+        if (!tab || !tab.config || tab.config.viewMode === "diff" || tab.config.path === "plan_tasks") {
             this.editorHeaderBar.style.display = "none";
             this.editorElement.style.top = "";
             this.editorElement.style.height = "";
@@ -260,6 +260,7 @@ export class EditorHolder extends Panel {
         if (tab.config.fileModified) {
             this.editorHeaderBar.style.display = "flex";
             this.editorHeaderBar.className = "editor-header-bar modified-external";
+            this.editorHeaderIcon.style.display = "";
             this.editorHeaderIcon.textContent = "warning";
             this.editorHeaderIcon.style.color = "";
             this.editorHeaderText.textContent = "This file has been modified outside the editor.";
@@ -349,6 +350,7 @@ export class EditorHolder extends Panel {
         if (hasPendingChanges) {
             this.editorHeaderBar.style.display = "flex";
             this.editorHeaderBar.className = "editor-header-bar pending-changes";
+            this.editorHeaderIcon.style.display = "";
             this.editorHeaderIcon.textContent = "edit";
             this.editorHeaderIcon.style.color = "";
             this.editorHeaderText.innerHTML = `Pending AI edits in memory. <span style="font-size: 11.5px; font-weight: normal; margin-left: 6px;">(Permission Mode)</span>`;
@@ -372,6 +374,7 @@ export class EditorHolder extends Panel {
         if (hasBackups && latestBackup) {
             this.editorHeaderBar.style.display = "flex";
             this.editorHeaderBar.className = "editor-header-bar rollback-protected";
+            this.editorHeaderIcon.style.display = "";
             this.editorHeaderIcon.textContent = "check_circle";
             this.editorHeaderIcon.style.color = "";
             this.editorHeaderText.innerHTML = `File edited by AI. Rollback protected. <span style="font-size: 11.5px; font-weight: normal; margin-left: 6px;">(Forgiveness Mode)</span>`;
@@ -398,6 +401,7 @@ export class EditorHolder extends Panel {
         if (!hasPendingChanges && isDirty) {
             this.editorHeaderBar.style.display = "flex";
             this.editorHeaderBar.className = "editor-header-bar user-changes";
+            this.editorHeaderIcon.style.display = "";
             this.editorHeaderIcon.textContent = "edit";
             this.editorHeaderIcon.style.color = "";
             this.editorHeaderText.innerHTML = `Unsaved local changes. <span style="color: var(--text-secondary); font-size: 11.5px; font-weight: normal; margin-left: 6px;">(User Edits)</span>`;
@@ -429,11 +433,83 @@ export class EditorHolder extends Panel {
             return;
         }
 
-        // Hide bar if no modifications or notifications
-        this.editorHeaderBar.style.display = "none";
-        this.editorElement.style.top = "";
-        this.editorElement.style.height = "";
-        if (this.editor && typeof this.editor.resize === "function") this.editor.resize();
+        // Show clean neutral state
+        this.editorHeaderBar.style.display = "flex";
+        this.editorHeaderBar.className = "editor-header-bar file-info";
+        this.editorHeaderIcon.style.display = "none";
+        
+        const fullPath = tab.config.fullPath || tab.config.path || "";
+        const standardizedPath = fullPath.replace(/\\/g, '/');
+        
+        let folderName = "";
+        let relativePath = standardizedPath;
+        
+        const checkFolders = [];
+        if (tab.config.folder) {
+            checkFolders.push(tab.config.folder);
+        }
+        const wsFolders = window.workspace?.folders || [];
+        for (const f of wsFolders) {
+            if (!checkFolders.includes(f)) {
+                checkFolders.push(f);
+            }
+        }
+        
+        for (const f of checkFolders) {
+            const normFolder = f.replace(/\\/g, '/');
+            if (normFolder === "." || normFolder === "") continue;
+            
+            const absPrefix = normFolder.endsWith('/') ? normFolder : normFolder + '/';
+            if (standardizedPath.startsWith(absPrefix)) {
+                const folderParts = normFolder.split('/');
+                folderName = folderParts[folderParts.length - 1] || normFolder;
+                relativePath = standardizedPath.slice(absPrefix.length);
+                break;
+            }
+            
+            const relMatch = '/' + normFolder + '/';
+            const matchIndex = standardizedPath.indexOf(relMatch);
+            if (matchIndex !== -1) {
+                const folderParts = normFolder.split('/');
+                folderName = folderParts[folderParts.length - 1] || normFolder;
+                relativePath = standardizedPath.slice(matchIndex + relMatch.length);
+                break;
+            }
+        }
+        
+        let pathDisplayHTML = standardizedPath;
+        if (folderName) {
+            pathDisplayHTML = `<span style="opacity: 0.7; font-weight: bold; margin-right: 6px;">[${folderName}]</span>${relativePath}`;
+        }
+        
+        this.editorHeaderText.innerHTML = pathDisplayHTML;
+        
+        this.editorHeaderRight.innerHTML = "";
+        const rightContainer = document.createElement("div");
+        rightContainer.style.color = "var(--text-secondary)";
+        rightContainer.style.fontSize = "11.5px";
+        rightContainer.style.fontWeight = "normal";
+        rightContainer.style.display = "flex";
+        rightContainer.style.gap = "12px";
+        rightContainer.style.alignItems = "center";
+        
+        if (tab.config.size !== undefined && tab.config.size !== null) {
+            const sizeSpan = document.createElement("span");
+            const sizeInKb = tab.config.size === 0 ? "0.0" : Math.max(0.1, tab.config.size / 1024).toFixed(1);
+            sizeSpan.textContent = `${sizeInKb} KB`;
+            rightContainer.appendChild(sizeSpan);
+        }
+        
+        if (tab.config.modTime) {
+            const timeSpan = document.createElement("span");
+            const dateStr = new Date(tab.config.modTime * 1000).toLocaleString();
+            timeSpan.textContent = `Last modified: ${dateStr}`;
+            rightContainer.appendChild(timeSpan);
+        }
+        
+        this.editorHeaderRight.appendChild(rightContainer);
+        
+        this._adjustEditorTop();
     }
 }
 

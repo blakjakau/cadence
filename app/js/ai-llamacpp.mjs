@@ -160,7 +160,7 @@ class LlamaCpp extends AI {
                 for (const part of parts) {
                     const match = part.match(/\[Tool Response: ([^\]]+)\]\n\n([\s\S]*)/);
                     if (match) {
-                        const toolName = match[1];
+                        const toolName = match[1].split(' ')[0];
                         const toolResponse = match[2];
                         
                         // Find matching tool call to get the ID
@@ -208,10 +208,10 @@ class LlamaCpp extends AI {
             const requestBody = {
                 messages: formattedMessages,
                 stream: true,
+                max_tokens: this.config.n_predict,
                 temperature: this.config.temperature,
                 top_k: this.config.top_k,
                 top_p: this.config.top_p,
-                max_tokens: this.config.n_predict,
                 stop: stopTokens
             };
 
@@ -368,7 +368,7 @@ class LlamaCpp extends AI {
                             }
                         }
                     } catch (e) {
-                        console.warn("[Llama.cpp] JSON parse error:", e);
+                        //console.warn("[Llama.cpp] JSON parse error:", e);
                     }
                 }
             }
@@ -458,7 +458,7 @@ function parseRelaxedJson(str) {
         const fn = new Function(`return (${cleaned});`);
         return fn();
     } catch (e) {
-        console.warn("[Llama.cpp] Relaxed JSON parsing failed:", e);
+        console.debug("[Llama.cpp] Relaxed JSON parsing failed:", e);
     }
 
     const obj = {};

@@ -54,6 +54,9 @@ type fileResponse struct {
 	Path      string      `json:"path"`
 	Error     string      `json:"error,omitempty"`
 	Data      interface{} `json:"data,omitempty"`
+	ModTime   int64       `json:"modTime,omitempty"`
+	FullPath  string      `json:"fullPath,omitempty"`
+	Size      int64       `json:"size,omitempty"`
 }
 
 type searchMatch struct {
@@ -293,7 +296,14 @@ func handleRestGet(w http.ResponseWriter, fullPath, reqPath string) {
 		respData = base64.StdEncoding.EncodeToString(content)
 	}
 
-	resp := fileResponse{Action: "read", Path: reqPath, Data: respData}
+	resp := fileResponse{
+		Action:   "read",
+		Path:     reqPath,
+		Data:     respData,
+		ModTime:  stat.ModTime().Unix(),
+		FullPath: filepath.ToSlash(fullPath),
+		Size:     stat.Size(),
+	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp)
 }
@@ -336,8 +346,10 @@ func handleFileWs(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleWsRequest(ws *websocket.Conn, req fileRequest) {
+	log.Printf("[DEBUG] WS Request: action=%s, path=%s, requestId=%d", req.Action, req.Path, req.RequestId)
 	fullPath, err := securePath(req.Path)
 	if err != nil {
+		log.Printf("[DEBUG] WS Error: securePath failed for path %s: %v", req.Path, err)
 		ws.WriteJSON(fileResponse{Action: req.Action, Path: req.Path, Error: "Forbidden"})
 		return
 	}
@@ -364,6 +376,11 @@ func handleWsRequest(ws *websocket.Conn, req fileRequest) {
 		if err != nil {
 			resp.Error = err.Error()
 		} else {
+			if stat, statErr := os.Stat(fullPath); statErr == nil {
+				resp.ModTime = stat.ModTime().Unix()
+				resp.FullPath = filepath.ToSlash(fullPath)
+				resp.Size = stat.Size()
+			}
 			if req.StartLine > 0 {
 				lines := strings.Split(string(content), "\n")
 				startIdx := req.StartLine - 1
@@ -396,6 +413,11 @@ func handleWsRequest(ws *websocket.Conn, req fileRequest) {
 			} else {
 				im := getIndexManagerAPI()
 				im.UpdateFile(fullPath, string(decoded))
+				if stat, statErr := os.Stat(fullPath); statErr == nil {
+					resp.ModTime = stat.ModTime().Unix()
+					resp.FullPath = filepath.ToSlash(fullPath)
+					resp.Size = stat.Size()
+				}
 			}
 		}
 	case "rename":
@@ -465,6 +487,7 @@ func handleWsRequest(ws *websocket.Conn, req fileRequest) {
 		resp.Error = "Unknown action"
 	}
 
+	log.Printf("[DEBUG] WS Response: action=%s, path=%s, requestId=%d, error=%s", resp.Action, resp.Path, resp.RequestId, resp.Error)
 	ws.WriteJSON(resp)
 }
 

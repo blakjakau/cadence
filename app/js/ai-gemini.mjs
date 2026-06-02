@@ -69,7 +69,8 @@ class Gemini extends AI {
 
     get supportsReasoning() {
         const model = (this.config.model || "").toLowerCase();
-        return model.includes('thinking') || model.includes('pro') || model.includes('2.0') || model.includes('2.5') || model.includes('3.1') || model.includes('3.5');
+        return model.included("Gemini")
+        // return model.includes('thinking') || model.includes('pro') || model.includes('2.0') || model.includes('2.5') || model.includes('3.1') || model.includes('3.5');
     }
 
     get supportsParallelTools() {
@@ -324,7 +325,7 @@ class Gemini extends AI {
                 if (msg.role === 'user' && msg.content.startsWith('[Tool Response: ')) {
                     const match = msg.content.match(/\[Tool Response: ([^\]]+)\]\n\n([\s\S]*)/);
                     if (match) {
-                        const toolName = match[1];
+                        const toolName = match[1].split(' ')[0];
                         const toolResponse = match[2];
                         contents.push({
                             role: 'function',

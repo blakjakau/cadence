@@ -13,6 +13,7 @@ import workspaceClient from "./workspace-client.mjs"
 import agentTools from "./agent/agent-tools.mjs"
 
 import DiffHandler from "./tools/diff-handler.mjs"
+import AgentBackup from "./agent/agent-backup.mjs"
 import systemPromptBuilder from './genericSystemPrompt.mjs'; // NEW: For building prompts
 import getAgentSystemPrompt from './ai-manager-agent-prompt.mjs'; // NEW: For building agent prompts
 import hljs from "./tools/highlightjs.mjs"
@@ -1458,6 +1459,145 @@ class AIManager {
 				// Now, render the final response in the UI using finalize().
 				responseBlock.finalize(fullResponse, modelMessage);
 
+				// NEW: Chat-mode output checks for diff blocks
+				if (!this.agentMode) {
+					const diffBlocks = responseBlock.querySelectorAll("pre[data-original-diff-content]");
+					if (diffBlocks.length > 0) {
+						let anyFailed = false;
+						let failedFilename = "";
+						let failedPath = "";
+						
+						for (let index = 0; index < diffBlocks.length; index++) {
+							const pre = diffBlocks[index];
+							const rawDiff = pre.dataset.originalDiffContent;
+							if (!rawDiff) continue;
+
+							const targetPathMatch = rawDiff.match(/^\+\+\+ b\/(.+)$/m) || rawDiff.match(/^\+\+\+ (.+)$/m);
+							if (!targetPathMatch || !targetPathMatch[1]) continue;
+
+							const targetPath = targetPathMatch[1];
+							let tab = await this.ai._getTabSessionByPath(targetPath);
+							if (!tab) {
+								const fileData = this.ai._findFileByPath(targetPath);
+								if (fileData && window.ui && window.ui.fileList && window.ui.fileList.open) {
+									await window.ui.fileList.open(fileData);
+									tab = await this.ai._getTabSessionByPath(fileData.path);
+								}
+							}
+
+							let currentContent = "";
+							if (tab && tab.config && tab.config.session) {
+								currentContent = tab.config.session.getValue();
+							} else {
+								// Fallback: try looking in file_context from history
+								let contextContent = null;
+								const normalizedTargetPath = targetPath.startsWith('/') ? targetPath.substring(1) : targetPath;
+								for (let i = this.activeSession.messages.length - 1; i >= 0; i--) {
+									const msg = this.activeSession.messages[i];
+									if (msg.type === "file_context" && msg.id) {
+										const normalizedMsgId = msg.id.startsWith('/') ? msg.id.substring(1) : msg.id;
+										if (normalizedMsgId === normalizedTargetPath || normalizedMsgId.endsWith(normalizedTargetPath)) {
+											contextContent = msg.content;
+											break;
+										}
+									}
+								}
+								if (contextContent !== null) {
+									currentContent = contextContent;
+								}
+							}
+
+							const testMergedContent = DiffHandler.applyAIResponseDiff(currentContent, rawDiff);
+							if (testMergedContent === null) {
+								anyFailed = true;
+								failedPath = targetPath;
+								failedFilename = targetPath.split('/').pop();
+								break;
+							} else if (this.forgivenessMode) {
+								// Chat+forgiveness mode: Successful merge commits directly to the current file buffer (Ace session)
+								if (tab && tab.config && tab.config.session) {
+									const filePathForBackup = tab.config.path;
+									let backupId = "";
+									const activeSession = this.activeSession;
+									const hasExistingBackup = activeSession && activeSession.modifiedFiles && activeSession.modifiedFiles[filePathForBackup] && activeSession.modifiedFiles[filePathForBackup].length > 0;
+
+									if (hasExistingBackup) {
+										backupId = activeSession.modifiedFiles[filePathForBackup][0].backupId;
+									} else {
+										try {
+											const actId = modelMessage.id || activeSession?.id || "default";
+											backupId = await AgentBackup.create(filePathForBackup, currentContent, actId);
+											
+											if (activeSession) {
+												activeSession.modifiedFiles = activeSession.modifiedFiles || {};
+												if (!activeSession.modifiedFiles[filePathForBackup]) {
+													activeSession.modifiedFiles[filePathForBackup] = [];
+												}
+												activeSession.modifiedFiles[filePathForBackup].push({
+													backupId: backupId,
+													timestamp: Date.now(),
+													sourceId: actId
+												});
+											}
+										} catch (e) {
+											console.error("[ChatDiff] Failed to create backup:", e);
+										}
+									}
+
+									// Commit merged content to current editor buffer (without saving)
+									const session = tab.config.session;
+									const doc = session.getDocument();
+									const lastRow = doc.getLength() - 1;
+									const lastCol = doc.getLine(lastRow).length;
+									const Range = (window.ace.require ? window.ace.require("ace/range").Range : null) || window.ace.Range;
+									const fullRange = new Range(0, 0, lastRow, lastCol);
+									session.replace(fullRange, testMergedContent);
+									
+									// Enable diff review tracking vs current buffer
+									tab.config.viewMode = "diff";
+									tab.config.backupId = backupId;
+									
+									// Mark as applied in modelMessage and update apply button UI
+									modelMessage.diffStatuses[index] = true;
+									
+									const applyBtn = pre.querySelector("ui-button:not(.expand-collapse-button)");
+									if (applyBtn) {
+										applyBtn.classList.remove("diff-apply-failed");
+										applyBtn.classList.add("diff-apply-success");
+										applyBtn.icon = "done";
+										applyBtn.title = "Diff applied successfully!";
+									}
+
+									// Focus and Redraw (activates split diff view automatically)
+									tab.click();
+
+									this.historyManager.addMessage({
+										type: "system_message",
+										content: `Diff successfully applied to **${targetPath}** in Forgiveness Mode. Remember to save the file.`,
+										timestamp: Date.now(),
+									});
+								}
+							}
+						}
+
+						if (anyFailed) {
+							// Notify user of failed merge and ask for choice
+							const choice = await window.modal.confirm(
+								`The generated diff for <strong>${failedFilename}</strong> could not be applied automatically. Would you like to review it manually or retry?`,
+								"Diff Application Failed",
+								["Manual Review", "Retry"]
+							);
+							if (choice === false) { // "Retry" is second button (resolves to false)
+								this.promptEditor.setValue(`your diff for ${failedPath} could not be applied, please try again`);
+								this.generate();
+							}
+						} else if (this.forgivenessMode) {
+							// Update IndexedDB to persist the updated diffStatuses and backup references
+							await workspaceClient.setSession(this.activeSession.id, this.activeSession);
+						}
+					}
+				}
+
 				this._dispatchContextUpdate("append_model") // Dispatch after model response
 
 				this._isProcessing = false // Release lock
@@ -1946,7 +2086,21 @@ class AIManager {
 						toolResult = `Error: User rejected the change to ${toolCall.arguments.path || "file"}.`;
 					}
 
-					accumulatedResponses.push(`[Tool Response: ${toolCall.name}]\n\n${toolResult}`);
+					let responseTitle = `[Tool Response: ${toolCall.name}]`;
+					if (toolCall.name === "read_file" && toolCall.arguments && toolCall.arguments.path) {
+						const path = toolCall.arguments.path;
+						const start = parseInt(toolCall.arguments.startLine);
+						const count = parseInt(toolCall.arguments.lineCount);
+						if (!isNaN(start) && !isNaN(count)) {
+							const end = start + count - 1;
+							responseTitle = `[Tool Response: read_file ${path} #L${start}-${end}]`;
+						} else if (!isNaN(start)) {
+							responseTitle = `[Tool Response: read_file ${path} #L${start}]`;
+						} else {
+							responseTitle = `[Tool Response: read_file ${path}]`;
+						}
+					}
+					accumulatedResponses.push(`${responseTitle}\n\n${toolResult}`);
 
 					if (toolCall.name === "create_implementation_plan") {
 						hasPlan = true;
@@ -2090,6 +2244,14 @@ class AIManager {
 				if (lastIdx !== -1) {
 					finalizedResponse = finalizedResponse.substring(0, lastIdx).trim();
 				}
+			} else if (forcedReason === "repetition_loop") {
+				// Detect the pattern again to find the exact length and count to truncate
+				const rep = this._detectRepetition(finalizedResponse);
+				if (rep.detected) {
+					// Keep only the first occurrence of the repeating pattern
+					const truncateLen = rep.pattern.length * (rep.count - 1);
+					finalizedResponse = finalizedResponse.slice(0, finalizedResponse.length - truncateLen).trim();
+				}
 			}
 		}
 
@@ -2139,11 +2301,17 @@ class AIManager {
 			this.messageRenderer.addCodeBlockButtons(responseBlock, modelMessage);
 		}
 
-		if (forcedReason === "secondary_thought" || forcedReason === "secondary_tool_call") {
-			const blockType = forcedReason === "secondary_thought" ? "thought" : "tool call";
+		if (forcedReason === "secondary_thought" || forcedReason === "secondary_tool_call" || forcedReason === "repetition_loop") {
+			let alertContent = "";
+			if (forcedReason === "repetition_loop") {
+				alertContent = `⚠️ **Agent Loop Flag:** The model entered a repeating output loop. The stream was forcibly truncated to keep context clean.`;
+			} else {
+				const blockType = forcedReason === "secondary_thought" ? "thought" : "tool call";
+				alertContent = `⚠️ **Agent Protocol Flag:** The model attempted to generate a secondary **${blockType}** block. The stream was forcibly truncated to enforce single-turn execution structure.`;
+			}
 			this.historyManager.addMessage({
 				type: "system_message",
-				content: `⚠️ **Agent Protocol Flag:** The model attempted to generate a secondary **${blockType}** block. The stream was forcibly truncated to enforce single-turn execution structure.`,
+				content: alertContent,
 				timestamp: Date.now()
 			});
 		}
@@ -2205,7 +2373,40 @@ class AIManager {
 			}
 		}
 
+		// 3. Check for repeating output loops
+		const repCheck = this._detectRepetition(fullResponse);
+		if (repCheck.detected) {
+			return { shouldAbort: true, reason: "repetition_loop" };
+		}
+
 		return { shouldAbort: false, reason: "" };
+	}
+
+	_detectRepetition(text, minPatternLen = 15, minRepeats = 3) {
+		if (!text || text.length < minPatternLen * minRepeats) return { detected: false };
+
+		const maxPatternLen = Math.floor(text.length / minRepeats);
+
+		for (let len = minPatternLen; len <= maxPatternLen; len++) {
+			const pattern = text.slice(-len);
+			let count = 1;
+
+			while (count < minRepeats) {
+				const startIdx = text.length - (len * (count + 1));
+				const prevSegment = text.slice(startIdx, startIdx + len);
+				if (prevSegment === pattern) {
+					count++;
+				} else {
+					break;
+				}
+			}
+
+			if (count >= minRepeats) {
+				return { detected: true, pattern: pattern, count: count };
+			}
+		}
+
+		return { detected: false };
 	}
 
 
@@ -2329,6 +2530,260 @@ class AIManager {
 			return true; // Signal to proceed
 		}
 		return true; // No stale files, proceed
+	}
+	async replayMessage(messageId) {
+		if (this._isProcessing) {
+			console.warn("AI is currently processing another request. Please wait.")
+			return;
+		}
+
+		if (!this.activeSession) return;
+
+		const msgIndex = this.activeSession.messages.findIndex(m => m.id === messageId);
+		if (msgIndex === -1) return;
+
+		const userMessage = this.activeSession.messages[msgIndex];
+		if (userMessage.type !== "user") return;
+
+		// 1. Delete all turns AFTER the target turn
+		this.activeSession.messages.splice(msgIndex + 1);
+		this.activeSession.lastModified = Date.now();
+		await workspaceClient.setSession(this.activeSession.id, this.activeSession);
+
+		// 2. Re-render the history so all following messages disappear from the screen
+		this.historyManager.render();
+
+		// 3. Trigger the generation turn using the remaining history!
+		this._unsentPromptBuffer = null;
+		this._isProcessing = true;
+		this._setButtonsDisabledState(true);
+
+		if (this.agentMode) {
+			const userMessageElement = this.conversationArea.querySelector(`[data-message-id="${messageId}"]`);
+			await this._runAgentLoop(userMessage, userMessageElement);
+			return;
+		}
+
+		// Standard Chat mode:
+		const fileBarContainer = this.panel.querySelector('.ai-filebar-container');
+		const fileBarHeight = fileBarContainer ? fileBarContainer.offsetHeight : 0;
+		const availableHeightForResponse = this.conversationArea.clientHeight - (fileBarHeight + 16);
+
+		const modelMessageId = crypto.randomUUID();
+		const responseBlock = this.historyManager.createStreamingBlock(modelMessageId);
+		const spinner = this._createSpinner();
+		if (!this.rawViewMode) {
+			responseBlock.append(spinner);
+		}
+		this.conversationArea.append(responseBlock);
+		responseBlock.style.minHeight = `${Math.max(50, availableHeightForResponse)}px`;
+
+		const userMessageElement = this.conversationArea.querySelector(`[data-message-id="${messageId}"]`);
+		if (userMessageElement) {
+			const PADDING_FROM_TOP = 8;
+			this.conversationArea.scrollTop = userMessageElement.offsetTop - fileBarHeight - PADDING_FROM_TOP;
+		}
+
+		const callbacks = {
+			onUpdate: (fullResponse) => {
+				if (spinner.parentNode) spinner.remove();
+				const shouldScroll = this._shouldAutoScroll();
+				responseBlock.updateContent(fullResponse);
+				if (shouldScroll && this.conversationArea) {
+					this.conversationArea.scrollTop = this.conversationArea.scrollHeight;
+				}
+			},
+			onDone: async (fullResponse) => {
+				const modelMessage = { id: modelMessageId, role: "model", type: "model", content: fullResponse, diffStatuses: [], timestamp: Date.now() };
+				if (callbacks.toolCalls && callbacks.toolCalls.length > 0) {
+					modelMessage.toolCalls = callbacks.toolCalls;
+				}
+				if (callbacks.thoughtSignature) {
+					modelMessage.thoughtSignature = callbacks.thoughtSignature;
+				}
+				this.activeSession.messages.push(modelMessage);
+				this.historyManager.addInteractionToLastUserMessage(userMessage);
+				this.activeSession.lastModified = Date.now();
+				await workspaceClient.setSession(this.activeSession.id, this.activeSession);
+
+				responseBlock.finalize(fullResponse, modelMessage);
+
+				// NEW: Chat-mode output checks for diff blocks
+				if (!this.agentMode) {
+					const diffBlocks = responseBlock.querySelectorAll("pre[data-original-diff-content]");
+					if (diffBlocks.length > 0) {
+						let anyFailed = false;
+						let failedFilename = "";
+						let failedPath = "";
+						
+						for (let index = 0; index < diffBlocks.length; index++) {
+							const pre = diffBlocks[index];
+							const rawDiff = pre.dataset.originalDiffContent;
+							if (!rawDiff) continue;
+
+							const targetPathMatch = rawDiff.match(/^\+\+\+ b\/(.+)$/m) || rawDiff.match(/^\+\+\+ (.+)$/m);
+							if (!targetPathMatch || !targetPathMatch[1]) continue;
+
+							const targetPath = targetPathMatch[1];
+							let tab = await this.ai._getTabSessionByPath(targetPath);
+							if (!tab) {
+								const fileData = this.ai._findFileByPath(targetPath);
+								if (fileData && window.ui && window.ui.fileList && window.ui.fileList.open) {
+									await window.ui.fileList.open(fileData);
+									tab = await this.ai._getTabSessionByPath(fileData.path);
+								}
+							}
+
+							let currentContent = "";
+							if (tab && tab.config && tab.config.session) {
+								currentContent = tab.config.session.getValue();
+							} else {
+								// Fallback: try looking in file_context from history
+								let contextContent = null;
+								const normalizedTargetPath = targetPath.startsWith('/') ? targetPath.substring(1) : targetPath;
+								for (let i = this.activeSession.messages.length - 1; i >= 0; i--) {
+									const msg = this.activeSession.messages[i];
+									if (msg.type === "file_context" && msg.id) {
+										const normalizedMsgId = msg.id.startsWith('/') ? msg.id.substring(1) : msg.id;
+										if (normalizedMsgId === normalizedTargetPath || normalizedMsgId.endsWith(normalizedTargetPath)) {
+											contextContent = msg.content;
+											break;
+										}
+									}
+								}
+								if (contextContent !== null) {
+									currentContent = contextContent;
+								}
+							}
+
+							const testMergedContent = DiffHandler.applyAIResponseDiff(currentContent, rawDiff);
+							if (testMergedContent === null) {
+								anyFailed = true;
+								failedPath = targetPath;
+								failedFilename = targetPath.split('/').pop();
+								break;
+							} else if (this.forgivenessMode) {
+								// Chat+forgiveness mode: Successful merge commits directly to the current file buffer (Ace session)
+								if (tab && tab.config && tab.config.session) {
+									const filePathForBackup = tab.config.path;
+									let backupId = "";
+									const activeSession = this.activeSession;
+									const hasExistingBackup = activeSession && activeSession.modifiedFiles && activeSession.modifiedFiles[filePathForBackup] && activeSession.modifiedFiles[filePathForBackup].length > 0;
+
+									if (hasExistingBackup) {
+										backupId = activeSession.modifiedFiles[filePathForBackup][0].backupId;
+									} else {
+										try {
+											const actId = modelMessage.id || activeSession?.id || "default";
+											backupId = await AgentBackup.create(filePathForBackup, currentContent, actId);
+											
+											if (activeSession) {
+												activeSession.modifiedFiles = activeSession.modifiedFiles || {};
+												if (!activeSession.modifiedFiles[filePathForBackup]) {
+													activeSession.modifiedFiles[filePathForBackup] = [];
+												}
+												activeSession.modifiedFiles[filePathForBackup].push({
+													backupId: backupId,
+													timestamp: Date.now(),
+													sourceId: actId
+												});
+											}
+										} catch (e) {
+											console.error("[ChatDiff] Failed to create backup:", e);
+										}
+									}
+
+									// Commit merged content to current editor buffer (without saving)
+									const session = tab.config.session;
+									const doc = session.getDocument();
+									const lastRow = doc.getLength() - 1;
+									const lastCol = doc.getLine(lastRow).length;
+									const Range = (window.ace.require ? window.ace.require("ace/range").Range : null) || window.ace.Range;
+									const fullRange = new Range(0, 0, lastRow, lastCol);
+									session.replace(fullRange, testMergedContent);
+									
+									// Enable diff review tracking vs current buffer
+									tab.config.viewMode = "diff";
+									tab.config.backupId = backupId;
+									
+									// Mark as applied in modelMessage and update apply button UI
+									modelMessage.diffStatuses[index] = true;
+									
+									const applyBtn = pre.querySelector("ui-button:not(.expand-collapse-button)");
+									if (applyBtn) {
+										applyBtn.classList.remove("diff-apply-failed");
+										applyBtn.classList.add("diff-apply-success");
+										applyBtn.icon = "done";
+										applyBtn.title = "Diff applied successfully!";
+									}
+
+									// Focus and Redraw (activates split diff view automatically)
+									tab.click();
+
+									this.historyManager.addMessage({
+										type: "system_message",
+										content: `Diff successfully applied to **${targetPath}** in Forgiveness Mode. Remember to save the file.`,
+										timestamp: Date.now(),
+									});
+								}
+							}
+						}
+
+						if (anyFailed) {
+							// Notify user of failed merge and ask for choice
+							const choice = await window.modal.confirm(
+								`The generated diff for <strong>${failedFilename}</strong> could not be applied automatically. Would you like to review it manually or retry?`,
+								"Diff Application Failed",
+								["Manual Review", "Retry"]
+							);
+							if (choice === false) { // "Retry" is second button (resolves to false)
+								this.promptEditor.setValue(`your diff for ${failedPath} could not be applied, please try again`);
+								this.generate();
+							}
+						} else if (this.forgivenessMode) {
+							// Update IndexedDB to persist the updated diffStatuses and backup references
+							await workspaceClient.setSession(this.activeSession.id, this.activeSession);
+						}
+					}
+				}
+
+				this._dispatchContextUpdate("append_model");
+
+				this._isProcessing = false;
+				this._setButtonsDisabledState(false);
+			},
+			onError: async (error) => {
+				responseBlock.style.minHeight = '';
+				if (typeof responseBlock.updateContent === 'function') {
+					responseBlock.updateContent(`Error: ${error.message}`);
+				} else {
+					responseBlock.innerHTML = `Error: ${error.message}`;
+				}
+				console.error(`Error calling ${this.ai.config.model} API:`, error);
+
+				const errorMessage = {
+					id: modelMessageId,
+					role: "error",
+					type: "error",
+					content: `Error: ${error.message}`,
+					timestamp: Date.now(),
+					diffStatuses: [],
+				};
+				this.activeSession.messages.push(errorMessage);
+				this.activeSession.lastModified = Date.now();
+				await workspaceClient.setSession(this.activeSession.id, this.activeSession);
+
+				this._dispatchContextUpdate("append_error");
+
+				this._isProcessing = false;
+				this._setButtonsDisabledState(false);
+			},
+			onContextRatioUpdate: (ratio) => {},
+		};
+
+		const messagesForAI = this.historyManager.prepareMessagesForAI();
+		const systemPrompt = await this.getSystemPrompt();
+		this.ai.chat(messagesForAI, callbacks, systemPrompt);
 	}
 
 	async loadSettings() {

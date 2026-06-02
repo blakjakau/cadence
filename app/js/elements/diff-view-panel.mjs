@@ -151,13 +151,16 @@ export class DiffViewPanel extends Block {
                 if (fileData.error) throw new Error(fileData.error);
                 currentContent = decodeURIComponent(escape(atob(fileData.data)));
             } else if (isForgivenessMode) {
-                // Forgiveness Mode: Original is from backup, Current is on-disk
+                // Forgiveness Mode: Original is from backup, Current is in-memory/on-disk
                 originalContent = await AgentBackup.rollback(backupId);
 
-                // Get current content from disk via Conduit (which has the committed edits)
-                const fileData = await conduitClient.wsRead(filePath);
-                if (fileData.error) throw new Error(fileData.error);
-                currentContent = decodeURIComponent(escape(atob(fileData.data)));
+                if (tab && tab.config?.session) {
+                    currentContent = tab.config.session.getValue();
+                } else {
+                    const fileData = await conduitClient.wsRead(filePath);
+                    if (fileData.error) throw new Error(fileData.error);
+                    currentContent = decodeURIComponent(escape(atob(fileData.data)));
+                }
             } else {
                 // Permission Mode / User Edits: Original is on-disk, Current is dirty/in-memory
                 const fileData = await conduitClient.wsRead(filePath);

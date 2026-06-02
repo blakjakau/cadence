@@ -38,6 +38,9 @@ type Workspace struct {
 	ActiveAiSessionId  interface{}            `json:"activeAiSessionId,omitempty"`
 	OpenFolders        []string               `json:"openFolders,omitempty"`
 	ActiveSidebarTab   interface{}            `json:"activeSidebarTab,omitempty"`
+	// New fields for editor tab persistence
+	ActiveEditorTabHandle string               `json:"activeEditorTabHandle,omitempty"`
+	ActiveEditorSide      string               `json:"activeEditorSide,omitempty"`
 }
 
 var (

@@ -2,6 +2,7 @@
 
 import { Block, Button } from "./elements.mjs"
 import DEFAULT_WELCOME_MESSAGE_MARKDOWN from "./ai-manager-setup-guide.mjs"
+import workspaceClient from "./workspace-client.mjs"
 export const MAX_RECENT_MESSAGES_TO_PRESERVE = 5
 
 class AIManagerHistory {
@@ -224,9 +225,7 @@ class AIManagerHistory {
 				if (deleteIcon) {
 					deleteIcon.onclick = (e) => {
 						e.stopPropagation();
-						if (confirm("Are you sure you want to permanently delete this item from the history?")) {
-							this._handleDeleteSingleMessage(messageId);
-						}
+						this._handleDeleteSingleMessage(messageId);
 					};
 				}
 			};
@@ -275,6 +274,9 @@ class AIManagerHistory {
 			messageBlock.classList.add("prompt-pill");
 			messageBlock.innerHTML = this.md.render(message.content);
 			wrapper.append(messageBlock);
+
+			const replayButton = this._createSingleReplayButton(message.id);
+			wrapper.append(replayButton);
 
 			const deleteButton = this._createSingleDeleteButton(message.id);
 			wrapper.append(deleteButton);
@@ -389,9 +391,7 @@ class AIManagerHistory {
 		} else if (deleteIcon) {
 			deleteIcon.onclick = (e) => {
 				e.stopPropagation();
-				if (confirm("Are you sure you want to permanently delete this item from the history?")) {
-					this._handleDeleteSingleMessage(message.id);
-				}
+				this._handleDeleteSingleMessage(message.id);
 			};
 		}
 
@@ -431,6 +431,20 @@ class AIManagerHistory {
 		this.manager._dispatchContextUpdate("task_state_updated");
 	}
 
+	_createSingleReplayButton(messageId) {
+		const replayButton = new Button();
+		replayButton.classList.add("replay-history-button");
+		replayButton.icon = "replay";
+		replayButton.title = "Replay this prompt (deletes subsequent turns and regenerates)";
+		replayButton.on("click", (e) => {
+			e.stopPropagation();
+			if (confirm("Are you sure you want to replay this prompt? This will permanently delete all subsequent messages in this session and request a new response.")) {
+				this.manager.replayMessage(messageId);
+			}
+		});
+		return replayButton;
+	}
+
 	_createSingleDeleteButton(messageId) {
 		const deleteButton = new Button();
 		deleteButton.classList.add("delete-history-button");
@@ -438,14 +452,12 @@ class AIManagerHistory {
 		deleteButton.title = "Delete this message permanently";
 		deleteButton.on("click", (e) => {
 			e.stopPropagation();
-			if (confirm("Are you sure you want to permanently delete this item from the history?")) {
-				this._handleDeleteSingleMessage(messageId);
-			}
+			this._handleDeleteSingleMessage(messageId);
 		});
 		return deleteButton;
 	}
 
-	_handleDeleteSingleMessage(messageId) {
+	async _handleDeleteSingleMessage(messageId) {
 		if (!this.manager.activeSession) return;
 
 		const msgIndex = this.chatHistory.findIndex(msg => msg.id === messageId);
@@ -454,13 +466,103 @@ class AIManagerHistory {
 			return;
 		}
 
+		const deletedMessage = this.chatHistory[msgIndex];
+
 		this.manager.activeSession.messages.splice(msgIndex, 1);
 		this.manager.activeSession.lastModified = Date.now();
+		await workspaceClient.setSession(this.manager.activeSession.id, this.manager.activeSession);
 
 		this.render();
 
 		this.manager._setButtonsDisabledState(this.manager._isProcessing);
 		this.manager._dispatchContextUpdate("delete_item");
+
+		this._showUndoToast(deletedMessage, msgIndex);
+	}
+
+	_showUndoToast(deletedMessage, originalIndex) {
+		// If there is an existing undo toast, remove it first
+		const existingToast = document.querySelector(".undo-delete-toast");
+		if (existingToast) {
+			if (existingToast.dataset.timeoutId) {
+				clearTimeout(parseInt(existingToast.dataset.timeoutId));
+			}
+			existingToast.remove();
+		}
+
+		const toastEl = document.createElement('div');
+		toastEl.className = "undo-delete-toast";
+		toastEl.style.position = 'fixed';
+		toastEl.style.bottom = '20px';
+		toastEl.style.left = '50%';
+		toastEl.style.transform = 'translateX(-50%) translateY(10px)';
+		toastEl.style.backgroundColor = 'var(--theme-dark, #333)';
+		toastEl.style.color = '#fff';
+		toastEl.style.padding = '12px 24px';
+		toastEl.style.borderRadius = 'var(--radius, 8px)';
+		toastEl.style.boxShadow = '0 4px 12px rgba(0,0,0,0.15)';
+		toastEl.style.zIndex = '99999';
+		toastEl.style.opacity = '0';
+		toastEl.style.transition = 'opacity 0.3s ease, transform 0.3s ease';
+		toastEl.style.display = 'flex';
+		toastEl.style.alignItems = 'center';
+		toastEl.style.gap = '16px';
+		toastEl.style.fontSize = '14px';
+
+		const textSpan = document.createElement('span');
+		textSpan.textContent = "Message deleted from history.";
+		toastEl.appendChild(textSpan);
+
+		const undoBtn = document.createElement('button');
+		undoBtn.textContent = "Undo";
+		undoBtn.style.background = 'var(--theme, #0089cd)';
+		undoBtn.style.color = '#fff';
+		undoBtn.style.border = 'none';
+		undoBtn.style.padding = '6px 12px';
+		undoBtn.style.borderRadius = '4px';
+		undoBtn.style.cursor = 'pointer';
+		undoBtn.style.fontWeight = 'bold';
+		undoBtn.style.fontSize = '12px';
+		undoBtn.style.transition = 'filter 0.2s';
+		undoBtn.onmouseover = () => { undoBtn.style.filter = 'brightness(1.2)'; };
+		undoBtn.onmouseout = () => { undoBtn.style.filter = 'none'; };
+
+		undoBtn.onclick = async () => {
+			if (this.manager.activeSession) {
+				this.manager.activeSession.messages.splice(originalIndex, 0, deletedMessage);
+				this.manager.activeSession.lastModified = Date.now();
+				await workspaceClient.setSession(this.manager.activeSession.id, this.manager.activeSession);
+				this.render();
+				this.manager._dispatchContextUpdate("undo_delete");
+			}
+			toastEl.style.opacity = '0';
+			toastEl.style.transform = 'translateX(-50%) translateY(10px)';
+			setTimeout(() => toastEl.remove(), 300);
+		};
+
+		toastEl.appendChild(undoBtn);
+		document.body.appendChild(toastEl);
+
+		// Fade in
+		requestAnimationFrame(() => {
+			requestAnimationFrame(() => {
+				toastEl.style.opacity = '1';
+				toastEl.style.transform = 'translateX(-50%) translateY(0)';
+			});
+		});
+
+		// Automatically fade out and remove after 6 seconds
+		const timeoutId = setTimeout(() => {
+			toastEl.style.opacity = '0';
+			toastEl.style.transform = 'translateX(-50%) translateY(10px)';
+			setTimeout(() => {
+				if (toastEl.parentNode) {
+					toastEl.remove();
+				}
+			}, 300);
+		}, 6000);
+
+		toastEl.dataset.timeoutId = timeoutId.toString();
 	}
 
 	/**
@@ -503,6 +605,9 @@ class AIManagerHistory {
 			if (!userElement.querySelector(".delete-history-button")) {
 				const userPromptIndex = this.chatHistory.findIndex(msg => msg.id === userMessage.id);
 				if (userPromptIndex !== -1) { // Check that message is still in history
+					const replayButton = this._createSingleReplayButton(userMessage.id);
+					userElement.append(replayButton);
+
 					const deleteButton = this._createSingleDeleteButton(userMessage.id);
 					userElement.append(deleteButton);
 				}

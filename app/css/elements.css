@@ -990,8 +990,8 @@ ui-input input:focus {
     align-items: center;
     justify-content: space-between;
     padding: 8px 16px;
-    background: var(--theme);
-    border-bottom: 1px solid var(--border-primary);
+    background: var(--bg-secondary);
+    border-bottom: 1px solid var(--border-secondary);
     height: var(--menuHeight);
     min-height: var(--menuHeight);
     box-sizing: border-box;
@@ -1296,6 +1296,13 @@ ui-diff-view-panel .diff-counter-add {
     background-color: rgba(46, 160, 67, 0.15);
     color: #3fb950;
     border: 1px solid rgba(46, 160, 67, 0.2);
+}
+
+.editor-header-bar.modified-external,
+.editor-header-bar.pending-changes,
+.editor-header-bar.rollback-protected,
+.editor-header-bar.user-changes {
+    background: var(--theme);
 }
 
 .editor-header-bar.modified-external {

@@ -337,6 +337,29 @@
     z-index: 1;
 }
 
+.replay-history-button {
+    background-color: var(--theme-dark);
+    color: var(--text-inverted);
+    border: none;
+    border-radius: 50%; 
+    width: 24px;
+    height: 24px;
+    min-width: 24px;
+    min-height: 24px;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    cursor: pointer;
+    padding: 0;
+    position: absolute;
+    top: -4px; 
+    right: 24px;
+    opacity: 0; 
+    transition: opacity 0.2s ease-in-out, background-color 0.2s ease-in-out;
+    box-shadow: 0 1px 3px var(--shadow-color);
+    z-index: 1;
+}
+
 /* ACE Editor read-only state, specifically for the prompt editor */
 .prompt-area .ace_editor.ace_read-only {
     opacity: 0.7;
@@ -348,7 +371,12 @@
     background-color: var(--color-error);
 }
 
+.replay-history-button:hover {
+    background-color: var(--theme);
+}
+
 .prompt-pill-wrapper:hover .delete-history-button,
+.prompt-pill-wrapper:hover .replay-history-button,
 .context-file-wrapper:hover .delete-history-button,
 .response-block:hover .delete-history-button,
 .system-message-block:hover .delete-history-button,

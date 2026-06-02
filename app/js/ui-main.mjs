@@ -562,6 +562,9 @@ const uiManager = {
 		drawer = new Panel()
 		drawer.setAttribute("id", "drawer")
 		drawer.resizable = "top"
+		const initialConstraints = getDrawerConstraints();
+		drawer.minSize = initialConstraints.min;
+		drawer.maxSize = initialConstraints.max;
 
 		const drawerToggle = new Button();
 		drawerToggle.icon = "expand_more";

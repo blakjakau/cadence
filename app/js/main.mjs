@@ -40,6 +40,30 @@ conduitClient.on('connect', () => {
 			updateIndexerStatus(res.data);
 		}
 	}).catch(e => console.warn("Could not get initial index status:", e));
+
+	// Proactively check for external modifications on all open tabs
+	const checkTabs = [...(leftTabs?.tabs || []), ...(rightTabs?.tabs || [])];
+	for (const tab of checkTabs) {
+		const path = tab.config.handle;
+		if (!path || tab.config.mode?.mode === "media" || path === "plan_tasks") continue;
+
+		conduitClient.wsRead(path, 1, 1).then(res => {
+			if (res && res.modTime && tab.config.modTime && res.modTime !== tab.config.modTime) {
+				tab.config.fileModified = true;
+				tab.changed = true;
+
+				const fileItem = fileList.find(path);
+				if (fileItem && fileItem.length > 0) {
+					fileItem[0].changed = true;
+				}
+
+				const targetTabs = tab.config.side === "right" ? rightTabs : leftTabs;
+				if (tab === targetTabs.activeTab) {
+					ui.showFileModifiedNotice(tab, tab.config.side);
+				}
+			}
+		}).catch(e => console.warn(`Error checking external changes for ${path}:`, e));
+	}
 });
 
 const canPrettify = {
@@ -117,6 +141,13 @@ const workspace = {
 	aiSessionsMetadata: [], // Array of {id, name, createdAt, lastModified}
 	activeAiSessionId: null, // The ID of the currently active AI session
 }
+
+// workspace state managment
+let workspaceUnloading = false
+let isOpeningWorkspace = false
+let restoreInProgress = false
+let restoreWaitingForConnect = false
+
 
 // window.showSettings = ui.showSettings
 window.app = app
@@ -293,7 +324,16 @@ const saveFile = async (tab) => {
 	tab.config.ignoreNextNotify = true
 	try {
 		const base64Content = btoa(unescape(encodeURIComponent(text)))
-		await conduitClient.wsWrite(path, base64Content)
+		const response = await conduitClient.wsWrite(path, base64Content)
+		if (response && response.modTime) {
+			tab.config.modTime = response.modTime
+		}
+		if (response && response.fullPath) {
+			tab.config.fullPath = response.fullPath
+		}
+		if (response && response.size !== undefined) {
+			tab.config.size = response.size
+		}
 		
 		if (tab.config.session) {
 			tab.config.session.baseValue = text
@@ -383,9 +423,8 @@ const onFileModified = (path) => {
 	}
 }
 
-let workspaceUnloading = false
 const saveWorkspace = async () => {
-	if (workspaceUnloading) return
+	if (workspaceUnloading || restoreInProgress) return
 
 	const orderedFiles = []
 	let planTasksSide = null
@@ -415,6 +454,25 @@ const saveWorkspace = async () => {
 
 	workspace.openFolders = fileList.openFolders
 	workspace.activeSidebarTab = ui.iconTabBar?.activeTab?.iconId
+
+	// --- Persistence enhancement: Capture active editor tab state ---
+	if(!isOpeningWorkspace && !restoreInProgress) {
+		const activeLeftTab = leftTabs?.activeTab //leftTabs.tabs.find(tab => tab.config.handle);
+		const activeRightTab = rightTabs?.activeTab //rightTabs.tabs.find(tab => tab.config.handle);
+	
+		if (activeLeftTab) {	
+			workspace.activeEditorTabHandle = activeLeftTab.config.handle;
+			workspace.activeEditorSide = "left";
+		} else if (activeRightTab) {
+			workspace.activeEditorTabHandle = activeRightTab.config.handle;
+			workspace.activeEditorSide = "right";
+		} else {
+			workspace.activeEditorTabHandle = null;
+			workspace.activeEditorSide = null;
+		}
+		// -------------------------------------------------------------
+	}
+	
 	workspaceClient.setWorkspace(workspace)
 	
 	if (workspace.folders) {
@@ -478,9 +536,6 @@ const openWorkspace = (() => {
 
 	// rename for possible future functionality
 	rename.remove()
-
-	let isOpeningWorkspace = false;
-
 	return async (name, triggered = false) => {
 		if (isOpeningWorkspace) return;
 		isOpeningWorkspace = true;
@@ -501,13 +556,18 @@ const openWorkspace = (() => {
 
 			if ("undefined" != typeof load) {
 				workspaceUnloading = true
-			// clear the leftTabs
-			while (leftTabs.tabs.length > 1) {
-				leftTabs.tabs[0].close.click()
-			}
-			if (leftTabs.tabs[0]) leftTabs.tabs[0].close.click()
+				
+				// clear the leftTabs
+				while (leftTabs.tabs.length > 0) {
+					leftTabs.tabs[0].close.click()
+				}
 
-			workspaceUnloading = false
+				// clear the rightTabs
+				while (rightTabs.tabs.length > 0) {
+					rightTabs.tabs[0].close.click()
+				}
+
+				workspaceUnloading = false
 
 			workspace.name = load.name || "default"
 			workspace.folders = load.folders || []
@@ -539,6 +599,8 @@ const openWorkspace = (() => {
 			}
 			workspace.activeSidebarTab = load.activeSidebarTab || null
 			workspace.id = load.id || safeString(workspace.name)
+			workspace.activeEditorTabHandle = load.activeEditorTabHandle || null
+			workspace.activeEditorSide = load.activeEditorSide || null
 
 			fileList.ignorePaths = workspace.ignorePaths
 			// REMOVED: workspace.promptHistory = load.promptHistory || []; // Removed
@@ -625,6 +687,8 @@ const openWorkspace = (() => {
 				// NEW: Initialize empty system prompt config
 				workspace.systemPromptConfig = {}
 				workspace.activeAiSessionId = null
+				workspace.activeEditorTabHandle = null
+				workspace.activeEditorSide = null
 				updateFileListBackground()
 				// AIManager will handle creating the first session when it gets loadSessions call
 				hideActions()
@@ -1148,6 +1212,9 @@ const reloadFile = async (tab) => {
 		tab.config.session.setValue(text)
 		tab.config.fileModified = false // Clear the file modified flag
 		tab.changed = false // Clear unsaved changes flag
+		tab.config.fullPath = response.fullPath
+		tab.config.modTime = response.modTime
+		tab.config.size = response.size
 
 		if (window.ui && window.ui.fileList) {
 			const fileItem = window.ui.fileList.find(handle)
@@ -1260,8 +1327,8 @@ const setCurrentEditor = (editor) => {
 		const fileInWorkspace = workspace.files.find((file) => file.handle === tab.config.handle)
 		if (fileInWorkspace) {
 			fileInWorkspace.side = editor === leftEdit ? "left" : "right"
-			saveWorkspace()
 		}
+		saveWorkspace()
 	}
 }
 
@@ -1390,8 +1457,9 @@ const openFileHandle = async (handle, knownPath = null, targetEditor = currentEd
 
 	let text = ""
 	let rawData = null
+	let fileData = null
 	try {
-		const fileData = await conduitClient.wsRead(path)
+		fileData = await conduitClient.wsRead(path)
 		if (fileData.error) throw new Error(fileData.error)
 		rawData = fileData.data
 		if (!isImage) {
@@ -1503,9 +1571,12 @@ const openFileHandle = async (handle, knownPath = null, targetEditor = currentEd
 		fileModified: false,
 		defaultStatusIcon: tabIcon, // Pass the determined icon to the new tab.
 		rawData: rawData,
+		fullPath: fileData ? fileData.fullPath : undefined,
+		modTime: fileData ? fileData.modTime : undefined,
+		size: fileData ? fileData.size : undefined,
 	})
 	setupSessionChangeListener(newSession, tab)
-	tab.click()
+	if(!restoreInProgress) tab.click()
 	observeFile(path, onFileModified) // Observe the file for changes
 
 	// Only add to workspace and save if it's a newly opened file, not from a restore
@@ -1619,10 +1690,13 @@ const updateEditorUI = async (targetEditor, targetMediaView, tab) => {
 	tab.config._lastViewMode = tab.config.viewMode;
 	
 	let scrollPosition = null;
-	if (outgoingViewMode === "edit" && tab.config.session) {
-		scrollPosition = targetEditor.getSession().getScrollTop();
-	} else if (outgoingViewMode === "diff" && holder.diffView && holder.diffView.leftEditor) {
-		scrollPosition = holder.diffView.leftEditor.getSession().getScrollTop();
+	const isSameTab = tab.config.session && targetEditor.getSession() === tab.config.session;
+	if (isSameTab) {
+		if (outgoingViewMode === "edit" && tab.config.session) {
+			scrollPosition = targetEditor.getSession().getScrollTop();
+		} else if (outgoingViewMode === "diff" && holder.diffView && holder.diffView.leftEditor) {
+			scrollPosition = holder.diffView.leftEditor.getSession().getScrollTop();
+		}
 	}
 
 	if (holder.diffView) holder.diffView.style.display = "none"
@@ -1805,11 +1879,19 @@ const defaultTab = (targetTabs) => {
 }
 
 // fileActions.hook="bottom";
-let restoreInProgress = false
 const restoreWorkspaceContent = async () => {
 	if (restoreInProgress) return
 	if (!conduitClient.isConnected) {
 		console.debug("restoreWorkspaceContent: WebSocket not connected, waiting...")
+		if (!restoreWaitingForConnect) {
+			restoreWaitingForConnect = true
+			const onConnect = () => {
+				conduitClient.off("connect", onConnect)
+				restoreWaitingForConnect = false
+				restoreWorkspaceContent()
+			}
+			conduitClient.on("connect", onConnect)
+		}
 		return
 	}
 	restoreInProgress = true
@@ -1868,7 +1950,31 @@ const restoreWorkspaceContent = async () => {
 
 			// Remove missing files from workspace.files
 			workspace.files = workspace.files.filter((file) => !missingFiles.includes(file.path))
-			saveWorkspace() // Save workspace after removing missing files
+			
+			// --- Tab Restoration Logic ---
+			if (workspace.activeEditorTabHandle) {
+				const activeSide = workspace.activeEditorSide
+				const clean = (p) => p ? p.replace(/\\/g, '/').replace(/^\//, '') : '';
+				const targetHandle = clean(workspace.activeEditorTabHandle);
+				
+				const activeTab = activeSide === "left" ? 
+					leftTabs.tabs.find(t => clean(t.config.handle) === targetHandle) : 
+					rightTabs.tabs.find(t => clean(t.config.handle) === targetHandle);
+	
+				if (activeTab) {
+					console.warn(`restoring active tab: ${workspace.activeEditorTabHandle} on ${activeSide}`);
+					activeTab.click();
+				} else {
+					console.log(`Active tab ${workspace.activeEditorTabHandle} not found in open tabs.`);
+				}
+			} else {
+				// If no specific active tab is saved, ensure at least one default tab exists in the editor
+				const defaultEditor = leftTabs.tabs.length > 0 ? leftTabs : rightTabs;
+				if (defaultEditor.tabs.length === 0) {
+					defaultTab(defaultEditor);
+				}
+			}
+			// -----------------------------
 		}
 
 		if (workspace.planTasksSide) {
@@ -1877,6 +1983,8 @@ const restoreWorkspaceContent = async () => {
 		}
 
 		ui.showSidebar(1)
+		restoreInProgress = false
+		saveWorkspace()
 	} finally {
 		restoreInProgress = false
 	}
@@ -2143,27 +2251,27 @@ const keyBinds = [
 	{
 		target: "app",
 		name: "workspaceOpen",
-		exec: async (args) => {
-			await sleep(400)
-			if (args === workspace.name) {
-				return
-			}
-			openWorkspace(args, true)
+			exec: async (args) => {
+				await sleep(400)
+				if (args === workspace.id) {
+					return
+				}
+				openWorkspace(args, true)
+			},
 		},
-	},
-	{
-		target: "app",
-		name: "workspaceRename",
-		exec: async () => {
-			await sleep(400)
+		{
+			target: "app",
+			name: "workspaceRename",
+			exec: async () => {
+				await sleep(400)
+			},
 		},
-	},
-	{
-		target: "app",
-		name: "workspaceDelete",
-		exec: async () => {
-			await sleep(400)
-			if (workspace.name !== "default") {
+		{
+			target: "app",
+			name: "workspaceDelete",
+			exec: async () => {
+				await sleep(400)
+				if (workspace.id !== "default") {
 				const confirmed = await window.modal.confirm(
 					`Are you sure you want to permanently delete the workspace "<strong>${workspace.name}</strong>"? This action cannot be undone.`,
 					"Delete Workspace"
@@ -2443,11 +2551,7 @@ setTimeout(async () => {
 		saveAppConfig()
 
 		// Automatically restore workspace content once connected
-		conduitClient.on("connect", () => {
-			if (workspace.folders.length > 0 || workspace.files.length > 0) {
-				restoreWorkspaceContent()
-			}
-		})
+		// (Handled internally in restoreWorkspaceContent to avoid connection race condition)
 
 		// After appConfig is loaded and aiManager is initialized, apply global AI settings
 		const currentProvider = ui.aiManager.aiProvider

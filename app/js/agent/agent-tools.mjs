@@ -218,28 +218,35 @@ class AgentTools {
             // Try to find if the file is open in the editor
             const openTab = this._findOpenTab(resolvedPath);
 
+            let content = "";
             if (openTab && openTab.config.session) {
                 console.log(`[AgentTools] Reading ${path} from open editor buffer.`);
                 const session = openTab.config.session;
                 const edits = this.editBuffer[resolvedPath]?.edits || [];
-                return this._getCleanContentOfSession(session, edits);
-            }
-
-            if (this.conduit.isConnected) {
+                content = this._getCleanContentOfSession(session, edits);
+            } else if (this.conduit.isConnected) {
                 const result = await this.conduit.wsRead(resolvedPath);
                 if (result.error) throw new Error(result.error);
                 if (result.data) {
                     try {
-                        return atob(result.data);
+                        content = atob(result.data);
                     } catch (e) {
                         // If not valid base64 (or already decoded), return as-is
-                        return result.data;
+                        content = result.data;
                     }
+                } else {
+                    content = result.content || "";
                 }
-                return result.content || "";
             } else {
                 return "Error: Conduit not connected. Use @file context to provide content.";
             }
+
+            // Check if content matches an existing unpruned tool response
+            if (content && this._isContentInUnprunedHistory(content)) {
+                return "Content is unchange from previous request";
+            }
+
+            return content;
         } catch (error) {
             return `Error reading file: ${error.message}`;
         }
@@ -337,6 +344,40 @@ class AgentTools {
         return dirtyLength;
     }
 
+    _isContentInUnprunedHistory(content) {
+        try {
+            const aiManager = window.ui?.aiManager;
+            if (!aiManager || !aiManager.activeSession) return false;
+
+            const messages = aiManager.activeSession.messages || [];
+            let dialogueHistory = messages.filter(
+                (msg) => msg.type !== "task_state" && msg.type !== "system_message" && msg.role !== "temp_ai_response" && msg.type !== "file_context"
+            );
+
+            // Apply exact same pruning slice logic as prepareMessagesForAI
+            if (aiManager.agentMode) {
+                const keepCount = 14;
+                if (dialogueHistory.length > keepCount) {
+                    let sliceIndex = dialogueHistory.length - keepCount;
+                    if (sliceIndex > 0 && dialogueHistory[sliceIndex].type === "tool_response") {
+                        sliceIndex -= 1;
+                    }
+                    dialogueHistory = dialogueHistory.slice(sliceIndex);
+                }
+            }
+
+            // Search only unpruned tool_response messages
+            for (const msg of dialogueHistory) {
+                if (msg.type === "tool_response" && msg.content && msg.content.includes(content)) {
+                    return true;
+                }
+            }
+        } catch (e) {
+            console.error("[AgentTools] Error checking unpruned history:", e);
+        }
+        return false;
+    }
+
     /**
      * Reads a file's structural outline.
      * @param {string} path 
@@ -347,13 +388,21 @@ class AgentTools {
             if (permitted !== true) return permitted;
 
             const resolvedPath = this._resolveAndValidatePath(path);
+            let outline = "";
             if (this.conduit.isConnected) {
                 const result = await this.conduit.wsGetOutline(resolvedPath);
                 if (result.error) throw new Error(result.error);
-                return result.data || "No outline available.";
+                outline = result.data || "No outline available.";
             } else {
                 return "Error: Conduit not connected.";
             }
+
+            // Check if outline matches an existing unpruned tool response
+            if (outline && this._isContentInUnprunedHistory(outline)) {
+                return "Content is unchange from previous request";
+            }
+
+            return outline;
         } catch (error) {
             return `Error reading file outline: ${error.message}`;
         }
@@ -714,27 +763,33 @@ class AgentTools {
                     throw new Error(`Target string not found in ${path}. Ensure the search string matches exactly, including whitespace.`);
                 }
                 
-                // 1. Create backup
+                // 1. Create backup if not already present in the active session
                 let backupId = "";
-                try {
-                    const actId = sourceId || window.ui?.aiManager?.activeSession?.id || "default";
-                    backupId = await AgentBackup.create(resolvedPath, originalContent, actId);
-                    
-                    const activeSession = window.ui?.aiManager?.activeSession;
-                    if (activeSession) {
-                        activeSession.modifiedFiles = activeSession.modifiedFiles || {};
-                        if (!activeSession.modifiedFiles[resolvedPath]) {
-                            activeSession.modifiedFiles[resolvedPath] = [];
+                const activeSession = window.ui?.aiManager?.activeSession;
+                const hasExistingBackup = activeSession && activeSession.modifiedFiles && activeSession.modifiedFiles[resolvedPath] && activeSession.modifiedFiles[resolvedPath].length > 0;
+
+                if (hasExistingBackup) {
+                    backupId = activeSession.modifiedFiles[resolvedPath][0].backupId;
+                } else {
+                    try {
+                        const actId = sourceId || activeSession?.id || "default";
+                        backupId = await AgentBackup.create(resolvedPath, originalContent, actId);
+                        
+                        if (activeSession) {
+                            activeSession.modifiedFiles = activeSession.modifiedFiles || {};
+                            if (!activeSession.modifiedFiles[resolvedPath]) {
+                                activeSession.modifiedFiles[resolvedPath] = [];
+                            }
+                            activeSession.modifiedFiles[resolvedPath].push({
+                                backupId: backupId,
+                                timestamp: Date.now(),
+                                sourceId: actId
+                            });
+                            await workspaceClient.setSession(activeSession.id, activeSession);
                         }
-                        activeSession.modifiedFiles[resolvedPath].push({
-                            backupId: backupId,
-                            timestamp: Date.now(),
-                            sourceId: actId
-                        });
-                        await workspaceClient.setSession(activeSession.id, activeSession);
+                    } catch (e) {
+                        console.error("[AgentTools] Failed to create backup:", e);
                     }
-                } catch (e) {
-                    console.error("[AgentTools] Failed to create backup:", e);
                 }
 
                 // 2. Perform the clean edit on Ace session
@@ -762,7 +817,10 @@ class AgentTools {
                     containers.forEach(c => window.ui.renderPlanTasksView(c));
                 }
 
-                return `Successfully edited ${path} in Forgiveness Mode. The change has been committed directly to the file and a rollback backup was created. The tab has switched to the side-by-side Diff view for your review.`;
+                const backupMsg = hasExistingBackup 
+                    ? "the rollback backup has been retained" 
+                    : "a rollback backup was created";
+                return `Successfully edited ${path} in Forgiveness Mode. The change has been committed directly to the file and ${backupMsg}. The tab has switched to the side-by-side Diff view for your review.`;
             }
 
             // Permission Mode: clean replacement in memory
@@ -937,11 +995,13 @@ class AgentTools {
             case 'exec_command':
                 return await this.execCommand(args.command);
             case 'create_implementation_plan':
-                return "Successfully created implementation plan. The user is reviewing it.";
+                return "Implementation plan created. The user is reviewing it.";
+            case 'create_task_list':
+            	return "Task list created.";
             case 'update_task_list':
-                return "Successfully updated task list.";
+                return "Task list updated.";
             case 'complete_task':
-                return `Successfully marked task as complete: ${args.taskName}`;
+                return `Task marked complete: ${args.taskName}`;
             case 'done':
                 return "Agent successfully completed the execution loop.";
             default:
