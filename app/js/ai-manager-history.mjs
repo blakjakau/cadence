@@ -217,6 +217,13 @@ class AIManagerHistory {
 				const previewSuffix = (fullResponse && fullResponse.length > 40) ? "..." : "";
 				const previewSpan = element.querySelector(".content-preview");
 				if (previewSpan) previewSpan.textContent = this._escapeHtml(previewText) + previewSuffix;
+
+				const sizeSpan = element.querySelector(".item-size-badge");
+				if (sizeSpan) {
+					const sizeInBytes = fullResponse ? new TextEncoder().encode(fullResponse).length : 0;
+					const sizeInKB = (sizeInBytes / 1024).toFixed(2);
+					sizeSpan.textContent = `(${sizeInKB} KB)`;
+				}
 			};
 			
 			element.finalize = (fullResponse, finalizedMessage) => {
@@ -361,9 +368,12 @@ class AIManagerHistory {
 		const previewText = message.content ? message.content.substring(0, 40).replace(/\n/g, " ") : "";
 		const previewSuffix = (message.content && message.content.length > 40) ? "..." : "";
 
+		const sizeInBytes = message.content ? new TextEncoder().encode(message.content).length : 0;
+		const sizeInKB = (sizeInBytes / 1024).toFixed(2);
+
 		header.innerHTML = `
 			<ui-icon>${iconName}</ui-icon>
-			<span class="role-label">${roleLabel}</span>
+			<span class="role-label">${roleLabel} <small class="item-size-badge" style="opacity: 0.6; font-size: 10px; margin-left: 4px;">(${sizeInKB} KB)</small></span>
 			<span class="content-preview">${this._escapeHtml(previewText)}${previewSuffix}</span>
 			<ui-icon class="delete-raw-item" title="Delete this turn permanently" style="font-size: 16px; color: var(--text-secondary); cursor: pointer; margin-left: auto; margin-right: 8px; transition: color 0.2s;" onmouseover="this.style.color='var(--color-error)'" onmouseout="this.style.color='var(--text-secondary)'">delete</ui-icon>
 			<ui-icon class="expand-arrow" style="margin-left: 0;">expand_more</ui-icon>
@@ -894,12 +904,13 @@ class AIManagerHistory {
 			});
 		}
 
-		// 4. Prune the chat history to fit within the context window
+		// 4. Prune the chat history to fit within 80% of the context window (leaving 20% headroom for response)
 		const maxTokens = this.ai.MAX_CONTEXT_TOKENS || 4096;
+		const allowedTokens = Math.floor(maxTokens * 0.8);
 		let currentTokens = this.ai.estimateTokens(chatHistory);
 		const minimumMessagesToKeep = 1;
 
-		while (currentTokens > maxTokens && chatHistory.length > minimumMessagesToKeep) {
+		while (currentTokens > allowedTokens && chatHistory.length > minimumMessagesToKeep) {
 			chatHistory.shift(); // Remove oldest message
 			currentTokens = this.ai.estimateTokens(chatHistory);
 		}
@@ -958,8 +969,8 @@ class AIManagerHistory {
 			}
 		});
 
-		if (currentTokens > maxTokens) {
-			console.warn(`Context window exceeded even after pruning. Estimated: ${currentTokens}, Max: ${maxTokens}`);
+		if (currentTokens > allowedTokens) {
+			console.warn(`Context window exceeded 80% headroom limit even after pruning. Estimated: ${currentTokens}, Allowed: ${allowedTokens}`);
 		}
 
 		return contextForAI;
