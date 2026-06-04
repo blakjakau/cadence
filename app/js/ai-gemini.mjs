@@ -323,18 +323,38 @@ class Gemini extends AI {
         for (const msg of messages) {
             if (msg.role === 'user' || msg.role === 'model') {
                 if (msg.role === 'user' && msg.content.startsWith('[Tool Response: ')) {
-                    const match = msg.content.match(/\[Tool Response: ([^\]]+)\]\n\n([\s\S]*)/);
-                    if (match) {
-                        const toolName = match[1].split(' ')[0];
-                        const toolResponse = match[2];
+                    const parts = [];
+                    const regex = /\[Tool Response: ([^\]]+)\]\n\n/g;
+                    let match;
+                    const matches = [];
+                    
+                    while ((match = regex.exec(msg.content)) !== null) {
+                        matches.push({
+                            toolName: match[1].split(' ')[0],
+                            index: match.index,
+                            contentStart: regex.lastIndex
+                        });
+                    }
+                    
+                    for (let i = 0; i < matches.length; i++) {
+                        const current = matches[i];
+                        const next = matches[i + 1];
+                        let sectionContent = next ? msg.content.substring(current.contentStart, next.index) : msg.content.substring(current.contentStart);
+                        
+                        sectionContent = sectionContent.replace(/\n\n---\n\n$/, '').trim();
+                        
+                        parts.push({
+                            functionResponse: {
+                                name: current.toolName,
+                                response: { result: sectionContent }
+                            }
+                        });
+                    }
+
+                    if (parts.length > 0) {
                         contents.push({
                             role: 'function',
-                            parts: [{
-                                functionResponse: {
-                                    name: toolName,
-                                    response: { result: toolResponse }
-                                }
-                            }]
+                            parts: parts
                         });
                         continue;
                     }
@@ -355,8 +375,21 @@ class Gemini extends AI {
                         }
 
                         for (const rawCall of msg.toolCalls) {
+                            const callObj = rawCall.functionCall || rawCall;
+                            let args = callObj.args || callObj.arguments || {};
+                            if (typeof args === 'string') {
+                                try {
+                                    args = JSON.parse(args);
+                                } catch (e) {
+                                    console.error("[Gemini] Failed to parse tool call arguments as JSON:", args, e);
+                                    args = {};
+                                }
+                            }
                             const functionCallPart = {
-                                functionCall: rawCall.functionCall || rawCall // Handle if rawCall is wrapped or native
+                                functionCall: {
+                                    name: callObj.name,
+                                    args: args
+                                }
                             };
                             if (rawCall.thoughtSignature) {
                                 functionCallPart.thoughtSignature = rawCall.thoughtSignature;

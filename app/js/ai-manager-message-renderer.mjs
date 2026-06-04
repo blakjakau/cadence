@@ -235,6 +235,30 @@ export default class AIManagerMessageRenderer {
     renderResponseContent(content, message = null) {
         if (!content) return "";
 
+        if (message && message.toolCalls && message.toolCalls.length > 0) {
+            if (!content.includes("<tool_call")) {
+                let xmlAppend = "";
+                for (const tc of message.toolCalls) {
+                    const callObj = tc.functionCall || tc;
+                    xmlAppend += `\n<tool_call name="${callObj.name}">\n`;
+                    const args = callObj.args || callObj.arguments || {};
+                    let argsObj = {};
+                    try {
+                        argsObj = typeof args === 'string' ? JSON.parse(args) : args;
+                    } catch (e) {
+                        console.error("[Renderer] Failed to parse tool call args:", args, e);
+                        argsObj = {};
+                    }
+                    for (const [k, v] of Object.entries(argsObj)) {
+                        const stringValue = typeof v === 'object' ? JSON.stringify(v) : v;
+                        xmlAppend += `  <${k}>${stringValue}</${k}>\n`;
+                    }
+                    xmlAppend += `</tool_call>\n`;
+                }
+                content += xmlAppend;
+            }
+        }
+
         let isFailed = false;
         if (message && this.aiManager.activeSession && this.aiManager.activeSession.messages) {
             const index = this.aiManager.activeSession.messages.findIndex(m => m.id === message.id);

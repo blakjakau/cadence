@@ -962,10 +962,64 @@ class AIManagerHistory {
 					});
 				}
 			} else {
-				contextForAI.push({
+				let content = msg.content;
+				let toolCalls = msg.toolCalls;
+				
+				if (this.ai.supportsJSONTools) {
+					// Self-healing: if no toolCalls are present on the message, but content has XML, parse them!
+					if ((!toolCalls || toolCalls.length === 0) && content && content.includes('<tool_call')) {
+						const parsed = this.manager._parseAllToolCalls(content);
+						if (parsed && parsed.length > 0) {
+							toolCalls = parsed.map(ptc => ({
+								functionCall: {
+									name: ptc.name,
+									args: ptc.arguments
+								}
+							}));
+						}
+					}
+					
+					// Strip XML from content for JSON-native models
+					if (content) {
+						content = content.replace(/<tool_call\s+name=["']([^"']+)["']\s*>[\s\S]*?<\/tool_call>/gi, '').trim();
+					}
+				} else {
+					// For non-JSON-native models, if they have JSON toolCalls but no XML in content, append it
+					if (toolCalls && toolCalls.length > 0 && (!content || !content.includes("<tool_call"))) {
+						for (const tc of toolCalls) {
+							const callObj = tc.functionCall || tc;
+							let xml = `\n<tool_call name="${callObj.name}">\n`;
+							const args = callObj.args || callObj.arguments || {};
+							let argsObj = {};
+							try {
+								argsObj = typeof args === 'string' ? JSON.parse(args) : args;
+							} catch (e) {
+								console.error("[History] Failed to parse tool call args:", args, e);
+								argsObj = {};
+							}
+							for (const [k, v] of Object.entries(argsObj)) {
+								const stringValue = typeof v === 'object' ? JSON.stringify(v) : v;
+								xml += `  <${k}>${stringValue}</${k}>\n`;
+							}
+							xml += `</tool_call>\n`;
+							content += xml;
+						}
+					}
+				}
+
+				const contextItem = {
 					role: msg.role,
-					content: msg.content
-				});
+					content: content
+				};
+				
+				if (this.ai.supportsJSONTools && toolCalls && toolCalls.length > 0) {
+					contextItem.toolCalls = toolCalls;
+				}
+				if (msg.thoughtSignature) {
+					contextItem.thoughtSignature = msg.thoughtSignature;
+				}
+				
+				contextForAI.push(contextItem);
 			}
 		});
 
