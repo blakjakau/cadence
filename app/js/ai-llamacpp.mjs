@@ -220,7 +220,9 @@ class LlamaCpp extends AI {
             }
 
             if (window.ui?.aiManager?.agentMode && cadenceTools && cadenceTools.length > 0) {
-                requestBody.tools = cadenceTools.map(t => ({
+                const isPlanning = window.ui?.aiManager?.planningMode === true;
+                const filteredTools = cadenceTools.filter(t => !(isPlanning && (t.name === "create_file" || t.name === "edit_file")));
+                requestBody.tools = filteredTools.map(t => ({
                     type: "function",
                     function: {
                         name: t.name,

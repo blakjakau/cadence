@@ -22,15 +22,92 @@ export class DiffViewPanel extends Block {
         headerLeft.appendChild(icon);
         headerLeft.appendChild(this.titleSpan);
 
+        // View Mode Preference
+        this.diffViewMode = localStorage.getItem("diffViewMode") || "split";
+
+        // View toggle buttons (Split / Unified)
+        this.toggleContainer = document.createElement("div");
+        this.toggleContainer.className = "diff-header-nav";
+        this.toggleContainer.style.marginLeft = "16px";
+
+        this.splitBtn = document.createElement("button");
+        this.splitBtn.className = "nav-btn";
+        this.splitBtn.innerHTML = "<ui-icon style='font-size: 14px; margin-right: 4px;'>vertical_split</ui-icon><span>Split</span>";
+        this.splitBtn.title = "Side-by-side Diff View";
+        this.splitBtn.style.fontSize = "11px";
+        this.splitBtn.style.fontWeight = "600";
+        this.splitBtn.style.padding = "2px 8px";
+        this.splitBtn.style.height = "24px";
+        this.splitBtn.style.display = "inline-flex";
+        this.splitBtn.style.alignItems = "center";
+
+        this.unifiedBtn = document.createElement("button");
+        this.unifiedBtn.className = "nav-btn";
+        this.unifiedBtn.innerHTML = "<ui-icon style='font-size: 14px; margin-right: 4px;'>format_align_justify</ui-icon><span>Unified</span>";
+        this.unifiedBtn.title = "Unified Diff View";
+        this.unifiedBtn.style.fontSize = "11px";
+        this.unifiedBtn.style.fontWeight = "600";
+        this.unifiedBtn.style.padding = "2px 8px";
+        this.unifiedBtn.style.height = "24px";
+        this.unifiedBtn.style.display = "inline-flex";
+        this.unifiedBtn.style.alignItems = "center";
+
+        this.toggleContainer.appendChild(this.splitBtn);
+        this.toggleContainer.appendChild(this.unifiedBtn);
+
+        const updateActiveToggleState = () => {
+            if (this.diffViewMode === "split") {
+                this.splitBtn.style.backgroundColor = "var(--theme-dark)";
+                this.splitBtn.style.color = "white";
+                this.unifiedBtn.style.backgroundColor = "rgba(0, 0, 0, 0.33)";
+                this.unifiedBtn.style.color = "";
+            } else {
+                this.unifiedBtn.style.backgroundColor = "var(--theme-dark)";
+                this.unifiedBtn.style.color = "white";
+                this.splitBtn.style.backgroundColor = "rgba(0, 0, 0, 0.33)";
+                this.splitBtn.style.color = "";
+            }
+        };
+
+        this.splitBtn.onclick = (e) => {
+            e.stopPropagation();
+            if (this.diffViewMode === "split") return;
+            this.diffViewMode = "split";
+            localStorage.setItem("diffViewMode", "split");
+            updateActiveToggleState();
+            if (this.activeFilePath) {
+                this.update(this.activeFilePath, this.activeBackupId, this.activeTab);
+            }
+        };
+
+        this.unifiedBtn.onclick = (e) => {
+            e.stopPropagation();
+            if (this.diffViewMode === "unified") return;
+            this.diffViewMode = "unified";
+            localStorage.setItem("diffViewMode", "unified");
+            updateActiveToggleState();
+            if (this.activeFilePath) {
+                this.update(this.activeFilePath, this.activeBackupId, this.activeTab);
+            }
+        };
+
+        updateActiveToggleState();
+        this.updateActiveToggleState = updateActiveToggleState;
+
         // Jump to nearest edits navigation buttons
         this.navContainer = document.createElement("div");
         this.navContainer.className = "diff-header-nav";
         this.navContainer.style.display = "none";
+        this.navContainer.style.alignItems = "center";
 
         this.prevBtn = document.createElement("button");
         this.prevBtn.className = "nav-btn";
         this.prevBtn.innerHTML = "<ui-icon>chevron_left</ui-icon>";
         this.prevBtn.title = "Previous Edit";
+
+        this.editCountSpan = document.createElement("span");
+        this.editCountSpan.className = "diff-edit-count";
+        this.editCountSpan.textContent = "0/0";
 
         this.nextBtn = document.createElement("button");
         this.nextBtn.className = "nav-btn";
@@ -38,8 +115,10 @@ export class DiffViewPanel extends Block {
         this.nextBtn.title = "Next Edit";
 
         this.navContainer.appendChild(this.prevBtn);
+        this.navContainer.appendChild(this.editCountSpan);
         this.navContainer.appendChild(this.nextBtn);
         headerLeft.appendChild(this.navContainer);
+        headerLeft.appendChild(this.toggleContainer);
 
         this.header.appendChild(headerLeft);
 
@@ -218,37 +297,82 @@ export class DiffViewPanel extends Block {
                 rightLabelText = "Modified (Current)";
             }
 
-            if (deletedCount > 0) {
-                this.leftLabel.innerHTML = `<span>${leftLabelText}</span><span class="diff-counter diff-counter-delete">-${deletedCount}</span>`;
+            this.updateActiveToggleState();
+
+            if (this.diffViewMode === "split") {
+                this.rightPane.style.display = "";
+                this.leftPane.style.borderRight = "";
+                this.rightLabel.style.display = "";
+
+                if (deletedCount > 0) {
+                    this.leftLabel.innerHTML = `<span>${leftLabelText}</span><span class="diff-counter diff-counter-delete">-${deletedCount}</span>`;
+                } else {
+                    this.leftLabel.innerHTML = `<span>${leftLabelText}</span>`;
+                }
+
+                if (addedCount > 0) {
+                    this.rightLabel.innerHTML = `<span>${rightLabelText}</span><span class="diff-counter diff-counter-add">+${addedCount}</span>`;
+                } else {
+                    this.rightLabel.innerHTML = `<span>${rightLabelText}</span>`;
+                }
             } else {
-                this.leftLabel.innerHTML = `<span>${leftLabelText}</span>`;
+                this.rightPane.style.display = "none";
+                this.leftPane.style.borderRight = "none";
+                this.rightLabel.style.display = "none";
+
+                let labelHtml = `<span>Unified Diff</span>`;
+                if (deletedCount > 0 || addedCount > 0) {
+                    labelHtml += ` <span style="display:inline-flex; gap: 4px; margin-left: 8px;">`;
+                    if (deletedCount > 0) {
+                        labelHtml += `<span class="diff-counter diff-counter-delete">-${deletedCount}</span>`;
+                    }
+                    if (addedCount > 0) {
+                        labelHtml += `<span class="diff-counter diff-counter-add">+${addedCount}</span>`;
+                    }
+                    labelHtml += `</span>`;
+                }
+                this.leftLabel.innerHTML = labelHtml;
             }
 
-            if (addedCount > 0) {
-                this.rightLabel.innerHTML = `<span>${rightLabelText}</span><span class="diff-counter diff-counter-add">+${addedCount}</span>`;
-            } else {
-                this.rightLabel.innerHTML = `<span>${rightLabelText}</span>`;
-            }
-
-            // Build aligned padded text contents
+            // Build aligned padded or unified text contents
             const leftContentLines = [];
             const rightContentLines = [];
+            const unifiedContentLines = [];
 
-            diff.forEach(item => {
-                if (item.type === 'keep') {
-                    leftContentLines.push(item.leftLine);
-                    rightContentLines.push(item.rightLine);
-                } else if (item.type === 'delete') {
-                    leftContentLines.push(item.leftLine);
-                    rightContentLines.push(""); // Pad right with empty line
-                } else if (item.type === 'add') {
-                    leftContentLines.push(""); // Pad left with empty line
-                    rightContentLines.push(item.rightLine);
-                }
-            });
+            const deletedRows = [];
+            const addedRows = [];
 
-            const leftContentText = leftContentLines.join("\n");
-            const rightContentText = rightContentLines.join("\n");
+            if (this.diffViewMode === "split") {
+                diff.forEach((item, row) => {
+                    if (item.type === 'keep') {
+                        leftContentLines.push(item.leftLine);
+                        rightContentLines.push(item.rightLine);
+                    } else if (item.type === 'delete') {
+                        deletedRows.push(row);
+                        leftContentLines.push(item.leftLine);
+                        rightContentLines.push(""); // Pad right with empty line
+                    } else if (item.type === 'add') {
+                        addedRows.push(row);
+                        leftContentLines.push(""); // Pad left with empty line
+                        rightContentLines.push(item.rightLine);
+                    }
+                });
+            } else {
+                diff.forEach(item => {
+                    if (item.type === 'keep') {
+                        unifiedContentLines.push(item.leftLine);
+                    } else if (item.type === 'delete') {
+                        deletedRows.push(unifiedContentLines.length);
+                        unifiedContentLines.push(item.leftLine);
+                    } else if (item.type === 'add') {
+                        addedRows.push(unifiedContentLines.length);
+                        unifiedContentLines.push(item.rightLine);
+                    }
+                });
+            }
+
+            const leftContentText = this.diffViewMode === "split" ? leftContentLines.join("\n") : unifiedContentLines.join("\n");
+            const rightContentText = this.diffViewMode === "split" ? rightContentLines.join("\n") : "";
 
             // 3. Initialize/Refresh Ace Editor Left
             if (!this.leftEditor) {
@@ -291,12 +415,13 @@ export class DiffViewPanel extends Block {
                 this.rightEditor.renderer.setOptions(appConfig.rendererOptions);
             }
 
-            // 5. Setup One-time Selection Syncing
+            // 5. Setup One-time Selection & Scroll Syncing
             if (!this._selectionSyncSetup && this.leftEditor && this.rightEditor) {
                 let isSyncingSelection = false;
                 
                 const syncSelection = (source, target) => {
                     if (isSyncingSelection) return;
+                    if (this.diffViewMode !== "split") return;
                     isSyncingSelection = true;
                     const range = source.selection.getRange();
                     target.selection.setRange(range);
@@ -309,6 +434,36 @@ export class DiffViewPanel extends Block {
 
                 this.rightEditor.selection.on("changeSelection", () => {
                     syncSelection(this.rightEditor, this.leftEditor);
+                });
+
+                // Synchronize scrolling with value-based delta thresholds to prevent asynchronous feedback loops
+                this.leftEditor.getSession().on('changeScrollTop', (scrollTop) => {
+                    this.updateEditCount();
+                    if (this.diffViewMode !== "split") return;
+                    const currentRightScroll = this.rightEditor.getSession().getScrollTop();
+                    if (Math.abs(currentRightScroll - scrollTop) < 1) return;
+                    this.rightEditor.getSession().setScrollTop(scrollTop);
+                });
+
+                this.rightEditor.getSession().on('changeScrollTop', (scrollTop) => {
+                    if (this.diffViewMode !== "split") return;
+                    const currentLeftScroll = this.leftEditor.getSession().getScrollTop();
+                    if (Math.abs(currentLeftScroll - scrollTop) < 1) return;
+                    this.leftEditor.getSession().setScrollTop(scrollTop);
+                });
+
+                this.leftEditor.getSession().on('changeScrollLeft', (scrollLeft) => {
+                    if (this.diffViewMode !== "split") return;
+                    const currentRightScroll = this.rightEditor.getSession().getScrollLeft();
+                    if (Math.abs(currentRightScroll - scrollLeft) < 1) return;
+                    this.rightEditor.getSession().setScrollLeft(scrollLeft);
+                });
+
+                this.rightEditor.getSession().on('changeScrollLeft', (scrollLeft) => {
+                    if (this.diffViewMode !== "split") return;
+                    const currentLeftScroll = this.leftEditor.getSession().getScrollLeft();
+                    if (Math.abs(currentLeftScroll - scrollLeft) < 1) return;
+                    this.leftEditor.getSession().setScrollLeft(scrollLeft);
                 });
 
                 this._selectionSyncSetup = true;
@@ -332,76 +487,63 @@ export class DiffViewPanel extends Block {
             const sessionLeft = this.leftEditor.getSession();
             const sessionRight = this.rightEditor.getSession();
 
-            const deletedRows = [];
-            const addedRows = [];
-
-            diff.forEach((item, row) => {
-                if (item.type === 'delete') {
-                    deletedRows.push(row);
-                    // Left editor: highlight line red
+            if (this.diffViewMode === "split") {
+                diff.forEach((item, row) => {
+                    if (item.type === 'delete') {
+                        // Left editor: highlight line red
+                        if (Range) {
+                            const range = new Range(row, 0, row, Number.MAX_VALUE);
+                            const markerId = sessionLeft.addMarker(range, "diff-marker-deletion", "fullLine");
+                            this.leftMarkers.push(markerId);
+                        }
+                        sessionLeft.addGutterDecoration(row, "diff-gutter-deletion");
+                        
+                        // Right editor: highlight padded blank line as empty
+                        if (Range) {
+                            const rangeEmpty = new Range(row, 0, row, Number.MAX_VALUE);
+                            const markerEmptyId = sessionRight.addMarker(rangeEmpty, "diff-marker-empty", "fullLine");
+                            this.rightMarkers.push(markerEmptyId);
+                        }
+                        sessionRight.addGutterDecoration(row, "diff-gutter-empty");
+                    } else if (item.type === 'add') {
+                        // Left editor: highlight padded blank line as empty
+                        if (Range) {
+                            const rangeEmpty = new Range(row, 0, row, Number.MAX_VALUE);
+                            const markerEmptyId = sessionLeft.addMarker(rangeEmpty, "diff-marker-empty", "fullLine");
+                            this.leftMarkers.push(markerEmptyId);
+                        }
+                        sessionLeft.addGutterDecoration(row, "diff-gutter-empty");
+                        
+                        // Right editor: highlight line green
+                        if (Range) {
+                            const range = new Range(row, 0, row, Number.MAX_VALUE);
+                            const markerId = sessionRight.addMarker(range, "diff-marker-addition", "fullLine");
+                            this.rightMarkers.push(markerId);
+                        }
+                        sessionRight.addGutterDecoration(row, "diff-gutter-addition");
+                    }
+                });
+            } else {
+                deletedRows.forEach(row => {
                     if (Range) {
                         const range = new Range(row, 0, row, Number.MAX_VALUE);
                         const markerId = sessionLeft.addMarker(range, "diff-marker-deletion", "fullLine");
                         this.leftMarkers.push(markerId);
                     }
                     sessionLeft.addGutterDecoration(row, "diff-gutter-deletion");
-                    
-                    // Right editor: highlight padded blank line as empty
-                    if (Range) {
-                        const rangeEmpty = new Range(row, 0, row, Number.MAX_VALUE);
-                        const markerEmptyId = sessionRight.addMarker(rangeEmpty, "diff-marker-empty", "fullLine");
-                        this.rightMarkers.push(markerEmptyId);
-                    }
-                    sessionRight.addGutterDecoration(row, "diff-gutter-empty");
-                } else if (item.type === 'add') {
-                    addedRows.push(row);
-                    // Left editor: highlight padded blank line as empty
-                    if (Range) {
-                        const rangeEmpty = new Range(row, 0, row, Number.MAX_VALUE);
-                        const markerEmptyId = sessionLeft.addMarker(rangeEmpty, "diff-marker-empty", "fullLine");
-                        this.leftMarkers.push(markerEmptyId);
-                    }
-                    sessionLeft.addGutterDecoration(row, "diff-gutter-empty");
-                    
-                    // Right editor: highlight line green
+                });
+
+                addedRows.forEach(row => {
                     if (Range) {
                         const range = new Range(row, 0, row, Number.MAX_VALUE);
-                        const markerId = sessionRight.addMarker(range, "diff-marker-addition", "fullLine");
-                        this.rightMarkers.push(markerId);
+                        const markerId = sessionLeft.addMarker(range, "diff-marker-addition", "fullLine");
+                        this.leftMarkers.push(markerId);
                     }
-                    sessionRight.addGutterDecoration(row, "diff-gutter-addition");
-                }
-            });
+                    sessionLeft.addGutterDecoration(row, "diff-gutter-addition");
+                });
+            }
 
-            // Synchronize scrolling with value-based delta thresholds to prevent asynchronous feedback loops
-            // this.leftEditor.getSession().removeAllListeners('changeScrollTop');
-            // this.rightEditor.getSession().removeAllListeners('changeScrollTop');
-            // this.leftEditor.getSession().removeAllListeners('changeScrollLeft');
-            // this.rightEditor.getSession().removeAllListeners('changeScrollLeft');
 
-            this.leftEditor.getSession().on('changeScrollTop', (scrollTop) => {
-                const currentRightScroll = this.rightEditor.getSession().getScrollTop();
-                if (Math.abs(currentRightScroll - scrollTop) < 1) return;
-                this.rightEditor.getSession().setScrollTop(scrollTop);
-            });
-
-            this.rightEditor.getSession().on('changeScrollTop', (scrollTop) => {
-                const currentLeftScroll = this.leftEditor.getSession().getScrollTop();
-                if (Math.abs(currentLeftScroll - scrollTop) < 1) return;
-                this.leftEditor.getSession().setScrollTop(scrollTop);
-            });
-
-            this.leftEditor.getSession().on('changeScrollLeft', (scrollLeft) => {
-                const currentRightScroll = this.rightEditor.getSession().getScrollLeft();
-                if (Math.abs(currentRightScroll - scrollLeft) < 1) return;
-                this.rightEditor.getSession().setScrollLeft(scrollLeft);
-            });
-
-            this.rightEditor.getSession().on('changeScrollLeft', (scrollLeft) => {
-                const currentLeftScroll = this.leftEditor.getSession().getScrollLeft();
-                if (Math.abs(currentLeftScroll - scrollLeft) < 1) return;
-                this.leftEditor.getSession().setScrollLeft(scrollLeft);
-            });
 
             // Calculate contiguous modified blocks for prev/next jump navigation
             const changeBlocks = [];
@@ -425,6 +567,9 @@ export class DiffViewPanel extends Block {
             if (currentBlock) {
                 changeBlocks.push(currentBlock);
             }
+
+            this.changeBlocks = changeBlocks;
+            this.updateEditCount();
 
             if (changeBlocks.length > 0) {
                 this.navContainer.style.display = "flex";
@@ -456,7 +601,13 @@ export class DiffViewPanel extends Block {
                     const block = changeBlocks[index];
                     const targetRow = Math.max(0, block.start - 5);
                     this.leftEditor.scrollToRow(targetRow);
-                    this.rightEditor.scrollToRow(targetRow);
+                    if (this.diffViewMode === "split") {
+                        this.rightEditor.scrollToRow(targetRow);
+                    }
+                    this.updateEditCount();
+                    setTimeout(() => {
+                        this.updateEditCount();
+                    }, 100);
                 };
 
                 this.prevBtn.onclick = (e) => {
@@ -482,11 +633,24 @@ export class DiffViewPanel extends Block {
             setTimeout(() => {
                 if (this.leftEditor) {
                     this.leftEditor.resize();
-                    drawScrollbarMarkers(this.leftEditor, deletedRows, "rgba(248, 81, 73, 0.85)");
+                    if (this.diffViewMode === "split") {
+                        drawScrollbarMarkers(this.leftEditor, deletedRows, "rgba(248, 81, 73, 0.85)");
+                    } else {
+                        drawUnifiedScrollbarMarkers(this.leftEditor, deletedRows, addedRows);
+                    }
                 }
                 if (this.rightEditor) {
                     this.rightEditor.resize();
-                    drawScrollbarMarkers(this.rightEditor, addedRows, "rgba(46, 160, 67, 0.85)");
+                    if (this.diffViewMode === "split") {
+                        drawScrollbarMarkers(this.rightEditor, addedRows, "rgba(46, 160, 67, 0.85)");
+                    } else {
+                        const overlay = this.rightEditor.container.querySelector(".diff-scrollbar-marker-overlay");
+                        if (overlay) overlay.remove();
+                    }
+                }
+                if (this.diffViewMode === "split" && this.leftEditor && this.rightEditor) {
+                    this.rightEditor.getSession().setScrollTop(this.leftEditor.getSession().getScrollTop());
+                    this.rightEditor.getSession().setScrollLeft(this.leftEditor.getSession().getScrollLeft());
                 }
             }, 50);
 
@@ -683,7 +847,7 @@ export class DiffViewPanel extends Block {
                 } else {
                     // User Local Edits Mode: Render Save, Keep Editing, and Revert buttons
                     const revertBtn = document.createElement("button");
-                    revertBtn.className = "cancel";
+                    revertBtn.className = "rollback";
                     revertBtn.innerHTML = "<ui-icon>undo</ui-icon><span>Revert</span>";
                     revertBtn.onclick = async () => {
                         const confirmed = await window.modal.confirm(`Are you sure you want to revert all unsaved local changes to ${filename}?`, "Revert Changes");
@@ -699,7 +863,7 @@ export class DiffViewPanel extends Block {
 
                     const keepEditingBtn = document.createElement("button");
                     keepEditingBtn.className = "cancel";
-                    keepEditingBtn.innerHTML = "<ui-icon>edit</ui-icon><span>Keep Editing</span>";
+                    keepEditingBtn.innerHTML = "<ui-icon>close</ui-icon><span>Cancel</span>";
                     keepEditingBtn.onclick = () => {
                         if (tab) {
                             tab.config.viewMode = "edit";
@@ -732,15 +896,43 @@ export class DiffViewPanel extends Block {
                         }
                     };
 
-                    this.headerRight.appendChild(saveBtn);
-                    this.headerRight.appendChild(keepEditingBtn);
                     this.headerRight.appendChild(revertBtn);
+                    // this.headerRight.appendChild(saveBtn);
+                    this.headerRight.appendChild(keepEditingBtn);
                 }
             }
         } catch (err) {
             console.error("Error loading diff view:", err);
             window.modal.notice(`Error loading diff view:<br><small>${err.message}</small>`, "Diff Loading Error");
         }
+    }
+
+    updateEditCount() {
+        if (!this.editCountSpan || !this.changeBlocks || this.changeBlocks.length === 0) {
+            if (this.editCountSpan) this.editCountSpan.textContent = "0/0";
+            return;
+        }
+        if (!this.leftEditor) return;
+        
+        const topRow = this.leftEditor.getFirstVisibleRow();
+        let minDiff = Infinity;
+        let activeIdx = 0;
+        for (let i = 0; i < this.changeBlocks.length; i++) {
+            const block = this.changeBlocks[i];
+            let diff = 0;
+            if (topRow < block.start) {
+                diff = block.start - topRow;
+            } else if (topRow > block.end) {
+                diff = topRow - block.end;
+            } else {
+                diff = 0;
+            }
+            if (diff < minDiff) {
+                minDiff = diff;
+                activeIdx = i;
+            }
+        }
+        this.editCountSpan.textContent = `${activeIdx + 1}/${this.changeBlocks.length}`;
     }
 }
 
@@ -860,6 +1052,46 @@ function drawScrollbarMarkers(editor, rows, color) {
         marker.className = "diff-scrollbar-marker";
         marker.style.top = `${(row / totalRows) * 100}%`;
         marker.style.backgroundColor = color;
+        overlay.appendChild(marker);
+    });
+
+    editor.container.appendChild(overlay);
+}
+
+/**
+ * Draws visual diff markers for both additions and deletions on top of the Ace editor's vertical scrollbar.
+ */
+function drawUnifiedScrollbarMarkers(editor, deletedRows, addedRows) {
+    const scrollbarEl = editor.container.querySelector(".ace_scrollbar-v");
+    if (!scrollbarEl) return;
+
+    let overlay = editor.container.querySelector(".diff-scrollbar-marker-overlay");
+    if (overlay) {
+        overlay.remove();
+    }
+
+    if (deletedRows.length === 0 && addedRows.length === 0) return;
+
+    overlay = document.createElement("div");
+    overlay.className = "diff-scrollbar-marker-overlay";
+    overlay.style.display = scrollbarEl.style.display === 'none' ? 'none' : 'block';
+
+    const totalRows = editor.getSession().getLength();
+    if (totalRows <= 0) return;
+
+    deletedRows.forEach(row => {
+        const marker = document.createElement("div");
+        marker.className = "diff-scrollbar-marker";
+        marker.style.top = `${(row / totalRows) * 100}%`;
+        marker.style.backgroundColor = "rgba(248, 81, 73, 0.85)";
+        overlay.appendChild(marker);
+    });
+
+    addedRows.forEach(row => {
+        const marker = document.createElement("div");
+        marker.className = "diff-scrollbar-marker";
+        marker.style.top = `${(row / totalRows) * 100}%`;
+        marker.style.backgroundColor = "rgba(46, 160, 67, 0.85)";
         overlay.appendChild(marker);
     });
 

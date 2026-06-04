@@ -643,7 +643,9 @@ class Gemini extends AI {
                 requestBody.contents = [{ role: "user", parts: [{ text: userPromptContent }] }];
                 
                 if (window.ui?.aiManager?.agentMode) {
-                    const geminiTools = cadenceTools.map(t => {
+                    const isPlanning = window.ui?.aiManager?.planningMode === true;
+                    const filteredTools = cadenceTools.filter(t => !(isPlanning && (t.name === "create_file" || t.name === "edit_file")));
+                    const geminiTools = filteredTools.map(t => {
                         const properties = {};
                         for (const [k, v] of Object.entries(t.parameters.properties)) {
                             properties[k] = { ...v, type: v.type.toUpperCase() };
@@ -794,7 +796,9 @@ class Gemini extends AI {
                 requestBody.contents = this._toGeminiContents(processedMessages);
                 
                 if (window.ui?.aiManager?.agentMode) {
-                    const geminiTools = cadenceTools.map(t => {
+                    const isPlanning = window.ui?.aiManager?.planningMode === true;
+                    const filteredTools = cadenceTools.filter(t => !(isPlanning && (t.name === "create_file" || t.name === "edit_file")));
+                    const geminiTools = filteredTools.map(t => {
                         const properties = {};
                         for (const [k, v] of Object.entries(t.parameters.properties)) {
                             properties[k] = { ...v, type: v.type.toUpperCase() };

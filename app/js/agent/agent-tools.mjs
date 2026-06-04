@@ -955,7 +955,12 @@ class AgentTools {
      * @param {object} args - The arguments.
      * @param {string} [sourceId] - Optional session ID for tracking
      */
-    async execute(name, args = {}, sourceId = null) {
+     async execute(name, args = {}, sourceId = null) {
+        // Prevent file editing/creation tools in planning mode
+        if (window.ui?.aiManager?.planningMode && (name === 'create_file' || name === 'edit_file')) {
+            return `Tool Error: Tool '${name}' is not allowed while in planning mode.`;
+        }
+
         // Fallback required parameter check
         const toolDef = tools.find(t => t.name === name);
         if (toolDef && toolDef.parameters && Array.isArray(toolDef.parameters.required)) {

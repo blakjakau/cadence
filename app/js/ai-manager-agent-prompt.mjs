@@ -1,8 +1,11 @@
 import { tools } from './ai-manager-tools-schema.mjs';
 
-function generateXmlToolDocs() {
+function generateXmlToolDocs(planningMode = false) {
     let xml = "";
     for (const tool of tools) {
+        if (planningMode && (tool.name === "create_file" || tool.name === "edit_file")) {
+            continue;
+        }
         xml += `<tool_call name="${tool.name}">\n`;
         for (const [propName, propDetails] of Object.entries(tool.parameters.properties)) {
             const isOptional = !tool.parameters.required.includes(propName);
@@ -11,7 +14,9 @@ function generateXmlToolDocs() {
         }
         xml += `</tool_call>\n`;
     }
-    xml += `* Note: For edit_file, <search> MUST perfectly match existing file content character-for-character.\n`;
+    if (!planningMode) {
+        xml += `* Note: For edit_file, <search> MUST perfectly match existing file content character-for-character.\n`;
+    }
     return xml.trim();
 }
 
@@ -25,6 +30,7 @@ export default function getAgentSystemPrompt(modelName = '', features = {}) {
     const hasTasks = !!features.hasTasks;
     const hasAcceptedPlan = !!features.hasAcceptedPlan;
     const hasCompletedAllTasks = !!features.hasCompletedAllTasks;
+    const planningMode = !!features.planningMode;
 
     const directives = [];
     if (!hasPlan) {
@@ -113,7 +119,7 @@ I am reading app.js to locate the issue.
         toolsSection = `
 # Available Tools
 Choose AT MOST ONE tool per turn and use its exact format, the host will return results for your next step.
-${generateXmlToolDocs()}
+${generateXmlToolDocs(planningMode)}
 `;
     }
 

@@ -1209,6 +1209,13 @@ ui-diff-view-panel .diff-header-nav button.nav-btn ui-icon {
     color: var(--text-primary) !important;
 }
 
+ui-diff-view-panel .diff-header-nav .diff-edit-count {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--theme-dark);
+    font-family: monospace;
+}
+
 ui-diff-view-panel .diff-ace-editor-left,
 ui-diff-view-panel .diff-ace-editor-right {
     position: absolute !important;

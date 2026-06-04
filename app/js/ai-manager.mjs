@@ -186,7 +186,8 @@ class AIManager {
 				hasPlan,
 				hasTasks,
 				hasAcceptedPlan,
-				hasCompletedAllTasks
+				hasCompletedAllTasks,
+				planningMode: this.planningMode
 			});
 		} else {
 			basePrompt = systemPromptBuilder(this.getSystemPromptConfig());
@@ -1701,6 +1702,9 @@ class AIManager {
 
 	_validateToolArguments(toolCall) {
 		if (!toolCall) return null;
+		if (this.planningMode && (toolCall.name === "create_file" || toolCall.name === "edit_file")) {
+			return `Tool Error: Tool "${toolCall.name}" is not allowed while in planning mode.`;
+		}
 		const toolDef = tools.find(t => t.name === toolCall.name);
 		if (toolDef && toolDef.parameters && Array.isArray(toolDef.parameters.required)) {
 			const args = toolCall.arguments || {};
