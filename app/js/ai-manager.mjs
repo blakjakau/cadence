@@ -2456,6 +2456,7 @@ class AIManager {
 	 * Returns a Promise that resolves when the user has made a choice.
 	 */
 	async _checkForStaleContextFiles(originalPrompt) {
+		if (this.agentMode) return true;
 		if (!this.activeSession) return true;
 
 		const staleFileContexts = [];

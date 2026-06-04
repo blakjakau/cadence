@@ -912,12 +912,21 @@ class Gemini extends AI {
 	    let changesApplied = false;
 	    for (const key in newSettings) {
 	        if (newSettings.hasOwnProperty(key)) {
-                if (key === 'model' && typeof newSettings[key] === 'string' && newSettings[key].startsWith("models/")) {
-                    newSettings[key] = this._stripModelPrefix(newSettings[key]);
+                let val = newSettings[key];
+                if (key === 'model' && typeof val === 'string' && val.startsWith("models/")) {
+                    val = this._stripModelPrefix(val);
+                }
+                if (this._settingsSchema[key]) {
+                    const type = this._settingsSchema[key].type;
+                    if (type === 'number') {
+                        val = Number(val);
+                    } else if (type === 'boolean' || type === 'checkbox') {
+                        val = val === true || val === 'true';
+                    }
                 }
 
-	            if (this.config[key] !== newSettings[key]) {
-	                this.config[key] = newSettings[key];
+	            if (this.config[key] !== val) {
+	                this.config[key] = val;
 	                changesApplied = true;
 	            }
 	        }

@@ -165,6 +165,24 @@ class TerminalManager {
 		// Open the terminal in the provided container
 		term.open(containerElement);
 
+		// Handle CTRL+1 through CTRL+9 tab switching
+		term.attachCustomKeyEventHandler((event) => {
+			if (event.type === "keydown") {
+				const isCtrl = event.ctrlKey || event.metaKey;
+				if (isCtrl && event.key >= "1" && event.key <= "9") {
+					const index = parseInt(event.key) - 1;
+					const tab = this.sessionTabBar.tabs[index];
+					if (tab) {
+						event.preventDefault();
+						event.stopPropagation();
+						tab.click();
+					}
+					return false;
+				}
+			}
+			return true;
+		});
+
 		return { term, fitAddon };
 	}
 
@@ -379,6 +397,7 @@ class TerminalManager {
 			newSession.containerElement.style.display = "block";
 			this._activeSessionId = sessionId; // Update internal active session ID
 			this.fit(); // Fit the newly visible terminal (before focusing)
+			newSession.term.focus(); // Focus the newly active terminal
 		} else {
 			console.warn(`Attempted to switch to non-existent session: ${sessionId}`);
 			this._activeSessionId = null; // Clear active session if not found
@@ -409,9 +428,9 @@ class TerminalManager {
 				// We just need to clear the old one here.
 				this._activeSessionId = null;
 			}
-			// If this was the last session, show the empty state message
+			// If this was the last session, automatically open a new one
 			if (this._sessions.size === 0 && this.conduitStatus.isRunning) {
-				this._emptyStateElement.style.display = 'flex';
+				this.createNewTerminalSession();
 			}
 			
 		} else {

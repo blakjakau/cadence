@@ -223,7 +223,14 @@ class AIManagerSettings {
         for (const key in currentOptions) {
             const valueKey = `${aiManager.aiProvider}-${key}`
             if (values.hasOwnProperty(valueKey)) {
-                newProviderSettings[key] = values[valueKey];
+                let val = values[valueKey];
+                const optionType = currentOptions[key].type;
+                if (optionType === "number") {
+                    val = Number(val);
+                } else if (optionType === "boolean" || optionType === "checkbox") {
+                    val = val === true || val === "true";
+                }
+                newProviderSettings[key] = val;
             }
         }
 

@@ -411,7 +411,16 @@ class LlamaCpp extends AI {
 
     async setOptions(newConfig, onErrorCallback, onSuccessCallback, useWorkspaceSettings, source = 'global') {
         for (const name in newConfig) {
-            this.config[name] = newConfig[name];
+            let val = newConfig[name];
+            if (this._settingsSchema[name]) {
+                const type = this._settingsSchema[name].type;
+                if (type === 'number') {
+                    val = Number(val);
+                } else if (type === 'boolean' || type === 'checkbox') {
+                    val = val === true || val === 'true';
+                }
+            }
+            this.config[name] = val;
         }
         if (Array.isArray(this.config.stop)) {
             this.config.stop = this.config.stop.filter(token => token !== "</tool_call>");

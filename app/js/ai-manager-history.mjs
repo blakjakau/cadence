@@ -840,7 +840,7 @@ class AIManagerHistory {
 		}
 
 		// Partition chat history into file contexts and dialogue history to preserve attachments
-		const fileContexts = chatHistory.filter(msg => msg.type === "file_context");
+		const fileContexts = this.manager.agentMode ? [] : chatHistory.filter(msg => msg.type === "file_context");
 		let dialogueHistory = chatHistory.filter(msg => msg.type !== "file_context");
 
 		// Advanced Dialogue Pruning in Agent Mode

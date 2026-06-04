@@ -578,7 +578,71 @@ export class FileList extends ContentFill {
 		return uniqueMatches.slice(0, limit);
 	}
 	
-	
+	addFileToIndex(filePath) {
+		if (!this.index) {
+			this.index = { tree: [], folders: [], files: [] };
+		}
+		if (!this.index.files) {
+			this.index.files = [];
+		}
+		// Normalize path to use forward slashes
+		const normalizedPath = filePath.replace(/\\/g, '/');
+		
+		// If it's already in the files list, do nothing
+		if (this.index.files.some(f => f.path === normalizedPath)) {
+			return;
+		}
+
+		const name = normalizedPath.split('/').pop();
+		const parentPath = normalizedPath.substring(0, normalizedPath.lastIndexOf('/')) || '.';
+		
+		const newItem = {
+			name: name,
+			path: normalizedPath,
+			isDir: false
+		};
+		
+		this.index.files.push(newItem);
+		
+		// Helper to find parent and insert the newItem
+		const findAndInsert = (tree) => {
+			if (!tree) return false;
+			for (let item of tree) {
+				if (item.isDir && item.path === parentPath) {
+					if (!item.tree) {
+						item.tree = [];
+					}
+					if (!item.tree.some(f => f.path === normalizedPath)) {
+						item.tree.push(newItem);
+						item.tree.sort((a, b) => a.name.localeCompare(b.name));
+					}
+					return true;
+				}
+				if (item.isDir && item.tree && findAndInsert(item.tree)) {
+					return true;
+				}
+			}
+			return false;
+		};
+
+		// If parent is the root ('.') or matching a root folder
+		if (parentPath === '.' || this._tree.some(f => f.path === parentPath)) {
+			let targetTree = this._tree;
+			if (parentPath !== '.') {
+				const parent = this._tree.find(f => f.path === parentPath);
+				if (parent) {
+					if (!parent.tree) parent.tree = [];
+					targetTree = parent.tree;
+				}
+			}
+			if (!targetTree.some(f => f.path === normalizedPath)) {
+				targetTree.push(newItem);
+				targetTree.sort((a, b) => a.name.localeCompare(b.name));
+			}
+		} else {
+			findAndInsert(this._tree);
+		}
+	}
 }
 
 customElements.define("ui-file-list", FileList);

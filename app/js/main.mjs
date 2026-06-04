@@ -31,6 +31,12 @@ conduitClient.on('indexer_status', (msg) => {
 	updateIndexerStatus(msg.data);
 });
 
+conduitClient.on('write', (msg) => {
+	if (msg && msg.path && !msg.error) {
+		fileList?.addFileToIndex?.(msg.path);
+	}
+});
+
 conduitClient.on('connect', () => {
 	if (workspace && workspace.folders) {
 		conduitClient.wsSetActiveRoots(workspace.folders).catch(e => console.warn(e));
@@ -87,7 +93,7 @@ window.ui = ui
 window.modal = Modal // Assign the singleton instance
 window.code = {
 	version: (() => {
-		const last = "0.4.2"
+		const last = "0.8.0"
 		fetch("/version.json")
 			.then(async (response) => {
 				if (response.ok) {
@@ -842,12 +848,11 @@ const execCommandAbout = () => {
 	const versionInfo = `Version ${
 		window.code.version
 	} (${modeStr}) - Copyright &copy; ${new Date().getFullYear()} jakbox.dev`
-	const content = `<p>Simple, fast, lightweight code editing. Edit your local code files straight from your web browser, 
-			or install the web app for that sweet "native app" experience.</p>
+	const content = `<p>A fast, lightweight code editor designed for local development and AI-driven workflows.</p>
 
-			<p>For issues &amp; bugs please see the <a href="https://github.com/blakjakau/dev.jakbox.code/issues" target="_blank">issue tracker</a></p>
+			<p>For issues &amp; bugs please see the <a href="https://github.com/blakjakau/cadence/issues" target="_blank">issue tracker</a></p>
 			
-			<p>Cadence is open source and uses other open source projects see <a href="https://github.com/blakjakau/dev.jakbox.code/blob/master/licence.md" target="_blank">here</a> for licence information</a>.</p>
+			<p>Cadence is open source and uses other open source projects. See <a href="https://github.com/blakjakau/cadence/blob/master/licence.md" target="_blank">here</a> for license information.</p>
 			<br/><small>${versionInfo}</small>`
 	const title = `<img src="images/code-192-blue.svg" width="32px" style="vertical-align: middle;">&nbsp;Cadence`
 	Modal.notice(content, title)
@@ -1045,6 +1050,8 @@ const execCommandSave = async () => {
 		// This is a new file, add it to the workspace
 		syncWorkspaceFile(tab)
 
+		fileList?.addFileToIndex?.(config.path)
+
 		// Refresh the folder in the file list to show the new file
 		await fileList.refreshFolder(config.folder)
 	}
@@ -1078,6 +1085,8 @@ const execCommandSaveAs = async () => {
 
 	await saveFile(tab)
 	syncWorkspaceFile(tab)
+
+	fileList?.addFileToIndex?.(config.path)
 
 	await fileList.refreshFolder(config.folder)
 	if (oldFolderHandle && oldFolderHandle !== config.folder) {
@@ -1624,6 +1633,7 @@ fileMenu.click = folderMenu.click = topfolderMenu.click = async (action) => {
 			const newFilePath = `${filePath}/${newFileName}`;
 			try {
 				await conduitClient.wsWrite(newFilePath, btoa("")); // Create empty file
+				fileList?.addFileToIndex?.(newFilePath);
 				await fileList.refreshFolder(filePath);
 				await openFileHandle(newFilePath, newFilePath);
 			} catch (e) {
@@ -2089,6 +2099,37 @@ const keyBinds = [
 		exec: () => {
 			window.ui.omnibox("lookup")
 		},
+	},
+	{
+		target: "app",
+		name: "toggle-diff-view",
+		bindKey: { win: "Alt+D", mac: "Option+D" },
+		exec: () => {
+			const activeTab = currentTabs?.activeTab;
+			if (activeTab && activeTab.config && activeTab.config.path !== "plan_tasks") {
+				const isDiff = activeTab.config.viewMode === "diff";
+				if (!isDiff) {
+					const session = window.ui?.aiManager?.activeSession;
+					const path = activeTab.config.path;
+					if (session && session.modifiedFiles) {
+						const matchedKey = Object.keys(session.modifiedFiles).find(k => {
+							const normalize = (p) => p ? p.replace(/\\/g, '/').replace(/\/+/g, '/').replace(/^\//, '').replace(/\/$/, '') : '';
+							const n1 = normalize(k);
+							const n2 = normalize(path);
+							return n1 && n2 && (n1 === n2 || n1.endsWith('/' + n2) || n2.endsWith('/' + n1));
+						});
+						if (matchedKey && session.modifiedFiles[matchedKey].length > 0) {
+							const backups = session.modifiedFiles[matchedKey];
+							activeTab.config.backupId = backups[backups.length - 1].backupId;
+						}
+					}
+					activeTab.config.viewMode = "diff";
+				} else {
+					activeTab.config.viewMode = "edit";
+				}
+				activeTab.click();
+			}
+		}
 	},
 	{
 		target: "app",
