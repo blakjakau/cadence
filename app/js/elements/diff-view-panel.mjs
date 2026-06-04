@@ -1,4 +1,5 @@
 import { Block } from './element.mjs';
+import { Button } from './button.mjs';
 import conduitClient from '../conduit-client.mjs';
 import workspaceClient from '../workspace-client.mjs';
 
@@ -29,14 +30,14 @@ export class DiffViewPanel extends Block {
         this.toggleContainer = document.createElement("div");
         this.toggleContainer.className = "diff-header-nav toggle-container";
 
-        this.splitBtn = document.createElement("button");
+        this.splitBtn = new Button("Split");
         this.splitBtn.className = "nav-btn";
-        this.splitBtn.innerHTML = "<ui-icon>vertical_split</ui-icon><span>Split</span>";
+        this.splitBtn.icon = "vertical_split";
         this.splitBtn.title = "Side-by-side Diff View";
 
-        this.unifiedBtn = document.createElement("button");
+        this.unifiedBtn = new Button("Unified");
         this.unifiedBtn.className = "nav-btn";
-        this.unifiedBtn.innerHTML = "<ui-icon>format_align_justify</ui-icon><span>Unified</span>";
+        this.unifiedBtn.icon = "format_align_justify";
         this.unifiedBtn.title = "Unified Diff View";
 
         this.toggleContainer.appendChild(this.splitBtn);
@@ -82,18 +83,18 @@ export class DiffViewPanel extends Block {
         this.navContainer = document.createElement("div");
         this.navContainer.className = "diff-header-nav nav-container";
 
-        this.prevBtn = document.createElement("button");
+        this.prevBtn = new Button("");
         this.prevBtn.className = "nav-btn";
-        this.prevBtn.innerHTML = "<ui-icon>chevron_left</ui-icon>";
+        this.prevBtn.icon = "chevron_left";
         this.prevBtn.title = "Previous Edit";
 
         this.editCountSpan = document.createElement("span");
         this.editCountSpan.className = "diff-edit-count";
         this.editCountSpan.textContent = "0/0";
 
-        this.nextBtn = document.createElement("button");
+        this.nextBtn = new Button("");
         this.nextBtn.className = "nav-btn";
-        this.nextBtn.innerHTML = "<ui-icon>chevron_right</ui-icon>";
+        this.nextBtn.icon = "chevron_right";
         this.nextBtn.title = "Next Edit";
 
         this.navContainer.appendChild(this.prevBtn);
@@ -159,6 +160,7 @@ export class DiffViewPanel extends Block {
     async update(filePath, backupId, tab = null) {
         this.activeBackupId = backupId;
         this.activeFilePath = filePath;
+        this.activeTab = tab;
 
         const normalize = (p) => p ? p.replace(/\\/g, '/').replace(/\/+/g, '/').replace(/^\//, '').replace(/\/$/, '') : '';
         const pathsMatch = (p1, p2) => {
@@ -641,9 +643,9 @@ export class DiffViewPanel extends Block {
 
             if (isReloadDiff) {
                 // Reload Diff Mode: Render Reload & Dismiss buttons
-                const dismissBtn = document.createElement("button");
+                const dismissBtn = new Button("Dismiss");
                 dismissBtn.className = "cancel";
-                dismissBtn.innerHTML = "<ui-icon>close</ui-icon><span>Dismiss</span>";
+                dismissBtn.icon = "close";
                 dismissBtn.onclick = () => {
                     tab.config.fileModified = false;
                     const isDirty = tab.config.session.getValue() !== tab.config.session.baseValue;
@@ -657,9 +659,9 @@ export class DiffViewPanel extends Block {
                     tab.click();
                 };
 
-                const reloadBtn = document.createElement("button");
+                const reloadBtn = new Button("Reload File");
                 reloadBtn.className = "apply";
-                reloadBtn.innerHTML = "<ui-icon>sync</ui-icon><span>Reload File</span>";
+                reloadBtn.icon = "sync";
                 reloadBtn.onclick = async () => {
                     if (window.ui && window.ui.reloadFile) {
                         await window.ui.reloadFile(tab);
@@ -676,9 +678,9 @@ export class DiffViewPanel extends Block {
                 this.headerRight.appendChild(dismissBtn);
             } else if (isForgivenessMode) {
                 // Forgiveness Mode: Render Rollback button
-                const rollbackBtn = document.createElement("button");
+                const rollbackBtn = new Button("Rollback Changes");
                 rollbackBtn.className = "rollback";
-                rollbackBtn.innerHTML = "<ui-icon>undo</ui-icon><span>Rollback Changes</span>";
+                rollbackBtn.icon = "undo";
                 
                 rollbackBtn.onclick = async () => {
                     const confirmed = await window.modal.confirm(`Are you sure you want to rollback all changes to ${filename}?`, "Rollback Changes");
@@ -686,7 +688,8 @@ export class DiffViewPanel extends Block {
 
                     try {
                         rollbackBtn.disabled = true;
-                        rollbackBtn.innerHTML = "<ui-icon class='spinner'>sync</ui-icon><span>Rolling back...</span>";
+                        rollbackBtn.icon = "<ui-icon class='spinner'>sync</ui-icon>";
+                        rollbackBtn.text = "Rolling back...";
 
                         // Apply rollback
                         const content = await AgentBackup.rollback(backupId);
@@ -738,12 +741,13 @@ export class DiffViewPanel extends Block {
                         console.error("Rollback failed:", err);
                         window.modal.notice(`Rollback failed:<br><small>${err.message}</small>`, "Rollback Error");
                         rollbackBtn.disabled = false;
-                        rollbackBtn.innerHTML = "<ui-icon>undo</ui-icon><span>Rollback Changes</span>";
+                        rollbackBtn.icon = "undo";
+                        rollbackBtn.text = "Rollback Changes";
                     }
                 };
-                const cancelBtn = document.createElement("button");
+                const cancelBtn = new Button("Cancel");
                 cancelBtn.className = "cancel";
-                cancelBtn.innerHTML = "<ui-icon>close</ui-icon><span>Cancel</span>";
+                cancelBtn.icon = "close";
                 cancelBtn.onclick = () => {
                     if (tab) {
                         tab.config.viewMode = "edit";
@@ -764,9 +768,9 @@ export class DiffViewPanel extends Block {
 
                 if (isAIPendingEdits) {
                     // AI Permission Mode: Render Discard & Apply buttons
-                    const discardBtn = document.createElement("button");
+                    const discardBtn = new Button("Discard");
                     discardBtn.className = "discard";
-                    discardBtn.innerHTML = "<ui-icon>close</ui-icon><span>Discard</span>";
+                    discardBtn.icon = "close";
                     
                     discardBtn.onclick = async () => {
                         const confirmed = await window.modal.confirm(`Are you sure you want to discard all pending changes to ${filename}?`, "Discard Changes");
@@ -789,14 +793,15 @@ export class DiffViewPanel extends Block {
                         }
                     };
 
-                    const applyBtn = document.createElement("button");
+                    const applyBtn = new Button("Apply Changes");
                     applyBtn.className = "apply";
-                    applyBtn.innerHTML = "<ui-icon>check</ui-icon><span>Apply Changes</span>";
+                    applyBtn.icon = "check";
                     
                     applyBtn.onclick = async () => {
                         try {
                             applyBtn.disabled = true;
-                            applyBtn.innerHTML = "<ui-icon class='spinner'>sync</ui-icon><span>Applying...</span>";
+                            applyBtn.icon = "<ui-icon class='spinner'>sync</ui-icon>";
+                            applyBtn.text = "Applying...";
 
                             if (tab && window.saveFileTab) {
                                 await window.saveFileTab(tab);
@@ -820,7 +825,8 @@ export class DiffViewPanel extends Block {
                             console.error("Apply changes failed:", err);
                             window.modal.notice(`Apply changes failed:<br><small>${err.message}</small>`, "Apply Error");
                             applyBtn.disabled = false;
-                            applyBtn.innerHTML = "<ui-icon>check</ui-icon><span>Apply Changes</span>";
+                            applyBtn.icon = "check";
+                            applyBtn.text = "Apply Changes";
                         }
                     };
 
@@ -828,9 +834,9 @@ export class DiffViewPanel extends Block {
                     this.headerRight.appendChild(applyBtn);
                 } else {
                     // User Local Edits Mode: Render Save, Keep Editing, and Revert buttons
-                    const revertBtn = document.createElement("button");
+                    const revertBtn = new Button("Revert");
                     revertBtn.className = "rollback";
-                    revertBtn.innerHTML = "<ui-icon>undo</ui-icon><span>Revert</span>";
+                    revertBtn.icon = "undo";
                     revertBtn.onclick = async () => {
                         const confirmed = await window.modal.confirm(`Are you sure you want to revert all unsaved local changes to ${filename}?`, "Revert Changes");
                         if (!confirmed) return;
@@ -843,9 +849,9 @@ export class DiffViewPanel extends Block {
                         }
                     };
 
-                    const keepEditingBtn = document.createElement("button");
+                    const keepEditingBtn = new Button("Cancel");
                     keepEditingBtn.className = "cancel";
-                    keepEditingBtn.innerHTML = "<ui-icon>close</ui-icon><span>Cancel</span>";
+                    keepEditingBtn.icon = "close";
                     keepEditingBtn.onclick = () => {
                         if (tab) {
                             tab.config.viewMode = "edit";
@@ -853,13 +859,14 @@ export class DiffViewPanel extends Block {
                         }
                     };
 
-                    const saveBtn = document.createElement("button");
+                    const saveBtn = new Button("Save");
                     saveBtn.className = "apply";
-                    saveBtn.innerHTML = "<ui-icon>save</ui-icon><span>Save</span>";
+                    saveBtn.icon = "save";
                     saveBtn.onclick = async () => {
                         try {
                             saveBtn.disabled = true;
-                            saveBtn.innerHTML = "<ui-icon class='spinner'>sync</ui-icon><span>Saving...</span>";
+                            saveBtn.icon = "<ui-icon class='spinner'>sync</ui-icon>";
+                            saveBtn.text = "Saving...";
 
                             if (tab && window.saveFileTab) {
                                 await window.saveFileTab(tab);
@@ -874,7 +881,8 @@ export class DiffViewPanel extends Block {
                             console.error("Save changes failed:", err);
                             window.modal.notice(`Save changes failed:<br><small>${err.message}</small>`, "Save Error");
                             saveBtn.disabled = false;
-                            saveBtn.innerHTML = "<ui-icon>save</ui-icon><span>Save</span>";
+                            saveBtn.icon = "save";
+                            saveBtn.text = "Save";
                         }
                     };
 

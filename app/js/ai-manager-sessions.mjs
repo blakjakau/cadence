@@ -116,13 +116,19 @@ class AIManagerSessions {
 		);
 		if (planMessage) {
 			planMessage.planStatus = isAccepted ? "accepted" : "rejected";
-			await workspaceClient.setSession(sourceSession.id, sourceSession);
 		}
 
 		let promptText = "";
 		if (isAccepted) {
 			promptText = "Let's proceed with the implementation plan. Please execute the checklist step-by-step.";
 			if (comment) promptText += `\n\nAdditional Instructions:\n${comment}`;
+
+			// Disable planning mode so the model can actually implement its plan
+			this.manager.planningMode = false;
+			localStorage.setItem("aiPlanningMode", "false");
+			sourceSession.planningMode = false;
+			this.manager._updatePromptAreaPlaceholder();
+			this.manager._updateAgentProgressPanel();
 		} else {
 			if (comment) {
 				promptText = `The proposed implementation plan has been rejected. Please review the feedback and formulate a new plan.\n\nFeedback:\n${comment}`;
@@ -130,6 +136,8 @@ class AIManagerSessions {
 				promptText = "The proposed implementation plan has been rejected. Please await further instruction from the user.";
 			}
 		}
+
+		await workspaceClient.setSession(sourceSession.id, sourceSession);
 
 		// Set the prompt in the editor
 		this.manager.promptEditor.setValue(promptText, -1);

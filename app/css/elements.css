@@ -1086,6 +1086,24 @@ ui-diff-view-panel .diff-header {
     box-sizing: border-box;
 }
 
+ui-diff-view-panel .diff-header ui-button {
+    background: var(--theme-dark, rgba(0,0,0,0.33));
+	color: #ffffff;
+    border: none;
+	min-height:23px;
+	height:23px;
+    font-size: 11px;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-weight: 600;
+}
+ui-diff-view-panel .diff-header ui-button[active] {
+	background: var(--bg-tertiary, rgba(0,0,0,0.66));
+}
+
 ui-diff-view-panel .diff-header-left {
     display: flex;
     align-items: center;
@@ -1094,10 +1112,6 @@ ui-diff-view-panel .diff-header-left {
     font-weight: 600;
     color: var(--text-primary);
     overflow: hidden;
-}
-
-ui-diff-view-panel .diff-header-left ui-icon {
-    color: var(--theme);
 }
 
 ui-diff-view-panel .diff-header-title {
@@ -1112,31 +1126,20 @@ ui-diff-view-panel .diff-header-right {
     gap: 12px;
 }
 
-ui-diff-view-panel .diff-header-right button {
-    padding: 4px 12px;
-    font-size: 11px;
-    display: flex;
-    align-items: center;
-    gap: 4px;
-    border-radius: 4px;
-    cursor: pointer;
-    font-weight: 600;
-}
-
-ui-diff-view-panel .diff-header-right button.rollback {
+ui-diff-view-panel .diff-header-right ui-button.rollback {
     background: var(--theme-dark, rgba(0,0,0,0.33));
     color: #ffffff;
     border: none;
 }
 
-ui-diff-view-panel .diff-header-right button.discard,
-ui-diff-view-panel .diff-header-right button.cancel {
+ui-diff-view-panel .diff-header-right ui-button.discard,
+ui-diff-view-panel .diff-header-right ui-button.cancel {
     background: var(--bg-tertiary, rgba(0,0,0,0.66));
     color: var(--text-primary);
     border: 1px solid var(--border-primary);
 }
 
-ui-diff-view-panel .diff-header-right button.apply {
+ui-diff-view-panel .diff-header-right ui-button.apply {
     background: #2da44e;
     color: #ffffff;
     border: none;
