@@ -935,7 +935,7 @@ const uiManager = {
 			new Block(
 				`
 				&nbsp;&nbsp; <acronym title='Ctrl-G'>:Goto</acronym> 
-				&nbsp;&nbsp; <acronym title='Ctrl-F'>/Find</acronym> 
+				&nbsp;&nbsp; <acronym title='Ctrl-F'>/Find	</acronym> 
 				&nbsp;&nbsp; <acronym title='Ctrl-Shift-F'>~RegEx</acronym> 
 				&nbsp;&nbsp; <acronym title='Ctrl-Shift-Alt-F'>?RegEx-Multiline</acronym> 
 				<!--&nbsp;&nbsp; <acronym title='Ctrl-R (Not implemented)'><strike>@Reference</strike></acronym>-->
@@ -1200,8 +1200,8 @@ const uiManager = {
 	},
 
 	omnibox: (mode) => {
-		omni.classList.add("active")
-		omni.results.hide()
+		// read the existing value...
+		const old = omni.classList.contains("active")?omni.input.value.substr(1):""
 		omni.input.focus()
 		omni.stackPos = omni.stack.length
 		if (omni.last == mode && "find regex regex-m".indexOf(mode) != -1) {
@@ -1210,30 +1210,43 @@ const uiManager = {
 		} else {
 			switch (mode) {
 				case "find":
-					omni.input.value = "/"
+					omni.input.value = "/"+old
 					omni.input.setSelectionRange(1, 1)
 					break
 				case "regex":
-					omni.input.value = "~"
+					omni.input.value = "~"+old
 					omni.input.setSelectionRange(1, 1)
 					break
 				case "regex-m":
-					omni.input.value = "?"
+					omni.input.value = "?"+old
 					omni.input.setSelectionRange(1, 1)
 					break
 				case "goto":
 					omni.results.hide()
-					omni.input.value = ":"
+					omni.input.value = ":"+old
 					omni.input.setSelectionRange(1, 1)
+					if(old) omni.results.show()
+					break
+				case "goto-o":
+					omni.results.hide()
+					omni.input.value = ":"+old
+					omni.input.setSelectionRange(1, 1)
+					if(old) omni.results.show()
 					break
 				case "lookup":
-					omni.input.value = "@"
+					omni.input.value = "@"+old
 					omni.input.setSelectionRange(1, 1)
 					break
 			}
 		}
+		omni.classList.add("active")
+		omni.results.hide()
 		omni.last = mode
 		omni.modePrefix = omni.input.value.substr(0, 1)
+		if(old!=="") {
+			omni.input.setSelectionRange(omni.input.value.length,omni.input.value.length)
+			omni.perform()
+		}
 		setTimeout(() => {
 			omni.input.on("blur", uiManager.hideOmnibox, { once: true })
 		})

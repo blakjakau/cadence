@@ -1021,6 +1021,34 @@ const execCommandPrevBuffer = () => {
 		ui.currentTabs.prev()
 	}
 }
+const execCommandJumpToBuffer = (tabIndex) => {
+	const index = tabIndex - 1
+	const activeEl = document.activeElement
+	if (activeEl && activeEl.closest(".terminal-instance-container")) {
+		if (window.terminalManager?.sessionTabBar) {
+			const tab = window.terminalManager.sessionTabBar.tabs[index]
+			if (tab) {
+				tab.click()
+			}
+		}
+		return
+	}
+	if (activeEl && activeEl.closest("#ai-panel")) {
+		if (ui.aiManager?.sessionTabBar) {
+			const tab = ui.aiManager.sessionTabBar.tabs[index]
+			if (tab) {
+				tab.click()
+			}
+		}
+		return
+	}
+	if (ui.currentTabs) {
+		const tab = ui.currentTabs.tabs[index]
+		if (tab) {
+			tab.click()
+		}
+	}
+}
 
 const execCommandSave = async () => {
 	const tab = currentTabs.activeTab
@@ -1095,6 +1123,9 @@ const execCommandSaveAs = async () => {
 }
 
 const execCommandOpen = async () => {
+	
+	return window.ui.omnibox("goto")
+
 	const startIn = await getSuggestedStartDirectory()
 	const newHandle = await window.showOpenFilePicker({ startIn }).catch(console.warn)
 	if (!newHandle) {
@@ -1112,6 +1143,8 @@ const execCommandNewFile = async () => {
 	} else if (activeEl && activeEl.closest("#ai-prompt-editor-container")) {
 		context = "ai"
 	} else if (activeEl && (activeEl.closest(".ace_editor") || activeEl.classList.contains("ace_text-input"))) {
+		context = "editor"
+	} else if (activeEl == document.body) {
 		context = "editor"
 	} else {
 		// 2. If no editor is focused, use the active sidebar panel as the context
@@ -2433,6 +2466,18 @@ const keyBinds = [
 		},
 	},
 ]
+
+// add CTRL+[1-9] to switch active tab based on focus context
+for (let i = 1; i <= 9; i++) {
+	keyBinds.push({
+		target: "app",
+		name: `jump-to-buffer-${i}`,
+		bindKey: { win: `Ctrl-${i}`, mac: `Command-${i}` },
+		exec: () => {
+			execCommandJumpToBuffer(i)
+		}
+	});
+}
 
 keyBinds.forEach((bind) => {
 	window.ui.commands.add(bind)

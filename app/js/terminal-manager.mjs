@@ -165,23 +165,23 @@ class TerminalManager {
 		// Open the terminal in the provided container
 		term.open(containerElement);
 
-		// Handle CTRL+1 through CTRL+9 tab switching
-		term.attachCustomKeyEventHandler((event) => {
-			if (event.type === "keydown") {
-				const isCtrl = event.ctrlKey || event.metaKey;
-				if (isCtrl && event.key >= "1" && event.key <= "9") {
-					const index = parseInt(event.key) - 1;
-					const tab = this.sessionTabBar.tabs[index];
-					if (tab) {
-						event.preventDefault();
-						event.stopPropagation();
-						tab.click();
-					}
-					return false;
-				}
-			}
-			return true;
-		});
+		// // Handle CTRL+1 through CTRL+9 tab switching
+		// term.attachCustomKeyEventHandler((event) => {
+		// 	if (event.type === "keydown") {
+		// 		const isCtrl = event.ctrlKey || event.metaKey;
+		// 		if (isCtrl && event.key >= "1" && event.key <= "9") {
+		// 			const index = parseInt(event.key) - 1;
+		// 			const tab = this.sessionTabBar.tabs[index];
+		// 			if (tab) {
+		// 				event.preventDefault();
+		// 				event.stopPropagation();
+		// 				tab.click();
+		// 			}
+		// 			return false;
+		// 		}
+		// 	}
+		// 	return true;
+		// });
 
 		return { term, fitAddon };
 	}
