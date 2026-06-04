@@ -1182,22 +1182,39 @@ ui-diff-view-panel .diff-header-nav {
     display: flex;
     align-items: center;
     gap: 4px;
-    margin-left: 12px;
+}
+
+ui-diff-view-panel .diff-header-nav.toggle-container {
+    margin-left: 16px;
+}
+
+ui-diff-view-panel .diff-header-nav.nav-container {
+    display: none;
+    align-items: center;
+}
+
+ui-diff-view-panel .diff-header-nav.nav-container.visible {
+    display: flex;
 }
 
 ui-diff-view-panel .diff-header-nav button.nav-btn {
+    font-size: 11px;
+    font-weight: 600;
+    padding: 2px 8px;
+    height: 24px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
     background: rgba(0, 0, 0, 0.33);
     color: var(--text-primary);
     border: 1px solid var(--border-primary);
-    padding: 2px 4px;
     border-radius: 4px;
     cursor: pointer;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    height: 20px;
-    min-width: 24px;
-    font-size: 10px;
+}
+
+ui-diff-view-panel .diff-header-nav button.nav-btn[active] {
+    background: var(--theme-dark);
+    color: white;
 }
 
 ui-diff-view-panel .diff-header-nav button.nav-btn:hover {
@@ -1205,8 +1222,9 @@ ui-diff-view-panel .diff-header-nav button.nav-btn:hover {
 }
 
 ui-diff-view-panel .diff-header-nav button.nav-btn ui-icon {
-    font-size: 16px !important;
-    color: var(--text-primary) !important;
+    font-size: 14px !important;
+    margin-right: 4px !important;
+    color: inherit !important;
 }
 
 ui-diff-view-panel .diff-header-nav .diff-edit-count {

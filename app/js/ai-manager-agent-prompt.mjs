@@ -133,12 +133,13 @@ ${generateXmlToolDocs(planningMode)}
 - NEVER use control or tool tags to discuss or think about your actions, only to perform them.`;
     } else {
         coreRules = `
-- Ensure an implementation plan and task list are created BEFORE using 'edit' tools
-- Always report your intentions to the user BEFORE you start making tools calls
+- Ensure an implementation plan and task list are created BEFORE using 'edit' and 'create' tools
+- ALWAYS report your intentions to the user BEFORE you start making tools calls
+- NEVER include large chunks of code in your conversational output
 - Context Limits: Explore files by reading their outlines with read_file_outline and search_in_file
-	NEVER read a whole file, when you only need part of it.
 	Outlines provide symbols with line numbers and lengths. 
-	You can find text in a file using search_in_file to locate the exact line number
+	You can find text in a file using 'search_in_file' to locate the exact line number
+	NEVER read a whole file, when you only need part of it.
 `;
     }
 

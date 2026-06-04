@@ -27,47 +27,31 @@ export class DiffViewPanel extends Block {
 
         // View toggle buttons (Split / Unified)
         this.toggleContainer = document.createElement("div");
-        this.toggleContainer.className = "diff-header-nav";
-        this.toggleContainer.style.marginLeft = "16px";
+        this.toggleContainer.className = "diff-header-nav toggle-container";
 
         this.splitBtn = document.createElement("button");
         this.splitBtn.className = "nav-btn";
-        this.splitBtn.innerHTML = "<ui-icon style='font-size: 14px; margin-right: 4px;'>vertical_split</ui-icon><span>Split</span>";
+        this.splitBtn.innerHTML = "<ui-icon>vertical_split</ui-icon><span>Split</span>";
         this.splitBtn.title = "Side-by-side Diff View";
-        this.splitBtn.style.fontSize = "11px";
-        this.splitBtn.style.fontWeight = "600";
-        this.splitBtn.style.padding = "2px 8px";
-        this.splitBtn.style.height = "24px";
-        this.splitBtn.style.display = "inline-flex";
-        this.splitBtn.style.alignItems = "center";
 
         this.unifiedBtn = document.createElement("button");
         this.unifiedBtn.className = "nav-btn";
-        this.unifiedBtn.innerHTML = "<ui-icon style='font-size: 14px; margin-right: 4px;'>format_align_justify</ui-icon><span>Unified</span>";
+        this.unifiedBtn.innerHTML = "<ui-icon>format_align_justify</ui-icon><span>Unified</span>";
         this.unifiedBtn.title = "Unified Diff View";
-        this.unifiedBtn.style.fontSize = "11px";
-        this.unifiedBtn.style.fontWeight = "600";
-        this.unifiedBtn.style.padding = "2px 8px";
-        this.unifiedBtn.style.height = "24px";
-        this.unifiedBtn.style.display = "inline-flex";
-        this.unifiedBtn.style.alignItems = "center";
 
         this.toggleContainer.appendChild(this.splitBtn);
         this.toggleContainer.appendChild(this.unifiedBtn);
 
         const updateActiveToggleState = () => {
             if (this.diffViewMode === "split") {
-                this.splitBtn.style.backgroundColor = "var(--theme-dark)";
-                this.splitBtn.style.color = "white";
-                this.unifiedBtn.style.backgroundColor = "rgba(0, 0, 0, 0.33)";
-                this.unifiedBtn.style.color = "";
+                this.splitBtn.setAttribute('active', '');
+                this.unifiedBtn.removeAttribute('active');
             } else {
-                this.unifiedBtn.style.backgroundColor = "var(--theme-dark)";
-                this.unifiedBtn.style.color = "white";
-                this.splitBtn.style.backgroundColor = "rgba(0, 0, 0, 0.33)";
-                this.splitBtn.style.color = "";
+                this.splitBtn.removeAttribute('active');
+                this.unifiedBtn.setAttribute('active', '');
             }
         };
+
 
         this.splitBtn.onclick = (e) => {
             e.stopPropagation();
@@ -96,9 +80,7 @@ export class DiffViewPanel extends Block {
 
         // Jump to nearest edits navigation buttons
         this.navContainer = document.createElement("div");
-        this.navContainer.className = "diff-header-nav";
-        this.navContainer.style.display = "none";
-        this.navContainer.style.alignItems = "center";
+        this.navContainer.className = "diff-header-nav nav-container";
 
         this.prevBtn = document.createElement("button");
         this.prevBtn.className = "nav-btn";
@@ -572,7 +554,7 @@ export class DiffViewPanel extends Block {
             this.updateEditCount();
 
             if (changeBlocks.length > 0) {
-                this.navContainer.style.display = "flex";
+                this.navContainer.classList.add("visible");
 
                 const getNearestBlockIndex = (direction) => {
                     if (changeBlocks.length === 0) return -1;
@@ -626,7 +608,7 @@ export class DiffViewPanel extends Block {
                     }
                 };
             } else {
-                this.navContainer.style.display = "none";
+                this.navContainer.classList.remove("visible");
             }
 
             // Trigger a deferred resize to ensure correct rendering and scroll behavior
