@@ -2278,6 +2278,7 @@ const keyBinds = [
 			const activeEl = document.activeElement;
 			if (activeEl && activeEl.closest(".terminal-instance-container")) {
 				ui.toggleDrawer(false);
+				if (currentEditor) currentEditor.focus();
 			} else {
 				ui.toggleDrawer(true);
 				// Small delay to ensure the drawer is open before attempting to focus
