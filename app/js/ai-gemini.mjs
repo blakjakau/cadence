@@ -16,7 +16,7 @@ class Gemini extends AI {
             tpmLimit: 250000,
             rpdLimit: 500
         };
-        this.MAX_CONTEXT_TOKENS = 32768; 
+        this.MAX_CONTEXT_TOKENS = 32768*2; 
 
         try {
             this.requestTimestamps = JSON.parse(localStorage.getItem('gemini_request_timestamps') || '[]');

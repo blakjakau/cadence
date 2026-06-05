@@ -18,7 +18,7 @@ class LlamaCpp extends AI {
             n_predict: 4096,
             stop: ["</s>", "<|end|>", "<|im_end|>", "Llama:", "User:", "Assistant:"]
         };
-        this.MAX_CONTEXT_TOKENS = 8192; // Default, will try to query if possible
+        this.MAX_CONTEXT_TOKENS = 32768; // Default, will try to query if possible
 
         this._settingsSchema = {
             server: { type: "string", label: "Llama.cpp Server", default: "http://localhost:8080" },

@@ -347,28 +347,12 @@ class AgentTools {
     _isContentInUnprunedHistory(content) {
         try {
             const aiManager = window.ui?.aiManager;
-            if (!aiManager || !aiManager.activeSession) return false;
+            if (!aiManager || !aiManager.activeSession || !aiManager.historyManager) return false;
 
-            const messages = aiManager.activeSession.messages || [];
-            let dialogueHistory = messages.filter(
-                (msg) => msg.type !== "task_state" && msg.type !== "system_message" && msg.role !== "temp_ai_response" && msg.type !== "file_context"
-            );
-
-            // Apply exact same pruning slice logic as prepareMessagesForAI
-            if (aiManager.agentMode) {
-                const keepCount = 14;
-                if (dialogueHistory.length > keepCount) {
-                    let sliceIndex = dialogueHistory.length - keepCount;
-                    if (sliceIndex > 0 && dialogueHistory[sliceIndex].type === "tool_response") {
-                        sliceIndex -= 1;
-                    }
-                    dialogueHistory = dialogueHistory.slice(sliceIndex);
-                }
-            }
-
-            // Search only unpruned tool_response messages
-            for (const msg of dialogueHistory) {
-                if (msg.type === "tool_response" && msg.content && msg.content.includes(content)) {
+            const prepared = aiManager.historyManager.prepareMessagesForAI() || [];
+            for (const msg of prepared) {
+                // Check in user function/tool response contents as well as direct text contents
+                if (msg.content && msg.content.includes(content)) {
                     return true;
                 }
             }
@@ -736,6 +720,12 @@ class AgentTools {
         try {
             const permitted = this._checkFilePermitted(path);
             if (permitted !== true) return permitted;
+
+            const cleanSearch = (searchString || "").replace(/\s+/g, "");
+            const cleanReplace = (replacementString || "").replace(/\s+/g, "");
+            if (cleanSearch === cleanReplace) {
+                return "Malformed edit, replace and search blocks are the same";
+            }
 
             const resolvedPath = this._resolveAndValidatePath(path);
             

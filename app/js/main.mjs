@@ -2275,7 +2275,19 @@ const keyBinds = [
 		name: "show-terminal",
 		bindKey: { win: "Alt+T", mac: "Option+T" },
 		exec: () => {
-			ui.toggleDrawer()
+			const activeEl = document.activeElement;
+			if (activeEl && activeEl.closest(".terminal-instance-container")) {
+				ui.toggleDrawer(false);
+			} else {
+				ui.toggleDrawer(true);
+				// Small delay to ensure the drawer is open before attempting to focus
+				setTimeout(() => {
+					const terminalInput = document.querySelector(".xterm-helper-textarea");
+					if (terminalInput) {
+						terminalInput.focus();
+					}
+				}, 100);
+			}
 		},
 	},
 	{

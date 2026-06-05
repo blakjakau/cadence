@@ -845,45 +845,68 @@ class AIManagerHistory {
 
 		// Advanced Dialogue Pruning in Agent Mode
 		if (this.manager.agentMode) {
-			// Keep a safe history of the last 14 dialogue turns (thoughts, tool actions, and results)
-			// BUT preserve ALL user instructions to maintain chronological task timeline
-			const keepCount = 14;
-			if (dialogueHistory.length > keepCount) {
+			// Instead of a fixed message count (like 14), prune oldest dialogue turns ONLY if the estimated tokens exceed the target limit.
+			// For all providers target 80% of their MAX_CONTEXT_TOKENS (defined in their settings/props).
+			// BUT preserve ALL user instructions to maintain chronological task timeline.
+			const targetLimit = Math.floor((this.ai?.MAX_CONTEXT_TOKENS || 8192) * 0.8);
+			const currentTokens = this.ai.estimateTokens([...fileContexts, ...dialogueHistory]);
+			if (currentTokens > targetLimit) {
 				const userPrompts = dialogueHistory.filter(msg => msg.type === "user");
 				
-				let sliceIndex = dialogueHistory.length - keepCount;
-				// Fix paired pruning boundary:
-				// If the message at sliceIndex is a tool_response, we must also include its model message (sliceIndex - 1).
-				if (sliceIndex > 0 && dialogueHistory[sliceIndex].type === "tool_response") {
-					sliceIndex -= 1;
-				}
-				
-				const recentHistory = dialogueHistory.slice(sliceIndex);
-				
-				const keepIds = new Set();
-				userPrompts.forEach(m => keepIds.add(m.id));
-				recentHistory.forEach(m => keepIds.add(m.id));
-				
-				const newDialogueHistory = [];
-				let lastKeptIndex = -1;
-				
-				for (let i = 0; i < dialogueHistory.length; i++) {
-					if (keepIds.has(dialogueHistory[i].id)) {
-						const skipped = i - lastKeptIndex - 1;
-						if (skipped > 0) {
-							newDialogueHistory.push({
-								id: `pruned-gap-${i}`,
-								role: "system",
-								type: "system_message",
-								content: `[${skipped} turns pruned for context length]`
-							});
-						}
-						newDialogueHistory.push(dialogueHistory[i]);
-						lastKeptIndex = i;
+				// Search backwards to find the maximum number of recent dialogue turns we can keep
+				let sliceIndex = 0;
+				for (let count = 1; count <= dialogueHistory.length; count++) {
+					let candidateIndex = dialogueHistory.length - count;
+					
+					// Fix paired pruning boundary:
+					// If the candidate message is a tool_response, we must keep its model message as well.
+					if (candidateIndex > 0 && dialogueHistory[candidateIndex].type === "tool_response") {
+						candidateIndex -= 1;
+					}
+					
+					const recentHistory = dialogueHistory.slice(candidateIndex);
+					
+					const keepIds = new Set();
+					userPrompts.forEach(m => keepIds.add(m.id));
+					recentHistory.forEach(m => keepIds.add(m.id));
+					
+					const testDialogue = dialogueHistory.filter(msg => keepIds.has(msg.id));
+					const testHistory = [...fileContexts, ...testDialogue];
+					const testTokens = this.ai.estimateTokens(testHistory);
+					
+					if (testTokens <= targetLimit) {
+						sliceIndex = candidateIndex;
+					} else {
+						break;
 					}
 				}
 				
-				dialogueHistory = newDialogueHistory;
+				if (sliceIndex > 0) {
+					const recentHistory = dialogueHistory.slice(sliceIndex);
+					const keepIds = new Set();
+					userPrompts.forEach(m => keepIds.add(m.id));
+					recentHistory.forEach(m => keepIds.add(m.id));
+					
+					const newDialogueHistory = [];
+					let lastKeptIndex = -1;
+					
+					for (let i = 0; i < dialogueHistory.length; i++) {
+						if (keepIds.has(dialogueHistory[i].id)) {
+							const skipped = i - lastKeptIndex - 1;
+							if (skipped > 0) {
+								newDialogueHistory.push({
+									id: `pruned-gap-${i}`,
+									role: "system",
+									type: "system_message",
+									content: `[${skipped} turns pruned for context length]`
+								});
+							}
+							newDialogueHistory.push(dialogueHistory[i]);
+							lastKeptIndex = i;
+						}
+					}
+					dialogueHistory = newDialogueHistory;
+				}
 			}
 		}
 
