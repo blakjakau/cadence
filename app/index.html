@@ -238,6 +238,13 @@
 		<ui-menu-item command="delete" icon="delete">Delete</ui-menu-item>
 	</ui-menu>
 
+	<ui-menu id="editor_context" onclick="(e)=>{ window.ui.execCommand(e) }">
+		<ui-menu-item id="editor_context_goto" command="editor:goToDefinition" icon="shortcut" keyTag="Ctrl-B">Lookup Definition</ui-menu-item>
+		<ui-menu-split id="editor_context_split"></ui-menu-split>
+		<ui-menu-item command="editor:undo" icon="undo" keyTag="Ctrl-Z">Undo</ui-menu-item>
+		<ui-menu-item command="editor:redo" icon="redo" keyTag="Ctrl-Y">Redo</ui-menu-item>
+	</ui-menu>
+
 	
 	<ui-panel id="unsupported" type=modal blank class="slideDown" style="left:25%; width:50%; top:25%; height:50%; padding:16px;">
 		<center>

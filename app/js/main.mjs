@@ -136,7 +136,7 @@ const workspace = {
 	id: "default",
 	name: "default",
 	folders: [],
-	ignorePaths: [".git", "node_modules", "dist", "build"],
+	ignorePaths: [".git", ".modules", "node_modules", "dist", "build"],
 	files: [],
 	sidebarPanelWidths: {},
 	scratchpad: "",
@@ -170,10 +170,15 @@ window.ui.commands = {
 			switch (command.target) {
 				case "editor":
 					//register with ACE editor
-					leftEdit.commands.addCommand({
-						name: command.name,
-						bindKey: command.bindKey,
-						exec: command.exec,
+					const targetEditors = window.editors || [leftEdit, rightEdit];
+					targetEditors.forEach(editor => {
+						if (editor && editor.id !== "ai-prompt-editor") {
+							editor.commands.addCommand({
+								name: command.name,
+								bindKey: command.bindKey,
+								exec: command.exec,
+							})
+						}
 					})
 					break
 				case "app":
@@ -597,11 +602,12 @@ const openWorkspace = (() => {
 				// Ignore if .cadence doesn't exist
 			}
 			
+			workspace.ignorePaths = load.ignorePaths || [".git", ".modules", "node_modules", "dist", "build"]
+			fileList.ignorePaths = workspace.ignorePaths
+
 			if (workspace.folders) {
 				conduitClient.wsSetActiveRoots(workspace.folders).catch(e => console.warn(e));
 			}
-			
-			workspace.ignorePaths = load.ignorePaths || [".git", "node_modules", "dist", "build"]
 			workspace.openFolders = load.openFolders || []
 			workspace.scratchpad = load.scratchpad || ""
 			ui.scratchEditor.setValue(workspace.scratchpad || "")
@@ -616,7 +622,6 @@ const openWorkspace = (() => {
 			workspace.activeEditorTabHandle = load.activeEditorTabHandle || null
 			workspace.activeEditorSide = load.activeEditorSide || null
 
-			fileList.ignorePaths = workspace.ignorePaths
 			// REMOVED: workspace.promptHistory = load.promptHistory || []; // Removed
 			// REMOVED: ui.aiManager.promptHistory = workspace.promptHistory; // Removed
 			workspace.aiConfig = load.aiConfig || {}
@@ -695,7 +700,7 @@ const openWorkspace = (() => {
 				workspace.id = "default"
 				workspace.files = []
 				workspace.folders = []
-				workspace.ignorePaths = [".git", "node_modules", "dist", "build"]
+				workspace.ignorePaths = [".git", ".modules", "node_modules", "dist", "build"]
 				// NEW: Initialize empty AI session metadata
 				workspace.aiSessionsMetadata = []
 				// NEW: Initialize empty system prompt config
@@ -2420,7 +2425,7 @@ const keyBinds = [
 				workspace.id = id
 				workspace.folders = []
 				workspace.files = []
-				workspace.ignorePaths = [".git", "node_modules", "dist", "build"]
+				workspace.ignorePaths = [".git", ".modules", "node_modules", "dist", "build"]
 				workspace.openFolders = []
 				// NEW: Initialize empty AI session metadata for new workspace
 				updateFileListBackground()
@@ -2464,6 +2469,321 @@ const keyBinds = [
 		exec: () => {
 			execCommandToggleSidebarPanel("developer_board")
 		},
+	},
+	{
+		target: "editor",
+		name: "goToDefinition",
+		bindKey: { win: "Ctrl-B", mac: "Command-B" },
+		exec: async (editor) => {
+			let symbol = "";
+			// If context menu registered an active symbol, use it, then clear it
+			if (window.ui && window.ui.activeContextMenuSymbol) {
+				symbol = window.ui.activeContextMenuSymbol;
+				window.ui.activeContextMenuSymbol = null;
+			} else {
+				// Otherwise get the word under the caret/selection
+				const pos = editor.getCursorPosition();
+				const range = editor.session.getWordRange(pos.row, pos.column);
+				symbol = editor.session.getTextRange(range).trim();
+			}
+			symbol = symbol.replace(/[^a-zA-Z0-9_]/g, "");
+			if (!symbol) return;
+
+			try {
+				let matches = [];
+
+				// 1. Backend symbol search
+				const res = await conduitClient.wsSearchSymbols(symbol);
+				if (res && res.data) {
+					const exactMatches = res.data.filter(s => s.name === symbol);
+					matches = exactMatches.length > 0 ? exactMatches : res.data;
+				}
+
+				// Helper to scan a session for symbol definitions using Regex
+				const scanSessionForSymbol = (session, sym) => {
+					const escapedSymbol = sym.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
+					const regexes = [
+						new RegExp(`(?:const|let|var|function|class|def|func|type|struct|interface)\\s+${escapedSymbol}\\b`),
+						new RegExp(`func\\s+\\([^)]+\\)\\s+${escapedSymbol}\\b`),
+						new RegExp(`\\b${escapedSymbol}\\s*(?::=|=|=>|:[^=])`)
+					];
+					
+					const lines = session.getDocument().getAllLines();
+					for (let i = 0; i < lines.length; i++) {
+						const lineText = lines[i];
+						const trimmed = lineText.trim();
+						if (trimmed.startsWith("//") || trimmed.startsWith("#") || trimmed.startsWith("/*") || trimmed.startsWith("*")) {
+							continue;
+						}
+						if (regexes.some(rx => rx.test(lineText))) {
+							return i + 1; // 1-indexed line
+						}
+					}
+					return -1;
+				};
+
+				const normalize = (p) => p ? p.replace(/\\/g, '/').replace(/\/+/g, '/').replace(/^\//, '').replace(/\/$/, '') : '';
+
+				const pathsMatch = (p1, p2) => {
+					const np1 = normalize(p1);
+					const np2 = normalize(p2);
+					return np1 === np2 || np1.endsWith('/' + np2) || np2.endsWith('/' + np1);
+				};
+
+				const hasMatch = (filePath, line) => {
+					return matches.some(m => pathsMatch(m.filePath, filePath) && m.line === line);
+				};
+
+				// 2. Local active session search
+				const activeTab = editor.tabs?.activeTab;
+				const activePath = activeTab?.config?.path;
+				if (activeTab && activeTab.config && activeTab.config.session && activePath) {
+					const localLine = scanSessionForSymbol(activeTab.config.session, symbol);
+					if (localLine > 0 && !hasMatch(activePath, localLine)) {
+						matches.unshift({
+							name: symbol,
+							type: "local variable",
+							line: localLine,
+							filePath: activePath,
+							signature: activeTab.config.session.getLine(localLine - 1).trim()
+						});
+					}
+				}
+
+				// 3. Fallback: Search other open tabs/sessions
+				const otherTabs = [
+					...(leftTabs?.tabs || []),
+					...(rightTabs?.tabs || [])
+				].filter(t => t !== activeTab);
+
+				for (const tab of otherTabs) {
+					if (tab.config && tab.config.session && tab.config.path) {
+						const line = scanSessionForSymbol(tab.config.session, symbol);
+						if (line > 0 && !hasMatch(tab.config.path, line)) {
+							matches.push({
+								name: symbol,
+								type: "variable/definition",
+								line: line,
+								filePath: tab.config.path,
+								signature: tab.config.session.getLine(line - 1).trim()
+							});
+						}
+					}
+				}
+
+				if (matches.length === 0) {
+					window.modal.toast(`Symbol "${symbol}" not found.`);
+					return;
+				}
+
+				const navigateToSymbol = async (filePath, line) => {
+					const curActiveTab = editor.tabs?.activeTab;
+					const curActivePath = curActiveTab?.config?.path;
+					
+					if (curActivePath && pathsMatch(curActivePath, filePath)) {
+						editor.gotoLine(line, 0, true);
+						editor.focus();
+					} else {
+						await openFileHandle(filePath, filePath, editor);
+						const targetEditor = window.ui.currentEditor || editor;
+						targetEditor.gotoLine(line, 0, true);
+						targetEditor.focus();
+					}
+				};
+
+				if (matches.length === 1) {
+					await navigateToSymbol(matches[0].filePath, matches[0].line);
+				} else {
+					// Show custom sub-modal using Cadence Modal
+					const optionsHtml = matches.map((m, idx) => {
+						const filename = m.filePath.split('/').pop();
+						return `
+							<div class="symbol-match-option" data-idx="${idx}" style="padding: 10px; margin: 6px 0; border-radius: var(--borderRadius); cursor: pointer; background: var(--bg-hover, #2a2a2a); border: 1px solid var(--border-color, #333); transition: all 0.2s;">
+								<div style="font-weight: bold; color: var(--theme); font-size: 14px;">${m.signature || m.name}</div>
+								<div style="font-size: 12px; color: var(--text-secondary); margin-top: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
+									Line ${m.line} in <code>${m.filePath}</code>
+								</div>
+							</div>
+						`;
+					}).join('');
+
+					const container = document.createElement("div");
+					container.innerHTML = `
+						<h1>Multiple definitions found for "${symbol}"</h1>
+						<div style="max-height: 300px; overflow-y: auto; margin-top: 12px; padding-right: 4px;">
+							${optionsHtml}
+						</div>
+					`;
+
+					const selectModal = new window.modal.constructor();
+					selectModal.inner.appendChild(container);
+					selectModal.actionBar.empty();
+					const cancelBtn = new Button("Cancel");
+					cancelBtn.classList.add("cancel");
+					cancelBtn.on("click", () => selectModal.hide(null));
+					selectModal.actionBar.append(cancelBtn);
+
+					container.querySelectorAll('.symbol-match-option').forEach(el => {
+						el.onclick = () => {
+							const idx = parseInt(el.getAttribute('data-idx'));
+							selectModal.hide(idx);
+						};
+					});
+
+					const choice = await selectModal.show();
+					if (choice !== null && choice >= 0) {
+						await navigateToSymbol(matches[choice].filePath, matches[choice].line);
+					}
+				}
+			} catch (err) {
+				console.error("Go to definition failed:", err);
+				window.modal.toast("Go to definition lookup error.");
+			}
+		}
+	},
+	{
+		target: "editor",
+		name: "showFileOutline",
+		bindKey: { win: "Ctrl-Shift-O", mac: "Command-Shift-O" },
+		exec: async (editor) => {
+			const activeTab = editor.tabs?.activeTab;
+			const path = activeTab?.config?.path;
+			if (!path || path === "plan_tasks") return;
+
+			try {
+				const res = await conduitClient.wsGetFileSymbols(path);
+				if (!res || !res.data || res.data.length === 0) {
+					window.modal.toast("No symbols found in current file.");
+					return;
+				}
+
+				const symbols = res.data;
+				
+				// Create a quick outline filter picker modal
+				const container = document.createElement("div");
+				container.style.display = "flex";
+				container.style.flexDirection = "column";
+				container.style.gap = "10px";
+				
+				const title = document.createElement("h1");
+				title.textContent = `File Outline: ${path.split('/').pop()}`;
+				container.appendChild(title);
+
+				const searchInput = new Input();
+				searchInput.type = "text";
+				searchInput.placeholder = "Type to search symbols...";
+				searchInput.style.width = "100%";
+				container.appendChild(searchInput);
+
+				const listContainer = document.createElement("div");
+				listContainer.style.maxHeight = "300px";
+				listContainer.style.overflowY = "auto";
+				listContainer.style.marginTop = "8px";
+				listContainer.style.display = "flex";
+				listContainer.style.flexDirection = "column";
+				listContainer.style.gap = "4px";
+				container.appendChild(listContainer);
+
+				const renderList = (filter = "") => {
+					listContainer.innerHTML = "";
+					const filtered = symbols.filter(s => s.name.toLowerCase().includes(filter.toLowerCase()));
+					if (filtered.length === 0) {
+						listContainer.innerHTML = `<div style="color: var(--text-secondary); padding: 8px;">No matching symbols</div>`;
+						return;
+					}
+					filtered.forEach((sym, idx) => {
+						const item = document.createElement("div");
+						item.className = "symbol-outline-option";
+						item.style.padding = "8px 12px";
+						item.style.borderRadius = "var(--borderRadius)";
+						item.style.cursor = "pointer";
+						item.style.background = idx === 0 ? "var(--theme-dark)" : "var(--bg-hover)";
+						if (idx === 0) item.classList.add("active");
+						item.style.display = "flex";
+						item.style.justifyContent = "space-between";
+						item.style.alignItems = "center";
+						item.style.transition = "all 0.15s";
+						
+						item.innerHTML = `
+							<span style="font-weight: bold; color: ${idx === 0 ? '#fff' : 'var(--theme)'};">${sym.name}</span>
+							<span style="font-size: 11px; opacity: 0.8; color: ${idx === 0 ? '#fff' : 'var(--text-secondary)'};">${sym.type} (Line ${sym.line})</span>
+						`;
+						item.onclick = () => {
+							pickerModal.hide(sym);
+						};
+						listContainer.appendChild(item);
+					});
+				};
+
+				let activeIdx = 0;
+				const handleNav = (direction) => {
+					const items = listContainer.querySelectorAll(".symbol-outline-option");
+					if (items.length === 0) return;
+					items[activeIdx]?.classList.remove("active");
+					items[activeIdx].style.background = "var(--bg-hover)";
+					const activeText = items[activeIdx]?.querySelector("span");
+					if (activeText) activeText.style.color = "var(--theme)";
+					const activeMeta = items[activeIdx]?.querySelector("span:last-child");
+					if (activeMeta) activeMeta.style.color = "var(--text-secondary)";
+
+					if (direction === "down") {
+						activeIdx = (activeIdx + 1) % items.length;
+					} else {
+						activeIdx = (activeIdx - 1 + items.length) % items.length;
+					}
+					items[activeIdx]?.classList.add("active");
+					items[activeIdx].style.background = "var(--theme-dark)";
+					const newActiveText = items[activeIdx]?.querySelector("span");
+					if (newActiveText) newActiveText.style.color = "#fff";
+					const newActiveMeta = items[activeIdx]?.querySelector("span:last-child");
+					if (newActiveMeta) newActiveMeta.style.color = "#fff";
+					items[activeIdx].scrollIntoViewIfNeeded();
+				};
+
+				searchInput.addEventListener("input", (e) => {
+					activeIdx = 0;
+					renderList(e.target.value);
+				});
+
+				searchInput.addEventListener("keydown", (e) => {
+					if (e.key === "ArrowDown") {
+						e.preventDefault();
+						handleNav("down");
+					} else if (e.key === "ArrowUp") {
+						e.preventDefault();
+						handleNav("up");
+					} else if (e.key === "Enter") {
+						e.preventDefault();
+						const items = listContainer.querySelectorAll(".symbol-outline-option");
+						if (items[activeIdx]) {
+							items[activeIdx].click();
+						}
+					}
+				});
+
+				const pickerModal = new window.modal.constructor();
+				pickerModal.inner.appendChild(container);
+				pickerModal.actionBar.empty();
+				const cancelBtn = new Button("Cancel");
+				cancelBtn.classList.add("cancel");
+				cancelBtn.on("click", () => pickerModal.hide(null));
+				pickerModal.actionBar.append(cancelBtn);
+
+				renderList();
+				
+				const promise = pickerModal.show();
+				setTimeout(() => searchInput.focus(), 50);
+
+				const selectedSym = await promise;
+				if (selectedSym) {
+					editor.gotoLine(selectedSym.line, 0, true);
+					editor.focus();
+				}
+			} catch (err) {
+				console.error("Outline picker error:", err);
+				window.modal.toast("Failed to load outline.");
+			}
+		}
 	},
 ]
 
@@ -2636,6 +2956,46 @@ setTimeout(async () => {
 		app.systemPromptConfig = stored?.systemPromptConfig || {} // NEW
 		// Apply any stored editor settings immediately after loading them.
 		execCommandEditorOptions()
+
+		// Register workspace-wide symbol autocomplete
+		try {
+			const langTools = ace.require("ace/ext/language_tools");
+			if (langTools) {
+				const workspaceCompleter = {
+					getCompletions: async (editor, session, pos, prefix, callback) => {
+						if (editor.id === "ai-prompt-editor") {
+							return callback(null, []);
+						}
+						if (!prefix || prefix.length < 2) {
+							return callback(null, []);
+						}
+						try {
+							const res = await conduitClient.wsSearchSymbols(prefix);
+							if (!res || !res.data) {
+								return callback(null, []);
+							}
+							
+							const completions = res.data.map(sym => {
+								const filename = sym.filePath.split('/').pop();
+								return {
+									caption: sym.name,
+									value: sym.name,
+									meta: `${sym.type} (${filename})`,
+									score: sym.name.toLowerCase().startsWith(prefix.toLowerCase()) ? 1000 : 500
+								};
+							});
+							callback(null, completions);
+						} catch (e) {
+							console.warn("Workspace autocomplete search failed:", e);
+							callback(null, []);
+						}
+					}
+				};
+				langTools.addCompleter(workspaceCompleter);
+			}
+		} catch (e) {
+			console.warn("Failed to register workspace autocompleter:", e);
+		}
 
 		app.workspace = stored?.workspace || "default"
 		app.workspaces = stored?.workspaces || [app.workspace]

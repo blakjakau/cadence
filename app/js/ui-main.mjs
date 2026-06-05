@@ -82,6 +82,7 @@ const uiManager = {
 			const drawerToggle = document.querySelector("#drawerToggle");
 			if (drawerToggle) drawerToggle.icon = "expand_less";
 		}
+		
 		if (typeof debounceConstrainHolders === "function") {
 			// debounceConstrainHolders();
 			drawer.removeEventListener("transitionend", debounceConstrainHolders);
@@ -102,7 +103,7 @@ const uiManager = {
 		window.addEventListener("resize", () => {
 			debounceConstrainHolders()
 		})
-
+		
 		debounceConstrainHolders = () => {
 			clearTimeout(constrainHoldersTimeout);
 			constrainHoldersTimeout = setTimeout(constrainHolders, 100);
@@ -1065,6 +1066,41 @@ const uiManager = {
 				updateCursorPositionStatus(editor);
 			})
 
+			editor.container.addEventListener("contextmenu", (e) => {
+				e.preventDefault();
+				
+				const pos = editor.renderer.screenToTextCoordinates(e.clientX, e.clientY);
+				const range = editor.session.getWordRange(pos.row, pos.column);
+				const clickedWord = editor.session.getTextRange(range).trim();
+				const symbol = clickedWord.replace(/[^a-zA-Z0-9_]/g, "");
+
+				const gotoItem = document.getElementById("editor_context_goto");
+				const splitItem = document.getElementById("editor_context_split");
+				
+				if (symbol) {
+					window.ui.activeContextMenuSymbol = symbol;
+					if (gotoItem) {
+						gotoItem.textContent = `Go to Definition of "${symbol}"`;
+						gotoItem.style.display = "block";
+					}
+					if (splitItem) {
+						splitItem.style.display = "block";
+					}
+				} else {
+					window.ui.activeContextMenuSymbol = null;
+					if (gotoItem) {
+						gotoItem.style.display = "none";
+					}
+					if (splitItem) {
+						splitItem.style.display = "none";
+					}
+				}
+
+				const menuEl = document.getElementById("editor_context");
+				if (menuEl && typeof menuEl.showAt === "function") {
+					menuEl.showAt(e);
+				}
+			});
 		}
 
 

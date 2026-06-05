@@ -133,7 +133,7 @@ ${generateXmlToolDocs(planningMode)}
 - NEVER use control or tool tags to discuss or think about your actions, only to perform them.`;
     } else {
         coreRules = `
-- Ensure an implementation plan and task list are created BEFORE using 'edit' and 'create' tools
+- An implementation plan and task list must be created BEFORE 'edit' and 'create' tools will be available
 - ALWAYS report your intentions to the user BEFORE you start making tools calls
 - NEVER include large chunks of code in your conversational output
 - Context Limits: Explore files by reading their outlines with read_file_outline and search_in_file

@@ -314,6 +314,12 @@ func handleRestPost(w http.ResponseWriter, r *http.Request, fullPath string) {
 		http.Error(w, "Cannot read body", http.StatusBadRequest)
 		return
 	}
+	// Automatically create paths to the folder if they don't exist
+	dir := filepath.Dir(fullPath)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		http.Error(w, "Failed to create directory: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
 	// Assumes raw binary content in POST body for simplicity.
 	// A JSON-based approach might wrap it: {"content": "base64data"}
 	err = ioutil.WriteFile(fullPath, body, 0644)
@@ -407,16 +413,22 @@ func handleWsRequest(ws *websocket.Conn, req fileRequest) {
 		if err != nil {
 			resp.Error = "Invalid base64 content: " + err.Error()
 		} else {
-			err = ioutil.WriteFile(fullPath, decoded, 0644)
-			if err != nil {
-				resp.Error = err.Error()
+			// Automatically create paths to the folder if they don't exist
+			dir := filepath.Dir(fullPath)
+			if err := os.MkdirAll(dir, 0755); err != nil {
+				resp.Error = "Failed to create directory: " + err.Error()
 			} else {
-				im := getIndexManagerAPI()
-				im.UpdateFile(fullPath, string(decoded))
-				if stat, statErr := os.Stat(fullPath); statErr == nil {
-					resp.ModTime = stat.ModTime().Unix()
-					resp.FullPath = filepath.ToSlash(fullPath)
-					resp.Size = stat.Size()
+				err = ioutil.WriteFile(fullPath, decoded, 0644)
+				if err != nil {
+					resp.Error = err.Error()
+				} else {
+					im := getIndexManagerAPI()
+					im.UpdateFile(fullPath, string(decoded))
+					if stat, statErr := os.Stat(fullPath); statErr == nil {
+						resp.ModTime = stat.ModTime().Unix()
+						resp.FullPath = filepath.ToSlash(fullPath)
+						resp.Size = stat.Size()
+					}
 				}
 			}
 		}
@@ -458,23 +470,39 @@ func handleWsRequest(ws *websocket.Conn, req fileRequest) {
 	case "get_outline":
 		im := getIndexManagerAPI()
 		resp.Data = im.GetOutline(fullPath)
+	case "get_file_symbols":
+		im := getIndexManagerAPI()
+		resp.Data = im.GetFileSymbols(fullPath)
 	case "search_symbols":
 		im := getIndexManagerAPI()
 		resp.Data = im.SearchSymbols(req.Query)
 	case "set_active_roots":
 		im := getIndexManagerAPI()
+		var payload struct {
+			Roots       []string `json:"roots"`
+			IgnorePaths []string `json:"ignorePaths"`
+		}
 		var roots []string
+		var ignorePaths []string
 		
-		if err := json.Unmarshal([]byte(req.Content), &roots); err != nil {
-			resp.Error = "Invalid roots format"
+		if err := json.Unmarshal([]byte(req.Content), &payload); err == nil && len(payload.Roots) > 0 {
+			roots = payload.Roots
+			ignorePaths = payload.IgnorePaths
 		} else {
+			// Fallback to legacy string array format
+			if err := json.Unmarshal([]byte(req.Content), &roots); err != nil {
+				resp.Error = "Invalid roots format"
+			}
+		}
+		
+		if resp.Error == "" {
 			var secureRoots []string
 			for _, r := range roots {
 				if secureRoot, err := securePath(r); err == nil {
 					secureRoots = append(secureRoots, secureRoot)
 				}
 			}
-			im.SetActiveRoots(secureRoots)
+			im.SetActiveRoots(secureRoots, ignorePaths)
 			resp.Data = "ok"
 		}
 	case "get_indexer_status":
@@ -493,11 +521,22 @@ func handleWsRequest(ws *websocket.Conn, req fileRequest) {
 
 // walkAndSearchFolders recursively searches for directories matching the query.
 func walkAndSearchFolders(path, query string) ([]fileInfo, error) {
+	im := getIndexManagerAPI()
+	var matchingIdx *WorkspaceIndex
+	im.mu.RLock()
+	for root, idx := range im.Indexes {
+		if path == root || strings.HasPrefix(path, root+string(filepath.Separator)) {
+			matchingIdx = idx
+			break
+		}
+	}
+	im.mu.RUnlock()
+
 	visited := make(map[string]bool)
-	return walkAndSearchFoldersHelper(path, query, visited, 0)
+	return walkAndSearchFoldersHelper(path, query, visited, 0, matchingIdx)
 }
 
-func walkAndSearchFoldersHelper(path, query string, visited map[string]bool, depth int) ([]fileInfo, error) {
+func walkAndSearchFoldersHelper(path, query string, visited map[string]bool, depth int, matchingIdx *WorkspaceIndex) ([]fileInfo, error) {
 	if depth > 15 {
 		return nil, nil // Stop deep recursion
 	}
@@ -528,6 +567,9 @@ func walkAndSearchFoldersHelper(path, query string, visited map[string]bool, dep
 	if lowerBaseName == "node_modules" || lowerBaseName == "dist" || lowerBaseName == "build" || lowerBaseName == ".pkgconfig" {
 		return nil, nil
 	}
+	if matchingIdx != nil && matchingIdx.IsPathIgnored(path) {
+		return nil, nil
+	}
 
 	entries, err := ioutil.ReadDir(path)
 	if err != nil {
@@ -551,7 +593,12 @@ func walkAndSearchFoldersHelper(path, query string, visited map[string]bool, dep
 			continue
 		}
 
-		children, _ := walkAndSearchFoldersHelper(filepath.Join(path, childName), query, visited, depth+1)
+		childPath := filepath.Join(path, childName)
+		if matchingIdx != nil && matchingIdx.IsPathIgnored(childPath) {
+			continue
+		}
+
+		children, _ := walkAndSearchFoldersHelper(childPath, query, visited, depth+1, matchingIdx)
 
 		if strings.Contains(childLower, strings.ToLower(query)) || len(children) > 0 {
 			item := fileInfo{
@@ -569,6 +616,17 @@ func walkAndSearchFoldersHelper(path, query string, visited map[string]bool, dep
 
 // walkAndSearchContent recursively searches text files under rootPath for occurrences of query.
 func walkAndSearchContent(rootPath, query string) ([]searchMatch, error) {
+	im := getIndexManagerAPI()
+	var matchingIdx *WorkspaceIndex
+	im.mu.RLock()
+	for root, idx := range im.Indexes {
+		if rootPath == root || strings.HasPrefix(rootPath, root+string(filepath.Separator)) {
+			matchingIdx = idx
+			break
+		}
+	}
+	im.mu.RUnlock()
+
 	var matches []searchMatch
 	queryLower := strings.ToLower(query)
 	limit := 100 // Cap results at 100 to prevent overwhelming memory or socket
@@ -588,6 +646,13 @@ func walkAndSearchContent(rootPath, query string) ([]searchMatch, error) {
 		}
 		if time.Since(startTime) > timeout {
 			return filepath.SkipAll // Stop search if it takes longer than 5s
+		}
+
+		if matchingIdx != nil && matchingIdx.IsPathIgnored(path) {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
 		}
 
 		// Skip hidden folders and specific large/binary directories

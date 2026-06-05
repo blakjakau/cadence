@@ -275,12 +275,20 @@ class ConduitClient {
         return this._send({ action: 'get_outline', path });
     }
 
+    wsGetFileSymbols(path) {
+        return this._send({ action: 'get_file_symbols', path });
+    }
+
     wsGetIndexerStatus() {
         return this._send({ action: 'get_indexer_status' });
     }
 
-    wsSetActiveRoots(roots) {
-        return this._send({ action: 'set_active_roots', content: JSON.stringify(roots) });
+    wsSetActiveRoots(roots, ignorePaths = null) {
+        if (!ignorePaths && window.workspace && window.workspace.ignorePaths) {
+            ignorePaths = window.workspace.ignorePaths;
+        }
+        const payload = { roots, ignorePaths };
+        return this._send({ action: 'set_active_roots', content: JSON.stringify(payload) });
     }
 
     // Watch is fire-and-forget, it just sends the command.

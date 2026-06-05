@@ -81,7 +81,7 @@ export const tools = [
     },
     {
         name: "create_file",
-        description: "Create a new file with the specified content.",
+        description: "Create a new file with the specified content. Parent folders in the path will automatically be created if they do not exist.",
         parameters: {
             type: "object",
             properties: {

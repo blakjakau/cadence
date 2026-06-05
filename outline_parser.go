@@ -106,6 +106,8 @@ func parseRegexOutline(path string, content string) (string, []SymbolInfo, error
 	methodRegex := regexp.MustCompile(`^\s*(?:async\s+)?([A-Za-z0-9_]+)\s*\([^)]*\)\s*\{`)
 	pythonDefRegex := regexp.MustCompile(`^\s*(?:async\s+)?def\s+([A-Za-z0-9_]+)\s*\(`)
 	pythonClassRegex := regexp.MustCompile(`^\s*class\s+([A-Za-z0-9_]+)\s*(?:\(|:)`)
+	objArrowFuncRegex := regexp.MustCompile(`^\s*([A-Za-z0-9_]+)\s*:\s*(?:async\s*)?(?:\([^)]*\)|[A-Za-z0-9_]+)\s*=>`)
+	objFuncRegex := regexp.MustCompile(`^\s*([A-Za-z0-9_]+)\s*:\s*(?:async\s*)?function\b`)
 
 	for i, line := range lines {
 		trimLine := strings.TrimSpace(line)
@@ -141,6 +143,20 @@ func parseRegexOutline(path string, content string) (string, []SymbolInfo, error
 			skipWords := map[string]bool{"if": true, "for": true, "while": true, "switch": true, "catch": true}
 			if !skipWords[matches[1]] {
 				length := findSymbolLength(lines, i, isPython)
+				symbols = append(symbols, SymbolInfo{Name: matches[1], Type: "method", Line: lineNum, Length: length, Signature: trimLine})
+				matched = true
+			}
+		} else if matches := objArrowFuncRegex.FindStringSubmatch(line); len(matches) > 1 {
+			skipWords := map[string]bool{"default": true, "case": true}
+			if !skipWords[matches[1]] {
+				length := findSymbolLength(lines, i, false)
+				symbols = append(symbols, SymbolInfo{Name: matches[1], Type: "method", Line: lineNum, Length: length, Signature: trimLine})
+				matched = true
+			}
+		} else if matches := objFuncRegex.FindStringSubmatch(line); len(matches) > 1 {
+			skipWords := map[string]bool{"default": true, "case": true}
+			if !skipWords[matches[1]] {
+				length := findSymbolLength(lines, i, false)
 				symbols = append(symbols, SymbolInfo{Name: matches[1], Type: "method", Line: lineNum, Length: length, Signature: trimLine})
 				matched = true
 			}

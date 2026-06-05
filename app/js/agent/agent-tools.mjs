@@ -877,6 +877,10 @@ class AgentTools {
                 if (window.ui?.fileList?.refreshFolders) {
                     window.ui.fileList.refreshFolders();
                 }
+
+                if (window.ui?.fileList?.open) {
+                    await window.ui.fileList.open(resolvedPath);
+                }
                 
                 return `Successfully created ${path}.`;
             }

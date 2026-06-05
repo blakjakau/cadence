@@ -30,6 +30,10 @@ func hello() {
 export function greet(name) {
 	return "hello " + name;
 }
+const uiManager = {
+	someFunc: () => { return "foo"; },
+	anotherFunc: function(args) { return "bar"; }
+}
 `
 	os.WriteFile(mjsFile, []byte(mjsContent), 0644)
 
@@ -61,5 +65,19 @@ export function greet(name) {
 		t.Errorf("Expected to find 'greet' symbol")
 	} else if mjsResults[0].Name != "greet" {
 		t.Errorf("Expected symbol name 'greet', got %s", mjsResults[0].Name)
+	}
+
+	mjsArrowResults := idx.SearchSymbols("someFunc")
+	if len(mjsArrowResults) == 0 {
+		t.Errorf("Expected to find 'someFunc' symbol")
+	} else if mjsArrowResults[0].Name != "someFunc" {
+		t.Errorf("Expected symbol name 'someFunc', got %s", mjsArrowResults[0].Name)
+	}
+
+	mjsFuncResults := idx.SearchSymbols("anotherFunc")
+	if len(mjsFuncResults) == 0 {
+		t.Errorf("Expected to find 'anotherFunc' symbol")
+	} else if mjsFuncResults[0].Name != "anotherFunc" {
+		t.Errorf("Expected symbol name 'anotherFunc', got %s", mjsFuncResults[0].Name)
 	}
 }
