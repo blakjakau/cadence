@@ -208,7 +208,7 @@ class AgentTools {
      * Reads a file's content.
      * @param {string} path 
      */
-    async readFile(path) {
+    async readFile(path, startLine, lineCount) {
         try {
             const permitted = this._checkFilePermitted(path);
             if (permitted !== true) return permitted;
@@ -242,8 +242,15 @@ class AgentTools {
             }
 
             // Check if content matches an existing unpruned tool response
-            if (content && this._isContentInUnprunedHistory(content)) {
-                return "Content is unchange from previous request";
+            if (startLine === undefined && lineCount === undefined && content && this._isContentInUnprunedHistory(content)) {
+                return "Content is unchanged from previous request";
+            }
+
+            if (startLine !== undefined || lineCount !== undefined) {
+                const lines = content.split(/\r?\n/);
+                const start = startLine !== undefined ? Math.max(1, parseInt(startLine, 10)) - 1 : 0;
+                const count = lineCount !== undefined ? Math.max(0, parseInt(lineCount, 10)) : lines.length;
+                content = lines.slice(start, start + count).join('\n');
             }
 
             return content;
@@ -383,7 +390,7 @@ class AgentTools {
 
             // Check if outline matches an existing unpruned tool response
             if (outline && this._isContentInUnprunedHistory(outline)) {
-                return "Content is unchange from previous request";
+                return "Content is unchanged from previous request";
             }
 
             return outline;
@@ -970,7 +977,7 @@ class AgentTools {
             case 'list_files':
                 return await this.listFiles(args.path);
             case 'read_file':
-                return await this.readFile(args.path);
+                return await this.readFile(args.path, args.startLine, args.lineCount);
             case 'read_file_outline':
                 return await this.readFileOutline(args.path);
             case 'read_symbol':

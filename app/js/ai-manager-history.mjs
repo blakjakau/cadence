@@ -163,6 +163,13 @@ class AIManagerHistory {
 
 			if (element) this.conversationArea.append(element);
 		}
+
+		// Re-append the active streaming block if we are currently processing/generating
+		if (this.manager._isProcessing && this.activeStreamingBlock) {
+			this.conversationArea.append(this.activeStreamingBlock);
+		} else {
+			this.activeStreamingBlock = null;
+		}
 	}
 
 
@@ -227,6 +234,7 @@ class AIManagerHistory {
 			};
 			
 			element.finalize = (fullResponse, finalizedMessage) => {
+				this.activeStreamingBlock = null; // Clear active streaming reference
 				element.updateContent(fullResponse);
 				const deleteIcon = element.querySelector(".delete-raw-item");
 				if (deleteIcon) {
@@ -236,6 +244,7 @@ class AIManagerHistory {
 					};
 				}
 			};
+			this.activeStreamingBlock = element;
 			return element;
 		} else {
 			const responseBlock = new Block();
@@ -249,11 +258,13 @@ class AIManagerHistory {
 			};
 			
 			responseBlock.finalize = (fullResponse, finalizedMessage) => {
+				this.activeStreamingBlock = null; // Clear active streaming reference
 				responseBlock.innerHTML = this.manager.messageRenderer.renderResponseContent(fullResponse, finalizedMessage);
 				this.manager.messageRenderer.addCodeBlockButtons(responseBlock, finalizedMessage);
 				const deleteButton = this._createSingleDeleteButton(messageId);
 				responseBlock.append(deleteButton);
 			};
+			this.activeStreamingBlock = responseBlock;
 			return responseBlock;
 		}
 	}

@@ -397,9 +397,9 @@
 }
 
 .loading-spinner {
-    width: 32px;
-    height: 32px;
-    border: 4px solid var(--border-secondary);
+    width: 16px;
+    height: 16px;
+    border: 2px solid var(--border-secondary);
     border-top-color: var(--theme); /* The top border of the loading spinner should be the theme color. */
     border-radius: 50%;
     animation: spin-simple 1s linear infinite;
