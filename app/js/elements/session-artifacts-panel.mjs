@@ -1,4 +1,5 @@
 import { Block } from './element.mjs';
+import { Button } from './button.mjs';
 import conduitClient from '../conduit-client.mjs';
 import workspaceClient from '../workspace-client.mjs';
 
@@ -31,16 +32,10 @@ export class UIAccordion extends Block {
 
         this.editBtn = null;
         if (hasEditButton) {
-            this.editBtn = document.createElement("button");
-            this.editBtn.className = `${editBtnClass} theme-button secondary edit-btn`;
+            this.editBtn = new Button("Edit");
+            this.editBtn.className = `${editBtnClass} edit-btn`;
+            this.editBtn.icon = "edit";
 
-            const editIcon = document.createElement("ui-icon");
-            editIcon.textContent = "edit";
-            const editLabel = document.createElement("span");
-            editLabel.textContent = "Edit";
-
-            this.editBtn.appendChild(editIcon);
-            this.editBtn.appendChild(editLabel);
             this.rightContainer.appendChild(this.editBtn);
         }
 
@@ -241,15 +236,9 @@ export class SessionArtifactsPanel extends Block {
             if (!session) return;
 
             if (!this.planEditorInstance) {
-                this.planBtn.innerHTML = "";
-                const saveIcon = document.createElement("ui-icon");
-                saveIcon.textContent = "save";
-                const saveLabel = document.createElement("span");
-                saveLabel.textContent = "Save";
-                this.planBtn.appendChild(saveIcon);
-                this.planBtn.appendChild(saveLabel);
-                this.planBtn.style.color = "var(--theme)";
-                this.planBtn.style.borderColor = "var(--theme)";
+                this.planBtn.text = "Save";
+                this.planBtn.icon = "save";
+                this.planBtn.className = "apply";
 
                 const currentHeight = this.planContent.offsetHeight;
                 const rawMarkdown = session.implementationPlan || "";
@@ -290,15 +279,9 @@ export class SessionArtifactsPanel extends Block {
                     ? ui.aiManager.md.render(newValue)
                     : `<span class="empty-state">No implementation plan defined. Cadence will outline one once active.</span>`;
 
-                this.planBtn.innerHTML = "";
-                const editIcon = document.createElement("ui-icon");
-                editIcon.textContent = "edit";
-                const editLabel = document.createElement("span");
-                editLabel.textContent = "Edit";
-                this.planBtn.appendChild(editIcon);
-                this.planBtn.appendChild(editLabel);
-                this.planBtn.style.color = "";
-                this.planBtn.style.borderColor = "";
+                this.planBtn.text = "Edit";
+                this.planBtn.icon = "edit";
+                this.planBtn.className = "edit-plan-btn";
             }
         };
     }
@@ -324,15 +307,9 @@ export class SessionArtifactsPanel extends Block {
             if (!session) return;
 
             if (!this.tasksEditorInstance) {
-                this.tasksBtn.innerHTML = "";
-                const saveIcon = document.createElement("ui-icon");
-                saveIcon.textContent = "save";
-                const saveLabel = document.createElement("span");
-                saveLabel.textContent = "Save";
-                this.tasksBtn.appendChild(saveIcon);
-                this.tasksBtn.appendChild(saveLabel);
-                this.tasksBtn.style.color = "var(--theme)";
-                this.tasksBtn.style.borderColor = "var(--theme)";
+                this.tasksBtn.text = "Save";
+                this.tasksBtn.icon = "save";
+                this.tasksBtn.className = "apply";
 
                 const currentHeight = this.tasksContent.offsetHeight;
                 const rawMarkdown = session.taskList || "";
@@ -372,15 +349,9 @@ export class SessionArtifactsPanel extends Block {
                     ? ui.aiManager.md.render(newValue)
                     : `<span class="empty-state">No task list defined. Cadence will build one once active.</span>`;
 
-                this.tasksBtn.innerHTML = "";
-                const editIcon = document.createElement("ui-icon");
-                editIcon.textContent = "edit";
-                const editLabel = document.createElement("span");
-                editLabel.textContent = "Edit";
-                this.tasksBtn.appendChild(editIcon);
-                this.tasksBtn.appendChild(editLabel);
-                this.tasksBtn.style.color = "";
-                this.tasksBtn.style.borderColor = "";
+                this.tasksBtn.text = "Edit";
+                this.tasksBtn.icon = "edit";
+                this.tasksBtn.className = "edit-tasks-btn";
             }
         };
     }
@@ -435,15 +406,9 @@ export class SessionArtifactsPanel extends Block {
                 ? ui.aiManager.md.render(session.implementationPlan)
                 : `<span class="empty-state">No implementation plan defined. Cadence will outline one once active.</span>`;
 
-            this.planBtn.innerHTML = "";
-            const editIcon = document.createElement("ui-icon");
-            editIcon.textContent = "edit";
-            const editLabel = document.createElement("span");
-            editLabel.textContent = "Edit";
-            this.planBtn.appendChild(editIcon);
-            this.planBtn.appendChild(editLabel);
-            this.planBtn.style.color = "";
-            this.planBtn.style.borderColor = "";
+            this.planBtn.text = "Edit";
+            this.planBtn.icon = "edit";
+            this.planBtn.className = "edit-plan-btn";
         }
 
         // Render tasks content if not editing
@@ -452,15 +417,9 @@ export class SessionArtifactsPanel extends Block {
                 ? ui.aiManager.md.render(session.taskList)
                 : `<span class="empty-state">No task list defined. Cadence will build one once active.</span>`;
 
-            this.tasksBtn.innerHTML = "";
-            const editIcon = document.createElement("ui-icon");
-            editIcon.textContent = "edit";
-            const editLabel = document.createElement("span");
-            editLabel.textContent = "Edit";
-            this.tasksBtn.appendChild(editIcon);
-            this.tasksBtn.appendChild(editLabel);
-            this.tasksBtn.style.color = "";
-            this.tasksBtn.style.borderColor = "";
+            this.tasksBtn.text = "Edit";
+            this.tasksBtn.icon = "edit";
+            this.tasksBtn.className = "edit-tasks-btn";
         }
 
         // Render modified file backups list using programmatic DOM manipulation
@@ -515,29 +474,13 @@ export class SessionArtifactsPanel extends Block {
                 timeSpan.className = "backup-time";
                 timeSpan.textContent = formatTime(latestBackup.timestamp);
 
-                const btn = document.createElement("button");
-                btn.className = "rollback-btn theme-button secondary";
+                const btn = new Button("Rollback");
+                btn.icon = "undo";
+                btn.className = "rollback secondary";
 
-                const btnIcon = document.createElement("ui-icon");
-                btnIcon.textContent = "undo";
-
-                const btnLabel = document.createElement("span");
-                btnLabel.textContent = "Rollback";
-
-                btn.appendChild(btnIcon);
-                btn.appendChild(btnLabel);
-
-                const reviewBtn = document.createElement("button");
-                reviewBtn.className = "review-btn theme-button secondary";
-
-                const reviewBtnIcon = document.createElement("ui-icon");
-                reviewBtnIcon.textContent = "visibility";
-
-                const reviewBtnLabel = document.createElement("span");
-                reviewBtnLabel.textContent = "Review";
-
-                reviewBtn.appendChild(reviewBtnIcon);
-                reviewBtn.appendChild(reviewBtnLabel);
+                const reviewBtn = new Button("Review");
+                reviewBtn.icon = "visibility";
+                reviewBtn.className = "secondary";
 
                 reviewBtn.onclick = async () => {
                     if (window.ui && window.ui.fileList && window.ui.fileList.open) {
@@ -564,9 +507,8 @@ export class SessionArtifactsPanel extends Block {
                 btn.onclick = async () => {
                     try {
                         btn.disabled = true;
-                        btnIcon.className = "spinner";
-                        btnIcon.textContent = "sync";
-                        btnLabel.textContent = "Rolling back...";
+                        btn.text = "Rolling back...";
+                        btn.icon = "sync";
 
                         // 1. Revert content in AgentBackup
                         const { default: AgentBackup } = await import('../agent/agent-backup.mjs');
@@ -614,9 +556,8 @@ export class SessionArtifactsPanel extends Block {
                         console.error("Rollback failed:", err);
                         window.modal.notice(`Rollback failed:<br><small>${err.message}</small>`, "Rollback Error");
                         btn.disabled = false;
-                        btnIcon.className = "";
-                        btnIcon.textContent = "undo";
-                        btnLabel.textContent = "Rollback";
+                        btn.text = "Rollback";
+                        btn.icon = "undo";
                     }
                 };
 
