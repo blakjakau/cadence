@@ -58,7 +58,7 @@ export const tools = [
     },
     {
         name: "search_in_file",
-        description: "Search for an exact string within a specific file.",
+        description: "Search for an exact string within a specific file (case-insensitive).",
         parameters: {
             type: "object",
             properties: {

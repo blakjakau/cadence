@@ -675,8 +675,9 @@ class AgentTools {
 
             const lines = content.split('\n');
             const matches = [];
+            const lowerQuery = query.toLowerCase();
             for (let i = 0; i < lines.length; i++) {
-                if (lines[i].includes(query)) {
+                if (lines[i].toLowerCase().includes(lowerQuery)) {
                     matches.push(i);
                 }
             }
