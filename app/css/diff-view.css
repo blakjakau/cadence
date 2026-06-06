@@ -1,0 +1,272 @@
+/* --- ui-diff-view-panel (DiffViewPanel) --- */
+ui-diff-view-panel {
+    display: flex;
+    flex-direction: column;
+    position: absolute;
+    top: var(--tabHeight);
+    left: 0;
+    right: 0;
+    bottom: 0;
+    overflow: hidden;
+    background: var(--bg-primary);
+    z-index: 2;
+    pointer-events: auto !important;
+}
+
+ui-diff-view-panel .diff-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 16px;
+    background: var(--theme);
+    border-bottom: 1px solid var(--border-primary);
+    height: var(--menuHeight);
+    min-height: var(--menuHeight);
+    box-sizing: border-box;
+}
+
+ui-diff-view-panel .diff-header ui-button {
+    background: var(--theme-dark, rgba(0, 0, 0, 0.33));
+    color: #ffffff;
+    border: none;
+    min-height: 23px;
+    height: 23px;
+    font-size: 11px;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-weight: 600;
+}
+ui-diff-view-panel .diff-header ui-button[active] {
+    background: var(--bg-tertiary, rgba(0, 0, 0, 0.66));
+}
+
+ui-diff-view-panel .diff-header-left {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-primary);
+    overflow: hidden;
+}
+
+ui-diff-view-panel .diff-header-title {
+    text-overflow: ellipsis;
+    overflow: hidden;
+    white-space: nowrap;
+}
+
+ui-diff-view-panel .diff-header-right {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+ui-diff-view-panel .diff-header-right ui-button.rollback {
+    background: var(--theme-dark, rgba(0, 0, 0, 0.33));
+    color: #ffffff;
+    border: none;
+}
+
+ui-diff-view-panel .diff-header-right ui-button.discard,
+ui-diff-view-panel .diff-header-right ui-button.cancel {
+    background: var(--bg-tertiary, rgba(0, 0, 0, 0.66));
+    color: var(--text-primary);
+    border: 1px solid var(--border-primary);
+}
+
+ui-diff-view-panel .diff-header-right ui-button.apply {
+    background: #2da44e;
+    color: #ffffff;
+    border: none;
+}
+
+ui-diff-view-panel .diff-split-container {
+    display: flex;
+    height: calc(100% - var(--menuHeight));
+    width: 100%;
+    overflow: hidden;
+    position: relative;
+    pointer-events: auto !important;
+}
+
+ui-diff-view-panel .diff-pane {
+    flex: 1;
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    position: relative;
+    pointer-events: auto !important;
+}
+
+ui-diff-view-panel .diff-pane.left-pane {
+    border-right: 1px solid var(--border-primary);
+}
+
+ui-diff-view-panel .diff-pane-label {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 6px 12px;
+    font-size: 11px;
+    font-weight: 600;
+    background: var(--bg-secondary);
+    color: var(--text-secondary);
+    border-bottom: 1px solid var(--border-primary);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+ui-diff-view-panel .diff-header-nav {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
+ui-diff-view-panel .diff-header-nav.toggle-container {
+    margin-left: 16px;
+}
+
+ui-diff-view-panel .diff-header-nav.nav-container {
+    display: none;
+    align-items: center;
+}
+
+ui-diff-view-panel .diff-header-nav.nav-container.visible {
+    display: flex;
+}
+
+ui-diff-view-panel .diff-header-nav button.nav-btn {
+    font-size: 11px;
+    font-weight: 600;
+    padding: 2px 8px;
+    height: 24px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(0, 0, 0, 0.33);
+    color: var(--text-primary);
+    border: 1px solid var(--border-primary);
+    border-radius: 4px;
+    cursor: pointer;
+}
+
+ui-diff-view-panel .diff-header-nav button.nav-btn[active] {
+    background: var(--theme-dark);
+    color: white;
+}
+
+ui-diff-view-panel .diff-header-nav button.nav-btn:hover {
+    background: var(--bg-tertiary);
+}
+
+ui-diff-view-panel .diff-header-nav button.nav-btn ui-icon {
+    font-size: 14px !important;
+    margin-right: 4px !important;
+    color: inherit !important;
+}
+
+ui-diff-view-panel .diff-header-nav .diff-edit-count {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--theme-dark);
+    font-family: monospace;
+}
+
+ui-diff-view-panel .diff-ace-editor-left,
+ui-diff-view-panel .diff-ace-editor-right {
+    position: absolute !important;
+    top: 28px !important;
+    bottom: 0px !important;
+    left: 0px !important;
+    right: 4px !important;
+    pointer-events: auto !important;
+}
+
+ui-diff-view-panel .diff-marker-addition {
+    position: absolute;
+    background-color: rgba(46, 160, 67, 0.18) !important;
+    z-index: 20;
+}
+
+ui-diff-view-panel .diff-marker-deletion {
+    position: absolute;
+    background-color: rgba(248, 81, 73, 0.18) !important;
+    z-index: 20;
+}
+
+ui-diff-view-panel .diff-marker-empty {
+    position: absolute;
+    background-color: rgba(128, 128, 128, 0.05) !important;
+    background-image: repeating-linear-gradient(
+        45deg,
+        rgba(0, 0, 0, 0.03),
+        rgba(0, 0, 0, 0.03) 10px,
+        transparent 10px,
+        transparent 20px
+    ) !important;
+    z-index: 20;
+}
+
+ui-diff-view-panel .diff-gutter-addition {
+    background-color: rgba(46, 160, 67, 0.3) !important;
+    color: #2da44e !important;
+    font-weight: bold;
+}
+
+ui-diff-view-panel .diff-gutter-deletion {
+    background-color: rgba(248, 81, 73, 0.3) !important;
+    color: #cf222e !important;
+    font-weight: bold;
+}
+
+ui-diff-view-panel .diff-gutter-empty {
+    background-color: rgba(128, 128, 128, 0.1) !important;
+    opacity: 0.5;
+}
+
+ui-diff-view-panel .diff-scrollbar-marker-overlay {
+    position: absolute;
+    right: 8px;
+    top: 0;
+    bottom: 0;
+    width: 3px;
+    pointer-events: none;
+    z-index: 100;
+}
+
+ui-diff-view-panel .diff-scrollbar-marker {
+    position: absolute;
+    left: 0;
+    right: 0;
+    height: 3px;
+    border-radius: 1px;
+    z-index: 101;
+    box-shadow: 0 0.5px 1px rgba(0, 0, 0, 0.4);
+}
+
+ui-diff-view-panel .diff-counter {
+    font-size: 10px;
+    font-family: var(--font-mono);
+    font-weight: 700;
+    padding: 1px 5px;
+    border-radius: 3px;
+    margin-left: 6px;
+    display: inline-block;
+    vertical-align: middle;
+}
+
+ui-diff-view-panel .diff-counter-delete {
+    background-color: rgba(248, 81, 73, 0.15);
+    color: #f85149;
+    border: 1px solid rgba(248, 81, 73, 0.2);
+}
+
+ui-diff-view-panel .diff-counter-add {
+    background-color: rgba(46, 160, 67, 0.15);
+    color: #3fb950;
+    border: 1px solid rgba(46, 160, 67, 0.2);
+}

@@ -1,0 +1,94 @@
+/* --- ui-editor-holder (EditorHolder) unified notice and header bar --- */
+.editor-header-bar {
+    display: none;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 16px;
+    background: var(--bg-secondary);
+    border-bottom: 1px solid var(--border-secondary);
+    height: var(--menuHeight);
+    min-height: var(--menuHeight);
+    box-sizing: border-box;
+    position: absolute;
+    top: var(--tabHeight);
+    left: 0;
+    right: 0;
+    z-index: 10;
+}
+
+.editor-header-bar .left-side {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-primary);
+    overflow: hidden;
+}
+
+.editor-header-bar .left-side ui-icon {
+    font-size: 16px;
+}
+
+.editor-header-bar .left-side span {
+    text-overflow: ellipsis;
+    overflow: hidden;
+    white-space: nowrap;
+    font-size: 13px;
+}
+
+.editor-header-bar .right-side {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.editor-header-bar button {
+    padding: 4px 12px;
+    font-size: 11px;
+    cursor: pointer;
+    border-radius: 4px;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    box-sizing: border-box;
+}
+
+.editor-header-bar button.primary {
+    background: var(--theme-dark);
+    color: #ffffff;
+    border: none;
+}
+
+.editor-header-bar button.secondary {
+    background: rgba(0, 0, 0, 0.33);
+    color: #ffffff;
+    border: none;
+}
+
+.editor-header-bar button.cancel {
+    background: rgba(0, 0, 0, 0.66);
+    color: var(--text-primary);
+    border: 1px solid var(--border-primary);
+}
+
+.editor-header-bar.modified-external,
+.editor-header-bar.pending-changes,
+.editor-header-bar.rollback-protected,
+.editor-header-bar.user-changes {
+    background: var(--theme);
+}
+
+.editor-header-bar.modified-external {
+    border-bottom: 1px solid #d97706;
+}
+
+.editor-header-bar.pending-changes {
+    border-bottom: 1px solid #10b981;
+}
+
+.editor-header-bar.rollback-protected,
+.editor-header-bar.user-changes {
+    border-bottom: 1px solid var(--theme);
+}

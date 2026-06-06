@@ -1,0 +1,18 @@
+ui-session-artifacts-panel ui-button {
+    background: var(--theme-dark, rgba(0, 0, 0, 0.33));
+    color: #ffffff;
+    border: none;
+    min-height: 23px;
+    height: 23px;
+    font-size: 11px;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-weight: 600;
+}
+
+ui-session-artifacts-panel ui-button[active] {
+    background: var(--bg-tertiary, rgba(0, 0, 0, 0.66));
+}
