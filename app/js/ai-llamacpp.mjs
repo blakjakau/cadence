@@ -204,6 +204,43 @@ class LlamaCpp extends AI {
         return formattedMessages;
     }
 
+    async tokenize(content) {
+        if (!this.config.server) return null;
+        try {
+            let textToTokenize = "";
+            if (typeof content === 'string') {
+                textToTokenize = content;
+            } else if (Array.isArray(content)) {
+                const formatted = this._formatChatMessages(content);
+                textToTokenize = formatted.map(m => `<|im_start|>${m.role}\n${m.content || ''}<|im_end|>`).join('\n');
+            } else {
+                return null;
+            }
+
+            let response = await fetch(`${this.config.server}/tokenize`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ content: textToTokenize })
+            });
+            if (!response.ok) {
+                response = await fetch(`${this.config.server}/v1/tokenize`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ content: textToTokenize })
+                });
+            }
+            if (response.ok) {
+                const data = await response.json();
+                if (data.tokens && Array.isArray(data.tokens)) {
+                    return data.tokens.length;
+                }
+            }
+        } catch (e) {
+            console.warn("[Llama.cpp] tokenize failed:", e.message);
+        }
+        return null;
+    }
+
     async generate(prompt, callbacks = {}) {
         const messages = [{ role: "user", content: prompt }];
         return this.chat(messages, callbacks);

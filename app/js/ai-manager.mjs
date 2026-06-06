@@ -113,7 +113,6 @@ class AIManager {
 		this.planningMode = false; // NEW: Toggle planning mode
 		this.planningModeToggle = null;
 		this.forgivenessMode = false; // NEW: Toggle Permission vs Forgiveness mode
-		this.isPaused = false; // NEW: Track if agent is paused
 		this.rawViewMode = false; // NEW: Tracks alternate expander raw view
 		this.rawViewButton = null;
 		this.autoContinue = localStorage.getItem("aiAutoContinue") === "true"; // NEW: Auto-continue on agent loop halt
@@ -376,9 +375,10 @@ class AIManager {
 
 		this.chatContainer = new Block();
 		this.chatContainer.classList.add('ai-chat-container');
+		this.undulatingGlow = this._createUndulatingGlow();
 		this.editBufferDisplay = this._createEditBufferDisplay();
 		this._emptyStateElement = this._createEmptyStateElement();
-		this.chatContainer.append(fileBarContainer, this.editBufferDisplay, this.conversationArea, this._emptyStateElement);
+		this.chatContainer.append(fileBarContainer, this.editBufferDisplay, this.conversationArea, this._emptyStateElement, this.undulatingGlow);
 
 		// Listen for file focus requests from chips in the conversation area
 		this.chatContainer.addEventListener('file-focus-request', async (e) => {
@@ -481,10 +481,56 @@ class AIManager {
 		progressBar.setAttribute("title", "Context window utilization")
 		progressBar.style.display = "block" // Now always visible
 
+		// Full thread/history bar (background layer)
+		const progressBarFullHistory = document.createElement("div")
+		progressBarFullHistory.classList.add("progress-bar-full-history")
+		progressBar.appendChild(progressBarFullHistory)
+
+		// Active window/message bar (foreground layer)
 		const progressBarInner = document.createElement("div")
 		progressBarInner.classList.add("progress-bar-inner")
 		progressBar.appendChild(progressBarInner)
 		return progressBar;
+	}
+
+	_createUndulatingGlow() {
+		const container = document.createElement('div');
+		container.classList.add('undulating-glow-container');
+
+		const canvas = document.createElement('div');
+		canvas.classList.add('undulating-glow-canvas');
+
+		const blobs = [];
+		for (let i = 1; i <= 8; i++) {
+			const blob = document.createElement('div');
+			blob.classList.add('glow-blob', `glow-blob-${i}`);
+			blobs.push(blob);
+		}
+
+		container.append(canvas, ...blobs);
+		return container;
+	}
+
+	_startGlow() {
+		if (this.undulatingGlow) {
+			this.undulatingGlow.classList.add('active');
+		}
+		if (this.conversationArea) {
+			const shouldScroll = this._shouldAutoScroll();
+			this.conversationArea.classList.add('glow-active');
+			if (shouldScroll) {
+				this.conversationArea.scrollTop = this.conversationArea.scrollHeight;
+			}
+		}
+	}
+
+	_stopGlow() {
+		if (this.undulatingGlow) {
+			this.undulatingGlow.classList.remove('active');
+		}
+		if (this.conversationArea) {
+			this.conversationArea.classList.remove('glow-active');
+		}
 	}
 
 	/**
@@ -542,16 +588,9 @@ class AIManager {
 		this.stopButton.innerHTML = `<ui-icon>stop</ui-icon> Stop`;
 		this.stopButton.onclick = () => this.stopAgent();
 
-		this.pauseButton = document.createElement("button");
-		this.pauseButton.className = "agentic-pause-btn pause-btn";
-		this.pauseButton.style.display = "none";
-		this.pauseButton.innerHTML = `<ui-icon>pause</ui-icon> Pause`;
-		this.pauseButton.onclick = () => this.isPaused ? this.resumeAgent() : this.pauseAgent();
-
 		const spacer = document.createElement("div");
 		buttonContainer.append(spacer)
 		buttonContainer.append(this.stopButton)
-		buttonContainer.append(this.pauseButton)
 		
 		if (this.submitButton) {
 			buttonContainer.append(this.submitButton)
@@ -825,10 +864,6 @@ class AIManager {
 			this.stopButton.style.display = this._isProcessing ? 'flex' : 'none';
 		}
 
-		if (this.pauseButton) {
-			this.pauseButton.style.display = this._isProcessing ? 'flex' : 'none';
-		}
-
 		// Also disable all history delete buttons while processing
 		if (this.conversationArea) {
 			this.conversationArea.querySelectorAll('.delete-history-button').forEach(btn => btn.disabled = disabled);
@@ -931,22 +966,35 @@ class AIManager {
 		if (this.progressBar && this.ai) {
 			const { estimatedWindow, estimatedTokensFullHistory, maxContextTokens } = detail
 			const progressBarInner = this.progressBar.querySelector(".progress-bar-inner")
+			const progressBarFullHistory = this.progressBar.querySelector(".progress-bar-full-history")
 
 			// Only show progress bar if AI is configured, otherwise hide or set to 0
 			if (this.ai.isConfigured() && maxContextTokens > 0) {
 				this.progressBar.style.display = "block";
-				const percentage = Math.min(100, (estimatedWindow / maxContextTokens) * 100)
-				progressBarInner.style.width = `${percentage}%`
+				
+				// Calculate active window (active message tokens) percentage
+				const percentageWindow = Math.min(100, (estimatedWindow / maxContextTokens) * 100)
+				progressBarInner.style.width = `${percentageWindow}%`
+				this._updateProgressBarColor(progressBarInner, percentageWindow)
+
+				// Calculate full history (whole thread tokens) percentage
+				const percentageFull = Math.min(100, (estimatedTokensFullHistory / maxContextTokens) * 100)
+				if (progressBarFullHistory) {
+					progressBarFullHistory.style.width = `${percentageFull}%`
+					this._updateProgressBarColor(progressBarFullHistory, percentageFull)
+				}
+
 				this.progressBar.setAttribute(
 					"title",
-					`Context: ${estimatedWindow} / ${maxContextTokens} tokens (${Math.round(percentage)}%)`
+					`Context: Active ${estimatedWindow} t (${Math.round(percentageWindow)}%) | Total ${estimatedTokensFullHistory} t (${Math.round(percentageFull)}%) / Max ${maxContextTokens} t`
 				)
-				this._updateProgressBarColor(progressBarInner, percentage)
 			} else {
 				this.progressBar.style.display = "none"; // Hide progress bar if not configured
 				progressBarInner.style.width = "0%";
+				if (progressBarFullHistory) progressBarFullHistory.style.width = "0%";
 				this.progressBar.setAttribute("title", `AI not configured or max tokens unknown.`);
 				this._updateProgressBarColor(progressBarInner, 0); // Reset color
+				if (progressBarFullHistory) this._updateProgressBarColor(progressBarFullHistory, 0);
 			}
 		}
 		// AI Info Display is updated by _updateAIInfoDisplay() directly.
@@ -1095,6 +1143,12 @@ class AIManager {
 		this._setButtonsDisabledState(this._isProcessing);
 
 		this.panel.dispatchEvent(new CustomEvent("context-update", { detail: eventDetail }))
+
+		if (this.activeSession && type !== "session_deleted" && type !== "session_closed" && type !== "tokens_updated") {
+			this.historyManager.updateMessageTokenCounts(this.activeSession).catch(err => {
+				console.warn("[AIManager] Failed to update background token counts:", err);
+			});
+		}
 	}
 
 	stopAgent() {
@@ -1102,6 +1156,7 @@ class AIManager {
 		if (this.ai && typeof this.ai.stop === 'function') {
 			this.ai.stop();
 		}
+		this._stopGlow();
 		this._isProcessing = false;
 		this._setButtonsDisabledState(false);
 		this.consecutiveHaltCount = 0;
@@ -1109,18 +1164,6 @@ class AIManager {
 			this.haltBar.remove();
 			this.haltBar = null;
 		}
-	}
-
-	pauseAgent() {
-		this.isPaused = true;
-		this.pauseButton.innerHTML = `<ui-icon>play_arrow</ui-icon> Resume`;
-		this.pauseButton.classList.replace("pause-btn", "resume-btn");
-	}
-
-	resumeAgent() {
-		this.isPaused = false;
-		this.pauseButton.innerHTML = `<ui-icon>pause</ui-icon> Pause`;
-		this.pauseButton.classList.replace("resume-btn", "pause-btn");
 	}
 
 	_showHaltBar(modelMessageId, responseBlock, warnBlock) {
@@ -1419,10 +1462,7 @@ class AIManager {
 		// Prepare placeholder for AI response
 		const modelMessageId = crypto.randomUUID(); // Pre-generate ID for the upcoming model response
 		const responseBlock = this.historyManager.createStreamingBlock(modelMessageId);
-		const spinner = this._createSpinner(); // Create the new spinner
-		if (!this.rawViewMode) {
-			responseBlock.append(spinner); // Add spinner to the response block only in standard mode
-		}
+		this._startGlow();
 		// NEW: Set a temporary min-height to ensure the scroll area is large enough
 		this.conversationArea.append(responseBlock);
 		responseBlock.style.minHeight = `${Math.max(50, availableHeightForResponse)}px`; // Ensure a minimum of 50px
@@ -1438,7 +1478,7 @@ class AIManager {
 
 		const callbacks = {
 			onUpdate: (fullResponse) => { // Update the responseBlock directly
-				if (spinner.parentNode) spinner.remove(); // Remove spinner on first stream chunk
+				this._stopGlow(); // Stop glow on first stream chunk
 				const shouldScroll = this._shouldAutoScroll();
 				responseBlock.updateContent(fullResponse);
 				if (shouldScroll && this.conversationArea) {
@@ -1446,6 +1486,7 @@ class AIManager {
 				}
 			},
 			onDone: async (fullResponse, contextRatioPercent) => { // Mark async to await set
+				this._stopGlow();
 				// First, update the session data and add the delete button to the user's prompt.
 				const modelMessage = { id: modelMessageId, role: "model", type: "model", content: fullResponse, diffStatuses: [], timestamp: Date.now() };
 				if (callbacks.toolCalls && callbacks.toolCalls.length > 0) {
@@ -1607,6 +1648,7 @@ class AIManager {
 				this._setButtonsDisabledState(false) // Re-enable buttons
 			},
 			onError: async (error) => { // Mark async to await set
+				this._stopGlow();
 				// The spinner is also removed here when innerHTML is overwritten.
 				responseBlock.style.minHeight = ''; // Reset min-height on error too
 				if (typeof responseBlock.updateContent === 'function') {
@@ -1872,10 +1914,7 @@ class AIManager {
 
 			const modelMessageId = crypto.randomUUID();
 			const responseBlock = this.historyManager.createStreamingBlock(modelMessageId);
-			const spinner = this._createSpinner();
-			if (!this.rawViewMode) {
-				responseBlock.append(spinner);
-			}
+			this._startGlow();
 			const shouldScrollAtStart = this._shouldAutoScroll();
 			this.conversationArea.append(responseBlock);
 
@@ -1896,7 +1935,7 @@ class AIManager {
 					onUpdate: (fullResponse) => {
 						if (streamForciblyEnded) return;
 						currentFullResponse = fullResponse;
-						if (spinner.parentNode) spinner.remove();
+						this._stopGlow();
 						const shouldScroll = this._shouldAutoScroll();
 						responseBlock.updateContent(fullResponse);
 						if (shouldScroll && this.conversationArea) {
@@ -1919,10 +1958,12 @@ class AIManager {
 					onDone: async (fullResponse) => {
 						if (streamForciblyEnded) return;
 						currentFullResponse = fullResponse;
+						this._stopGlow();
 						const finalizedResponse = await this._finalizeModelMessage(fullResponse, null, callbacks, modelMessageId, responseBlock);
 						resolve(finalizedResponse);
 					},
 					onError: async (err) => {
+						this._stopGlow();
 						// Stream forcibly ended logic is now handled in onUpdate directly.
 						if (streamForciblyEnded) {
 							// We shouldn't hit this, but just in case, resolve without saving twice.
@@ -2578,10 +2619,7 @@ class AIManager {
 
 		const modelMessageId = crypto.randomUUID();
 		const responseBlock = this.historyManager.createStreamingBlock(modelMessageId);
-		const spinner = this._createSpinner();
-		if (!this.rawViewMode) {
-			responseBlock.append(spinner);
-		}
+		this._startGlow();
 		this.conversationArea.append(responseBlock);
 		responseBlock.style.minHeight = `${Math.max(50, availableHeightForResponse)}px`;
 
@@ -2593,7 +2631,7 @@ class AIManager {
 
 		const callbacks = {
 			onUpdate: (fullResponse) => {
-				if (spinner.parentNode) spinner.remove();
+				this._stopGlow();
 				const shouldScroll = this._shouldAutoScroll();
 				responseBlock.updateContent(fullResponse);
 				if (shouldScroll && this.conversationArea) {
@@ -2601,6 +2639,7 @@ class AIManager {
 				}
 			},
 			onDone: async (fullResponse) => {
+				this._stopGlow();
 				const modelMessage = { id: modelMessageId, role: "model", type: "model", content: fullResponse, diffStatuses: [], timestamp: Date.now() };
 				if (callbacks.toolCalls && callbacks.toolCalls.length > 0) {
 					modelMessage.toolCalls = callbacks.toolCalls;
@@ -2760,6 +2799,7 @@ class AIManager {
 				this._setButtonsDisabledState(false);
 			},
 			onError: async (error) => {
+				this._stopGlow();
 				responseBlock.style.minHeight = '';
 				if (typeof responseBlock.updateContent === 'function') {
 					responseBlock.updateContent(`Error: ${error.message}`);

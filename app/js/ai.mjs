@@ -446,24 +446,42 @@ export default class AI {
      * @param {string | Array<Object>} messages The text string or array of messages.
      * @returns {number} Estimated token count.
      */
+    async tokenize(content) {
+        return null;
+    }
+
+	/**
+     * Estimates the token count for a given text or array of messages.
+     * This is a very rough character-based estimate (e.g., 1 token per 3.2 characters)
+     * used when a precise token counting API is not available.
+     * @param {string | Array<Object>} messages The text string or array of messages.
+     * @returns {number} Estimated token count.
+     */
     estimateTokens(messages) {
         if (typeof messages === 'string') {
-            return Math.ceil(messages.length / 4);
+            return Math.ceil(messages.length / 3.2);
         } else if (Array.isArray(messages)) {
             let totalLength = 0;
+            let totalTokens = 0;
             for (const msg of messages) {
+                // If it already has an exact tokenCount, use it directly!
+                if (typeof msg.tokenCount === 'number') {
+                    totalTokens += msg.tokenCount;
+                    continue;
+                }
+
                 // IMPORTANT: Only count content that would be sent to the AI
                 // The `type: 'error'` or `type: 'system_message'` should not contribute to AI tokens.
-                if (msg.role === 'user' || msg.role === 'model') {
-                    totalLength += (msg.content || '').length;
-                } else if (msg.type === 'file_context' && msg.content) {
+                if (msg.type === 'file_context' && msg.content) {
                     // Include context messages, also consider the "framing" text like filename and code block markers
                     // This estimation should match how _prepareMessagesForAI formats file_context for AI (using the full path from msg.id)
-                    const fileContentForAI = `--- File: ${msg.id} ---\n\`\`\`${msg.language}\n${msg.content}\n\`\`\``;
+                    const fileContentForAI = `--- File: ${msg.id || msg.filename || 'unknown'} ---\n\`\`\`${msg.language || ''}\n${msg.content}\n\`\`\``;
                     totalLength += fileContentForAI.length;
+                } else if (msg.role === 'user' || msg.role === 'model' || msg.role === 'assistant' || msg.role === 'system' || msg.role === 'tool') {
+                    totalLength += (msg.content || '').length;
                 }
             }
-            return Math.ceil(totalLength / 4);
+            return totalTokens + Math.ceil(totalLength / 3.2);
         }
         return 0;
     }

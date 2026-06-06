@@ -302,8 +302,9 @@ export default class AIManagerMessageRenderer {
 
         if (parsed.taskListBlock) {
             const tasksText = content.substring(parsed.taskListBlock.contentStartIdx, parsed.taskListBlock.contentEndIdx).trim();
-            if (isNew && tasksText && this.aiManager.activeSession && this.aiManager.activeSession.taskList !== tasksText) {
-                this.aiManager.activeSession.taskList = tasksText;
+            const formattedTasks = this.formatTaskList(tasksText);
+            if (isNew && formattedTasks && this.aiManager.activeSession && this.aiManager.activeSession.taskList !== formattedTasks) {
+                this.aiManager.activeSession.taskList = formattedTasks;
                 this.aiManager._updateAgentProgressPanel();
                 workspaceClient.setSession(this.aiManager.activeSession.id, this.aiManager.activeSession);
             }
@@ -371,6 +372,22 @@ export default class AIManagerMessageRenderer {
                 args[key] = val;
             }
 
+            // Parse unclosed tags at the end of the streaming tool args
+            const openTags = ['path', 'query', 'search', 'replace', 'content', 'plan', 'tasks', 'taskName', 'startLine', 'lineCount', 'startline', 'linecount'];
+            for (const tag of openTags) {
+                if (args[tag] === undefined) {
+                    const tagStartStr = `<${tag}>`;
+                    const idx = toolArgs.lastIndexOf(tagStartStr);
+                    if (idx !== -1) {
+                        const tagEndStr = `</${tag}>`;
+                        const endIdx = toolArgs.indexOf(tagEndStr, idx + tagStartStr.length);
+                        if (endIdx === -1) {
+                            args[tag] = toolArgs.substring(idx + tagStartStr.length);
+                        }
+                    }
+                }
+            }
+
             // Handle Project Management Tools
             if (toolName === "create_implementation_plan" || toolName === "update_task_list" || toolName === "complete_task") {
                 if (toolName === "create_implementation_plan" && args.plan) {
@@ -382,8 +399,9 @@ export default class AIManagerMessageRenderer {
                         planChanged = true;
                     }
 
-                    if (isNew && args.tasks && this.aiManager.activeSession && this.aiManager.activeSession.taskList !== args.tasks) {
-                        this.aiManager.activeSession.taskList = args.tasks;
+                    const formattedTasks = this.formatTaskList(args.tasks);
+                    if (isNew && formattedTasks && this.aiManager.activeSession && this.aiManager.activeSession.taskList !== formattedTasks) {
+                        this.aiManager.activeSession.taskList = formattedTasks;
                         tasksChanged = true;
                     }
 
@@ -400,8 +418,9 @@ export default class AIManagerMessageRenderer {
                         }
                     }
                 } else if (toolName === "update_task_list" && args.tasks) {
-                    if (isNew && this.aiManager.activeSession && this.aiManager.activeSession.taskList !== args.tasks) {
-                        this.aiManager.activeSession.taskList = args.tasks;
+                    const formattedTasks = this.formatTaskList(args.tasks);
+                    if (isNew && this.aiManager.activeSession && this.aiManager.activeSession.taskList !== formattedTasks) {
+                        this.aiManager.activeSession.taskList = formattedTasks;
                         this.aiManager._updateAgentProgressPanel();
                         workspaceClient.setSession(this.aiManager.activeSession.id, this.aiManager.activeSession);
                     }
@@ -532,6 +551,11 @@ export default class AIManagerMessageRenderer {
                         if (truncatedQuery) {
                             fileChipHtml += ` <span class="tool-call-query">"${this._escapeHtml(truncatedQuery)}"</span>`;
                         }
+                    } else if (toolName === "edit_file") {
+                        const searchLines = (args.search && args.search.length > 0) ? args.search.split('\n').length : 0;
+                        const replaceLines = (args.replace && args.replace.length > 0) ? args.replace.split('\n').length : 0;
+                        const badgeClass = isClosed ? "tool-call-lines-badge" : "tool-call-lines-badge streaming";
+                        fileChipHtml += ` <span class="${badgeClass}">[<span style="color: var(--color-success, #2ea44f);">+${replaceLines}</span> <span style="color: var(--color-error, #cf222e);">${searchLines > 0 ? `-${searchLines}` : '-0'}</span>]</span>`;
                     }
                     
                     label = `<code>${toolName}:</code> ${fileChipHtml}`;
@@ -791,5 +815,80 @@ export default class AIManagerMessageRenderer {
             result = result.substring(0, r.startIdx) + result.substring(r.endIdx);
         }
         return result;
+    }
+
+    formatTaskList(tasks) {
+        if (!tasks) return "";
+
+        // 1. If it's already an array, convert it to markdown checklist.
+        if (Array.isArray(tasks)) {
+            return tasks.map(t => {
+                const trimmed = String(t).trim();
+                // Check if it already starts with checkbox bullet
+                if (/^[-*]\s*\[[ xX]\]/.test(trimmed)) {
+                    return trimmed;
+                }
+                // Check if it starts with bullet without checkbox
+                if (/^[-*]\s+/.test(trimmed)) {
+                    return trimmed.replace(/^([-*])\s+/, '$1 [ ] ');
+                }
+                return `- [ ] ${trimmed}`;
+            }).join('\n');
+        }
+
+        // 2. If it's a string, see if it is a JSON array
+        if (typeof tasks === 'string') {
+            const trimmedTasks = tasks.trim();
+            if (trimmedTasks.startsWith('[') && trimmedTasks.endsWith(']')) {
+                try {
+                    const parsed = JSON.parse(trimmedTasks);
+                    if (Array.isArray(parsed)) {
+                        return this.formatTaskList(parsed);
+                    }
+                } catch (e) {
+                    // Not valid JSON, ignore and proceed
+                }
+            }
+
+            // If it already has checkboxes, return it as-is
+            if (trimmedTasks.includes('- [ ]') || trimmedTasks.includes('- [x]') || trimmedTasks.includes('- [X]') ||
+                trimmedTasks.includes('* [ ]') || trimmedTasks.includes('* [x]') || trimmedTasks.includes('* [X]')) {
+                return tasks;
+            }
+
+            // If it has bullet points without checkboxes, format them
+            if (/^[-*]\s+/m.test(trimmedTasks)) {
+                const lines = tasks.split('\n');
+                return lines.map(line => {
+                    const trimmedLine = line.trim();
+                    if (/^[-*]\s+/.test(trimmedLine)) {
+                        return trimmedLine.replace(/^([-*])\s+/, '$1 [ ] ');
+                    }
+                    if (trimmedLine.length > 0) {
+                        return `- [ ] ${trimmedLine}`;
+                    }
+                    return line;
+                }).join('\n');
+            }
+
+            // If it's just a multi-line string without bullets or checkboxes, turn it into checklist
+            if (trimmedTasks.includes('\n')) {
+                const lines = tasks.split('\n');
+                return lines.map(line => {
+                    const trimmedLine = line.trim();
+                    if (trimmedLine.length > 0) {
+                        return `- [ ] ${trimmedLine}`;
+                    }
+                    return line;
+                }).join('\n');
+            }
+            
+            // If it is a single-line string with no checkboxes/bullets, wrap it in checklist format
+            if (trimmedTasks.length > 0) {
+                return `- [ ] ${trimmedTasks}`;
+            }
+        }
+
+        return tasks;
     }
 }

@@ -489,6 +489,15 @@ class Gemini extends AI {
         }
     }
 
+    async tokenize(content) {
+        if (typeof content === 'string') {
+            return this._countTokens([{ role: 'user', content }]);
+        } else if (Array.isArray(content)) {
+            return this._countTokens(content);
+        }
+        return null;
+    }
+
     async _processApiResponseStream(reader, callbacks) {
         const { onUpdate, onError } = callbacks;
         let buffer = '';

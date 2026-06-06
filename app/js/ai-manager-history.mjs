@@ -230,7 +230,8 @@ class AIManagerHistory {
 				if (sizeSpan) {
 					const sizeInBytes = fullResponse ? new TextEncoder().encode(fullResponse).length : 0;
 					const sizeInKB = (sizeInBytes / 1024).toFixed(2);
-					sizeSpan.textContent = `(${sizeInKB} KB)`;
+					const estTokens = this.ai.estimateTokens(fullResponse);
+					sizeSpan.textContent = `(${sizeInKB} KB | ${estTokens} tokens)`;
 				}
 			};
 			
@@ -264,6 +265,9 @@ class AIManagerHistory {
 				this.manager.messageRenderer.addCodeBlockButtons(responseBlock, finalizedMessage);
 				const deleteButton = this._createSingleDeleteButton(messageId);
 				responseBlock.append(deleteButton);
+				
+				const tokenCount = typeof finalizedMessage.tokenCount === 'number' ? finalizedMessage.tokenCount : this.ai.estimateTokens([finalizedMessage]);
+				responseBlock.setAttribute("title", `Tokens: ${tokenCount}`);
 			};
 			this.activeStreamingBlock = responseBlock;
 			return responseBlock;
@@ -283,11 +287,13 @@ class AIManagerHistory {
 		}
 
 		let element;
+		const tokenCount = typeof message.tokenCount === 'number' ? message.tokenCount : this.ai.estimateTokens([message]);
 
 		if (message.type === "user") {
 			const wrapper = new Block();
 			wrapper.classList.add("prompt-pill-wrapper");
 			wrapper.dataset.messageId = message.id;
+			wrapper.setAttribute("title", `Tokens: ${tokenCount}`);
 
 			const messageBlock = new Block();
 			messageBlock.classList.add("prompt-pill");
@@ -306,6 +312,7 @@ class AIManagerHistory {
 			element.classList.add("response-block");
 			if (message.type === "error") element.classList.add("error-block");
 			element.dataset.messageId = message.id;
+			element.setAttribute("title", `Tokens: ${tokenCount}`);
 			element.innerHTML = this.manager.messageRenderer.renderResponseContent(message.content, message, isNew);
 			
 			const deleteButton = this._createSingleDeleteButton(message.id);
@@ -317,6 +324,7 @@ class AIManagerHistory {
 			element = new Block();
 			element.classList.add("system-message-block");
 			element.dataset.messageId = message.id;
+			element.setAttribute("title", `Tokens: ${tokenCount}`);
 			element.innerHTML = this.md.render(message.content);
 
 			const deleteButton = this._createSingleDeleteButton(message.id);
@@ -335,6 +343,7 @@ class AIManagerHistory {
 			element = new Block();
 			element.classList.add("task-state-block");
 			element.dataset.messageId = message.id;
+			element.setAttribute("title", `Tokens: ${tokenCount}`);
 			element.innerHTML = `<strong>Current Task:</strong><br>${this.md.render(message.content)}`;
 
 			const deleteButton = this._createSingleDeleteButton(message.id);
@@ -380,12 +389,13 @@ class AIManagerHistory {
 		const previewText = message.content ? message.content.substring(0, 40).replace(/\n/g, " ") : "";
 		const previewSuffix = (message.content && message.content.length > 40) ? "..." : "";
 
+		const tokenCount = typeof message.tokenCount === 'number' ? message.tokenCount : this.ai.estimateTokens([message]);
 		const sizeInBytes = message.content ? new TextEncoder().encode(message.content).length : 0;
 		const sizeInKB = (sizeInBytes / 1024).toFixed(2);
 
 		header.innerHTML = `
 			<ui-icon>${iconName}</ui-icon>
-			<span class="role-label">${roleLabel} <small class="item-size-badge" style="opacity: 0.6; font-size: 10px; margin-left: 4px;">(${sizeInKB} KB)</small></span>
+			<span class="role-label">${roleLabel} <small class="item-size-badge" style="opacity: 0.6; font-size: 10px; margin-left: 4px;">(${sizeInKB} KB | ${tokenCount} tokens)</small></span>
 			<span class="content-preview">${this._escapeHtml(previewText)}${previewSuffix}</span>
 			<ui-icon class="delete-raw-item" title="Delete this turn permanently" style="font-size: 16px; color: var(--text-secondary); cursor: pointer; margin-left: auto; margin-right: 8px; transition: color 0.2s;" onmouseover="this.style.color='var(--color-error)'" onmouseout="this.style.color='var(--text-secondary)'">delete</ui-icon>
 			<ui-icon class="expand-arrow" style="margin-left: 0;">expand_more</ui-icon>
@@ -794,6 +804,75 @@ class AIManagerHistory {
 		}
 	}
 
+	async updateMessageTokenCounts(session) {
+		if (!session || !this.ai || !this.ai.isConfigured()) return;
+		if (typeof this.ai.tokenize !== 'function') return;
+
+		let updated = false;
+
+		if (session.tokenizedForProvider !== this.ai.providerId) {
+			for (const msg of session.messages) {
+				delete msg.tokenCount;
+			}
+			delete session.implementationPlanTokenCount;
+			delete session.taskListTokenCount;
+			session.tokenizedForProvider = this.ai.providerId;
+			updated = true;
+		}
+
+		for (const msg of session.messages) {
+			if (typeof msg.tokenCount !== 'number' && msg.content) {
+				if (msg.type === 'system_message' || msg.type === 'error' || msg.role === 'temp_ai_response') {
+					msg.tokenCount = 0;
+					updated = true;
+					continue;
+				}
+
+				let textToTokenize = msg.content;
+				if (msg.type === 'file_context') {
+					textToTokenize = `--- File: ${msg.id || msg.filename || 'unknown'} ---\n\`\`\`${msg.language || ''}\n${msg.content}\n\`\`\``;
+				}
+
+				const count = await this.ai.tokenize(textToTokenize);
+				if (typeof count === 'number') {
+					msg.tokenCount = count;
+					updated = true;
+				}
+			}
+		}
+
+		if (session.implementationPlan && typeof session.implementationPlanTokenCount !== 'number') {
+			const textToTokenize = `EVERGREEN IMPLEMENTATION PLAN:\n${session.implementationPlan}`;
+			const count = await this.ai.tokenize(textToTokenize);
+			if (typeof count === 'number') {
+				session.implementationPlanTokenCount = count;
+				updated = true;
+			}
+		} else if (!session.implementationPlan && session.implementationPlanTokenCount !== undefined) {
+			delete session.implementationPlanTokenCount;
+			updated = true;
+		}
+
+		if (session.taskList && typeof session.taskListTokenCount !== 'number') {
+			const textToTokenize = `EVERGREEN TASK LIST:\n${session.taskList}`;
+			const count = await this.ai.tokenize(textToTokenize);
+			if (typeof count === 'number') {
+				session.taskListTokenCount = count;
+				updated = true;
+			}
+		} else if (!session.taskList && session.taskListTokenCount !== undefined) {
+			delete session.taskListTokenCount;
+			updated = true;
+		}
+
+		if (updated) {
+			session.lastModified = Date.now();
+			await workspaceClient.setSession(session.id, session);
+			this.render();
+			this.manager._dispatchContextUpdate("tokens_updated");
+		}
+	}
+
 	prepareMessagesForAI() {
 		// Create a deep enough copy of messages to avoid modifying the original history.
 		let messages = (this.manager.activeSession?.messages || []).map(msg => ({ ...msg }));
@@ -806,6 +885,63 @@ class AIManagerHistory {
 		let chatHistory = messages.filter(
 			(msg) => msg.type !== "task_state" && msg.type !== "system_message" && msg.role !== "temp_ai_response"
 		);
+
+		// Calculate extra tokens of evergreen plan, task list, directives, task state, and system prompt
+		let extraTokens = 0;
+		if (this.manager.agentMode) {
+			if (this.manager.activeSession?.implementationPlan) {
+				extraTokens += this.ai.estimateTokens([{
+					role: "system",
+					content: `EVERGREEN IMPLEMENTATION PLAN:\n${this.manager.activeSession.implementationPlan}`,
+					tokenCount: this.manager.activeSession.implementationPlanTokenCount
+				}]);
+			}
+			if (this.manager.activeSession?.taskList) {
+				extraTokens += this.ai.estimateTokens([{
+					role: "system",
+					content: `EVERGREEN TASK LIST:\n${this.manager.activeSession.taskList}`,
+					tokenCount: this.manager.activeSession.taskListTokenCount
+				}]);
+			}
+		}
+		if (taskStateMessage) {
+			extraTokens += this.ai.estimateTokens([{
+				role: "system",
+				content: `CURRENT TASK STATUS:\n${taskStateMessage.content}`,
+				tokenCount: taskStateMessage.tokenCount
+			}]);
+		}
+		
+		if (this.manager.agentMode && chatHistory.length > 0) {
+			const hasPlan = !!this.manager.activeSession?.implementationPlan;
+			const hasTasks = !!this.manager.activeSession?.taskList;
+			const hasAcceptedPlan = this.manager.activeSession?.messages?.some(m => m.planStatus === "accepted") || false;
+			
+			let hasCompletedAllTasks = false;
+			if (hasTasks && this.manager.activeSession.taskList) {
+				hasCompletedAllTasks = !this.manager.activeSession.taskList.includes("- [ ]") && !this.manager.activeSession.taskList.includes("* [ ]");
+			}
+
+			const directivesText = getAgentDirectives({
+				hasPlan,
+				hasTasks,
+				hasAcceptedPlan,
+				hasCompletedAllTasks
+			});
+
+			if (directivesText) {
+				extraTokens += this.ai.estimateTokens(directivesText);
+			}
+		}
+
+		// System prompt estimate
+		const activeSystemPrompt = this.ai?.config?.system || "";
+		if (activeSystemPrompt) {
+			extraTokens += this.ai.estimateTokens(activeSystemPrompt);
+		} else {
+			extraTokens += 500;
+		}
+		extraTokens += 500; // general safety headroom
 
 		// NEW: Always strip thought blocks from the context.
 		// Native reasoning models will get confused and try to explicitly output the tags
@@ -860,7 +996,7 @@ class AIManagerHistory {
 			// Instead of a fixed message count (like 14), prune oldest dialogue turns ONLY if the estimated tokens exceed the target limit.
 			// For all providers target 80% of their MAX_CONTEXT_TOKENS (defined in their settings/props).
 			// BUT preserve ALL user instructions to maintain chronological task timeline.
-			const targetLimit = Math.floor((this.ai?.MAX_CONTEXT_TOKENS || 8192) * 0.8);
+			const targetLimit = Math.max(1000, Math.floor((this.ai?.MAX_CONTEXT_TOKENS || 8192) * 0.8) - extraTokens);
 			const currentTokens = this.ai.estimateTokens([...fileContexts, ...dialogueHistory]);
 			if (currentTokens > targetLimit) {
 				const userPrompts = dialogueHistory.filter(msg => msg.type === "user");
@@ -941,7 +1077,7 @@ class AIManagerHistory {
 
 		// 4. Prune the chat history to fit within 80% of the context window (leaving 20% headroom for response)
 		const maxTokens = this.ai.MAX_CONTEXT_TOKENS || 4096;
-		const allowedTokens = Math.floor(maxTokens * 0.8);
+		const allowedTokens = Math.max(1000, Math.floor(maxTokens * 0.8) - extraTokens);
 		let currentTokens = this.ai.estimateTokens(chatHistory);
 		const minimumMessagesToKeep = 1;
 
@@ -959,13 +1095,15 @@ class AIManagerHistory {
 			if (this.manager.activeSession?.implementationPlan) {
 				contextForAI.push({
 					role: "system",
-					content: `EVERGREEN IMPLEMENTATION PLAN:\n${this.manager.activeSession.implementationPlan}`
+					content: `EVERGREEN IMPLEMENTATION PLAN:\n${this.manager.activeSession.implementationPlan}`,
+					tokenCount: this.manager.activeSession.implementationPlanTokenCount
 				});
 			}
 			if (this.manager.activeSession?.taskList) {
 				contextForAI.push({
 					role: "system",
-					content: `EVERGREEN TASK LIST:\n${this.manager.activeSession.taskList}`
+					content: `EVERGREEN TASK LIST:\n${this.manager.activeSession.taskList}`,
+					tokenCount: this.manager.activeSession.taskListTokenCount
 				});
 			}
 		}
@@ -973,7 +1111,8 @@ class AIManagerHistory {
 		if (taskStateMessage) {
 			contextForAI.push({
 				role: "system",
-				content: `CURRENT TASK STATUS:\n${taskStateMessage.content}`
+				content: `CURRENT TASK STATUS:\n${taskStateMessage.content}`,
+				tokenCount: taskStateMessage.tokenCount
 			});
 		}
 
