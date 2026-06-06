@@ -232,7 +232,7 @@ export default class AIManagerMessageRenderer {
         })
     }
 
-    renderResponseContent(content, message = null) {
+    renderResponseContent(content, message = null, isNew = false) {
         if (!content) return "";
 
         if (message && message.toolCalls && message.toolCalls.length > 0) {
@@ -280,9 +280,11 @@ export default class AIManagerMessageRenderer {
         const parsed = this.parseBlocks(content);
         const rangesToRemove = [];
 
+
+
         if (parsed.planBlock) {
             const planText = content.substring(parsed.planBlock.contentStartIdx, parsed.planBlock.contentEndIdx).trim();
-            if (planText && this.aiManager.activeSession && this.aiManager.activeSession.implementationPlan !== planText) {
+            if (isNew && planText && this.aiManager.activeSession && this.aiManager.activeSession.implementationPlan !== planText) {
                 this.aiManager.activeSession.implementationPlan = planText;
 
                 workspaceClient.setSession(this.aiManager.activeSession.id, this.aiManager.activeSession);
@@ -300,7 +302,7 @@ export default class AIManagerMessageRenderer {
 
         if (parsed.taskListBlock) {
             const tasksText = content.substring(parsed.taskListBlock.contentStartIdx, parsed.taskListBlock.contentEndIdx).trim();
-            if (tasksText && this.aiManager.activeSession && this.aiManager.activeSession.taskList !== tasksText) {
+            if (isNew && tasksText && this.aiManager.activeSession && this.aiManager.activeSession.taskList !== tasksText) {
                 this.aiManager.activeSession.taskList = tasksText;
                 this.aiManager._updateAgentProgressPanel();
                 workspaceClient.setSession(this.aiManager.activeSession.id, this.aiManager.activeSession);
@@ -311,7 +313,7 @@ export default class AIManagerMessageRenderer {
         let taskListUpdated = false;
         for (const block of parsed.completeTaskBlocks) {
             const taskText = content.substring(block.contentStartIdx, block.contentEndIdx).trim();
-            if (taskText && this.aiManager.activeSession && this.aiManager.activeSession.taskList) {
+            if (isNew && taskText && this.aiManager.activeSession && this.aiManager.activeSession.taskList) {
                 const escapedTaskText = taskText.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
                 const checkboxRegex = new RegExp(`([\\-*]\\s*\\[\\s*\\]\\s*)${escapedTaskText}`, 'i');
                 if (checkboxRegex.test(this.aiManager.activeSession.taskList)) {
@@ -324,7 +326,7 @@ export default class AIManagerMessageRenderer {
             rangesToRemove.push({ startIdx: block.startIdx, endIdx: block.endIdx });
         }
 
-        if (taskListUpdated) {
+        if (isNew && taskListUpdated) {
             this.aiManager._updateAgentProgressPanel();
             workspaceClient.setSession(this.aiManager.activeSession.id, this.aiManager.activeSession);
         }
@@ -375,12 +377,12 @@ export default class AIManagerMessageRenderer {
                     let planChanged = false;
                     let tasksChanged = false;
 
-                    if (this.aiManager.activeSession && this.aiManager.activeSession.implementationPlan !== args.plan) {
+                    if (isNew && this.aiManager.activeSession && this.aiManager.activeSession.implementationPlan !== args.plan) {
                         this.aiManager.activeSession.implementationPlan = args.plan;
                         planChanged = true;
                     }
 
-                    if (args.tasks && this.aiManager.activeSession && this.aiManager.activeSession.taskList !== args.tasks) {
+                    if (isNew && args.tasks && this.aiManager.activeSession && this.aiManager.activeSession.taskList !== args.tasks) {
                         this.aiManager.activeSession.taskList = args.tasks;
                         tasksChanged = true;
                     }
@@ -398,13 +400,13 @@ export default class AIManagerMessageRenderer {
                         }
                     }
                 } else if (toolName === "update_task_list" && args.tasks) {
-                    if (this.aiManager.activeSession && this.aiManager.activeSession.taskList !== args.tasks) {
+                    if (isNew && this.aiManager.activeSession && this.aiManager.activeSession.taskList !== args.tasks) {
                         this.aiManager.activeSession.taskList = args.tasks;
                         this.aiManager._updateAgentProgressPanel();
                         workspaceClient.setSession(this.aiManager.activeSession.id, this.aiManager.activeSession);
                     }
                 } else if (toolName === "complete_task" && args.taskName) {
-                    if (this.aiManager.activeSession && this.aiManager.activeSession.taskList) {
+                    if (isNew && this.aiManager.activeSession && this.aiManager.activeSession.taskList) {
                         const escapedTaskText = args.taskName.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
                         const checkboxRegex = new RegExp(`([\\-*]\\s*\\[\\s*\\]\\s*)${escapedTaskText}`, 'i');
                         if (checkboxRegex.test(this.aiManager.activeSession.taskList)) {

@@ -104,7 +104,7 @@ export const tools = [
     },
     {
         name: "edit_file",
-        description: "Replace exact text in a file. The search text MUST perfectly match existing file content character-for-character.",
+        description: "Replace exact text in a file. The search text MUST perfectly match existing file content character-for-character. Perform edits in smallest logical blocks",
         parameters: {
             type: "object",
             properties: {

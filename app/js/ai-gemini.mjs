@@ -14,7 +14,8 @@ class Gemini extends AI {
             stripCodeBlocksFromContext: false, // New setting to control code block stripping
             rpmLimit: 15,
             tpmLimit: 250000,
-            rpdLimit: 500
+            rpdLimit: 500,
+            thinkingLevel: "medium"
         };
         this.MAX_CONTEXT_TOKENS = 32768*2; 
 
@@ -36,6 +37,17 @@ class Gemini extends AI {
                 lookupCallback: this._getAvailableModels.bind(this) 
             },
             stripCodeBlocksFromContext: { type: "boolean", label: "Strip Code Blocks from Context", default: false },
+            thinkingLevel: {
+                type: "enum",
+                label: "Thinking Level",
+                default: "medium",
+                enum: [
+                    { value: "off", label: "Off" },
+                    { value: "low", label: "Low" },
+                    { value: "medium", label: "Medium" },
+                    { value: "high", label: "High" }
+                ]
+            },
             rpmLimit: { type: "number", label: "RPM Limit (Requests/Min)", default: 15 },
             tpmLimit: { type: "number", label: "TPM Limit (Tokens/Min)", default: 250000 },
             rpdLimit: { type: "number", label: "RPD Limit (Requests/Day)", default: 500 }
@@ -319,8 +331,34 @@ class Gemini extends AI {
     }
 
     _toGeminiContents(messages) {
-        const contents = [];
+        const preprocessed = [];
         for (const msg of messages) {
+            if (msg.type === 'file_context') {
+                preprocessed.push(msg);
+                continue;
+            }
+            
+            const role = msg.role === 'model' ? 'model' : 'user';
+            const last = preprocessed.length > 0 ? preprocessed[preprocessed.length - 1] : null;
+            
+            if (last && last.role === role && last.type !== 'file_context') {
+                last.content = (last.content || '') + '\n\n' + (msg.content || '');
+                if (msg.toolCalls) {
+                    last.toolCalls = (last.toolCalls || []).concat(msg.toolCalls);
+                }
+                if (msg.thoughtSignature) {
+                    last.thoughtSignature = msg.thoughtSignature;
+                }
+            } else {
+                preprocessed.push({
+                    ...msg,
+                    role: role
+                });
+            }
+        }
+
+        const contents = [];
+        for (const msg of preprocessed) {
             if (msg.role === 'user' || msg.role === 'model') {
                 if (msg.role === 'user' && msg.content.startsWith('[Tool Response: ')) {
                     const parts = [];
@@ -632,12 +670,17 @@ class Gemini extends AI {
 
                 const supportsThinking = this.config.model.includes('thinking') || this.config.model.includes('pro') || this.config.model.includes('2.0') || this.config.model.includes('2.5') || this.config.model.includes('3.1') || this.config.model.includes('3.5');
                 if (supportsThinking) {
-                    requestBody.generationConfig = {
-                        thinkingConfig: { 
+                    requestBody.generationConfig = requestBody.generationConfig || {};
+                    if (this.config.thinkingLevel === 'off') {
+                        requestBody.generationConfig.thinkingConfig = {
+                            thinkingBudget: 0
+                        };
+                    } else {
+                        requestBody.generationConfig.thinkingConfig = {
                             includeThoughts: true,
-                            thinkingLevel: "medium" 
-                        }
-                    };
+                            thinkingLevel: this.config.thinkingLevel || "medium"
+                        };
+                    }
                 }
 
                 requestBody.contents = [{ role: "user", parts: [{ text: userPromptContent }] }];
@@ -785,12 +828,17 @@ class Gemini extends AI {
 
                 const supportsThinking = this.config.model.includes('thinking') || this.config.model.includes('pro') || this.config.model.includes('2.0') || this.config.model.includes('2.5') || this.config.model.includes('3.1') || this.config.model.includes('3.5');
                 if (supportsThinking) {
-                    requestBody.generationConfig = {
-                        thinkingConfig: { 
+                    requestBody.generationConfig = requestBody.generationConfig || {};
+                    if (this.config.thinkingLevel === 'off') {
+                        requestBody.generationConfig.thinkingConfig = {
+                            thinkingBudget: 0
+                        };
+                    } else {
+                        requestBody.generationConfig.thinkingConfig = {
                             includeThoughts: true,
-                            thinkingLevel: "medium" 
-                        }
-                    };
+                            thinkingLevel: this.config.thinkingLevel || "medium"
+                        };
+                    }
                 }
 
                 requestBody.contents = this._toGeminiContents(processedMessages);

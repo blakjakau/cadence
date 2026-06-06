@@ -16,7 +16,8 @@ class LlamaCpp extends AI {
             top_k: 40,
             top_p: 0.9,
             n_predict: 4096,
-            stop: ["</s>", "<|end|>", "<|im_end|>", "Llama:", "User:", "Assistant:"]
+            stop: ["</s>", "<|end|>", "<|im_end|>", "Llama:", "User:", "Assistant:"],
+            thinkingLevel: "medium"
         };
         this.MAX_CONTEXT_TOKENS = 32768; // Default, will try to query if possible
 
@@ -28,6 +29,18 @@ class LlamaCpp extends AI {
             temperature: { type: "number", label: "Temperature", default: 0.7 },
             top_p: { type: "number", label: "Top P", default: 0.9 },
             top_k: { type: "number", label: "Top K", default: 40 },
+            thinkingLevel: {
+                type: "enum",
+                label: "Thinking Level",
+                default: "medium",
+                enum: [
+                    { value: "off", label: "Off" },
+                    { value: "low", label: "Low" },
+                    { value: "medium", label: "Medium" },
+                    { value: "high", label: "High" },
+                    { value: "ultra", label: "Ultra" }
+                ]
+            },
             system: { type: "textarea", label: "System Prompt Override", default: "", multiline: true }
         };
     }
@@ -217,6 +230,18 @@ class LlamaCpp extends AI {
 
             if (this.supportsReasoning) {
                 requestBody.enable_thinking = true;
+                const level = this.config.thinkingLevel || "medium";
+                if (level !== 'ultra') {
+                    let budget = 0;
+                    if (level === 'low') {
+                        budget = Math.round(this.MAX_CONTEXT_TOKENS * 0.0625);
+                    } else if (level === 'medium') {
+                        budget = Math.round(this.MAX_CONTEXT_TOKENS * 0.125);
+                    } else if (level === 'high') {
+                        budget = Math.round(this.MAX_CONTEXT_TOKENS * 0.25);
+                    }
+                    requestBody.reasoning_budget = budget;
+                }
             }
 
             if (window.ui?.aiManager?.agentMode && cadenceTools && cadenceTools.length > 0) {

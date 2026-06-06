@@ -20,17 +20,11 @@ function generateXmlToolDocs(planningMode = false) {
     return xml.trim();
 }
 
-export default function getAgentSystemPrompt(modelName = '', features = {}) {
-    // True native reasoning models like DeepSeek R1 or Gemini Flash Thinking
-    const isNativeReasoning = modelName.includes('r1') || modelName.includes('thinking') || modelName.includes('gemma-4');
-    
-    // Unpack features
-    const supportsNativeTools = features.supportsJSONTools !== undefined ? features.supportsJSONTools : modelName.includes('gemini');
+export function getAgentDirectives(features = {}) {
     const hasPlan = !!features.hasPlan;
     const hasTasks = !!features.hasTasks;
     const hasAcceptedPlan = !!features.hasAcceptedPlan;
     const hasCompletedAllTasks = !!features.hasCompletedAllTasks;
-    const planningMode = !!features.planningMode;
 
     const directives = [];
     if (!hasPlan) {
@@ -45,15 +39,24 @@ export default function getAgentSystemPrompt(modelName = '', features = {}) {
         } else if (!hasCompletedAllTasks) {
             directives.push("- Work on the tasks in your task checklist one by one, calling `complete_task` as you finish each task.");
         } else {
-            directives.push("- All tasks are marked as complete. Review your changes with the user and call the `done` tool to signal task completion.");
+            // directives.push("- All tasks are marked as complete. Review your changes with the user and call the `done` tool to signal task completion.");
         }
     }
 
-    let dynamicDirectivesSection = "";
     if (directives.length > 0) {
-        dynamicDirectivesSection = `\n\n# Current Directives\n${directives.join('\n')}`;
+        return `# Current Directives\n${directives.join('\n')}`;
     }
+    return "";
+}
+
+export default function getAgentSystemPrompt(modelName = '', features = {}) {
+    // True native reasoning models like DeepSeek R1 or Gemini Flash Thinking
+    const isNativeReasoning = modelName.includes('r1') || modelName.includes('thinking') || modelName.includes('gemma-4');
     
+    // Unpack features
+    const supportsNativeTools = features.supportsJSONTools !== undefined ? features.supportsJSONTools : modelName.includes('gemini');
+    const planningMode = !!features.planningMode;
+
     let exampleTurn = "";
     if (supportsNativeTools) {
         if (isNativeReasoning) {
@@ -95,7 +98,7 @@ I am reading app.js to locate the issue.
 
     let thinkingRule = "";
     if (isNativeReasoning) {
-        thinkingRule = "- Thinking: Leverage your native thinking/reasoning capability to analyze the task before making tool calls.";
+        thinkingRule = `- Thinking: Leverage your thinking/reasoning capability to analyze the task before making tool calls.`;
     } else {
         thinkingRule = "- Thinking: ALWAYS start your response with your reasoning, wrapped in <thought>...</thought> blocks. Explain your logic before calling tools.";
     }
@@ -109,7 +112,7 @@ I am reading app.js to locate the issue.
     
     let loopingRule = "";
     if (isNativeReasoning) {
-        loopingRule = "- Looping Prevention: Actively review your last 3 turns. If you are repeating tool calls, executing identical searches, or failing edits, you must explain why progress has stalled and immediately propose an alternative approach or different tool. Do not repeat failed edits or duplicate search queries.";
+        loopingRule = "- Looping Prevention: Review your last 3 turns. If you are repeating tool calls, executing identical searches, or failing edits, you must explain why progress has stalled and immediately propose an alternative approach or different tool. Do not repeat failed edits or duplicate search queries.";
     } else {
         loopingRule = "- Looping Prevention: In your <thought> block, actively review your last 3 turns. If you are repeating tool calls, executing identical searches, or failing edits, you must explain why progress has stalled and immediately propose an alternative approach or different tool. Do not repeat failed edits or duplicate search queries.";
     }
@@ -127,18 +130,20 @@ ${generateXmlToolDocs(planningMode)}
     if (!supportsNativeTools) {
         coreRules = `
 - Tools: Use AT MOST ONE tool call block per turn. Wait for the host to provide the result.
-- Always choose the least impactful tool (don't read the whole file if you only need a lines of function)
+- ALWAYS choose the least impactful tool (don't read the whole file if you only need a lines of function)
+- ALWAYS make the smallest atomic edits when using \`edit_file\`
 - Context Limits: ALWAYS explore files by reading their outlines first using read_file_outline. Outlines provide symbol line numbers and lengths. NEVER read a full file if you can extract just the function you need using the <startLine> and <lineCount> parameters of read_file. If you need to find exact text inside a file, use search_in_file to locate the exact line numbers and surrounding context. This saves token context window.
 - Strict XML: Use only the exact tags provided. Do not invent new tools.
 - NEVER use control or tool tags to discuss or think about your actions, only to perform them.`;
     } else {
         coreRules = `
 - An implementation plan and task list must be created BEFORE 'edit' and 'create' tools will be available
-- ALWAYS report your intentions to the user BEFORE you start making tools calls
-- NEVER include large chunks of code in your conversational output
+- ALWAYS make the smallest atomic edits when using \`edit_file\`
+- NEVER include large chunks of code in your conversational output or thoughts
 - Context Limits: Explore files by reading their outlines with read_file_outline and search_in_file
 	Outlines provide symbols with line numbers and lengths. 
 	You can find text in a file using 'search_in_file' to locate the exact line number
+	You can read small sections of files by providing line numbers to read_file
 	NEVER read a whole file, when you only need part of it.
 `;
     }
@@ -161,6 +166,5 @@ ${thinkingRule}
 ${taskFocusRule}
 ${loopingRule}
 ${coreRules}
-${projectManagementSection}
-${dynamicDirectivesSection}`;
+${projectManagementSection}`;
 }

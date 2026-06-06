@@ -796,7 +796,7 @@ class AgentTools {
                 const endPos = doc.indexToPosition(cleanStartIndex + searchString.length);
                 const Range = window.ace.require("ace/range").Range;
                 const rangeToReplace = new Range(startPos.row, startPos.column, endPos.row, endPos.column);
-                session.replace(rangeToReplace, replacementString);
+                session.replace(rangeToReplace, replacementString ?? "");
 
                 // 3. Save to disk immediately
                 if (window.saveFileTab) {
@@ -834,7 +834,7 @@ class AgentTools {
             const endPos = doc.indexToPosition(cleanStartIndex + searchString.length);
             const Range = window.ace.require("ace/range").Range;
             const rangeToReplace = new Range(startPos.row, startPos.column, endPos.row, endPos.column);
-            session.replace(rangeToReplace, replacementString);
+            session.replace(rangeToReplace, replacementString ?? "");
             // Set tab to diff view mode automatically for implicit review
             targetTab.config.viewMode = "diff";
             delete targetTab.config.backupId;
@@ -967,7 +967,7 @@ class AgentTools {
         const toolDef = tools.find(t => t.name === name);
         if (toolDef && toolDef.parameters && Array.isArray(toolDef.parameters.required)) {
             for (const reqParam of toolDef.parameters.required) {
-                if (args[reqParam] === undefined || args[reqParam] === null || args[reqParam] === "") {
+                if (args[reqParam] === undefined || args[reqParam] === null || (args[reqParam] === "" && reqParam !== "replace" && reqParam !== "content")) {
                     return `Tool Error: ${name} requires "${reqParam}" parameter`;
                 }
             }
@@ -989,8 +989,8 @@ class AgentTools {
             case 'edit_file':
                 return await this.editFile(
                     args.path,
-                    args.search || args.searchString,
-                    args.replace || args.replacementString,
+                    args.search !== undefined && args.search !== null ? args.search : args.searchString,
+                    args.replace !== undefined && args.replace !== null ? args.replace : args.replacementString,
                     sourceId
                 );
             case 'create_file':

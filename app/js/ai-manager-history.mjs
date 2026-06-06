@@ -3,6 +3,7 @@
 import { Block, Button } from "./elements.mjs"
 import DEFAULT_WELCOME_MESSAGE_MARKDOWN from "./ai-manager-setup-guide.mjs"
 import workspaceClient from "./workspace-client.mjs"
+import { getAgentDirectives } from "./ai-manager-agent-prompt.mjs"
 export const MAX_RECENT_MESSAGES_TO_PRESERVE = 5
 
 class AIManagerHistory {
@@ -253,13 +254,13 @@ class AIManagerHistory {
 			responseBlock.dataset.messageId = messageId;
 			
 			responseBlock.updateContent = (fullResponse) => {
-				responseBlock.innerHTML = this.manager.messageRenderer.renderResponseContent(fullResponse);
+				responseBlock.innerHTML = this.manager.messageRenderer.renderResponseContent(fullResponse, null, true);
 				this.manager.messageRenderer.addCodeBlockButtons(responseBlock);
 			};
 			
 			responseBlock.finalize = (fullResponse, finalizedMessage) => {
 				this.activeStreamingBlock = null; // Clear active streaming reference
-				responseBlock.innerHTML = this.manager.messageRenderer.renderResponseContent(fullResponse, finalizedMessage);
+				responseBlock.innerHTML = this.manager.messageRenderer.renderResponseContent(fullResponse, finalizedMessage, true);
 				this.manager.messageRenderer.addCodeBlockButtons(responseBlock, finalizedMessage);
 				const deleteButton = this._createSingleDeleteButton(messageId);
 				responseBlock.append(deleteButton);
@@ -305,7 +306,7 @@ class AIManagerHistory {
 			element.classList.add("response-block");
 			if (message.type === "error") element.classList.add("error-block");
 			element.dataset.messageId = message.id;
-			element.innerHTML = this.manager.messageRenderer.renderResponseContent(message.content, message);
+			element.innerHTML = this.manager.messageRenderer.renderResponseContent(message.content, message, isNew);
 			
 			const deleteButton = this._createSingleDeleteButton(message.id);
 			element.append(deleteButton);
@@ -1056,6 +1057,31 @@ class AIManagerHistory {
 				contextForAI.push(contextItem);
 			}
 		});
+
+		if (this.manager.agentMode && contextForAI.length > 0) {
+			const hasPlan = !!this.manager.activeSession?.implementationPlan;
+			const hasTasks = !!this.manager.activeSession?.taskList;
+			const hasAcceptedPlan = this.manager.activeSession?.messages?.some(m => m.planStatus === "accepted") || false;
+			
+			let hasCompletedAllTasks = false;
+			if (hasTasks && this.manager.activeSession.taskList) {
+				hasCompletedAllTasks = !this.manager.activeSession.taskList.includes("- [ ]") && !this.manager.activeSession.taskList.includes("* [ ]");
+			}
+
+			const directivesText = getAgentDirectives({
+				hasPlan,
+				hasTasks,
+				hasAcceptedPlan,
+				hasCompletedAllTasks
+			});
+
+			if (directivesText) {
+				contextForAI.splice(contextForAI.length - 1, 0, {
+					role: "system",
+					content: directivesText
+				});
+			}
+		}
 
 		if (currentTokens > allowedTokens) {
 			console.warn(`Context window exceeded 80% headroom limit even after pruning. Estimated: ${currentTokens}, Allowed: ${allowedTokens}`);

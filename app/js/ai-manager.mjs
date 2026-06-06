@@ -290,6 +290,8 @@ class AIManager {
 				if (action === "rename") {
 					this.switchSession(sessionId);
 					this.sessionsManager.renameCurrentSession();
+				} else if (action === "copy") {
+					this.sessionsManager.copySession(sessionId);
 				} else if (action === "archive") {
 					this.sessionsManager.closeSessionTab(sessionId, tab);
 				} else if (action === "delete") {
@@ -1709,7 +1711,7 @@ class AIManager {
 		if (toolDef && toolDef.parameters && Array.isArray(toolDef.parameters.required)) {
 			const args = toolCall.arguments || {};
 			for (const reqParam of toolDef.parameters.required) {
-				if (args[reqParam] === undefined || args[reqParam] === null || args[reqParam] === "") {
+				if (args[reqParam] === undefined || args[reqParam] === null || (args[reqParam] === "" && reqParam !== "replace" && reqParam !== "content")) {
 					return `Tool Error: ${toolCall.name} requires "${reqParam}" parameter`;
 				}
 			}
@@ -2149,7 +2151,7 @@ class AIManager {
 				// Update the model message block in the DOM to reflect the actual tool execution status (failed or invoked)
 				const modelMessage = this.activeSession.messages.find(m => m.id === modelMessageId);
 				if (modelMessage) {
-					responseBlock.innerHTML = this.messageRenderer.renderResponseContent(responseContent, modelMessage);
+					responseBlock.innerHTML = this.messageRenderer.renderResponseContent(responseContent, modelMessage, true);
 					this.messageRenderer.addCodeBlockButtons(responseBlock, modelMessage);
 				}
 
@@ -2301,7 +2303,7 @@ class AIManager {
 		if (typeof responseBlock.finalize === 'function') {
 			responseBlock.finalize(finalizedResponse, modelMessage);
 		} else {
-			responseBlock.innerHTML = this.messageRenderer.renderResponseContent(finalizedResponse, modelMessage);
+			responseBlock.innerHTML = this.messageRenderer.renderResponseContent(finalizedResponse, modelMessage, true);
 			this.messageRenderer.addCodeBlockButtons(responseBlock, modelMessage);
 		}
 

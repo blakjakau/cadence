@@ -1,7 +1,7 @@
-import prettier from "https://unpkg.com/prettier@2.4.1/esm/standalone.mjs"
-import parserBabel from "https://unpkg.com/prettier@2.4.1/esm/parser-babel.mjs"
-import parserHtml from "https://unpkg.com/prettier@2.4.1/esm/parser-html.mjs"
-import parserCss from "https://unpkg.com/prettier@2.4.1/esm/parser-postcss.mjs"
+import prettier from "https://unpkg.com/prettier@2.8.8/esm/standalone.mjs"
+import parserBabel from "https://unpkg.com/prettier@2.8.8/esm/parser-babel.mjs"
+import parserHtml from "https://unpkg.com/prettier@2.8.8/esm/parser-html.mjs"
+import parserCss from "https://unpkg.com/prettier@2.8.8/esm/parser-postcss.mjs"
 import workspaceClient from "./workspace-client.mjs"
 
 import {

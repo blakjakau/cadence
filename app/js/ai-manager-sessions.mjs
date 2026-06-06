@@ -446,6 +446,23 @@ class AIManagerSessions {
 				
 				item.append(nameSpan);
 
+				const copyBtn = document.createElement('button');
+				copyBtn.innerHTML = '<ui-icon>content_copy</ui-icon>';
+				copyBtn.className = 'icon-button';
+				copyBtn.style.background = 'transparent';
+				copyBtn.style.color = 'var(--text-secondary)';
+				copyBtn.style.border = 'none';
+				copyBtn.style.marginRight = '8px';
+				copyBtn.style.visibility = isMultiSelectMode ? 'hidden' : 'visible';
+				copyBtn.title = "Duplicate Chat";
+				copyBtn.onclick = async (e) => {
+					e.stopPropagation();
+					if (isMultiSelectMode) return;
+					window.modal.hide();
+					await this.copySession(session.id, true);
+				};
+				item.append(copyBtn);
+
 				const delBtn = document.createElement('button');
 				delBtn.innerHTML = '<ui-icon>delete</ui-icon>';
 				delBtn.className = 'icon-button'; // Removed 'theme-button' to remove the border
@@ -543,6 +560,42 @@ class AIManagerSessions {
 		const tab = this.manager.sessionTabBar.add({ name: sessionMeta.name, id: sessionMeta.id, defaultStatusIcon: 'developer_board' });
 		tab.on('dblclick', () => this.renameCurrentSession());
 		tab.click();
+	}
+
+	async copySession(sessionId, makeActive = true) {
+		const sourceSession = await workspaceClient.getSession(sessionId);
+		if (!sourceSession) {
+			window.modal.notice("Source session not found.", "Error Copying Session");
+			return;
+		}
+
+		const newId = `ai-session-${crypto.randomUUID()}`;
+		const newName = `${sourceSession.name} - copy`;
+
+		// Deep clone session data
+		const newSessionData = JSON.parse(JSON.stringify(sourceSession));
+		newSessionData.id = newId;
+		newSessionData.name = newName;
+		newSessionData.createdAt = Date.now();
+		newSessionData.lastModified = Date.now();
+
+		await workspaceClient.setSession(newId, newSessionData);
+
+		this.allSessionMetadata.push({
+			id: newId,
+			name: newName,
+			createdAt: newSessionData.createdAt,
+			lastModified: newSessionData.lastModified
+		});
+
+		if (makeActive) {
+			const newTab = this.manager.sessionTabBar.add({ name: newName, id: newId, defaultStatusIcon: 'developer_board' });
+			newTab.on('dblclick', () => this.renameCurrentSession());
+			newTab.click();
+			window.modal.toast(`Chat duplicated as "${newName}"`);
+		} else {
+			window.modal.toast(`Chat duplicated as "${newName}"`);
+		}
 	}
 
 	/**
