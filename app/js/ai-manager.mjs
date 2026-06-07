@@ -555,16 +555,10 @@ class AIManager {
 		const buttonContainer = new Block()
 		buttonContainer.classList.add("button-container");
 		
-		this.artifactsButton = document.createElement("button");
+		this.artifactsButton = new Button("Settings & Artifacts");
+		this.artifactsButton.setIcon("playlist_add_check");
 		this.artifactsButton.className = "artifacts-tab-btn theme-button secondary";
 		this.artifactsButton.title = "Open Session Settings & Artifacts";
-		this.artifactsButton.innerHTML = `<ui-icon style="font-size: 14px; margin-right: 4px;">playlist_add_check</ui-icon>Settings & Artifacts`;
-		this.artifactsButton.style.display = "flex";
-		this.artifactsButton.style.alignItems = "center";
-		this.artifactsButton.style.fontSize = "11.5px";
-		this.artifactsButton.style.fontWeight = "600";
-		this.artifactsButton.style.padding = "3px 8px";
-		this.artifactsButton.style.borderRadius = "var(--borderRadius)";
 		this.artifactsButton.onclick = () => {
 			if (window.ui?.openPlanAndTaskList) {
 				window.ui.openPlanAndTaskList();
@@ -582,10 +576,9 @@ class AIManager {
 		buttonContainer.append(this.aiInfoDisplay); // Element is created, but content will be set by _updateAIInfoDisplay()
 		buttonContainer.append(this.rawViewButton); // Add raw view button
 		buttonContainer.append(this.settingsButton);
-		this.stopButton = document.createElement("button");
-		this.stopButton.className = "agentic-stop-btn";
-		this.stopButton.style.display = "none";
-		this.stopButton.innerHTML = `<ui-icon>stop</ui-icon> Stop`;
+		this.stopButton = new Button("Stop");
+		this.stopButton.setIcon("stop");
+		this.stopButton.className = "agentic-stop-btn theme-button error";
 		this.stopButton.onclick = () => this.stopAgent();
 
 		const spacer = document.createElement("div");
@@ -772,12 +765,12 @@ class AIManager {
 	}
 
 	_createSubmitButton() {
-		const submitButton = new Button("Send")
-		submitButton.icon = "send"
-		submitButton.classList.add("submit-button", "theme-button")
-		submitButton.on("click", () => this.generate())
-		this._setButtonsDisabledState(this._isProcessing) // Initial state
-		return submitButton
+		this.submitButton = new Button("Send");
+		this.submitButton.setIcon("send");
+		this.submitButton.classList.add("submit-button", "theme-button");
+		this.submitButton.on("click", () => this.generate());
+		this._setButtonsDisabledState(this._isProcessing); // Initial state
+		return this.submitButton;
 	}
 
 	/**

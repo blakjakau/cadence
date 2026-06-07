@@ -190,13 +190,29 @@
     cursor: pointer;
 }
 
-.theme-button:hover {
-    background-color: var(--theme-dark);
-    border-color: var(--theme-dark);
+.button-container ui-button {
+    color: #ffffff;
+    border: none;
+    min-height: 23px;
+    height: 23px;
+    font-size: 11px;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-weight: 600;
+    align-self: center;
+
 }
 
-.submit-button {
-    align-self: flex-end;
+.button-container ui-button.theme-button.secondary {
+    background: var(--theme-dark, rgba(0, 0, 0, 0.33));
+}
+
+.button-container ui-button.error {
+    background: rgba(192, 0, 0, 0.5);
+    display: none;
 }
 
 .clear-button, .summarize-button { 
@@ -581,6 +597,7 @@ button:disabled,
     justify-content: space-between;
     align-items: center; 
     padding-bottom:4px;
+    height: var(--menuHeight);
 }
 
 .settings-button {

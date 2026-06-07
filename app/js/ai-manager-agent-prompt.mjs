@@ -140,11 +140,11 @@ ${generateXmlToolDocs(planningMode)}
 - An implementation plan and task list must be created BEFORE 'edit' and 'create' tools will be available
 - ALWAYS make the smallest atomic edits when using \`edit_file\`
 - NEVER include large chunks of code in your conversational output or thoughts
-- Context Limits: Explore files by reading their outlines with read_file_outline and search_in_file
-	Outlines provide symbols with line numbers and lengths. 
+- Context Limits **STRICT REQUIREMENT**: 
+	ALWAYS Explore files by reading their outlines with read_file_outline and search_in_file
+	ALWAYS use Outline symbols with their line numbers and lengths to read target file sections
 	You can find text in a file using 'search_in_file' to locate the exact line number
-	You can read small sections of files by providing line numbers to read_file
-	NEVER read a whole file, when you only need part of it.
+	NEVER read a whole file if you can just read part of it
 `;
     }
 
