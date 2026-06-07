@@ -199,8 +199,24 @@ class AIManager {
 			try {
 				const filePath = `${folder}/.cadence.md`;
 				const fileData = await window.conduit.wsRead(filePath);
-				if (fileData && !fileData.error && fileData.content) {
-					hints.push(fileData.content.trim());
+				if (fileData && !fileData.error) {
+					let content = "";
+					if (fileData.data) {
+						try {
+							content = decodeURIComponent(escape(atob(fileData.data)));
+						} catch (e) {
+							try {
+								content = atob(fileData.data);
+							} catch (e2) {
+								content = fileData.data;
+							}
+						}
+					} else if (fileData.content) {
+						content = fileData.content;
+					}
+					if (content) {
+						hints.push(content.trim());
+					}
 				}
 			} catch (e) {
 				// Ignore if file doesn't exist or is unreachable
@@ -209,7 +225,7 @@ class AIManager {
 
 		if (hints.length > 0) {
 			const compiledHints = hints.join("\n\n---\n\n");
-			basePrompt += `\n\n=== USER PERSISTENT HINTS & MEMORY SCRATCH-PAD ===\nThe following persistent memory and hints have been pre-loaded by the user. Adhere to any instructions, style guidelines, project information, rules, or preferences specified below:\n\n${compiledHints}\n=================================================`;
+			basePrompt += `\n\n=== PROJECT SPECIFIC HINTS FROM THE USER ===\n\n${compiledHints}\n=================================================`;
 		}
 
 		return basePrompt;
