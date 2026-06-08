@@ -153,10 +153,28 @@ class AIManagerHistory {
 			}
 		}
 
+		// Collect IDs of messages that have been summarized to skip rendering them directly in the chat history
+		const summarizedIds = new Set();
+		const summaries = this.chatHistory.filter(msg => msg.type === "cycle_summary");
+		for (const summary of summaries) {
+			const startId = summary.cycleStartMsgId;
+			const endId = summary.cycleEndMsgId;
+			if (startId && endId) {
+				const startIdx = this.chatHistory.findIndex(m => m.id === startId);
+				const endIdx = this.chatHistory.findIndex(m => m.id === endId);
+				if (startIdx !== -1 && endIdx !== -1 && startIdx <= endIdx) {
+					for (let j = startIdx; j <= endIdx; j++) {
+						summarizedIds.add(this.chatHistory[j].id);
+					}
+				}
+			}
+		}
+
 		// Use the new element factory for each message in the history
 		for (let i = 0; i < this.chatHistory.length; i++) {
 			const message = this.chatHistory[i];
 			if (message.type === 'file_context') continue;
+			if (summarizedIds.has(message.id)) continue;
 			
 			const element = this.manager.rawViewMode
 				? this._createExpanderMessageElement(message, i)
@@ -318,7 +336,102 @@ class AIManagerHistory {
 			const deleteButton = this._createSingleDeleteButton(message.id);
 			element.append(deleteButton);
 			
-			if (message.type === "model") this.manager.messageRenderer.addCodeBlockButtons(element, message);
+			if (message.type === "model") {
+				this.manager.messageRenderer.addCodeBlockButtons(element, message);
+
+				// Add manual cycle summarization trigger button if this model message called "done" and isn't summarized yet
+				if (message.toolCalls?.some(tc => (tc.functionCall?.name || tc.name) === "done")) {
+					const allMsgs = this.chatHistory;
+					const msgIdx = allMsgs.findIndex(m => m.id === message.id);
+					if (msgIdx !== -1) {
+						const nextMsg = allMsgs[msgIdx + 1];
+						const isDoneResponse = nextMsg && nextMsg.type === "tool_response" && nextMsg.content && nextMsg.content.includes("[Tool Response: done]");
+						if (isDoneResponse) {
+							const hasSummary = allMsgs.some(m => m.type === "cycle_summary" && m.cycleEndMsgId === nextMsg.id);
+							if (!hasSummary) {
+								const summarizeBtn = document.createElement("button");
+								summarizeBtn.className = "summarize-cycle-trigger-btn theme-button primary";
+								summarizeBtn.style.fontSize = "11px";
+								summarizeBtn.style.padding = "2px 8px";
+								summarizeBtn.style.cursor = "pointer";
+								summarizeBtn.style.borderRadius = "var(--radius, 4px)";
+								summarizeBtn.style.display = "inline-flex";
+								summarizeBtn.style.alignItems = "center";
+								summarizeBtn.style.border = "none";
+								summarizeBtn.innerHTML = "<ui-icon style='font-size: 13px; vertical-align: middle; margin-right: 4px;'>summarize</ui-icon> Summarize Cycle";
+								
+								summarizeBtn.onclick = async (e) => {
+									e.stopPropagation();
+									summarizeBtn.disabled = true;
+									summarizeBtn.innerHTML = "<span class='button-spinner'></span> Summarizing...";
+									
+									try {
+										let cycleStartIdx = -1;
+										for (let i = msgIdx - 1; i >= 0; i--) {
+											const prevMsg = allMsgs[i];
+											if (prevMsg.type === "cycle_summary" || 
+												(prevMsg.type === "tool_response" && prevMsg.content && prevMsg.content.includes("[Tool Response: done]")) ||
+												(prevMsg.role === "model" && prevMsg.toolCalls && prevMsg.toolCalls.some(tc => (tc.functionCall?.name || tc.name) === "done"))) {
+												cycleStartIdx = i + 1;
+												break;
+											}
+										}
+										if (cycleStartIdx === -1) {
+											cycleStartIdx = allMsgs.findIndex(m => m.type === "user" || m.type === "model");
+										}
+										
+										if (cycleStartIdx !== -1 && cycleStartIdx <= msgIdx + 1) {
+											const cycleMsgs = allMsgs.slice(cycleStartIdx, msgIdx + 2);
+											const result = await this.manager.generateCycleSummary(cycleMsgs);
+											if (result && result.summary) {
+												const summaryMessage = {
+													id: crypto.randomUUID(),
+													role: "system",
+													type: "cycle_summary",
+													title: result.title,
+													content: result.summary,
+													timestamp: Date.now(),
+													cycleStartMsgId: allMsgs[cycleStartIdx].id,
+													cycleEndMsgId: nextMsg.id
+												};
+												this.manager.activeSession.messages.splice(msgIdx + 2, 0, summaryMessage);
+												this.manager.activeSession.lastModified = Date.now();
+												await workspaceClient.setSession(this.manager.activeSession.id, this.manager.activeSession);
+												this.render();
+											}
+										}
+									} catch (err) {
+										console.error("Failed to generate summary manually:", err);
+										summarizeBtn.disabled = false;
+										summarizeBtn.innerHTML = "Summarize Cycle";
+									}
+								};
+
+								const doneBlock = Array.from(element.querySelectorAll(".tool-call-block")).find(block => block.querySelector("code")?.textContent === "done");
+								if (doneBlock) {
+									const headerEl = doneBlock.querySelector(".tool-call-header");
+									if (headerEl) {
+										summarizeBtn.style.marginLeft = "auto";
+										summarizeBtn.style.marginRight = "8px";
+										const badge = headerEl.querySelector(".tool-call-status-badge");
+										if (badge) {
+											headerEl.insertBefore(summarizeBtn, badge);
+										} else {
+											headerEl.append(summarizeBtn);
+										}
+									} else {
+										doneBlock.append(summarizeBtn);
+									}
+								} else {
+									summarizeBtn.style.marginTop = "10px";
+									summarizeBtn.style.padding = "6px 10px";
+									element.append(summarizeBtn);
+								}
+							}
+						}
+					}
+				}
+			}
 
 		} else if (message.type === "system_message") {
 			element = new Block();
@@ -346,6 +459,120 @@ class AIManagerHistory {
 			element.setAttribute("title", `Tokens: ${tokenCount}`);
 			element.innerHTML = `<strong>Current Task:</strong><br>${this.md.render(message.content)}`;
 
+			const deleteButton = this._createSingleDeleteButton(message.id);
+			element.append(deleteButton);
+		} else if (message.type === "cycle_summary") {
+			element = new Block();
+			element.classList.add("cycle-summary-block");
+			element.dataset.messageId = message.id;
+			element.setAttribute("title", `Tokens: ${tokenCount}`);
+			
+			// Translucent theme card styling matching implementation plan
+			element.style.background = "color-mix(in srgb, var(--theme, #0089cd) 8%, transparent)";
+			element.style.border = "1px solid color-mix(in srgb, var(--theme, #0089cd) 25%, transparent)";
+			element.style.borderRadius = "var(--radius, 8px)";
+			element.style.padding = "12px";
+			element.style.margin = "10px 0";
+			element.style.display = "flex";
+			element.style.flexDirection = "column";
+			element.style.gap = "8px";
+			element.style.transition = "all 0.2s ease";
+			
+			const summaryTitleText = message.title || (message.content ? (message.content.split(/[.\n]/)[0].trim().substring(0, 75) + "...") : "Cycle Completed & Summarized");
+			
+			const header = document.createElement("div");
+			header.className = "cycle-summary-header";
+			header.style.display = "flex";
+			header.style.alignItems = "center";
+			header.style.gap = "8px";
+			header.style.marginBottom = "4px";
+			header.innerHTML = `
+				<ui-icon style="color: var(--theme, #0089cd); font-size: 20px; flex-shrink: 0;">summarize</ui-icon>
+				<span class="cycle-summary-title" style="font-weight: 600; font-size: 13px; color: var(--theme, #0089cd); line-height: 1.4;">${this._escapeHtml(summaryTitleText)}</span>
+				<ui-button class="toggle-history-btn theme-button secondary" style="margin-left: auto; font-size: 11px; padding: 4px 8px; display: none;">Show Detail</ui-button>
+			`;
+			
+			const contentDiv = document.createElement("div");
+			contentDiv.className = "cycle-summary-content";
+			contentDiv.innerHTML = this.md.render(message.content);
+			
+			// Reduced card to just title in collapsed state
+			contentDiv.style.display = "none";
+			contentDiv.style.marginTop = "8px";
+			contentDiv.style.transition = "all 0.3s ease";
+			
+			const detailContainer = document.createElement("div");
+			detailContainer.className = "cycle-summary-detail-container";
+			detailContainer.style.display = "none";
+			detailContainer.style.marginTop = "12px";
+			detailContainer.style.borderTop = "1px dashed var(--border-color, #ccc)";
+			detailContainer.style.paddingTop = "12px";
+			
+			const toggleBtn = header.querySelector(".toggle-history-btn");
+			toggleBtn.onclick = (e) => {
+				e.stopPropagation();
+				const isExpanded = detailContainer.style.display !== "none";
+				if (isExpanded) {
+					detailContainer.style.display = "none";
+					toggleBtn.textContent = "Show Detail";
+				} else {
+					if (detailContainer.children.length === 0) {
+						const startId = message.cycleStartMsgId;
+						const endId = message.cycleEndMsgId;
+						const allMsgs = this.chatHistory;
+						const startIdx = allMsgs.findIndex(m => m.id === startId);
+						const endIdx = allMsgs.findIndex(m => m.id === endId);
+						if (startIdx !== -1 && endIdx !== -1 && startIdx <= endIdx) {
+							const cycleMsgs = allMsgs.slice(startIdx, endIdx + 1);
+							for (const cMsg of cycleMsgs) {
+								if (cMsg.type === 'file_context' || cMsg.type === 'cycle_summary') continue;
+								const cEl = this._createMessageElement(cMsg, allMsgs.indexOf(cMsg));
+								if (cEl) {
+									const nestedDelete = cEl.querySelector(".delete-history-button");
+									if (nestedDelete) nestedDelete.remove();
+									const nestedReplay = cEl.querySelector(".replay-history-button");
+									if (nestedReplay) nestedReplay.remove();
+									detailContainer.append(cEl);
+								}
+							}
+						} else {
+							detailContainer.innerHTML = `<div style="color: var(--text-secondary); font-style: italic; font-size: 12px; padding: 8px 0;">Detailed history for this cycle is not available (it may have been pruned or deleted from the conversation).</div>`;
+						}
+					}
+					detailContainer.style.display = "block";
+					toggleBtn.textContent = "Hide Detail";
+				}
+			};
+
+			const showMoreLink = document.createElement("div");
+			showMoreLink.className = "show-more-link";
+			showMoreLink.style.textAlign = "center";
+			showMoreLink.style.marginTop = "4px";
+			showMoreLink.style.fontSize = "11px";
+			showMoreLink.style.cursor = "pointer";
+			showMoreLink.style.color = "var(--theme, #0089cd)";
+			showMoreLink.style.fontWeight = "600";
+			showMoreLink.innerText = "Show Summary";
+			
+			showMoreLink.onclick = (e) => {
+				e.stopPropagation();
+				const isCollapsed = contentDiv.style.display === "none";
+				if (isCollapsed) {
+					contentDiv.style.display = "block";
+					showMoreLink.innerText = "Hide Summary";
+					toggleBtn.style.display = "block"; // Show "Show Details" button inside the expanded card
+				} else {
+					contentDiv.style.display = "none";
+					showMoreLink.innerText = "Show Summary";
+					toggleBtn.style.display = "none"; // Hide "Show Details" button when summary is collapsed
+					// Also hide details container if it was open
+					detailContainer.style.display = "none";
+					toggleBtn.textContent = "Show Detail";
+				}
+			};
+
+			element.append(header, contentDiv, showMoreLink, detailContainer);
+			
 			const deleteButton = this._createSingleDeleteButton(message.id);
 			element.append(deleteButton);
 		}
@@ -383,6 +610,9 @@ class AIManagerHistory {
 		} else if (message.type === "system_prompt_raw") {
 			iconName = "settings_suggest";
 			roleLabel = "System Prompt";
+		} else if (message.type === "cycle_summary") {
+			iconName = "summarize";
+			roleLabel = "Cycle Summary";
 		}
 
 		// First 40 characters for preview
@@ -735,7 +965,13 @@ class AIManagerHistory {
 			// Create the clean prompt content using only the eligible messages from the block we're replacing.
 			const summarizationPromptContent = actualMessagesToReplace
 				.filter((msg) => msg.type === "user" || msg.type === "model")
-				.map((msg) => `${msg.role === "user" ? "User" : "Assistant"}: ${msg.content}`)
+				.map((msg) => {
+					let content = msg.content || "";
+					content = content.replace(/<thought>[\s\S]*?<\/thought>/gi, '');
+					content = content.replace(/<think>[\s\S]*?<\/think>/gi, '');
+					content = content.replace(/<\|channel>thought[\s\S]*?<channel\|>/gi, '');
+					return `${msg.role === "user" ? "User" : "Assistant"}: ${content.trim()}`;
+				})
 				.join("\n\n")
 
 			const summarizationPrompt = `Please summarize the following conversation very concisely, focusing on key topics, questions, and outcomes. Do not add any new information or conversational filler. Just the summary.\n\n${summarizationPromptContent}`
@@ -885,6 +1121,44 @@ class AIManagerHistory {
 		let chatHistory = messages.filter(
 			(msg) => msg.type !== "task_state" && msg.type !== "system_message" && msg.role !== "temp_ai_response"
 		);
+
+		// Pruning gate: Substitute older completed cycles with their summaries, keeping only the most recent completed cycle in full.
+		const summaries = chatHistory.filter(msg => msg.type === "cycle_summary");
+		if (summaries.length > 0) {
+			let newChatHistory = [];
+			let i = 0;
+			while (i < chatHistory.length) {
+				const msg = chatHistory[i];
+				if (msg.type === "cycle_summary") {
+					const isLastSummary = msg.id === summaries[summaries.length - 1].id;
+					if (isLastSummary) {
+						// Keep the most recent completed cycle in full. Omit the summary message itself to avoid redundancy.
+						i++;
+						continue;
+					} else {
+						// This is an older cycle. Substitute the summary in place of the cycle messages.
+						const startId = msg.cycleStartMsgId;
+						const endId = msg.cycleEndMsgId;
+						if (startId && endId) {
+							const startIdx = newChatHistory.findIndex(m => m.id === startId);
+							const replaceStartIdx = startIdx !== -1 ? startIdx : 0;
+							newChatHistory.splice(replaceStartIdx, newChatHistory.length - replaceStartIdx, {
+								id: msg.id,
+								role: "user",
+								type: "cycle_summary",
+								content: `**Cycle: ${msg.title || "Completed Task"}**\n\n${msg.content}`,
+								timestamp: msg.timestamp
+							});
+							i++;
+							continue;
+						}
+					}
+				}
+				newChatHistory.push(msg);
+				i++;
+			}
+			chatHistory = newChatHistory;
+		}
 
 		// Calculate extra tokens of evergreen plan, task list, directives, task state, and system prompt
 		let extraTokens = 0;

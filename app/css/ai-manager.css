@@ -586,7 +586,7 @@ button:disabled,
 
 .ai-filebar-container > .progress-bar {
 	width: calc(100% - 16px); /* Match padding of file-context-bar, which is 8px on each side. */
-	margin: 0 8px 6px 8px; /* Give it some space */
+	margin: 4px 4px 4px 4px; /* Give it some space */
 	height: 6px;
 	background-color: var(--theme-dark);
 	border-radius: 4px;

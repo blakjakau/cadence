@@ -130,20 +130,22 @@ ${generateXmlToolDocs(planningMode)}
     if (!supportsNativeTools) {
         coreRules = `
 - Tools: Use AT MOST ONE tool call block per turn. Wait for the host to provide the result.
-- ALWAYS choose the least impactful tool (don't read the whole file if you only need a lines of function)
+- ALWAYS choose the least impactful tool (don't read the whole file if you only need the lines of function)
 - ALWAYS make the smallest atomic edits when using \`edit_file\`
-- Context Limits: ALWAYS explore files by reading their outlines first using read_file_outline. Outlines provide symbol line numbers and lengths. NEVER read a full file if you can extract just the function you need using the <startLine> and <lineCount> parameters of read_file. If you need to find exact text inside a file, use search_in_file to locate the exact line numbers and surrounding context. This saves token context window.
+- Context Limits: ALWAYS explore files by reading their outlines first using read_file_outline. Outlines provide symbol line numbers and lengths. NEVER read a full file if you can extract just the function you need using the <startLine> and <lineCount> parameters of read_file. If you need to find exact text inside a file, use search_in_file to locate the exact line numbers and surrounding context. This saves context tokens.
 - Strict XML: Use only the exact tags provided. Do not invent new tools.
+- NEVER include code in your conversational output or reasoning
 - NEVER use control or tool tags to discuss or think about your actions, only to perform them.`;
     } else {
         coreRules = `
 - An implementation plan and task list must be created BEFORE 'edit' and 'create' tools will be available
+- ALWAYS choose the least impactful tool (don't read the whole file if you only need the lines of function)
 - ALWAYS make the smallest atomic edits when using \`edit_file\`
-- NEVER include large chunks of code in your conversational output or thoughts
 - Context Limits **STRICT REQUIREMENT**: 
 	ALWAYS Explore files by reading their outlines with read_file_outline and search_in_file
 	ALWAYS use Outline symbols with their line numbers and lengths to read target file sections
 	You can find text in a file using 'search_in_file' to locate the exact line number
+    NEVER include code blocks in your conversational output or reasoning
 	NEVER read a whole file if you can just read part of it
 `;
     }

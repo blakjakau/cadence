@@ -590,6 +590,10 @@ class Gemini extends AI {
                                         } else if (!partThought && isReasoning) {
                                             isReasoning = false;
                                             totalThinkingMs += Date.now() - thinkingStartTime;
+                                            const backticks = fullResponseAccumulator.match(/```/g);
+                                            if (backticks && backticks.length % 2 !== 0) {
+                                                fullResponseAccumulator += "\n```\n";
+                                            }
                                             fullResponseAccumulator += "\n</thought>\n" + partText;
                                         } else if (!partThought && !isReasoning) {
                                             if (partText) {
@@ -600,6 +604,10 @@ class Gemini extends AI {
                                         if (isReasoning) {
                                             isReasoning = false;
                                             totalThinkingMs += Date.now() - thinkingStartTime;
+                                            const backticks = fullResponseAccumulator.match(/```/g);
+                                            if (backticks && backticks.length % 2 !== 0) {
+                                                fullResponseAccumulator += "\n```\n";
+                                            }
                                             fullResponseAccumulator += "\n</thought>\n";
                                         }
 
@@ -634,6 +642,10 @@ class Gemini extends AI {
                     if (isReasoning) {
                         isReasoning = false;
                         totalThinkingMs += Date.now() - thinkingStartTime;
+                        const backticks = fullResponseAccumulator.match(/```/g);
+                        if (backticks && backticks.length % 2 !== 0) {
+                            fullResponseAccumulator += "\n```\n";
+                        }
                         fullResponseAccumulator += "\n</thought>";
                         if (onUpdate) onUpdate(fullResponseAccumulator);
                     }

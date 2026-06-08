@@ -271,13 +271,13 @@ class LlamaCpp extends AI {
                 if (level !== 'ultra') {
                     let budget = 0;
                     if (level === 'low') {
-                        budget = Math.round(this.MAX_CONTEXT_TOKENS * 0.0625);
+                        budget = Math.min(1024, Math.round(this.MAX_CONTEXT_TOKENS * 0.03125));
                     } else if (level === 'medium') {
-                        budget = Math.round(this.MAX_CONTEXT_TOKENS * 0.125);
+                        budget = Math.min(2048, Math.round(this.MAX_CONTEXT_TOKENS * 0.0625));
                     } else if (level === 'high') {
-                        budget = Math.round(this.MAX_CONTEXT_TOKENS * 0.25);
+                        budget = Math.min(4096, Math.round(this.MAX_CONTEXT_TOKENS * 0.125));
                     }
-                    requestBody.reasoning_budget = budget;
+                    requestBody.thinking_budget_tokens = budget;
                 }
             }
 
@@ -360,49 +360,59 @@ class LlamaCpp extends AI {
                                 if (isReasoning) {
                                     isReasoning = false;
                                     totalThinkingMs += Date.now() - thinkingStartTime;
+                                    const backticks = fullResponse.match(/```/g);
+                                    if (backticks && backticks.length % 2 !== 0) {
+                                        chunkUpdate += "\n```\n";
+                                    }
                                     chunkUpdate += "\n</thought>\n";
                                 }
                                 chunkUpdate += delta.content;
                             }
 
-                            if (delta.tool_calls) {
+                            if (delta.tool_calls || ('tool_calls' in delta)) {
                                 if (isReasoning) {
                                     isReasoning = false;
                                     totalThinkingMs += Date.now() - thinkingStartTime;
+                                    const backticks = fullResponse.match(/```/g);
+                                    if (backticks && backticks.length % 2 !== 0) {
+                                        chunkUpdate += "\n```\n";
+                                    }
                                     chunkUpdate += "\n</thought>\n";
                                 }
-                                if (!callbacks.toolCalls) callbacks.toolCalls = [];
-                                for (const call of delta.tool_calls) {
-                                    const idx = call.index !== undefined ? call.index : 0;
-                                    if (!streamedToolCalls[idx]) {
-                                        streamedToolCalls[idx] = {
-                                            id: call.id || "",
-                                            name: call.function?.name || "",
-                                            arguments: ""
-                                        };
-                                    }
-                                    if (call.id) streamedToolCalls[idx].id = call.id;
-                                    if (call.function?.name) streamedToolCalls[idx].name = call.function.name;
-                                    if (call.function?.arguments) streamedToolCalls[idx].arguments += call.function.arguments;
-                                }
-
-                                // Update callbacks.toolCalls with current parsed state
-                                callbacks.toolCalls = [];
-                                for (const tc of streamedToolCalls) {
-                                    if (!tc || !tc.name) continue;
-                                    let parsedArgs = {};
-                                    try {
-                                        parsedArgs = JSON.parse(tc.arguments);
-                                    } catch (e) {
-                                        parsedArgs = parseRelaxedJson(tc.arguments);
-                                    }
-                                    callbacks.toolCalls.push({
-                                        id: tc.id || `call_${crypto.randomUUID()}`,
-                                        functionCall: {
-                                            name: tc.name,
-                                            args: parsedArgs
+                                if (delta.tool_calls) {
+                                    if (!callbacks.toolCalls) callbacks.toolCalls = [];
+                                    for (const call of delta.tool_calls) {
+                                        const idx = call.index !== undefined ? call.index : 0;
+                                        if (!streamedToolCalls[idx]) {
+                                            streamedToolCalls[idx] = {
+                                                id: call.id || "",
+                                                name: call.function?.name || "",
+                                                arguments: ""
+                                            };
                                         }
-                                    });
+                                        if (call.id) streamedToolCalls[idx].id = call.id;
+                                        if (call.function?.name) streamedToolCalls[idx].name = call.function.name;
+                                        if (call.function?.arguments) streamedToolCalls[idx].arguments += call.function.arguments;
+                                    }
+
+                                    // Update callbacks.toolCalls with current parsed state
+                                    callbacks.toolCalls = [];
+                                    for (const tc of streamedToolCalls) {
+                                        if (!tc || !tc.name) continue;
+                                        let parsedArgs = {};
+                                        try {
+                                            parsedArgs = JSON.parse(tc.arguments);
+                                        } catch (e) {
+                                            parsedArgs = parseRelaxedJson(tc.arguments);
+                                        }
+                                        callbacks.toolCalls.push({
+                                            id: tc.id || `call_${crypto.randomUUID()}`,
+                                            functionCall: {
+                                                name: tc.name,
+                                                args: parsedArgs
+                                            }
+                                        });
+                                    }
                                 }
                             }
 
@@ -440,6 +450,10 @@ class LlamaCpp extends AI {
             if (isReasoning) {
                 isReasoning = false;
                 totalThinkingMs += Date.now() - thinkingStartTime;
+                const backticks = fullResponse.match(/```/g);
+                if (backticks && backticks.length % 2 !== 0) {
+                    fullResponse += "\n```\n";
+                }
                 fullResponse += "\n</thought>";
             }
 

@@ -1344,6 +1344,7 @@ class AIManager {
 		const estimatedTokensBeforeNewPrompt = this.ai.estimateTokens(this.activeSession.messages)
 		const maxContextTokens = this.ai.MAX_CONTEXT_TOKENS
 		if (
+			!this.agentMode &&
 			maxContextTokens > 0 &&
 			(estimatedTokensBeforeNewPrompt / maxContextTokens) * 100 >= this.config.summarizeThreshold
 		) {
@@ -1868,7 +1869,76 @@ class AIManager {
 		});
 	}
 
+	async generateCycleSummary(cycleMessages) {
+		if (!this.ai || !this.ai.isConfigured()) return "";
 
+		const eligibleMessages = cycleMessages.filter(
+			(msg) => msg.type === "user" || msg.type === "model" || msg.type === "tool_response"
+		);
+
+		const summarizationPromptContent = eligibleMessages
+			.map((msg) => {
+				if (msg.type === "tool_response") {
+					return `[Tool Response]\n${msg.content}`;
+				}
+				const roleName = msg.role === "user" ? "User" : "Assistant";
+				return `[${roleName}]\n${msg.content}`;
+			})
+			.join("\n\n");
+
+		const summarizationPrompt = `Please summarize the following agent task cycle.
+You must output your response in the following XML format:
+<title>A very concise, single-line, active-voice title summarizing the main outcome of the cycle (max 10 words)</title>
+<summary>
+Outline what the user requested, the implementation plan created, what actions (file edits, creations, commands) the agent performed, and the final outcome/results. Keep the summary concise but descriptive of all changes.
+</summary>
+
+Here is the task cycle to summarize:
+${summarizationPromptContent}`;
+		const internalMessagesForAI = [{ role: "user", content: summarizationPrompt }];
+
+		let summaryResponse = "";
+		try {
+			await new Promise((resolve, reject) => {
+				this.ai.chat(internalMessagesForAI, {
+					onUpdate: (response) => {
+						summaryResponse = response;
+					},
+					onDone: () => resolve(),
+					onError: (error) => reject(error),
+				});
+			});
+		} catch (error) {
+			console.error("Error during cycle summarization AI call:", error);
+			return null;
+		}
+
+		const cleanResponse = summaryResponse.trim();
+		let title = "";
+		let summary = "";
+		const titleMatch = cleanResponse.match(/<title>([\s\S]*?)<\/title>/i);
+		const summaryMatch = cleanResponse.match(/<summary>([\s\S]*?)<\/summary>/i);
+		
+		if (titleMatch) title = titleMatch[1].trim();
+		if (summaryMatch) summary = summaryMatch[1].trim();
+		
+		if (!title && !summary) {
+			summary = cleanResponse;
+			title = summary.split(/[.\n]/)[0].trim();
+			if (title.length > 60) {
+				title = title.substring(0, 57) + "...";
+			}
+		} else if (!title) {
+			title = summary.split(/[.\n]/)[0].trim();
+			if (title.length > 60) {
+				title = title.substring(0, 57) + "...";
+			}
+		} else if (!summary) {
+			summary = cleanResponse;
+		}
+
+		return { title, summary };
+	}
 
 	_escapeHtml(text) {
 		if (!text) return "";
@@ -2192,6 +2262,88 @@ class AIManager {
 					this.activeSession.messages.push(toolResponseMessage);
 					this.activeSession.lastModified = Date.now();
 					await workspaceClient.setSession(this.activeSession.id, this.activeSession);
+				}
+
+				if (hasPlan) {
+					try {
+						const messages = this.activeSession.messages;
+						// Find the last completed cycle's done message
+						let lastDoneMsgIdx = -1;
+						for (let i = messages.length - 1; i >= 0; i--) {
+							const msg = messages[i];
+							if ((msg.type === "tool_response" && msg.content && msg.content.includes("[Tool Response: done]")) ||
+								(msg.role === "model" && msg.toolCalls && msg.toolCalls.some(tc => (tc.functionCall?.name || tc.name) === "done"))) {
+								// Check if this done message already has an associated summary in messages
+								const hasSummary = messages.some(m => m.type === "cycle_summary" && (m.cycleEndMsgId === msg.id || m.cycleEndMsgId === messages[i+1]?.id));
+								if (!hasSummary) {
+									lastDoneMsgIdx = i;
+									break;
+								}
+							}
+						}
+
+						if (lastDoneMsgIdx !== -1) {
+							let endIdx = lastDoneMsgIdx;
+							if (messages[lastDoneMsgIdx].role === "model" && 
+								messages[lastDoneMsgIdx + 1] && 
+								messages[lastDoneMsgIdx + 1].type === "tool_response") {
+								endIdx = lastDoneMsgIdx + 1;
+							}
+							
+							let cycleStartIdx = -1;
+							for (let i = endIdx - 2; i >= 0; i--) {
+								const msg = messages[i];
+								if (msg.type === "cycle_summary" || 
+									(msg.type === "tool_response" && msg.content && msg.content.includes("[Tool Response: done]")) ||
+									(msg.role === "model" && msg.toolCalls && msg.toolCalls.some(tc => (tc.functionCall?.name || tc.name) === "done"))) {
+									cycleStartIdx = i + 1;
+									break;
+								}
+							}
+							if (cycleStartIdx === -1) {
+								cycleStartIdx = messages.findIndex(msg => msg.type === "user" || msg.type === "model");
+							}
+
+							if (cycleStartIdx !== -1 && cycleStartIdx <= endIdx) {
+								const cycleMessages = messages.slice(cycleStartIdx, endIdx + 1);
+								
+								const summaryProgressMsg = document.createElement("div");
+								summaryProgressMsg.className = "agent-tool-progress";
+								summaryProgressMsg.innerHTML = `<ui-icon class="spin">cached</ui-icon> Generating cycle summary...`;
+								this.conversationArea.append(summaryProgressMsg);
+								if (this._shouldAutoScroll() && this.conversationArea) {
+									this.conversationArea.scrollTop = this.conversationArea.scrollHeight;
+								}
+
+								const result = await this.generateCycleSummary(cycleMessages);
+								
+								summaryProgressMsg.remove();
+
+								if (result && result.summary) {
+									const summaryMessage = {
+										id: crypto.randomUUID(),
+										role: "system",
+										type: "cycle_summary",
+										title: result.title,
+										content: result.summary,
+										timestamp: Date.now(),
+										cycleStartMsgId: messages[cycleStartIdx].id,
+										cycleEndMsgId: messages[endIdx].id
+									};
+									this.activeSession.messages.splice(endIdx + 1, 0, summaryMessage);
+									this.activeSession.lastModified = Date.now();
+									await workspaceClient.setSession(this.activeSession.id, this.activeSession);
+									
+									this.historyManager.render();
+									if (this.conversationArea) {
+										this.conversationArea.scrollTop = this.conversationArea.scrollHeight;
+									}
+								}
+							}
+						}
+					} catch (e) {
+						console.error("Error generating cycle summary:", e);
+					}
 				}
 
 				if (hasPlan || hasDone) {
