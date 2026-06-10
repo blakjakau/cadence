@@ -116,6 +116,40 @@ export const tools = [
         }
     },
     {
+        name: "edit_copy_lines",
+        description: "Copy a range of lines from a source file and insert them into a destination file. If destination file does not exist, it will be created.",
+        parameters: {
+            type: "object",
+            properties: {
+                source: { type: "string", description: "The path of the source file to copy from." },
+                startLine: { type: "number", description: "The starting line number (1-indexed) in the source file." },
+                lineCount: { type: "number", description: "The number of lines to copy." },
+                destination: { type: "string", description: "The path of the destination file to insert into. Can be a new or existing file." },
+                insertAt: { type: "number", description: "The line number (1-indexed) in the destination file where the lines should be inserted." },
+                removeFromSource: { type: "boolean", description: "Optional. If true, remove the copied lines from the source file." },
+                startAnchor: { type: "string", description: "Required. The exact line text expected at startLine in the source file for validation and auto-alignment." },
+                endAnchor: { type: "string", description: "Required. The exact line text expected at startLine+lineCount in the source file for validation and auto-alignment." }
+            },
+            required: ["source", "startLine", "lineCount", "destination", "insertAt", "startAnchor", "endAnchor"]
+        }
+    },
+    {
+        name: "edit_remove_lines",
+        description: "Remove lines from a file, you must provide either the exact text to remove OR the startLine and lineCount to remove.",
+        parameters: {
+            type: "object",
+            properties: {
+                path: { type: "string", description: "The path of the file to edit." },
+                search: { type: "string", description: "The exact lines of text to remove." },
+                startLine: { type: "number", description: "The starting line number (1-indexed) of the lines to remove." },
+                lineCount: { type: "number", description: "The number of lines to remove." },
+                startAnchor: { type: "string", description: "Optional. Required if startLine and lineCount are provided. The exact line text expected at startLine for validation and auto-alignment." },
+                endAnchor: { type: "string", description: "Optional. Required if startLine and lineCount are provided. The exact line text expected at startLine+lineCount for validation and auto-alignment." }
+            },
+            required: ["path"]
+        }
+    },
+    {
         name: "create_implementation_plan",
         description: "Create a detailed implementation plan before modifying code.",
         parameters: {

@@ -324,7 +324,7 @@ export class TabBar extends Block {
 	}
 
 	byTitle(title) {
-		const tab = this.querySelector(`ui-tab-item[title="${title}"`)
+		const tab = this.querySelector(`ui-tab-item[title="${title}"]`)
 		if (!tab) console.warn("No match found for", title)
 		return tab
 	}

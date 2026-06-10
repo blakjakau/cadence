@@ -509,6 +509,48 @@ class AIManager {
 		return progressBar;
 	}
 
+	_showPrefillProgress(responseBlock, pct, progressData) {
+		let container = responseBlock.querySelector('.prefill-progress-container');
+		if (!container) {
+			container = document.createElement('div');
+			container.className = 'prefill-progress-container';
+			container.innerHTML = `
+				<div class="prefill-progress-header">
+					<ui-icon class="prefill-progress-icon">sync</ui-icon>
+					<span class="prefill-progress-title">Context prefill processing...</span>
+					<span class="prefill-progress-percent">0%</span>
+				</div>
+				<div class="prefill-progress-bar">
+					<div class="prefill-progress-fill" style="width: 0%;"></div>
+				</div>
+				<div class="prefill-progress-details">0 / 0 tokens</div>
+			`;
+			responseBlock.appendChild(container);
+		}
+
+		const fill = container.querySelector('.prefill-progress-fill');
+		const percent = container.querySelector('.prefill-progress-percent');
+		const details = container.querySelector('.prefill-progress-details');
+
+		if (fill) fill.style.width = `${pct}%`;
+		if (percent) percent.textContent = `${pct}%`;
+		if (details) {
+			const processed = progressData.processed || 0;
+			const total = progressData.total || 0;
+			const cache = progressData.cache || 0;
+			if (cache > 0) {
+				details.textContent = `${processed} / ${total} tokens (cached: ${cache})`;
+			} else {
+				details.textContent = `${processed} / ${total} tokens`;
+			}
+		}
+
+		// Ensure we auto-scroll if we were already at the bottom
+		if (this._shouldAutoScroll() && this.conversationArea) {
+			this.conversationArea.scrollTop = this.conversationArea.scrollHeight;
+		}
+	}
+
 	_createUndulatingGlow() {
 		const container = document.createElement('div');
 		container.classList.add('undulating-glow-container');
@@ -1173,6 +1215,10 @@ class AIManager {
 			this.haltBar.remove();
 			this.haltBar = null;
 		}
+		if (this.conversationArea) {
+			const containers = this.conversationArea.querySelectorAll('.prefill-progress-container');
+			containers.forEach(container => container.remove());
+		}
 	}
 
 	_showHaltBar(modelMessageId, responseBlock, warnBlock) {
@@ -1488,7 +1534,11 @@ class AIManager {
 
 		const callbacks = {
 			onUpdate: (fullResponse) => { // Update the responseBlock directly
-				this._stopGlow(); // Stop glow on first stream chunk
+				if (callbacks.toolCalls && callbacks.toolCalls.length > 0) {
+					this._startGlow();
+				} else {
+					this._stopGlow();
+				}
 				const shouldScroll = this._shouldAutoScroll();
 				responseBlock.updateContent(fullResponse);
 				if (shouldScroll && this.conversationArea) {
@@ -1688,6 +1738,13 @@ class AIManager {
 				this._setButtonsDisabledState(false)
 			},
 			onContextRatioUpdate: (ratio) => { /* ... */ },
+			onPrefillProgress: (progressData) => {
+				const total = progressData.total;
+				const cache = progressData.cache || 0;
+				const processed = progressData.processed;
+				const pct = (total - cache > 0) ? Math.round(((processed - cache) / (total - cache)) * 100) : (total > 0 ? Math.round((processed / total) * 100) : 0);
+				this._showPrefillProgress(responseBlock, pct, progressData);
+			},
 		}
 
 		// Since we now return early if `processedPrompt` is empty, we can unconditionally call the AI here.
@@ -2014,7 +2071,11 @@ ${summarizationPromptContent}`;
 					onUpdate: (fullResponse) => {
 						if (streamForciblyEnded) return;
 						currentFullResponse = fullResponse;
-						this._stopGlow();
+						if (callbacks.toolCalls && callbacks.toolCalls.length > 0) {
+							this._startGlow();
+						} else {
+							this._stopGlow();
+						}
 						const shouldScroll = this._shouldAutoScroll();
 						responseBlock.updateContent(fullResponse);
 						if (shouldScroll && this.conversationArea) {
@@ -2050,6 +2111,14 @@ ${summarizationPromptContent}`;
 							return;
 						}
 						reject(err);
+					},
+					onPrefillProgress: (progressData) => {
+						if (streamForciblyEnded) return;
+						const total = progressData.total;
+						const cache = progressData.cache || 0;
+						const processed = progressData.processed;
+						const pct = (total - cache > 0) ? Math.round(((processed - cache) / (total - cache)) * 100) : (total > 0 ? Math.round((processed / total) * 100) : 0);
+						this._showPrefillProgress(responseBlock, pct, progressData);
 					}
 				};
 
@@ -2186,7 +2255,7 @@ ${summarizationPromptContent}`;
 
 					// Identify if tool is destructive
 					const isDestructive = ["create_file"].includes(toolCall.name);
-					if (isDestructive) {
+					if (isDestructive && !this.forgivenessMode) {
 						approved = await this._showAgentApprovalCard(toolCall);
 					}
 
@@ -2792,7 +2861,11 @@ ${summarizationPromptContent}`;
 
 		const callbacks = {
 			onUpdate: (fullResponse) => {
-				this._stopGlow();
+				if (callbacks.toolCalls && callbacks.toolCalls.length > 0) {
+					this._startGlow();
+				} else {
+					this._stopGlow();
+				}
 				const shouldScroll = this._shouldAutoScroll();
 				responseBlock.updateContent(fullResponse);
 				if (shouldScroll && this.conversationArea) {

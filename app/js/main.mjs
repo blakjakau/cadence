@@ -1696,11 +1696,40 @@ fileMenu.click = folderMenu.click = topfolderMenu.click = async (action) => {
 				try {
 					await conduitClient.wsDelete(filePath);
 					// If this was an open tab, close it
-					if (!file.isDir) {
-						const openTabLeft = leftTabs.byTitle(filePath);
-						if (openTabLeft) leftTabs.remove(openTabLeft);
-						const openTabRight = rightTabs.byTitle(filePath);
-						if (openTabRight) rightTabs.remove(openTabRight);
+					const tabsToCloseLeft = [];
+					const tabsToCloseRight = [];
+					const normalizePath = (p) => {
+						if (!p) return "";
+						return p.replace(/\\/g, '/').replace(/^\.\//, '').replace(/^\//, '').replace(/\/$/, '');
+					};
+					const checkAndAddTab = (tab, isDir, path) => {
+						const tabPath = tab.config?.path;
+						if (!tabPath) return false;
+						const normTab = normalizePath(tabPath);
+						const normPath = normalizePath(path);
+						if (isDir) {
+							return normTab === normPath || normTab.startsWith(normPath + '/') || normTab.endsWith('/' + normPath) || normTab.includes('/' + normPath + '/');
+						} else {
+							return normTab === normPath || normTab.endsWith('/' + normPath) || normPath.endsWith('/' + normTab);
+						}
+					};
+
+					for (const tab of leftTabs.tabs) {
+						if (checkAndAddTab(tab, file.isDir, filePath)) {
+							tabsToCloseLeft.push(tab);
+						}
+					}
+					for (const tab of rightTabs.tabs) {
+						if (checkAndAddTab(tab, file.isDir, filePath)) {
+							tabsToCloseRight.push(tab);
+						}
+					}
+
+					for (const tab of tabsToCloseLeft) {
+						await closeTab(leftTabs, { tab }, true);
+					}
+					for (const tab of tabsToCloseRight) {
+						await closeTab(rightTabs, { tab }, true);
 					}
 					const parentPathDelete = filePath.substring(0, filePath.lastIndexOf('/'));
 					await fileList.refreshFolder(parentPathDelete || ".");
@@ -1858,9 +1887,9 @@ rightTabs.click = async (event) => {
 	}
 }
 
-const closeTab = async (targetTabs, event) => {
+const closeTab = async (targetTabs, event, force = false) => {
 	const tab = event.tab
-	if (tab.changed) {
+	if (!force && tab.changed) {
 		const confirmed = await window.modal.confirm(
 			"This file has unsaved changes. Are you sure you want to close it?",
 			"Unsaved Changes"
@@ -1906,6 +1935,8 @@ leftTabs.close = (event) => {
 rightTabs.close = (event) => {
 	closeTab(rightTabs, event)
 }
+
+window.closeTab = closeTab;
 
 const defaultTab = (targetTabs) => {
 	if (!targetTabs) {

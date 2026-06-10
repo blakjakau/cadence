@@ -434,6 +434,127 @@ export class SessionArtifactsPanel extends Block {
             emptyNotice.textContent = "No file modifications recorded in this session yet.";
             this.backupsList.appendChild(emptyNotice);
         } else {
+            const undoAllContainer = document.createElement("div");
+            undoAllContainer.className = "undo-all-container";
+            undoAllContainer.style.display = "flex";
+            undoAllContainer.style.justifyContent = "flex-end";
+            undoAllContainer.style.padding = "4px 8px 8px 8px";
+            undoAllContainer.style.borderBottom = "1px solid var(--border)";
+            undoAllContainer.style.marginBottom = "8px";
+
+            const undoAllBtn = new Button("Undo All");
+            undoAllBtn.icon = "undo";
+            undoAllBtn.className = "rollback secondary";
+            undoAllBtn.onclick = async () => {
+                const confirmed = await window.modal.confirm(
+                    "Are you sure you want to undo/delete all modified files in this session? This action cannot be undone.",
+                    "Undo All Changes"
+                );
+                if (!confirmed) return;
+
+                undoAllBtn.disabled = true;
+                undoAllBtn.text = "Undoing all...";
+                undoAllBtn.icon = "sync";
+
+                for (const path of filePaths) {
+                    const list = modifiedFiles[path];
+                    const latestBackup = list[list.length - 1];
+                    try {
+                        if (latestBackup.isNewFile) {
+                            await conduitClient.wsDelete(path);
+
+                            const normalizePath = (p) => {
+                                if (!p) return "";
+                                return p.replace(/\\/g, '/').replace(/^\.\//, '').replace(/^\//, '').replace(/\/$/, '');
+                            };
+                            const checkAndAddTab = (tab, targetPath) => {
+                                const tabPath = tab.config?.path;
+                                if (!tabPath) return false;
+                                const normTab = normalizePath(tabPath);
+                                const normPath = normalizePath(targetPath);
+                                return normTab === normPath || normTab.endsWith('/' + normPath) || normPath.endsWith('/' + normTab);
+                            };
+
+                            const tabsToCloseLeft = [];
+                            const tabsToCloseRight = [];
+
+                            if (ui.leftTabs?.tabs) {
+                                for (const tab of ui.leftTabs.tabs) {
+                                    if (checkAndAddTab(tab, path)) {
+                                        tabsToCloseLeft.push(tab);
+                                    }
+                                }
+                            }
+                            if (ui.rightTabs?.tabs) {
+                                for (const tab of ui.rightTabs.tabs) {
+                                    if (checkAndAddTab(tab, path)) {
+                                        tabsToCloseRight.push(tab);
+                                    }
+                                }
+                            }
+
+                            if (window.closeTab) {
+                                for (const tab of tabsToCloseLeft) {
+                                    await window.closeTab(ui.leftTabs, { tab }, true);
+                                }
+                                for (const tab of tabsToCloseRight) {
+                                    await window.closeTab(ui.rightTabs, { tab }, true);
+                                }
+                            } else {
+                                for (const tab of tabsToCloseLeft) {
+                                    tab.tabBar.remove(tab, true);
+                                }
+                                for (const tab of tabsToCloseRight) {
+                                    tab.tabBar.remove(tab, true);
+                                }
+                            }
+                        } else {
+                            const { default: AgentBackup } = await import('../agent/agent-backup.mjs');
+                            const content = await AgentBackup.rollback(latestBackup.backupId);
+
+                            const base64Content = btoa(unescape(encodeURIComponent(content)));
+                            const result = await conduitClient.wsWrite(path, base64Content);
+                            if (result.error) throw new Error(result.error);
+
+                            const normalize = (p) => p ? p.replace(/\\/g, '/').replace(/\/+/g, '/').replace(/^\//, '').replace(/\/$/, '') : '';
+                            const pathsMatch = (p1, p2) => {
+                                const n1 = normalize(p1);
+                                const n2 = normalize(p2);
+                                if (!n1 || !n2) return false;
+                                return n1 === n2 || n1.endsWith('/' + n2) || n2.endsWith('/' + n1);
+                            };
+                            const allOpenTabs = [...(ui.leftTabs?.tabs || []), ...(ui.rightTabs?.tabs || [])];
+                            const tab = allOpenTabs.find(t => pathsMatch(t.config?.path, path));
+                            if (tab && tab.config.session) {
+                                tab.config.session.setValue(content);
+                                tab.config.session.baseValue = content;
+                                tab.changed = false;
+                            }
+
+                            const diffTab = allOpenTabs.find(t => t.config?.path === `diff_${latestBackup.backupId}`);
+                            if (diffTab) {
+                                diffTab.tabBar.remove(diffTab, true);
+                            }
+                        }
+                    } catch (e) {
+                        console.error(`Failed to undo changes for ${path}:`, e);
+                    }
+                }
+
+                session.modifiedFiles = {};
+                await workspaceClient.setSession(session.id, session);
+
+                if (window.ui?.fileList?.refreshFolders) {
+                    window.ui.fileList.refreshFolders();
+                }
+
+                window.modal.toast("Successfully undid all session changes.");
+                this.update();
+            };
+
+            undoAllContainer.appendChild(undoAllBtn);
+            this.backupsList.appendChild(undoAllContainer);
+
             filePaths.forEach(path => {
                 const list = modifiedFiles[path];
                 const filename = path.split('/').pop();
@@ -474,9 +595,10 @@ export class SessionArtifactsPanel extends Block {
                 timeSpan.className = "backup-time";
                 timeSpan.textContent = formatTime(latestBackup.timestamp);
 
-                const btn = new Button("Rollback");
-                btn.icon = "undo";
-                btn.className = "rollback secondary";
+                const isNewFile = latestBackup.isNewFile === true;
+                const btn = new Button(isNewFile ? "Delete" : "Rollback");
+                btn.icon = isNewFile ? "delete" : "undo";
+                btn.className = isNewFile ? "delete secondary" : "rollback secondary";
 
                 const reviewBtn = new Button("Review");
                 reviewBtn.icon = "visibility";
@@ -505,59 +627,146 @@ export class SessionArtifactsPanel extends Block {
                 };
 
                 btn.onclick = async () => {
-                    try {
-                        btn.disabled = true;
-                        btn.text = "Rolling back...";
-                        btn.icon = "sync";
+                    if (isNewFile) {
+                        const confirmed = await window.modal.confirm(`Are you sure you want to delete file <strong>${filename}</strong>?`, "Confirm Deletion");
+                        if (!confirmed) return;
 
-                        // 1. Revert content in AgentBackup
-                        const { default: AgentBackup } = await import('../agent/agent-backup.mjs');
-                        const content = await AgentBackup.rollback(latestBackup.backupId);
+                        try {
+                            btn.disabled = true;
+                            btn.text = "Deleting...";
+                            btn.icon = "sync";
 
-                        // 2. Write content directly to disk via Conduit
-                        const base64Content = btoa(unescape(encodeURIComponent(content)));
-                        const result = await conduitClient.wsWrite(path, base64Content);
-                        if (result.error) throw new Error(result.error);
+                            // 1. Delete from disk via Conduit
+                            const result = await conduitClient.wsDelete(path);
+                            if (result.error) throw new Error(result.error);
 
-                        // 3. Update active editor session if currently open in tabs
-                        const normalize = (p) => p ? p.replace(/\\/g, '/').replace(/\/+/g, '/').replace(/^\//, '').replace(/\/$/, '') : '';
-                        const pathsMatch = (p1, p2) => {
-                            const n1 = normalize(p1);
-                            const n2 = normalize(p2);
-                            if (!n1 || !n2) return false;
-                            return n1 === n2 || n1.endsWith('/' + n2) || n2.endsWith('/' + n1);
-                        };
-                        const allOpenTabs = [...(ui.leftTabs?.tabs || []), ...(ui.rightTabs?.tabs || [])];
-                        const tab = allOpenTabs.find(t => pathsMatch(t.config?.path, path));
-                        if (tab && tab.config.session) {
-                            tab.config.session.setValue(content);
-                            tab.config.session.baseValue = content;
-                            tab.changed = false;
-                        }
+                            // 2. Find and close any matching open tab
+                            const normalizePath = (p) => {
+                                if (!p) return "";
+                                return p.replace(/\\/g, '/').replace(/^\.\//, '').replace(/^\//, '').replace(/\/$/, '');
+                            };
+                            const checkAndAddTab = (tab, targetPath) => {
+                                const tabPath = tab.config?.path;
+                                if (!tabPath) return false;
+                                const normTab = normalizePath(tabPath);
+                                const normPath = normalizePath(targetPath);
+                                return normTab === normPath || normTab.endsWith('/' + normPath) || normPath.endsWith('/' + normTab);
+                            };
 
-                        // 4. Close open diff tab for this backup if present
-                        const diffTab = allOpenTabs.find(t => t.config?.path === `diff_${latestBackup.backupId}`);
-                        if (diffTab) {
-                            diffTab.tabBar.remove(diffTab, true);
-                        }
+                            const tabsToCloseLeft = [];
+                            const tabsToCloseRight = [];
 
-                        // 5. Mark backup as rolled back in the session state
-                        if (session.modifiedFiles && session.modifiedFiles[path]) {
-                            session.modifiedFiles[path] = session.modifiedFiles[path].filter(b => b.backupId !== latestBackup.backupId);
-                            if (session.modifiedFiles[path].length === 0) {
-                                delete session.modifiedFiles[path];
+                            if (ui.leftTabs?.tabs) {
+                                for (const tab of ui.leftTabs.tabs) {
+                                    if (checkAndAddTab(tab, path)) {
+                                        tabsToCloseLeft.push(tab);
+                                    }
+                                }
                             }
-                            await workspaceClient.setSession(session.id, session);
-                        }
+                            if (ui.rightTabs?.tabs) {
+                                for (const tab of ui.rightTabs.tabs) {
+                                    if (checkAndAddTab(tab, path)) {
+                                        tabsToCloseRight.push(tab);
+                                    }
+                                }
+                            }
 
-                        window.modal.toast(`Successfully rolled back ${filename} to original state.`);
-                        this.update();
-                    } catch (err) {
-                        console.error("Rollback failed:", err);
-                        window.modal.notice(`Rollback failed:<br><small>${err.message}</small>`, "Rollback Error");
-                        btn.disabled = false;
-                        btn.text = "Rollback";
-                        btn.icon = "undo";
+                            if (window.closeTab) {
+                                for (const tab of tabsToCloseLeft) {
+                                    await window.closeTab(ui.leftTabs, { tab }, true);
+                                }
+                                for (const tab of tabsToCloseRight) {
+                                    await window.closeTab(ui.rightTabs, { tab }, true);
+                                }
+                            } else {
+                                for (const tab of tabsToCloseLeft) {
+                                    tab.tabBar.remove(tab, true);
+                                }
+                                for (const tab of tabsToCloseRight) {
+                                    tab.tabBar.remove(tab, true);
+                                }
+                            }
+
+                            // 3. Mark file as deleted/removed in session modifiedFiles state
+                            if (session.modifiedFiles && session.modifiedFiles[path]) {
+                                delete session.modifiedFiles[path];
+                                await workspaceClient.setSession(session.id, session);
+                            }
+
+                            // 4. Refresh folders
+                            if (window.ui?.fileList?.refreshFolders) {
+                                window.ui.fileList.refreshFolders();
+                            } else {
+                                const parentPathDelete = path.substring(0, path.lastIndexOf('/'));
+                                if (window.ui?.fileList?.refreshFolder) {
+                                    await window.ui.fileList.refreshFolder(parentPathDelete || ".");
+                                }
+                            }
+
+                            window.modal.toast(`Successfully deleted ${filename}.`);
+                            this.update();
+                        } catch (err) {
+                            console.error("Delete failed:", err);
+                            window.modal.notice(`Delete failed:<br><small>${err.message}</small>`, "Delete Error");
+                            btn.disabled = false;
+                            btn.text = "Delete";
+                            btn.icon = "delete";
+                        }
+                    } else {
+                        try {
+                            btn.disabled = true;
+                            btn.text = "Rolling back...";
+                            btn.icon = "sync";
+
+                            // 1. Revert content in AgentBackup
+                            const { default: AgentBackup } = await import('../agent/agent-backup.mjs');
+                            const content = await AgentBackup.rollback(latestBackup.backupId);
+
+                            // 2. Write content directly to disk via Conduit
+                            const base64Content = btoa(unescape(encodeURIComponent(content)));
+                            const result = await conduitClient.wsWrite(path, base64Content);
+                            if (result.error) throw new Error(result.error);
+
+                            // 3. Update active editor session if currently open in tabs
+                            const normalize = (p) => p ? p.replace(/\\/g, '/').replace(/\/+/g, '/').replace(/^\//, '').replace(/\/$/, '') : '';
+                            const pathsMatch = (p1, p2) => {
+                                const n1 = normalize(p1);
+                                const n2 = normalize(p2);
+                                if (!n1 || !n2) return false;
+                                return n1 === n2 || n1.endsWith('/' + n2) || n2.endsWith('/' + n1);
+                            };
+                            const allOpenTabs = [...(ui.leftTabs?.tabs || []), ...(ui.rightTabs?.tabs || [])];
+                            const tab = allOpenTabs.find(t => pathsMatch(t.config?.path, path));
+                            if (tab && tab.config.session) {
+                                tab.config.session.setValue(content);
+                                tab.config.session.baseValue = content;
+                                tab.changed = false;
+                            }
+
+                            // 4. Close open diff tab for this backup if present
+                            const diffTab = allOpenTabs.find(t => t.config?.path === `diff_${latestBackup.backupId}`);
+                            if (diffTab) {
+                                diffTab.tabBar.remove(diffTab, true);
+                            }
+
+                            // 5. Mark backup as rolled back in the session state
+                            if (session.modifiedFiles && session.modifiedFiles[path]) {
+                                session.modifiedFiles[path] = session.modifiedFiles[path].filter(b => b.backupId !== latestBackup.backupId);
+                                if (session.modifiedFiles[path].length === 0) {
+                                    delete session.modifiedFiles[path];
+                                }
+                                await workspaceClient.setSession(session.id, session);
+                            }
+
+                            window.modal.toast(`Successfully rolled back ${filename} to original state.`);
+                            this.update();
+                        } catch (err) {
+                            console.error("Rollback failed:", err);
+                            window.modal.notice(`Rollback failed:<br><small>${err.message}</small>`, "Rollback Error");
+                            btn.disabled = false;
+                            btn.text = "Rollback";
+                            btn.icon = "undo";
+                        }
                     }
                 };
 

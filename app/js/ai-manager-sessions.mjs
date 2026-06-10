@@ -120,7 +120,7 @@ class AIManagerSessions {
 
 		let promptText = "";
 		if (isAccepted) {
-			promptText = "Let's proceed with the implementation plan. Please execute the checklist step-by-step.";
+			promptText = "[system] Implementation plan accepted. Execute the checklist step-by-step.";
 			if (comment) promptText += `\n\nAdditional Instructions:\n${comment}`;
 
 			// Disable planning mode so the model can actually implement its plan
@@ -131,9 +131,9 @@ class AIManagerSessions {
 			this.manager._updateAgentProgressPanel();
 		} else {
 			if (comment) {
-				promptText = `The proposed implementation plan has been rejected. Please review the feedback and formulate a new plan.\n\nFeedback:\n${comment}`;
+				promptText = `[system] The proposed implementation plan has been rejected. Review the feedback and formulate a new plan.\n\nFeedback:\n${comment}`;
 			} else {
-				promptText = "The proposed implementation plan has been rejected. Please await further instruction from the user.";
+				promptText = "[system] The proposed implementation plan has been rejected. Await further instruction from the user.";
 			}
 		}
 

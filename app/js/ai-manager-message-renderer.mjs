@@ -640,6 +640,85 @@ export default class AIManagerMessageRenderer {
         const len = content.length;
 
         while (i < len) {
+            if (activeBlock) {
+                if (activeBlock.type === 'thought') {
+                    if (activeBlock.subType === 'thought' && content.startsWith("</thought>", i)) {
+                        activeBlock.endIdx = i + 10;
+                        activeBlock.contentEndIdx = i;
+                        activeBlock.closed = true;
+                        activeBlock = null;
+                        inCodeBlock = false;
+                        inInlineCode = false;
+                        i += 10;
+                        continue;
+                    }
+                    if (activeBlock.subType === 'think' && content.startsWith("</think>", i)) {
+                        activeBlock.endIdx = i + 8;
+                        activeBlock.contentEndIdx = i;
+                        activeBlock.closed = true;
+                        activeBlock = null;
+                        inCodeBlock = false;
+                        inInlineCode = false;
+                        i += 8;
+                        continue;
+                    }
+                    if (activeBlock.subType === 'channel' && content.startsWith("<channel|>", i)) {
+                        activeBlock.endIdx = i + 10;
+                        activeBlock.contentEndIdx = i;
+                        activeBlock.closed = true;
+                        activeBlock = null;
+                        inCodeBlock = false;
+                        inInlineCode = false;
+                        i += 10;
+                        continue;
+                    }
+                } else if (activeBlock.type === 'plan') {
+                    if (content.startsWith("</implementation_plan>", i)) {
+                        activeBlock.endIdx = i + 22;
+                        activeBlock.contentEndIdx = i;
+                        activeBlock.closed = true;
+                        activeBlock = null;
+                        inCodeBlock = false;
+                        inInlineCode = false;
+                        i += 22;
+                        continue;
+                    }
+                } else if (activeBlock.type === 'taskList') {
+                    if (content.startsWith("</task_list>", i)) {
+                        activeBlock.endIdx = i + 12;
+                        activeBlock.contentEndIdx = i;
+                        activeBlock.closed = true;
+                        activeBlock = null;
+                        inCodeBlock = false;
+                        inInlineCode = false;
+                        i += 12;
+                        continue;
+                    }
+                } else if (activeBlock.type === 'completeTask') {
+                    if (content.startsWith("</complete_task>", i)) {
+                        activeBlock.endIdx = i + 16;
+                        activeBlock.contentEndIdx = i;
+                        activeBlock.closed = true;
+                        activeBlock = null;
+                        inCodeBlock = false;
+                        inInlineCode = false;
+                        i += 16;
+                        continue;
+                    }
+                } else if (activeBlock.type === 'toolCall') {
+                    if (content.startsWith("</tool_call>", i)) {
+                        activeBlock.endIdx = i + 12;
+                        activeBlock.contentEndIdx = i;
+                        activeBlock.closed = true;
+                        activeBlock = null;
+                        inCodeBlock = false;
+                        inInlineCode = false;
+                        i += 12;
+                        continue;
+                    }
+                }
+            }
+
             if (content.startsWith("```", i)) {
                 inCodeBlock = !inCodeBlock;
                 i += 3;
@@ -652,73 +731,6 @@ export default class AIManagerMessageRenderer {
             }
 
             if (inCodeBlock || inInlineCode) {
-                i++;
-                continue;
-            }
-
-            if (activeBlock) {
-                if (activeBlock.type === 'thought') {
-                    if (activeBlock.subType === 'thought' && content.startsWith("</thought>", i)) {
-                        activeBlock.endIdx = i + 10;
-                        activeBlock.contentEndIdx = i;
-                        activeBlock.closed = true;
-                        activeBlock = null;
-                        i += 10;
-                        continue;
-                    }
-                    if (activeBlock.subType === 'think' && content.startsWith("</think>", i)) {
-                        activeBlock.endIdx = i + 8;
-                        activeBlock.contentEndIdx = i;
-                        activeBlock.closed = true;
-                        activeBlock = null;
-                        i += 8;
-                        continue;
-                    }
-                    if (activeBlock.subType === 'channel' && content.startsWith("<channel|>", i)) {
-                        activeBlock.endIdx = i + 10;
-                        activeBlock.contentEndIdx = i;
-                        activeBlock.closed = true;
-                        activeBlock = null;
-                        i += 10;
-                        continue;
-                    }
-                } else if (activeBlock.type === 'plan') {
-                    if (content.startsWith("</implementation_plan>", i)) {
-                        activeBlock.endIdx = i + 22;
-                        activeBlock.contentEndIdx = i;
-                        activeBlock.closed = true;
-                        activeBlock = null;
-                        i += 22;
-                        continue;
-                    }
-                } else if (activeBlock.type === 'taskList') {
-                    if (content.startsWith("</task_list>", i)) {
-                        activeBlock.endIdx = i + 12;
-                        activeBlock.contentEndIdx = i;
-                        activeBlock.closed = true;
-                        activeBlock = null;
-                        i += 12;
-                        continue;
-                    }
-                } else if (activeBlock.type === 'completeTask') {
-                    if (content.startsWith("</complete_task>", i)) {
-                        activeBlock.endIdx = i + 16;
-                        activeBlock.contentEndIdx = i;
-                        activeBlock.closed = true;
-                        activeBlock = null;
-                        i += 16;
-                        continue;
-                    }
-                } else if (activeBlock.type === 'toolCall') {
-                    if (content.startsWith("</tool_call>", i)) {
-                        activeBlock.endIdx = i + 12;
-                        activeBlock.contentEndIdx = i;
-                        activeBlock.closed = true;
-                        activeBlock = null;
-                        i += 12;
-                        continue;
-                    }
-                }
                 i++;
                 continue;
             }

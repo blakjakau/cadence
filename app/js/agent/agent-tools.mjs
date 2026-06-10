@@ -856,6 +856,747 @@ class AgentTools {
     }
 
     /**
+     * Helper to verify and align line ranges using startAnchor and endAnchor.
+     * Searches within 5 lines of specified line numbers.
+     * Throws an error if anchors are specified but not found.
+     */
+    _alignAnchors(lines, startLine, lineCount, startAnchor, endAnchor) {
+        let adjustedStart = startLine;
+        let adjustedCount = lineCount;
+
+        if (startAnchor !== undefined && startAnchor !== null && startAnchor !== "") {
+            let found = false;
+            const offsets = [0, 1, -1, 2, -2, 3, -3, 4, -4, 5, -5];
+            for (const offset of offsets) {
+                const candidateLineNum = startLine + offset;
+                const idx = candidateLineNum - 1;
+                if (idx >= 0 && idx < lines.length) {
+                    if (lines[idx].trim() === startAnchor.trim()) {
+                        adjustedStart = candidateLineNum;
+                        found = true;
+                        break;
+                    }
+                }
+            }
+            if (!found) {
+                throw new Error(`startAnchor "${startAnchor}" not found within 5 lines of startLine ${startLine}`);
+            }
+        }
+
+        if (endAnchor !== undefined && endAnchor !== null && endAnchor !== "") {
+            let found = false;
+            const expectedEndLine = adjustedStart + lineCount;
+            const offsets = [0, 1, -1, 2, -2, 3, -3, 4, -4, 5, -5];
+            for (const offset of offsets) {
+                const candidateLineNum = expectedEndLine + offset;
+                const idx = candidateLineNum - 1;
+                if (idx >= 0 && idx < lines.length) {
+                    if (lines[idx].trim() === endAnchor.trim()) {
+                        adjustedCount = candidateLineNum - adjustedStart;
+                        found = true;
+                        break;
+                    }
+                }
+            }
+            if (!found) {
+                throw new Error(`endAnchor "${endAnchor}" not found within 5 lines of expected end line ${expectedEndLine}`);
+            }
+        }
+
+        return { startLine: adjustedStart, lineCount: adjustedCount };
+    }
+
+    /**
+     * Removes lines from a file.
+     * @param {string} path 
+     * @param {string} [searchString]
+     * @param {number} [startLine]
+     * @param {number} [lineCount]
+     * @param {string} [startAnchor]
+     * @param {string} [endAnchor]
+     * @param {string} [sourceId]
+     */
+    async editRemoveLines(path, searchString, startLine, lineCount, startAnchor, endAnchor, sourceId) {
+        try {
+            const permitted = this._checkFilePermitted(path);
+            if (permitted !== true) return permitted;
+
+            const resolvedPath = this._resolveAndValidatePath(path);
+            
+            // 1. Ensure the file is open in the editor
+            let targetTab = this._findOpenTab(resolvedPath);
+
+            if (!targetTab) {
+                if (window.ui?.fileList?.open) {
+                    await window.ui.fileList.open(resolvedPath, resolvedPath);
+                    targetTab = this._findOpenTab(resolvedPath);
+                }
+            }
+
+            if (!targetTab) {
+                throw new Error(`Failed to open file ${resolvedPath} in the editor.`);
+            }
+
+            const session = targetTab.config.session;
+            const originalContent = session.getValue();
+
+            // Validate arguments and calculate range to remove
+            const Range = window.ace.require("ace/range").Range;
+            let rangeToReplace;
+
+            if (searchString !== undefined && searchString !== null) {
+                // Count occurrences
+                let count = 0;
+                let pos = originalContent.indexOf(searchString);
+                while (pos !== -1) {
+                    count++;
+                    pos = originalContent.indexOf(searchString, pos + 1);
+                }
+                if (count > 1) {
+                    return "multiple instances of search found in file, please use startLine and lineCount";
+                }
+                
+                const cleanStartIndex = originalContent.indexOf(searchString);
+                if (cleanStartIndex === -1) {
+                    throw new Error(`Target string not found in ${path}. Ensure the search string matches exactly, including whitespace.`);
+                }
+
+                const doc = session.getDocument();
+                const startPos = doc.indexToPosition(cleanStartIndex);
+                const endPos = doc.indexToPosition(cleanStartIndex + searchString.length);
+                rangeToReplace = new Range(startPos.row, startPos.column, endPos.row, endPos.column);
+            } else if (startLine !== undefined && lineCount !== undefined) {
+                const doc = session.getDocument();
+                const totalLines = doc.getLength();
+                const lines = originalContent.split(/\r?\n/);
+
+                if (!startAnchor || !endAnchor) {
+                    throw new Error("You must provide both 'startAnchor' and 'endAnchor' when using 'startLine' and 'lineCount'.");
+                }
+                const aligned = this._alignAnchors(lines, startLine, lineCount, startAnchor, endAnchor);
+
+                const startRow = Math.max(0, parseInt(aligned.startLine, 10) - 1);
+                const countVal = Math.max(1, parseInt(aligned.lineCount, 10));
+
+                if (startRow >= totalLines) {
+                    throw new Error(`startLine ${startLine} is out of bounds (1-${totalLines})`);
+                }
+
+                if (startRow + countVal < totalLines) {
+                    rangeToReplace = new Range(startRow, 0, startRow + countVal, 0);
+                } else {
+                    if (startRow > 0) {
+                        const prevLineLen = doc.getLine(startRow - 1).length;
+                        rangeToReplace = new Range(startRow - 1, prevLineLen, totalLines - 1, doc.getLine(totalLines - 1).length);
+                    } else {
+                        rangeToReplace = new Range(0, 0, totalLines - 1, doc.getLine(totalLines - 1).length);
+                    }
+                }
+            } else {
+                throw new Error("You must provide either 'search' or both 'startLine' and 'lineCount'.");
+            }
+
+            const isForgivenessMode = window.ui?.aiManager?.forgivenessMode === true;
+            if (isForgivenessMode) {
+                // 1. Create backup if not already present in the active session
+                let backupId = "";
+                const activeSession = window.ui?.aiManager?.activeSession;
+                const hasExistingBackup = activeSession && activeSession.modifiedFiles && activeSession.modifiedFiles[resolvedPath] && activeSession.modifiedFiles[resolvedPath].length > 0;
+
+                if (hasExistingBackup) {
+                    backupId = activeSession.modifiedFiles[resolvedPath][0].backupId;
+                } else {
+                    try {
+                        const actId = sourceId || activeSession?.id || "default";
+                        backupId = await AgentBackup.create(resolvedPath, originalContent, actId);
+                        
+                        if (activeSession) {
+                            activeSession.modifiedFiles = activeSession.modifiedFiles || {};
+                            if (!activeSession.modifiedFiles[resolvedPath]) {
+                                activeSession.modifiedFiles[resolvedPath] = [];
+                            }
+                            activeSession.modifiedFiles[resolvedPath].push({
+                                backupId: backupId,
+                                timestamp: Date.now(),
+                                sourceId: actId
+                            });
+                            await workspaceClient.setSession(activeSession.id, activeSession);
+                        }
+                    } catch (e) {
+                        console.error("[AgentTools] Failed to create backup:", e);
+                    }
+                }
+
+                // 2. Perform the clean edit on Ace session
+                session.replace(rangeToReplace, "");
+
+                // 3. Save to disk immediately
+                if (window.saveFileTab) {
+                    await window.saveFileTab(targetTab);
+                    session.baseValue = session.getValue();
+                }
+
+                // 4. Set tab to diff view mode automatically for implicit review
+                targetTab.config.viewMode = "diff";
+                targetTab.config.backupId = backupId;
+
+                // 5. Focus & Redraw
+                targetTab.click();
+                if (window.ui?.renderPlanTasksView) {
+                    const containers = document.querySelectorAll('.plan-tasks-view');
+                    containers.forEach(c => window.ui.renderPlanTasksView(c));
+                }
+
+                const backupMsg = hasExistingBackup 
+                    ? "the rollback backup has been retained" 
+                    : "a rollback backup was created";
+                return `Successfully removed lines from ${path} in Forgiveness Mode. The change has been committed directly to the file and ${backupMsg}. The tab has switched to the side-by-side Diff view for your review.`;
+            }
+
+            // Permission Mode: clean replacement in memory
+            session.replace(rangeToReplace, "");
+            // Set tab to diff view mode automatically for implicit review
+            targetTab.config.viewMode = "diff";
+            delete targetTab.config.backupId;
+
+            // Track pending AI edits in active session
+            const activeSession = window.ui?.aiManager?.activeSession;
+            if (activeSession) {
+                activeSession.pendingEdits = activeSession.pendingEdits || {};
+                activeSession.pendingEdits[resolvedPath] = true;
+                await workspaceClient.setSession(activeSession.id, activeSession);
+            }
+
+            // Focus & Redraw
+            targetTab.click();
+            return `Successfully removed lines from ${path} in memory (Permission Mode). The tab has switched to the side-by-side Diff view for your review. Please click 'Apply Changes' at the top to save to disk or 'Discard' to revert.`;
+        } catch (error) {
+            return `Error removing lines: ${error.message}`;
+        }
+    }
+
+    /**
+     * Copy a range of lines from a source file and insert them into a destination file.
+     * @param {string} source 
+     * @param {number} startLine 
+     * @param {number} lineCount 
+     * @param {string} destination 
+     * @param {number} insertAt 
+     * @param {boolean} [removeFromSource]
+     * @param {string} [sourceId]
+     */
+    async editCopyLines(source, startLine, lineCount, destination, insertAt, removeFromSource, startAnchor, endAnchor, sourceId) {
+        try {
+            const sourcePermitted = this._checkFilePermitted(source);
+            if (sourcePermitted !== true) return sourcePermitted;
+            const destPermitted = this._checkFilePermitted(destination);
+            if (destPermitted !== true) return destPermitted;
+
+            const cleanSource = this._resolveAndValidatePath(source);
+            const cleanDestination = this._resolveAndValidatePath(destination);
+
+            const sourceContent = await this.readFile(cleanSource);
+            if (sourceContent.startsWith("Error:")) {
+                throw new Error(`Failed to read source file: ${sourceContent}`);
+            }
+            const sourceLines = sourceContent.split(/\r?\n/);
+
+            if (!startAnchor || !endAnchor) {
+                throw new Error("You must provide both 'startAnchor' and 'endAnchor'.");
+            }
+            const aligned = this._alignAnchors(sourceLines, startLine, lineCount, startAnchor, endAnchor);
+            startLine = aligned.startLine;
+            lineCount = aligned.lineCount;
+
+            const startIdx = Math.max(0, startLine - 1);
+            const countVal = Math.max(0, lineCount);
+            const linesToCopy = sourceLines.slice(startIdx, startIdx + countVal).join('\n');
+
+            // Check if destination file exists
+            let destExists = false;
+            let destTab = this._findOpenTab(cleanDestination);
+            if (destTab) {
+                destExists = true;
+            } else {
+                const files = window.ui?.fileList?.index?.files || [];
+                const normalizedDest = cleanDestination.toLowerCase();
+                const foundInIndex = files.some(f => f.path.replace(/\\/g, '/').replace(/\/+/g, '/').toLowerCase() === normalizedDest);
+                if (foundInIndex) {
+                    destExists = true;
+                } else {
+                    try {
+                        const readRes = await this.conduit.wsRead(cleanDestination);
+                        if (readRes && !readRes.error) {
+                            destExists = true;
+                        }
+                    } catch (e) {
+                        destExists = false;
+                    }
+                }
+            }
+
+            if (!destExists) {
+                if (!this.conduit.isConnected) {
+                    return "Error: Conduit not connected.";
+                }
+
+                if (removeFromSource) {
+                    let sourceTab = this._findOpenTab(cleanSource);
+                    if (!sourceTab) {
+                        if (window.ui?.fileList?.open) {
+                            await window.ui.fileList.open(cleanSource, cleanSource);
+                            sourceTab = this._findOpenTab(cleanSource);
+                        }
+                    }
+                    if (!sourceTab) {
+                        throw new Error(`Failed to open source file ${cleanSource} in the editor for removal.`);
+                    }
+
+                    const srcSession = sourceTab.config.session;
+                    const srcOriginalContent = srcSession.getValue();
+                    const srcDoc = srcSession.getDocument();
+                    const srcTotalLines = srcDoc.getLength();
+                    const srcStartRow = Math.max(0, parseInt(startLine, 10) - 1);
+                    const srcCountVal = Math.max(1, parseInt(lineCount, 10));
+
+                    const Range = window.ace.require("ace/range").Range;
+                    let rangeToRemove;
+                    if (srcStartRow + srcCountVal < srcTotalLines) {
+                        rangeToRemove = new Range(srcStartRow, 0, srcStartRow + srcCountVal, 0);
+                    } else {
+                        if (srcStartRow > 0) {
+                            const prevLineLen = srcDoc.getLine(srcStartRow - 1).length;
+                            rangeToRemove = new Range(srcStartRow - 1, prevLineLen, srcTotalLines - 1, srcDoc.getLine(srcTotalLines - 1).length);
+                        } else {
+                            rangeToRemove = new Range(0, 0, srcTotalLines - 1, srcDoc.getLine(srcTotalLines - 1).length);
+                        }
+                    }
+
+                    const isForgivenessMode = window.ui?.aiManager?.forgivenessMode === true;
+                    if (isForgivenessMode) {
+                        let srcBackupId = "";
+                        const activeSession = window.ui?.aiManager?.activeSession;
+                        const hasSrcBackup = activeSession && activeSession.modifiedFiles && activeSession.modifiedFiles[cleanSource] && activeSession.modifiedFiles[cleanSource].length > 0;
+
+                        if (hasSrcBackup) {
+                            srcBackupId = activeSession.modifiedFiles[cleanSource][0].backupId;
+                        } else {
+                            try {
+                                const actId = sourceId || activeSession?.id || "default";
+                                srcBackupId = await AgentBackup.create(cleanSource, srcOriginalContent, actId);
+
+                                if (activeSession) {
+                                    activeSession.modifiedFiles = activeSession.modifiedFiles || {};
+                                    if (!activeSession.modifiedFiles[cleanSource]) {
+                                        activeSession.modifiedFiles[cleanSource] = [];
+                                    }
+                                    activeSession.modifiedFiles[cleanSource].push({
+                                        backupId: srcBackupId,
+                                        timestamp: Date.now(),
+                                        sourceId: actId
+                                    });
+                                    await workspaceClient.setSession(activeSession.id, activeSession);
+                                }
+                            } catch (e) {
+                                console.error("[AgentTools] Failed to create source backup:", e);
+                            }
+                        }
+
+                        srcSession.replace(rangeToRemove, "");
+                        if (window.saveFileTab) {
+                            await window.saveFileTab(sourceTab);
+                            srcSession.baseValue = srcSession.getValue();
+                        }
+                        sourceTab.config.viewMode = "diff";
+                        sourceTab.config.backupId = srcBackupId;
+                    } else {
+                        srcSession.replace(rangeToRemove, "");
+                        sourceTab.config.viewMode = "diff";
+                        delete sourceTab.config.backupId;
+
+                        const activeSession = window.ui?.aiManager?.activeSession;
+                        if (activeSession) {
+                            activeSession.pendingEdits = activeSession.pendingEdits || {};
+                            activeSession.pendingEdits[cleanSource] = true;
+                            await workspaceClient.setSession(activeSession.id, activeSession);
+                        }
+                    }
+                }
+
+                const isForgivenessMode = window.ui?.aiManager?.forgivenessMode === true;
+                const activeSession = window.ui?.aiManager?.activeSession;
+                const actId = sourceId || activeSession?.id || "default";
+
+                if (isForgivenessMode) {
+                    const base64Content = btoa(unescape(encodeURIComponent(linesToCopy)));
+                    const result = await this.conduit.wsWrite(cleanDestination, base64Content);
+                    if (result.error) throw new Error(result.error);
+
+                    if (activeSession) {
+                        activeSession.modifiedFiles = activeSession.modifiedFiles || {};
+                        if (!activeSession.modifiedFiles[cleanDestination]) {
+                            activeSession.modifiedFiles[cleanDestination] = [];
+                        }
+                        activeSession.modifiedFiles[cleanDestination].push({
+                            backupId: "new_file",
+                            isNewFile: true,
+                            timestamp: Date.now(),
+                            sourceId: actId
+                        });
+                        await workspaceClient.setSession(activeSession.id, activeSession);
+                    }
+
+                    if (window.ui?.fileList?.refreshFolders) {
+                        window.ui.fileList.refreshFolders();
+                    }
+
+                    if (window.ui?.fileList?.open) {
+                        await window.ui.fileList.open(cleanDestination);
+                    }
+
+                    const actionWord = removeFromSource ? "moved" : "copied";
+                    return `Successfully created ${destination} and ${actionWord} the lines in Forgiveness Mode.`;
+                }
+
+                const result = await this.conduit.wsWrite(cleanDestination, "");
+                if (result.error) throw new Error(result.error);
+
+                if (window.ui?.fileList?.refreshFolders) {
+                    window.ui.fileList.refreshFolders();
+                }
+
+                if (window.ui?.fileList?.open) {
+                    await window.ui.fileList.open(cleanDestination, cleanDestination);
+                }
+
+                let targetTab = this._findOpenTab(cleanDestination);
+                if (!targetTab) {
+                    throw new Error(`Failed to open new destination file ${cleanDestination} in the editor.`);
+                }
+
+                targetTab.config.session.setValue(linesToCopy);
+                targetTab.config.viewMode = "diff";
+                delete targetTab.config.backupId;
+
+                if (activeSession) {
+                    activeSession.modifiedFiles = activeSession.modifiedFiles || {};
+                    if (!activeSession.modifiedFiles[cleanDestination]) {
+                        activeSession.modifiedFiles[cleanDestination] = [];
+                    }
+                    activeSession.modifiedFiles[cleanDestination].push({
+                        backupId: "new_file",
+                        isNewFile: true,
+                        timestamp: Date.now(),
+                        sourceId: actId
+                    });
+
+                    activeSession.pendingEdits = activeSession.pendingEdits || {};
+                    activeSession.pendingEdits[cleanDestination] = true;
+                    await workspaceClient.setSession(activeSession.id, activeSession);
+                }
+
+                targetTab.click();
+                const actionWord = removeFromSource ? "moved" : "copied";
+                return `Successfully created empty file ${destination} on disk and pending ${actionWord} lines in memory (Permission Mode). The tab has switched to the side-by-side Diff view to review the pending content. Please click 'Apply Changes' at the top to save to disk or 'Discard' to delete/revert.`;
+            }
+
+            // If removeFromSource is true and source is the same as destination, we handle it as a move within the same file.
+            if (removeFromSource && cleanSource === cleanDestination) {
+                // Ensure file is open in editor
+                let targetTab = this._findOpenTab(cleanDestination);
+                if (!targetTab) {
+                    if (window.ui?.fileList?.open) {
+                        await window.ui.fileList.open(cleanDestination, cleanDestination);
+                        targetTab = this._findOpenTab(cleanDestination);
+                    }
+                }
+                if (!targetTab) {
+                    throw new Error(`Failed to open file ${cleanDestination} in the editor.`);
+                }
+
+                const session = targetTab.config.session;
+                const originalContent = session.getValue();
+
+                const doc = session.getDocument();
+                const totalLines = doc.getLength();
+                const startRow = Math.max(0, parseInt(startLine, 10) - 1);
+                const countVal = Math.max(1, parseInt(lineCount, 10));
+                const insertRow = Math.max(0, parseInt(insertAt, 10) - 1);
+
+                if (insertRow >= startRow && insertRow < startRow + countVal) {
+                    throw new Error("Cannot insert copied lines inside the range of lines being removed from the same file.");
+                }
+
+                const lines = originalContent.split(/\r?\n/);
+                const copiedLinesArr = lines.slice(startRow, startRow + countVal);
+                lines.splice(startRow, countVal);
+
+                let targetInsertRow = insertRow;
+                if (insertRow > startRow) {
+                    targetInsertRow = insertRow - countVal;
+                }
+                lines.splice(targetInsertRow, 0, ...copiedLinesArr);
+                const newContent = lines.join('\n');
+
+                const Range = window.ace.require("ace/range").Range;
+                const endPos = doc.indexToPosition(originalContent.length);
+                const fullRange = new Range(0, 0, endPos.row, endPos.column);
+
+                const isForgivenessMode = window.ui?.aiManager?.forgivenessMode === true;
+                if (isForgivenessMode) {
+                    let backupId = "";
+                    const activeSession = window.ui?.aiManager?.activeSession;
+                    const hasExistingBackup = activeSession && activeSession.modifiedFiles && activeSession.modifiedFiles[cleanDestination] && activeSession.modifiedFiles[cleanDestination].length > 0;
+
+                    if (hasExistingBackup) {
+                        backupId = activeSession.modifiedFiles[cleanDestination][0].backupId;
+                    } else {
+                        try {
+                            const actId = sourceId || activeSession?.id || "default";
+                            backupId = await AgentBackup.create(cleanDestination, originalContent, actId);
+
+                            if (activeSession) {
+                                activeSession.modifiedFiles = activeSession.modifiedFiles || {};
+                                if (!activeSession.modifiedFiles[cleanDestination]) {
+                                    activeSession.modifiedFiles[cleanDestination] = [];
+                                }
+                                activeSession.modifiedFiles[cleanDestination].push({
+                                    backupId: backupId,
+                                    timestamp: Date.now(),
+                                    sourceId: actId
+                                });
+                                await workspaceClient.setSession(activeSession.id, activeSession);
+                            }
+                        } catch (e) {
+                            console.error("[AgentTools] Failed to create backup:", e);
+                        }
+                    }
+
+                    session.replace(fullRange, newContent);
+
+                    if (window.saveFileTab) {
+                        await window.saveFileTab(targetTab);
+                        session.baseValue = session.getValue();
+                    }
+
+                    targetTab.config.viewMode = "diff";
+                    targetTab.config.backupId = backupId;
+                    targetTab.click();
+                    if (window.ui?.renderPlanTasksView) {
+                        const containers = document.querySelectorAll('.plan-tasks-view');
+                        containers.forEach(c => window.ui.renderPlanTasksView(c));
+                    }
+
+                    const backupMsg = hasExistingBackup ? "the rollback backup has been retained" : "a rollback backup was created";
+                    return `Successfully moved lines within ${destination} in Forgiveness Mode. The change has been committed directly to the file and ${backupMsg}. The tab has switched to the side-by-side Diff view for your review.`;
+                }
+
+                session.replace(fullRange, newContent);
+                targetTab.config.viewMode = "diff";
+                delete targetTab.config.backupId;
+
+                const activeSession = window.ui?.aiManager?.activeSession;
+                if (activeSession) {
+                    activeSession.pendingEdits = activeSession.pendingEdits || {};
+                    activeSession.pendingEdits[cleanDestination] = true;
+                    await workspaceClient.setSession(activeSession.id, activeSession);
+                }
+
+                targetTab.click();
+                return `Successfully moved lines within ${destination} in memory (Permission Mode). The tab has switched to the side-by-side Diff view for your review. Please click 'Apply Changes' at the top to save to disk or 'Discard' to revert.`;
+            }
+
+            // Normal flow: Different destination file (and optional removal from source)
+            // Ensure the destination file is open in the editor
+            let targetTab = this._findOpenTab(cleanDestination);
+
+            if (!targetTab) {
+                if (window.ui?.fileList?.open) {
+                    await window.ui.fileList.open(cleanDestination, cleanDestination);
+                    targetTab = this._findOpenTab(cleanDestination);
+                }
+            }
+
+            if (!targetTab) {
+                throw new Error(`Failed to open destination file ${cleanDestination} in the editor.`);
+            }
+
+            const session = targetTab.config.session;
+            const originalContent = session.getValue();
+
+            const doc = session.getDocument();
+            const totalLines = doc.getLength();
+            const insertRow = Math.max(0, parseInt(insertAt, 10) - 1);
+
+            const Range = window.ace.require("ace/range").Range;
+            let rangeToInsert;
+            let textToInsert;
+
+            if (insertRow >= totalLines) {
+                const lastLineLen = doc.getLine(totalLines - 1).length;
+                rangeToInsert = new Range(totalLines - 1, lastLineLen, totalLines - 1, lastLineLen);
+                textToInsert = "\n" + linesToCopy;
+            } else {
+                rangeToInsert = new Range(insertRow, 0, insertRow, 0);
+                textToInsert = linesToCopy + "\n";
+            }
+
+            const isForgivenessMode = window.ui?.aiManager?.forgivenessMode === true;
+            
+            // Perform removal from source first if requested
+            if (removeFromSource) {
+                let sourceTab = this._findOpenTab(cleanSource);
+                if (!sourceTab) {
+                    if (window.ui?.fileList?.open) {
+                        await window.ui.fileList.open(cleanSource, cleanSource);
+                        sourceTab = this._findOpenTab(cleanSource);
+                    }
+                }
+                if (!sourceTab) {
+                    throw new Error(`Failed to open source file ${cleanSource} in the editor for removal.`);
+                }
+
+                const srcSession = sourceTab.config.session;
+                const srcOriginalContent = srcSession.getValue();
+                const srcDoc = srcSession.getDocument();
+                const srcTotalLines = srcDoc.getLength();
+                const srcStartRow = Math.max(0, parseInt(startLine, 10) - 1);
+                const srcCountVal = Math.max(1, parseInt(lineCount, 10));
+
+                let rangeToRemove;
+                if (srcStartRow + srcCountVal < srcTotalLines) {
+                    rangeToRemove = new Range(srcStartRow, 0, srcStartRow + srcCountVal, 0);
+                } else {
+                    if (srcStartRow > 0) {
+                        const prevLineLen = srcDoc.getLine(srcStartRow - 1).length;
+                        rangeToRemove = new Range(srcStartRow - 1, prevLineLen, srcTotalLines - 1, srcDoc.getLine(srcTotalLines - 1).length);
+                    } else {
+                        rangeToRemove = new Range(0, 0, srcTotalLines - 1, srcDoc.getLine(srcTotalLines - 1).length);
+                    }
+                }
+
+                if (isForgivenessMode) {
+                    let srcBackupId = "";
+                    const activeSession = window.ui?.aiManager?.activeSession;
+                    const hasSrcBackup = activeSession && activeSession.modifiedFiles && activeSession.modifiedFiles[cleanSource] && activeSession.modifiedFiles[cleanSource].length > 0;
+
+                    if (hasSrcBackup) {
+                        srcBackupId = activeSession.modifiedFiles[cleanSource][0].backupId;
+                    } else {
+                        try {
+                            const actId = sourceId || activeSession?.id || "default";
+                            srcBackupId = await AgentBackup.create(cleanSource, srcOriginalContent, actId);
+
+                            if (activeSession) {
+                                activeSession.modifiedFiles = activeSession.modifiedFiles || {};
+                                if (!activeSession.modifiedFiles[cleanSource]) {
+                                    activeSession.modifiedFiles[cleanSource] = [];
+                                }
+                                activeSession.modifiedFiles[cleanSource].push({
+                                    backupId: srcBackupId,
+                                    timestamp: Date.now(),
+                                    sourceId: actId
+                                });
+                                await workspaceClient.setSession(activeSession.id, activeSession);
+                            }
+                        } catch (e) {
+                            console.error("[AgentTools] Failed to create source backup:", e);
+                        }
+                    }
+
+                    srcSession.replace(rangeToRemove, "");
+                    if (window.saveFileTab) {
+                        await window.saveFileTab(sourceTab);
+                        srcSession.baseValue = srcSession.getValue();
+                    }
+                    sourceTab.config.viewMode = "diff";
+                    sourceTab.config.backupId = srcBackupId;
+                } else {
+                    srcSession.replace(rangeToRemove, "");
+                    sourceTab.config.viewMode = "diff";
+                    delete sourceTab.config.backupId;
+
+                    const activeSession = window.ui?.aiManager?.activeSession;
+                    if (activeSession) {
+                        activeSession.pendingEdits = activeSession.pendingEdits || {};
+                        activeSession.pendingEdits[cleanSource] = true;
+                        await workspaceClient.setSession(activeSession.id, activeSession);
+                    }
+                }
+            }
+
+            // Insert into destination
+            if (isForgivenessMode) {
+                let backupId = "";
+                const activeSession = window.ui?.aiManager?.activeSession;
+                const hasExistingBackup = activeSession && activeSession.modifiedFiles && activeSession.modifiedFiles[cleanDestination] && activeSession.modifiedFiles[cleanDestination].length > 0;
+
+                if (hasExistingBackup) {
+                    backupId = activeSession.modifiedFiles[cleanDestination][0].backupId;
+                } else {
+                    try {
+                        const actId = sourceId || activeSession?.id || "default";
+                        backupId = await AgentBackup.create(cleanDestination, originalContent, actId);
+
+                        if (activeSession) {
+                            activeSession.modifiedFiles = activeSession.modifiedFiles || {};
+                            if (!activeSession.modifiedFiles[cleanDestination]) {
+                                activeSession.modifiedFiles[cleanDestination] = [];
+                            }
+                            activeSession.modifiedFiles[cleanDestination].push({
+                                backupId: backupId,
+                                timestamp: Date.now(),
+                                sourceId: actId
+                            });
+                            await workspaceClient.setSession(activeSession.id, activeSession);
+                        }
+                    } catch (e) {
+                        console.error("[AgentTools] Failed to create backup:", e);
+                    }
+                }
+
+                session.replace(rangeToInsert, textToInsert);
+
+                if (window.saveFileTab) {
+                    await window.saveFileTab(targetTab);
+                    session.baseValue = session.getValue();
+                }
+
+                targetTab.config.viewMode = "diff";
+                targetTab.config.backupId = backupId;
+                targetTab.click();
+                if (window.ui?.renderPlanTasksView) {
+                    const containers = document.querySelectorAll('.plan-tasks-view');
+                    containers.forEach(c => window.ui.renderPlanTasksView(c));
+                }
+
+                const backupMsg = hasExistingBackup
+                    ? "the rollback backup has been retained"
+                    : "a rollback backup was created";
+                const removeMsg = removeFromSource ? " moved" : " copied";
+                return `Successfully${removeMsg} lines to ${destination} in Forgiveness Mode. The change has been committed directly to the file and ${backupMsg}. The tab has switched to the side-by-side Diff view for your review.`;
+            }
+
+            session.replace(rangeToInsert, textToInsert);
+            targetTab.config.viewMode = "diff";
+            delete targetTab.config.backupId;
+
+            const activeSession = window.ui?.aiManager?.activeSession;
+            if (activeSession) {
+                activeSession.pendingEdits = activeSession.pendingEdits || {};
+                activeSession.pendingEdits[cleanDestination] = true;
+                await workspaceClient.setSession(activeSession.id, activeSession);
+            }
+
+            targetTab.click();
+            const removeMsg = removeFromSource ? "moved" : "copied";
+            return `Successfully ${removeMsg} lines to ${destination} in memory (Permission Mode). The tab has switched to the side-by-side Diff view for your review. Please click 'Apply Changes' at the top to save to disk or 'Discard' to revert.`;
+        } catch (error) {
+            return `Error copying lines: ${error.message}`;
+        }
+    }
+
+    /**
      * Creates a new file.
      */
     async createFile(path, content, sourceId) {
@@ -866,10 +1607,27 @@ class AgentTools {
             }
 
             const isForgivenessMode = window.ui?.aiManager?.forgivenessMode === true;
+            const activeSession = window.ui?.aiManager?.activeSession;
+            const actId = sourceId || activeSession?.id || "default";
+
             if (isForgivenessMode) {
                 const base64Content = btoa(unescape(encodeURIComponent(content))); // Safe base64 encoding
                 const result = await this.conduit.wsWrite(resolvedPath, base64Content);
                 if (result.error) throw new Error(result.error);
+
+                if (activeSession) {
+                    activeSession.modifiedFiles = activeSession.modifiedFiles || {};
+                    if (!activeSession.modifiedFiles[resolvedPath]) {
+                        activeSession.modifiedFiles[resolvedPath] = [];
+                    }
+                    activeSession.modifiedFiles[resolvedPath].push({
+                        backupId: "new_file",
+                        isNewFile: true,
+                        timestamp: Date.now(),
+                        sourceId: actId
+                    });
+                    await workspaceClient.setSession(activeSession.id, activeSession);
+                }
 
                 // Refresh directory tree
                 if (window.ui?.fileList?.refreshFolders) {
@@ -905,8 +1663,18 @@ class AgentTools {
             delete targetTab.config.backupId;
 
             // Track pending AI edits in active session
-            const activeSession = window.ui?.aiManager?.activeSession;
             if (activeSession) {
+                activeSession.modifiedFiles = activeSession.modifiedFiles || {};
+                if (!activeSession.modifiedFiles[resolvedPath]) {
+                    activeSession.modifiedFiles[resolvedPath] = [];
+                }
+                activeSession.modifiedFiles[resolvedPath].push({
+                    backupId: "new_file",
+                    isNewFile: true,
+                    timestamp: Date.now(),
+                    sourceId: actId
+                });
+
                 activeSession.pendingEdits = activeSession.pendingEdits || {};
                 activeSession.pendingEdits[resolvedPath] = true;
                 await workspaceClient.setSession(activeSession.id, activeSession);
@@ -959,7 +1727,7 @@ class AgentTools {
      */
      async execute(name, args = {}, sourceId = null) {
         // Prevent file editing/creation tools in planning mode
-        if (window.ui?.aiManager?.planningMode && (name === 'create_file' || name === 'edit_file')) {
+        if (window.ui?.aiManager?.planningMode && (name === 'create_file' || name === 'edit_file' || name === 'edit_remove_lines' || name === 'edit_copy_lines')) {
             return `Tool Error: Tool '${name}' is not allowed while in planning mode.`;
         }
 
@@ -991,6 +1759,28 @@ class AgentTools {
                     args.path,
                     args.search !== undefined && args.search !== null ? args.search : args.searchString,
                     args.replace !== undefined && args.replace !== null ? args.replace : args.replacementString,
+                    sourceId
+                );
+            case 'edit_remove_lines':
+                return await this.editRemoveLines(
+                    args.path,
+                    args.search,
+                    args.startLine,
+                    args.lineCount,
+                    args.startAnchor,
+                    args.endAnchor,
+                    sourceId
+                );
+            case 'edit_copy_lines':
+                return await this.editCopyLines(
+                    args.source,
+                    args.startLine,
+                    args.lineCount,
+                    args.destination,
+                    args.insertAt,
+                    args.removeFromSource,
+                    args.startAnchor,
+                    args.endAnchor,
                     sourceId
                 );
             case 'create_file':

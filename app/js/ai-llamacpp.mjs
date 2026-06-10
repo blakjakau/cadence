@@ -247,7 +247,7 @@ class LlamaCpp extends AI {
     }
 
     async chat(messages, callbacks = {}, systemPromptOverride = null) {
-        const { onStart, onUpdate, onDone, onError, onContextRatioUpdate } = callbacks;
+        const { onStart, onUpdate, onDone, onError, onContextRatioUpdate, onPrefillProgress } = callbacks;
         if (onStart) onStart();
 
         try {
@@ -262,7 +262,8 @@ class LlamaCpp extends AI {
                 temperature: this.config.temperature,
                 top_k: this.config.top_k,
                 top_p: this.config.top_p,
-                stop: stopTokens
+                stop: stopTokens,
+                return_progress: true
             };
 
             if (this.supportsReasoning) {
@@ -340,6 +341,12 @@ class LlamaCpp extends AI {
 
                     try {
                         const parsed = JSON.parse(jsonStr);
+                        if (parsed.prompt_progress) {
+                            if (onPrefillProgress) {
+                                onPrefillProgress(parsed.prompt_progress);
+                            }
+                            continue;
+                        }
                         if (parsed.choices && parsed.choices.length > 0 && parsed.choices[0].delta) {
                             const delta = parsed.choices[0].delta;
                             let chunkUpdate = '';
@@ -379,39 +386,51 @@ class LlamaCpp extends AI {
                                     }
                                     chunkUpdate += "\n</thought>\n";
                                 }
-                                if (delta.tool_calls) {
-                                    if (!callbacks.toolCalls) callbacks.toolCalls = [];
-                                    for (const call of delta.tool_calls) {
-                                        const idx = call.index !== undefined ? call.index : 0;
-                                        if (!streamedToolCalls[idx]) {
-                                            streamedToolCalls[idx] = {
-                                                id: call.id || "",
-                                                name: call.function?.name || "",
-                                                arguments: ""
-                                            };
-                                        }
-                                        if (call.id) streamedToolCalls[idx].id = call.id;
-                                        if (call.function?.name) streamedToolCalls[idx].name = call.function.name;
-                                        if (call.function?.arguments) streamedToolCalls[idx].arguments += call.function.arguments;
-                                    }
 
-                                    // Update callbacks.toolCalls with current parsed state
-                                    callbacks.toolCalls = [];
-                                    for (const tc of streamedToolCalls) {
-                                        if (!tc || !tc.name) continue;
-                                        let parsedArgs = {};
-                                        try {
-                                            parsedArgs = JSON.parse(tc.arguments);
-                                        } catch (e) {
-                                            parsedArgs = parseRelaxedJson(tc.arguments);
-                                        }
-                                        callbacks.toolCalls.push({
-                                            id: tc.id || `call_${crypto.randomUUID()}`,
-                                            functionCall: {
-                                                name: tc.name,
-                                                args: parsedArgs
+                                // Commit chunkUpdate (e.g. </thought>) immediately so it's not lost if tool parsing throws
+                                if (chunkUpdate) {
+                                    fullResponse += chunkUpdate;
+                                    chunkUpdate = '';
+                                }
+
+                                if (delta.tool_calls && Array.isArray(delta.tool_calls)) {
+                                    try {
+                                        if (!callbacks.toolCalls) callbacks.toolCalls = [];
+                                        for (const call of delta.tool_calls) {
+                                            if (!call) continue;
+                                            const idx = call.index !== undefined ? call.index : 0;
+                                            if (!streamedToolCalls[idx]) {
+                                                streamedToolCalls[idx] = {
+                                                    id: call.id || "",
+                                                    name: call.function?.name || "",
+                                                    arguments: ""
+                                                };
                                             }
-                                        });
+                                            if (call.id) streamedToolCalls[idx].id = call.id;
+                                            if (call.function?.name) streamedToolCalls[idx].name = call.function.name;
+                                            if (call.function?.arguments) streamedToolCalls[idx].arguments += call.function.arguments;
+                                        }
+
+                                        // Update callbacks.toolCalls with current parsed state
+                                        callbacks.toolCalls = [];
+                                        for (const tc of streamedToolCalls) {
+                                            if (!tc || !tc.name) continue;
+                                            let parsedArgs = {};
+                                            try {
+                                                parsedArgs = JSON.parse(tc.arguments);
+                                            } catch (e) {
+                                                parsedArgs = parseRelaxedJson(tc.arguments);
+                                            }
+                                            callbacks.toolCalls.push({
+                                                id: tc.id || `call_${crypto.randomUUID()}`,
+                                                functionCall: {
+                                                    name: tc.name,
+                                                    args: parsedArgs
+                                                }
+                                            });
+                                        }
+                                    } catch (err) {
+                                        console.warn("[Llama.cpp] Error parsing streamed tool calls:", err);
                                     }
                                 }
                             }
