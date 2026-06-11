@@ -371,7 +371,7 @@ export class SessionArtifactsPanel extends Block {
         this.container.appendChild(this.backupsAccordion);
     }
 
-    update() {
+    async update() {
         const session = ui.aiManager.activeSession;
         if (!session) {
             this.container.innerHTML = `<div class="plan-tasks-empty">No active session found. Open the Agent panel to begin.</div>`;
@@ -428,7 +428,52 @@ export class SessionArtifactsPanel extends Block {
         const modifiedFiles = session.modifiedFiles || {};
         const filePaths = Object.keys(modifiedFiles);
 
-        if (filePaths.length === 0) {
+        // Validate that backups actually exist in IndexedDB before listing them
+        const { default: AgentBackup } = await import('../agent/agent-backup.mjs');
+        const validatedModifiedFiles = {};
+        let sessionNeedsSave = false;
+
+        console.log("[SessionArtifactsPanel] Starting validation of modified files:", filePaths);
+
+        for (const path of filePaths) {
+            const list = modifiedFiles[path] || [];
+            const validList = [];
+            console.log(`[SessionArtifactsPanel] Validating backups for ${path}. Total items: ${list.length}`);
+            for (const backup of list) {
+                if (backup.isNewFile) {
+                    console.log(`[SessionArtifactsPanel] Backup is new file: ${backup.backupId || 'no-id'}`);
+                    validList.push(backup);
+                } else {
+                    const exists = await AgentBackup.getBackup(backup.backupId);
+                    console.log(`[SessionArtifactsPanel] Checked backup ${backup.backupId}. Exists in IndexedDB:`, !!exists);
+                    if (exists) {
+                        validList.push(backup);
+                    }
+                }
+            }
+            if (validList.length > 0) {
+                validatedModifiedFiles[path] = validList;
+            }
+            if (list.length !== validList.length) {
+                sessionNeedsSave = true;
+                console.log(`[SessionArtifactsPanel] Backup list size mismatch for ${path}. Old: ${list.length}, New valid: ${validList.length}`);
+                if (validList.length === 0) {
+                    delete session.modifiedFiles[path];
+                } else {
+                    session.modifiedFiles[path] = validList;
+                }
+            }
+        }
+
+        if (sessionNeedsSave) {
+            console.log("[SessionArtifactsPanel] Saving updated session state due to invalid/expired backups");
+            await workspaceClient.setSession(session.id, session);
+        }
+
+        const validFilePaths = Object.keys(validatedModifiedFiles);
+        console.log("[SessionArtifactsPanel] Completed validation. Valid file paths:", validFilePaths);
+
+        if (validFilePaths.length === 0) {
             const emptyNotice = document.createElement("div");
             emptyNotice.className = "plan-tasks-empty";
             emptyNotice.textContent = "No file modifications recorded in this session yet.";
@@ -456,8 +501,8 @@ export class SessionArtifactsPanel extends Block {
                 undoAllBtn.text = "Undoing all...";
                 undoAllBtn.icon = "sync";
 
-                for (const path of filePaths) {
-                    const list = modifiedFiles[path];
+                for (const path of validFilePaths) {
+                    const list = validatedModifiedFiles[path];
                     const latestBackup = list[list.length - 1];
                     try {
                         if (latestBackup.isNewFile) {
@@ -555,8 +600,9 @@ export class SessionArtifactsPanel extends Block {
             undoAllContainer.appendChild(undoAllBtn);
             this.backupsList.appendChild(undoAllContainer);
 
-            filePaths.forEach(path => {
-                const list = modifiedFiles[path];
+            validFilePaths.forEach(path => {
+                const list = validatedModifiedFiles[path];
+                const versionCount = list.length;
                 const filename = path.split('/').pop();
                 const relativePath = path; 
                 const latestBackup = list[list.length - 1];
@@ -579,7 +625,7 @@ export class SessionArtifactsPanel extends Block {
 
                 const fileSpan = document.createElement("span");
                 fileSpan.className = "backup-file";
-                fileSpan.textContent = filename;
+                fileSpan.innerHTML = `${filename} <small class="backup-version-tag" style="background: rgba(255, 255, 255, 0.05); color: var(--text-muted, #888); padding: 2px 6px; border-radius: 10px; font-size: 10px; margin-left: 6px; font-weight: normal; border: 1px solid var(--border);">${versionCount} version${versionCount > 1 ? 's' : ''}</small>`;
 
                 const pathSpan = document.createElement("span");
                 pathSpan.className = "backup-path";
@@ -605,7 +651,10 @@ export class SessionArtifactsPanel extends Block {
                 reviewBtn.className = "secondary";
 
                 reviewBtn.onclick = async () => {
+                    console.log("[SessionArtifactsPanel] Review clicked for path:", path);
+                    console.log("[SessionArtifactsPanel] Latest backup details:", latestBackup);
                     if (window.ui && window.ui.fileList && window.ui.fileList.open) {
+                        console.log("[SessionArtifactsPanel] Opening file tab via fileList.open");
                         await window.ui.fileList.open(path, path);
                         const normalize = (p) => p ? p.replace(/\\/g, '/').replace(/\/+/g, '/').replace(/^\//, '').replace(/\/$/, '') : '';
                         const pathsMatch = (p1, p2) => {
@@ -615,14 +664,18 @@ export class SessionArtifactsPanel extends Block {
                             return n1 === n2 || n1.endsWith('/' + n2) || n2.endsWith('/' + n1);
                         };
                         const allOpenTabs = [...(window.ui.leftTabs?.tabs || []), ...(window.ui.rightTabs?.tabs || [])];
+                        console.log("[SessionArtifactsPanel] All open tabs config paths:", allOpenTabs.map(t => t.config?.path));
                         const tab = allOpenTabs.find(t => pathsMatch(t.config?.path, path));
                         if (tab) {
+                            console.log("[SessionArtifactsPanel] Found matching tab, setting viewMode to diff and backupId:", latestBackup.backupId);
                             tab.config.viewMode = "diff";
                             tab.config.backupId = latestBackup.backupId;
                             tab.click();
+                        } else {
+                            console.warn("[SessionArtifactsPanel] No matching tab found for path after opening:", path);
                         }
                     } else {
-                        console.error("window.ui.fileList.open is not defined");
+                        console.error("[SessionArtifactsPanel] window.ui.fileList.open is not defined");
                     }
                 };
 
