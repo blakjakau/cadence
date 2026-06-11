@@ -12,6 +12,11 @@
     background: linear-gradient(90deg, var(--theme) 31%, var(--theme-dark) 31%);
 }
 
+.settings-panel.active,
+.settings-panel-container.active {
+    display: flex;
+}
+
 /* A single setting row */
 ui-settings-panel .setting-item {
     display: flex;

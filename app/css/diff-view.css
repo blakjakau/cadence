@@ -91,19 +91,58 @@ ui-diff-view-panel .diff-split-container {
     overflow: hidden;
     position: relative;
     pointer-events: auto !important;
+    --left-width: 50%;
 }
 
 ui-diff-view-panel .diff-pane {
-    flex: 1;
     height: 100%;
     display: flex;
     flex-direction: column;
     position: relative;
     pointer-events: auto !important;
+    box-sizing: border-box;
 }
 
 ui-diff-view-panel .diff-pane.left-pane {
+    width: var(--left-width);
     border-right: 1px solid var(--border-primary);
+    flex: none;
+}
+
+ui-diff-view-panel .diff-pane.right-pane {
+    width: calc(100% - var(--left-width));
+    flex: none;
+}
+
+/* Premium Floating Action Button (FAB) on Split Divider */
+ui-diff-view-panel .diff-ratio-fab {
+    position: absolute;
+    bottom: 20vh;
+    left: var(--left-width);
+    transform: translateX(-50%);
+    z-index: 1000;
+    width: 36px;
+    height: 36px;
+    border-radius: 50%;
+    background: var(--theme);
+    color: white;
+    border: 1px solid var(--border-primary);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    box-shadow: 0 4px 10px rgba(0, 0, 0, 0.3);
+    transition: left 0.15s ease-out, transform 0.15s ease-out, background-color 0.2s;
+    outline: none;
+}
+ui-diff-view-panel .diff-ratio-fab:hover {
+    background: var(--theme-dark);
+    transform: translateX(-50%) scale(1.1);
+}
+ui-diff-view-panel .diff-ratio-fab ui-icon {
+    font-size: 18px !important;
+    color: white !important;
+    margin: 0 !important;
 }
 
 ui-diff-view-panel .diff-pane-label {
@@ -270,3 +309,17 @@ ui-diff-view-panel .diff-counter-add {
     color: #3fb950;
     border: 1px solid rgba(46, 160, 67, 0.2);
 }
+
+ui-diff-view-panel .diff-line-spacer {
+    background-color: rgba(128, 128, 128, 0.05) !important;
+    background-image: repeating-linear-gradient(
+        45deg,
+        rgba(0, 0, 0, 0.03),
+        rgba(0, 0, 0, 0.03) 10px,
+        transparent 10px,
+        transparent 20px
+    ) !important;
+    pointer-events: none;
+    width: 100%;
+}
+
