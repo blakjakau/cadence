@@ -270,8 +270,6 @@ export class DiffViewPanel extends Block {
     }
 
     async update(filePath, backupId, tab = null) {
-        this._savedScrollTop = this.leftEditor ? this.leftEditor.getSession().getScrollTop() : null;
-        this._savedScrollLeft = this.leftEditor ? this.leftEditor.getSession().getScrollLeft() : null;
         this._isupdating = true;
 
         this.activeBackupId = backupId;
@@ -391,13 +389,20 @@ export class DiffViewPanel extends Block {
                 }
             }
 
-            // Determine Ace mode based on filename extension
+            // Determine Ace mode based on active session's mode, or fallback to filename extension
             let mode = "ace/mode/text";
-            for (let n in window.ace_modes) {
-                const m = window.ace_modes[n];
-                if (filename.match(m.extRe)) {
-                    mode = m.mode;
-                    break;
+            if (tab && tab.config?.session) {
+                const sessionMode = tab.config.session.getMode();
+                if (sessionMode && sessionMode.$id) {
+                    mode = sessionMode.$id;
+                }
+            } else {
+                for (let n in window.ace_modes) {
+                    const m = window.ace_modes[n];
+                    if (filename.match(m.extRe)) {
+                        mode = m.mode;
+                        break;
+                    }
                 }
             }
 
@@ -451,11 +456,13 @@ export class DiffViewPanel extends Block {
             if (this.diffViewMode === "split") {
                 this.rightPane.style.display = "";
                 this.leftPane.style.borderRight = "";
+                this.leftPane.style.width = "";
                 this.rightLabel.style.display = "";
                 if (this.ratioFab) this.ratioFab.style.display = "";
             } else {
                 this.rightPane.style.display = "none";
                 this.leftPane.style.borderRight = "none";
+                this.leftPane.style.width = "100%";
                 this.rightLabel.style.display = "none";
                 if (this.ratioFab) this.ratioFab.style.display = "none";
             }
@@ -472,10 +479,25 @@ export class DiffViewPanel extends Block {
                 }
             }
             this.leftEditor.setTheme(theme);
-            this.leftEditor.getSession().setMode(mode);
 
             const leftContentText = this.diffViewMode === "split" ? originalContent : this.unifiedContentText;
-            this.leftEditor.setValue(leftContentText, -1);
+            let leftSession = tab?.config?.leftSession;
+            if (!leftSession) {
+                leftSession = window.ace.createEditSession(leftContentText);
+                if (tab) {
+                    tab.config.leftSession = leftSession;
+                    if (tab.config.session) {
+                        leftSession.setScrollTop(tab.config.session.getScrollTop());
+                        leftSession.setScrollLeft(tab.config.session.getScrollLeft());
+                    }
+                }
+            } else {
+                if (leftSession.getValue() !== leftContentText) {
+                    leftSession.setValue(leftContentText);
+                }
+            }
+            leftSession.setMode(mode);
+            this.leftEditor.setSession(leftSession);
 
             // 4. Initialize/Refresh Ace Editor Right
             if (!this.rightEditor) {
@@ -502,8 +524,17 @@ export class DiffViewPanel extends Block {
                     this.rightEditor.setSession(tab.config.session);
                     this.rightEditor.setReadOnly(false);
                 } else {
-                    const tempSession = window.ace.createEditSession(currentContent, window.ace.require(mode));
-                    this.rightEditor.setSession(tempSession);
+                    let rightSession = tab?.config?.rightSession;
+                    if (!rightSession) {
+                        rightSession = window.ace.createEditSession(currentContent);
+                        if (tab) tab.config.rightSession = rightSession;
+                    } else {
+                        if (rightSession.getValue() !== currentContent) {
+                            rightSession.setValue(currentContent);
+                        }
+                    }
+                    rightSession.setMode(mode);
+                    this.rightEditor.setSession(rightSession);
                     this.rightEditor.setReadOnly(true);
                 }
             } else {
@@ -519,6 +550,14 @@ export class DiffViewPanel extends Block {
             if (appConfig.rendererOptions) {
                 this.leftEditor.renderer.setOptions(appConfig.rendererOptions);
                 this.rightEditor.renderer.setOptions(appConfig.rendererOptions);
+            }
+
+            // Explicitly sync the modes on both editor sessions
+            if (this.leftEditor) {
+                this.leftEditor.getSession().setMode(mode);
+            }
+            if (this.rightEditor) {
+                this.rightEditor.getSession().setMode(mode);
             }
 
             // Sync keymap configuration with the main editor
@@ -546,7 +585,7 @@ export class DiffViewPanel extends Block {
                 this._keyboardListenersSetup = true;
             }
 
-            // 5. Setup One-time Selection & Scroll Syncing
+            // 5. Setup One-time Selection Syncing
             if (!this._selectionSyncSetup && this.leftEditor && this.rightEditor) {
                 let isSyncingSelection = false;
                 
@@ -567,8 +606,19 @@ export class DiffViewPanel extends Block {
                     syncSelection(this.rightEditor, this.leftEditor);
                 });
 
-                // Synchronize scrolling with value-based delta thresholds to prevent asynchronous feedback loops
-                this.leftEditor.getSession().on('changeScrollTop', (scrollTop) => {
+                this._selectionSyncSetup = true;
+            }
+
+            // Bind scroll listeners dynamically to the active sessions
+            const activeLeftSession = this.leftEditor.getSession();
+            const activeRightSession = this.rightEditor.getSession();
+
+            if (this._leftScrollSession !== activeLeftSession) {
+                if (this._leftScrollSession && this._leftScrollTopListener) {
+                    this._leftScrollSession.off("changeScrollTop", this._leftScrollTopListener);
+                    this._leftScrollSession.off("changeScrollLeft", this._leftScrollLeftListener);
+                }
+                this._leftScrollTopListener = (scrollTop) => {
                     this.updateEditCount();
                     if (this._isupdating) return;
                     if (this.diffViewMode !== "split") return;
@@ -579,9 +629,25 @@ export class DiffViewPanel extends Block {
                     const currentRightScroll = this.rightEditor.getSession().getScrollTop();
                     if (Math.abs(currentRightScroll - targetScrollTop) < 1) return;
                     this.rightEditor.getSession().setScrollTop(targetScrollTop);
-                });
+                };
+                this._leftScrollLeftListener = (scrollLeft) => {
+                    if (this._isupdating) return;
+                    if (this.diffViewMode !== "split") return;
+                    const currentRightScroll = this.rightEditor.getSession().getScrollLeft();
+                    if (Math.abs(currentRightScroll - scrollLeft) < 1) return;
+                    this.rightEditor.getSession().setScrollLeft(scrollLeft);
+                };
+                activeLeftSession.on("changeScrollTop", this._leftScrollTopListener);
+                activeLeftSession.on("changeScrollLeft", this._leftScrollLeftListener);
+                this._leftScrollSession = activeLeftSession;
+            }
 
-                this.rightEditor.getSession().on('changeScrollTop', (scrollTop) => {
+            if (this._rightScrollSession !== activeRightSession) {
+                if (this._rightScrollSession && this._rightScrollTopListener) {
+                    this._rightScrollSession.off("changeScrollTop", this._rightScrollTopListener);
+                    this._rightScrollSession.off("changeScrollLeft", this._rightScrollLeftListener);
+                }
+                this._rightScrollTopListener = (scrollTop) => {
                     if (this._isupdating) return;
                     if (this.diffViewMode !== "split") return;
                     const leftMarginTop = this.leftEditor.renderer.scrollMargin.top || 0;
@@ -591,25 +657,17 @@ export class DiffViewPanel extends Block {
                     const currentLeftScroll = this.leftEditor.getSession().getScrollTop();
                     if (Math.abs(currentLeftScroll - targetScrollTop) < 1) return;
                     this.leftEditor.getSession().setScrollTop(targetScrollTop);
-                });
-
-                this.leftEditor.getSession().on('changeScrollLeft', (scrollLeft) => {
-                    if (this._isupdating) return;
-                    if (this.diffViewMode !== "split") return;
-                    const currentRightScroll = this.rightEditor.getSession().getScrollLeft();
-                    if (Math.abs(currentRightScroll - scrollLeft) < 1) return;
-                    this.rightEditor.getSession().setScrollLeft(scrollLeft);
-                });
-
-                this.rightEditor.getSession().on('changeScrollLeft', (scrollLeft) => {
+                };
+                this._rightScrollLeftListener = (scrollLeft) => {
                     if (this._isupdating) return;
                     if (this.diffViewMode !== "split") return;
                     const currentLeftScroll = this.leftEditor.getSession().getScrollLeft();
                     if (Math.abs(currentLeftScroll - scrollLeft) < 1) return;
                     this.leftEditor.getSession().setScrollLeft(scrollLeft);
-                });
-
-                this._selectionSyncSetup = true;
+                };
+                activeRightSession.on("changeScrollTop", this._rightScrollTopListener);
+                activeRightSession.on("changeScrollLeft", this._rightScrollLeftListener);
+                this._rightScrollSession = activeRightSession;
             }
 
             // Register real-time change listener if editable
@@ -917,6 +975,17 @@ export class DiffViewPanel extends Block {
         }
         this._keyboardListenersSetup = false;
 
+        if (this._leftScrollSession) {
+            if (this._leftScrollTopListener) this._leftScrollSession.off("changeScrollTop", this._leftScrollTopListener);
+            if (this._leftScrollLeftListener) this._leftScrollSession.off("changeScrollLeft", this._leftScrollLeftListener);
+            this._leftScrollSession = null;
+        }
+        if (this._rightScrollSession) {
+            if (this._rightScrollTopListener) this._rightScrollSession.off("changeScrollTop", this._rightScrollTopListener);
+            if (this._rightScrollLeftListener) this._rightScrollSession.off("changeScrollLeft", this._rightScrollLeftListener);
+            this._rightScrollSession = null;
+        }
+
         const cleanWidgets = (editor) => {
             if (editor) {
                 if (editor.session.widgetManager) {
@@ -1220,6 +1289,15 @@ export class DiffViewPanel extends Block {
         }
 
         // Trigger a deferred resize to ensure correct rendering and scroll behavior
+        // Align right editor's scroll to left editor's scroll immediately to avoid alignment flicker
+        if (this.diffViewMode === "split" && this.leftEditor && this.rightEditor) {
+            const leftMarginTop = this.leftEditor.renderer.scrollMargin.top || 0;
+            const rightMarginTop = this.rightEditor.renderer.scrollMargin.top || 0;
+            this.rightEditor.getSession().setScrollTop(this.leftEditor.getSession().getScrollTop() + leftMarginTop - rightMarginTop);
+            this.rightEditor.getSession().setScrollLeft(this.leftEditor.getSession().getScrollLeft());
+        }
+
+        // Trigger a deferred resize to ensure correct rendering and scroll behavior
         setTimeout(() => {
             if (this.leftEditor) {
                 this.leftEditor.resize();
@@ -1243,16 +1321,6 @@ export class DiffViewPanel extends Block {
 
             // Restore updating flag
             this._isupdating = wasUpdating;
-
-            // Restore scroll positions if we saved them during an update()
-            if (this._savedScrollTop !== null && this._savedScrollTop !== undefined && this.leftEditor) {
-                this.leftEditor.getSession().setScrollTop(this._savedScrollTop);
-                if (this._savedScrollLeft !== null && this._savedScrollLeft !== undefined) {
-                    this.leftEditor.getSession().setScrollLeft(this._savedScrollLeft);
-                }
-                this._savedScrollTop = null;
-                this._savedScrollLeft = null;
-            }
 
             if (this.diffViewMode === "split" && this.leftEditor && this.rightEditor) {
                 const leftMarginTop = this.leftEditor.renderer.scrollMargin.top || 0;
