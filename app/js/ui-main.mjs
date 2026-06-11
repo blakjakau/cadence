@@ -1,4 +1,4 @@
-import { FileList, Panel, Inline, Block, Button, TabBar, MediaView, Input, MenuItem, ActionBar, EditorHolder, IconTabBar, IconTab, SidebarPanel } from './elements.mjs';
+import { FileList, Panel, Inline, Block, Button, TabBar, MediaView, Input, MenuItem, ActionBar, EditorHolder, IconTabBar, IconTab, SidebarPanel, extractFilenameAtColumn, findFileMatchesInIndex } from './elements.mjs';
 import TerminalManager from './terminal-manager.mjs'; // Import the new TerminalManager
 import { NativeTitleBar } from './elements/native-titlebar.mjs';
 import { ConduitFileList } from './elements/conduit-filelist.mjs';
@@ -1076,6 +1076,40 @@ const uiManager = {
 
 				const gotoItem = document.getElementById("editor_context_goto");
 				const splitItem = document.getElementById("editor_context_split");
+				const gotoFileItem = document.getElementById("editor_context_goto_file");
+				const gotoFileSplit = document.getElementById("editor_context_goto_file_split");
+				
+				// Check for filename
+				const line = editor.session.getLine(pos.row);
+				const filename = extractFilenameAtColumn(line, pos.column);
+				if (filename) {
+					const matches = findFileMatchesInIndex(filename);
+					if (gotoFileItem) {
+						gotoFileItem.textContent = `Go to File: ${filename}`;
+						gotoFileItem.style.display = "block";
+						if (matches && matches.length > 0) {
+							gotoFileItem.removeAttribute("disabled");
+							window.ui.activeContextMenuFileMatches = matches;
+							window.ui.activeContextMenuFilename = filename;
+						} else {
+							gotoFileItem.setAttribute("disabled", "true");
+							window.ui.activeContextMenuFileMatches = null;
+							window.ui.activeContextMenuFilename = null;
+						}
+					}
+					if (gotoFileSplit) {
+						gotoFileSplit.style.display = "block";
+					}
+				} else {
+					if (gotoFileItem) {
+						gotoFileItem.style.display = "none";
+					}
+					if (gotoFileSplit) {
+						gotoFileSplit.style.display = "none";
+					}
+					window.ui.activeContextMenuFileMatches = null;
+					window.ui.activeContextMenuFilename = null;
+				}
 				
 				if (symbol) {
 					window.ui.activeContextMenuSymbol = symbol;

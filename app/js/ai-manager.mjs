@@ -1215,6 +1215,10 @@ class AIManager {
 			this.haltBar.remove();
 			this.haltBar = null;
 		}
+		if (this.throttleBar) {
+			this.throttleBar.remove();
+			this.throttleBar = null;
+		}
 		if (this.conversationArea) {
 			const containers = this.conversationArea.querySelectorAll('.prefill-progress-container');
 			containers.forEach(container => container.remove());
@@ -2012,7 +2016,7 @@ ${summarizationPromptContent}`;
 		const maxLoops = 15;
 		this._abortAgent = false;
 		let isThrottled = true;
-		let throttleBar = null;
+		this.throttleBar = null;
 
 		while (this._isProcessing) {
 			if (this._abortAgent) break;
@@ -2020,28 +2024,28 @@ ${summarizationPromptContent}`;
 			loopCount++;
 
 			if (loopCount > maxLoops) {
-				if (!throttleBar) {
-					throttleBar = document.createElement("div");
-					throttleBar.className = "agent-throttle-bar";
-					throttleBar.innerHTML = `
+				if (!this.throttleBar) {
+					this.throttleBar = document.createElement("div");
+					this.throttleBar.className = "agent-throttle-bar";
+					this.throttleBar.innerHTML = `
 						<ui-icon style="vertical-align: middle; margin-right: 4px; font-size: 16px;">speed</ui-icon>
 						<span class="throttle-text"></span>
 						<ui-button class="throttle-toggle theme-button" style="padding: 4px 8px; font-size: 11px; margin-left: 12px; min-width: 80px;">Continue &gt;</ui-button>
 					`;
-					const btn = throttleBar.querySelector('.throttle-toggle');
+					const btn = this.throttleBar.querySelector('.throttle-toggle');
 					btn.onclick = () => {
 						isThrottled = !isThrottled;
 						if (isThrottled) {
 							btn.innerText = "Continue >";
-							throttleBar.classList.remove('unthrottled');
+							this.throttleBar.classList.remove('unthrottled');
 						} else {
 							btn.innerText = "Throttle";
-							throttleBar.classList.add('unthrottled');
+							this.throttleBar.classList.add('unthrottled');
 						}
 					};
-					this.chatContainer.append(throttleBar);
+					this.chatContainer.append(this.throttleBar);
 				}
-				throttleBar.querySelector('.throttle-text').innerText = `Agent execution throttled due to long running task: ${loopCount} of ${maxLoops} iterations`;
+				this.throttleBar.querySelector('.throttle-text').innerText = `Agent execution throttled due to long running task: ${loopCount} of ${maxLoops} iterations`;
 
 				if (isThrottled) {
 					await new Promise(r => setTimeout(r, 7000));
@@ -2456,8 +2460,9 @@ ${summarizationPromptContent}`;
 			}
 		}
 
-		if (throttleBar) {
-			throttleBar.remove();
+		if (this.throttleBar) {
+			this.throttleBar.remove();
+			this.throttleBar = null;
 		}
 	}
 

@@ -263,6 +263,7 @@ class LlamaCpp extends AI {
                 top_k: this.config.top_k,
                 top_p: this.config.top_p,
                 stop: stopTokens,
+                tool_choice: "auto",
                 return_progress: true
             };
 

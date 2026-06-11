@@ -208,7 +208,7 @@ class AgentTools {
      * Reads a file's content.
      * @param {string} path 
      */
-    async readFile(path, startLine, lineCount) {
+    async readFile(path, startLine, lineCount, bypassCache = false) {
         try {
             const permitted = this._checkFilePermitted(path);
             if (permitted !== true) return permitted;
@@ -242,7 +242,7 @@ class AgentTools {
             }
 
             // Check if content matches an existing unpruned tool response
-            if (startLine === undefined && lineCount === undefined && content && this._isContentInUnprunedHistory(content)) {
+            if (!bypassCache && startLine === undefined && lineCount === undefined && content && this._isContentInUnprunedHistory(content)) {
                 return "Content is unchanged from previous request";
             }
 
@@ -509,7 +509,7 @@ class AgentTools {
                         const skipExtensions = ['png', 'jpg', 'jpeg', 'gif', 'ico', 'pdf', 'zip', 'gz', 'tar', 'exe', 'bin', 'dll'];
                         if (skipExtensions.includes(extension)) continue;
 
-                        const content = await this.readFile(resolvedPath);
+                        const content = await this.readFile(resolvedPath, undefined, undefined, true);
                         if (content && !content.startsWith("Error:") && content.toLowerCase().includes(lowercaseQuery)) {
                             const lines = content.split('\n');
                             lines.forEach((line, idx) => {
@@ -860,18 +860,26 @@ class AgentTools {
      * Searches within 5 lines of specified line numbers.
      * Throws an error if anchors are specified but not found.
      */
+    /**
+     * Helper to verify and align line ranges using startAnchor and endAnchor.
+     * Searches within 8 lines of specified line numbers.
+     * Throws an error if anchors are specified but not found.
+     */
     _alignAnchors(lines, startLine, lineCount, startAnchor, endAnchor) {
         let adjustedStart = startLine;
         let adjustedCount = lineCount;
 
+        const norm = (s) => s ? s.toLowerCase().replace(/\s+/g, ' ').trim() : "";
+
         if (startAnchor !== undefined && startAnchor !== null && startAnchor !== "") {
             let found = false;
-            const offsets = [0, 1, -1, 2, -2, 3, -3, 4, -4, 5, -5];
+            const normAnchor = norm(startAnchor);
+            const offsets = [0, 1, -1, 2, -2, 3, -3, 4, -4, 5, -5, 6, -6, 7, -7, 8, -8];
             for (const offset of offsets) {
                 const candidateLineNum = startLine + offset;
                 const idx = candidateLineNum - 1;
                 if (idx >= 0 && idx < lines.length) {
-                    if (lines[idx].trim() === startAnchor.trim()) {
+                    if (norm(lines[idx]) === normAnchor) {
                         adjustedStart = candidateLineNum;
                         found = true;
                         break;
@@ -879,19 +887,20 @@ class AgentTools {
                 }
             }
             if (!found) {
-                throw new Error(`startAnchor "${startAnchor}" not found within 5 lines of startLine ${startLine}`);
+                throw new Error(`startAnchor "${startAnchor}" not found within 8 lines of startLine ${startLine}`);
             }
         }
 
         if (endAnchor !== undefined && endAnchor !== null && endAnchor !== "") {
             let found = false;
+            const normAnchor = norm(endAnchor);
             const expectedEndLine = adjustedStart + lineCount;
-            const offsets = [0, 1, -1, 2, -2, 3, -3, 4, -4, 5, -5];
+            const offsets = [0, 1, -1, 2, -2, 3, -3, 4, -4, 5, -5, 6, -6, 7, -7, 8, -8];
             for (const offset of offsets) {
                 const candidateLineNum = expectedEndLine + offset;
                 const idx = candidateLineNum - 1;
                 if (idx >= 0 && idx < lines.length) {
-                    if (lines[idx].trim() === endAnchor.trim()) {
+                    if (norm(lines[idx]) === normAnchor) {
                         adjustedCount = candidateLineNum - adjustedStart;
                         found = true;
                         break;
@@ -899,7 +908,7 @@ class AgentTools {
                 }
             }
             if (!found) {
-                throw new Error(`endAnchor "${endAnchor}" not found within 5 lines of expected end line ${expectedEndLine}`);
+                throw new Error(`endAnchor "${endAnchor}" not found within 8 lines of expected end line ${expectedEndLine}`);
             }
         }
 
@@ -1085,7 +1094,7 @@ class AgentTools {
      * @param {boolean} [removeFromSource]
      * @param {string} [sourceId]
      */
-    async editCopyLines(source, startLine, lineCount, destination, insertAt, removeFromSource, startAnchor, endAnchor, sourceId) {
+    async refactorCopyLines(source, startLine, lineCount, destination, insertAt, removeFromSource, startAnchor, endAnchor, sourceId) {
         try {
             const sourcePermitted = this._checkFilePermitted(source);
             if (sourcePermitted !== true) return sourcePermitted;
@@ -1095,7 +1104,7 @@ class AgentTools {
             const cleanSource = this._resolveAndValidatePath(source);
             const cleanDestination = this._resolveAndValidatePath(destination);
 
-            const sourceContent = await this.readFile(cleanSource);
+            const sourceContent = await this.readFile(cleanSource, undefined, undefined, true);
             if (sourceContent.startsWith("Error:")) {
                 throw new Error(`Failed to read source file: ${sourceContent}`);
             }
@@ -1727,7 +1736,7 @@ class AgentTools {
      */
      async execute(name, args = {}, sourceId = null) {
         // Prevent file editing/creation tools in planning mode
-        if (window.ui?.aiManager?.planningMode && (name === 'create_file' || name === 'edit_file' || name === 'edit_remove_lines' || name === 'edit_copy_lines')) {
+        if (window.ui?.aiManager?.planningMode && (name === 'create_file' || name === 'edit_file' || name === 'edit_remove_lines' || name === 'refactor_copy_lines')) {
             return `Tool Error: Tool '${name}' is not allowed while in planning mode.`;
         }
 
@@ -1771,8 +1780,8 @@ class AgentTools {
                     args.endAnchor,
                     sourceId
                 );
-            case 'edit_copy_lines':
-                return await this.editCopyLines(
+            case 'refactor_copy_lines':
+                return await this.refactorCopyLines(
                     args.source,
                     args.startLine,
                     args.lineCount,

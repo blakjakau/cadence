@@ -26,7 +26,7 @@ export { IconTabBar } from './elements/icon-tabbar.mjs';
 export { IconTab } from './elements/icon-tab.mjs';
 export { SidebarPanel } from './elements/sidebar-panel.mjs';
 export { Modal } from './elements/modal.mjs';
-export { isset, isNotNull, isFunction, isElement, clone, addStylesheet, sortOnName, readAndOrderDirectory, readAndOrderDirectoryRecursive, buildPath, loadScript } from './elements/utils.mjs';
+export { isset, isNotNull, isFunction, isElement, clone, addStylesheet, sortOnName, readAndOrderDirectory, readAndOrderDirectoryRecursive, buildPath, loadScript, extractFilenameAtColumn, findFileMatchesInIndex } from './elements/utils.mjs';
 export { LoaderBar } from "./elements/loader-bar.mjs"
 export { promptAddFolder, promptSaveFile } from './elements/file-dialogs.mjs';
 import modalInstance from './elements/modal.mjs';

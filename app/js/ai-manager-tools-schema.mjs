@@ -81,7 +81,7 @@ export const tools = [
     },
     {
         name: "create_file",
-        description: "Create a new file with the specified content. Parent folders in the path will automatically be created if they do not exist.",
+        description: "Create a new file with the specified content. Parent folders in the path will automatically be created if they do not exist. CRITICAL: Do NOT use this tool if you are copying, moving, or refactoring existing code from another file; use 'refactor_copy_lines' instead.",
         parameters: {
             type: "object",
             properties: {
@@ -104,7 +104,7 @@ export const tools = [
     },
     {
         name: "edit_file",
-        description: "Replace exact text in a file. The search text MUST perfectly match existing file content character-for-character. Perform edits in smallest logical blocks",
+        description: "Replace exact text in a file. The search text MUST perfectly match existing file content character-for-character. Perform edits in smallest logical blocks. CRITICAL: Do NOT use this tool if you are copying, moving, or refactoring existing code from another file; use 'refactor_copy_lines' instead.",
         parameters: {
             type: "object",
             properties: {
@@ -116,7 +116,7 @@ export const tools = [
         }
     },
     {
-        name: "edit_copy_lines",
+        name: "refactor_copy_lines",
         description: "Copy a range of lines from a source file and insert them into a destination file. If destination file does not exist, it will be created.",
         parameters: {
             type: "object",
@@ -126,9 +126,9 @@ export const tools = [
                 lineCount: { type: "number", description: "The number of lines to copy." },
                 destination: { type: "string", description: "The path of the destination file to insert into. Can be a new or existing file." },
                 insertAt: { type: "number", description: "The line number (1-indexed) in the destination file where the lines should be inserted." },
-                removeFromSource: { type: "boolean", description: "Optional. If true, remove the copied lines from the source file." },
-                startAnchor: { type: "string", description: "Required. The exact line text expected at startLine in the source file for validation and auto-alignment." },
-                endAnchor: { type: "string", description: "Required. The exact line text expected at startLine+lineCount in the source file for validation and auto-alignment." }
+                startAnchor: { type: "string", description: "Required. The exact line text expected at startLine in the source file for auto-alignment." },
+                endAnchor: { type: "string", description: "Required. The exact line text expected at startLine+lineCount in the source file auto-alignment." },
+                removeFromSource: { type: "boolean", description: "Optional. If true, remove the copied lines from the source file." }
             },
             required: ["source", "startLine", "lineCount", "destination", "insertAt", "startAnchor", "endAnchor"]
         }
@@ -143,8 +143,8 @@ export const tools = [
                 search: { type: "string", description: "The exact lines of text to remove." },
                 startLine: { type: "number", description: "The starting line number (1-indexed) of the lines to remove." },
                 lineCount: { type: "number", description: "The number of lines to remove." },
-                startAnchor: { type: "string", description: "Optional. Required if startLine and lineCount are provided. The exact line text expected at startLine for validation and auto-alignment." },
-                endAnchor: { type: "string", description: "Optional. Required if startLine and lineCount are provided. The exact line text expected at startLine+lineCount for validation and auto-alignment." }
+                startAnchor: { type: "string", description: "Optional. Required if startLine and lineCount are provided. The exact line text expected at startLine for auto-alignment." },
+                endAnchor: { type: "string", description: "Optional. Required if startLine and lineCount are provided. The exact line text expected at startLine+lineCount for auto-alignment." }
             },
             required: ["path"]
         }

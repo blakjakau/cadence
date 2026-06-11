@@ -133,15 +133,14 @@ ${generateXmlToolDocs(planningMode)}
 - ALWAYS choose the least impactful tool (don't read the whole file if you only need the lines of function)
 - ALWAYS make the smallest atomic edits when using \`edit_file\`
 - Context Limits: ALWAYS explore files by reading their outlines first using read_file_outline. Outlines provide symbol line numbers and lengths. NEVER read a full file if you can extract just the function you need using the <startLine> and <lineCount> parameters of read_file. If you need to find exact text inside a file, use search_in_file to locate the exact line numbers and surrounding context. This saves context tokens.
-- Line Numbers & Counts: When specifying line numbers (e.g. in \`read_file\`, \`edit_remove_lines\`, or \`edit_copy_lines\`), remember that files are strictly 1-indexed. The first line of a file is line 1. Be extremely careful to calculate line offsets accurately to avoid off-by-one errors.
+- Line Numbers & Counts: When specifying line numbers (e.g. in \`read_file\`, \`edit_remove_lines\`, or \`refactor_copy_lines\`), remember that files are strictly 1-indexed. The first line of a file is line 1. Be extremely careful to calculate line offsets accurately to avoid off-by-one errors.
 - Strict XML: Use only the exact tags provided. Do not invent new tools.
 - NEVER include code in your conversational output or reasoning
 - NEVER use control or tool tags to discuss or think about your actions, only to perform them.`;
     } else {
         coreRules = `
 - An implementation plan and task list must be created BEFORE 'edit' and 'create' tools will be available
-    Consider the most appropriate tool choices for the implmementation. eg \`create_file\` vs \`edit_copy_lines\`.
-    Consider order of operations of the implementation.
+- AWALYS consider the most appropriate tool choices for the implmementation. eg \`create_file\` vs \`refactor_copy_lines\`.
     Record these in the implementation plan.
 - Context Limits **STRICT REQUIREMENT**: 
 	ALWAYS Explore files by reading their outlines with read_file_outline and search_in_file
@@ -150,7 +149,7 @@ ${generateXmlToolDocs(planningMode)}
 	Use \`edit_file\` liberally for small code changes, the system accumulates them for user review and rollback (if needed)
     NEVER output code blocks just to explore what's already in your context
 	NEVER read a whole file if you can just read part of it
-- Line Numbers & Counts: When specifying line numbers (e.g. in \`read_file\`, \`edit_remove_lines\`, or \`edit_copy_lines\`), remember that files are strictly 1-indexed. The first line of a file is line 1. Be extremely careful to calculate line offsets accurately to avoid off-by-one errors.
+- Line Numbers & Counts: When specifying line numbers (e.g. in \`read_file\`, \`edit_remove_lines\`, or \`refactor_copy_lines\`), remember that files are strictly 1-indexed. The first line of a file is line 1. Be extremely careful to calculate line offsets accurately to avoid off-by-one errors.
 `;
     }
 

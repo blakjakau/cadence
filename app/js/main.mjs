@@ -7,6 +7,7 @@ import workspaceClient from "./workspace-client.mjs"
 import {
 	getIconForFileName, addStylesheet, buildPath, clone, isElement, isFunction, isNotNull,
 	isset, readAndOrderDirectory, readAndOrderDirectoryRecursive, sortOnName,
+	extractFilenameAtColumn, findFileMatchesInIndex,
 } from "./elements/utils.mjs"
 import ui from "./ui-main.mjs" // Assuming ui-main.mjs handles its own import of Modal via elements.mjs
 import {
@@ -2516,20 +2517,166 @@ const keyBinds = [
 	},
 	{
 		target: "editor",
+		name: "goToFile",
+		exec: async (editor) => {
+			let matches = null;
+			let filename = "";
+			if (window.ui && window.ui.activeContextMenuFileMatches) {
+				matches = window.ui.activeContextMenuFileMatches;
+				filename = window.ui.activeContextMenuFilename;
+				window.ui.activeContextMenuFileMatches = null;
+				window.ui.activeContextMenuFilename = null;
+			}
+			if (matches && matches.length > 0) {
+				// Inline helper to open files with multi-match logic
+				const handleFileOpening = async (fname, fmatches, ed) => {
+					if (!fmatches || fmatches.length === 0) return;
+					
+					if (fmatches.length === 1) {
+						await openFileHandle(fmatches[0].path, fmatches[0].path, ed);
+						return;
+					}
+					
+					// Multiple matches: look for exact name match first
+					const exactMatch = fmatches.find(f => f.name === fname);
+					if (exactMatch) {
+						await openFileHandle(exactMatch.path, exactMatch.path, ed);
+						return;
+					}
+					
+					// Show choice modal
+					const optionsHtml = fmatches.map((m, idx) => {
+						return `
+							<div class="file-match-option" data-idx="${idx}" style="padding: 10px; margin: 6px 0; border-radius: var(--borderRadius); cursor: pointer; background: var(--bg-hover, #2a2a2a); border: 1px solid var(--border-color, #333); transition: all 0.2s;">
+								<div style="font-weight: bold; color: var(--theme); font-size: 14px;">${m.name}</div>
+								<div style="font-size: 12px; color: var(--text-secondary); margin-top: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
+									<code>${m.path}</code>
+								</div>
+							</div>
+						`;
+					}).join('');
+
+					const container = document.createElement("div");
+					container.innerHTML = `
+						<h1>Multiple files found matching "${fname}"</h1>
+						<div style="max-height: 300px; overflow-y: auto; margin-top: 12px; padding-right: 4px;">
+							${optionsHtml}
+						</div>
+					`;
+
+					const selectModal = new window.modal.constructor();
+					selectModal.inner.appendChild(container);
+					selectModal.actionBar.empty();
+					const cancelBtn = new Button("Cancel");
+					cancelBtn.classList.add("cancel");
+					cancelBtn.on("click", () => selectModal.hide(null));
+					selectModal.actionBar.append(cancelBtn);
+
+					container.querySelectorAll('.file-match-option').forEach(el => {
+						el.onclick = () => {
+							const idx = parseInt(el.getAttribute('data-idx'));
+							selectModal.hide(idx);
+						};
+					});
+
+					const choice = await selectModal.show();
+					if (choice !== null && choice >= 0) {
+						await openFileHandle(fmatches[choice].path, fmatches[choice].path, ed);
+					}
+				};
+
+				await handleFileOpening(filename, matches, editor);
+			}
+		}
+	},
+	{
+		target: "editor",
 		name: "goToDefinition",
 		bindKey: { win: "Ctrl-B", mac: "Command-B" },
 		exec: async (editor) => {
 			let symbol = "";
+			let pos = null;
 			// If context menu registered an active symbol, use it, then clear it
 			if (window.ui && window.ui.activeContextMenuSymbol) {
 				symbol = window.ui.activeContextMenuSymbol;
 				window.ui.activeContextMenuSymbol = null;
 			} else {
 				// Otherwise get the word under the caret/selection
-				const pos = editor.getCursorPosition();
+				pos = editor.getCursorPosition();
 				const range = editor.session.getWordRange(pos.row, pos.column);
 				symbol = editor.session.getTextRange(range).trim();
 			}
+
+			// If triggering via caret/selection, check if there's a filename match
+			if (pos) {
+				const line = editor.session.getLine(pos.row);
+				const filename = extractFilenameAtColumn(line, pos.column);
+				if (filename) {
+					const matches = findFileMatchesInIndex(filename);
+					if (matches && matches.length > 0) {
+						// Inline helper to open files with multi-match logic
+						const handleFileOpening = async (fname, fmatches, ed) => {
+							if (!fmatches || fmatches.length === 0) return;
+							
+							if (fmatches.length === 1) {
+								await openFileHandle(fmatches[0].path, fmatches[0].path, ed);
+								return;
+							}
+							
+							// Multiple matches: look for exact name match first
+							const exactMatch = fmatches.find(f => f.name === fname);
+							if (exactMatch) {
+								await openFileHandle(exactMatch.path, exactMatch.path, ed);
+								return;
+							}
+							
+							// Show choice modal
+							const optionsHtml = fmatches.map((m, idx) => {
+								return `
+									<div class="file-match-option" data-idx="${idx}" style="padding: 10px; margin: 6px 0; border-radius: var(--borderRadius); cursor: pointer; background: var(--bg-hover, #2a2a2a); border: 1px solid var(--border-color, #333); transition: all 0.2s;">
+										<div style="font-weight: bold; color: var(--theme); font-size: 14px;">${m.name}</div>
+										<div style="font-size: 12px; color: var(--text-secondary); margin-top: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
+											<code>${m.path}</code>
+										</div>
+									</div>
+								`;
+							}).join('');
+
+							const container = document.createElement("div");
+							container.innerHTML = `
+								<h1>Multiple files found matching "${fname}"</h1>
+								<div style="max-height: 300px; overflow-y: auto; margin-top: 12px; padding-right: 4px;">
+									${optionsHtml}
+								</div>
+							`;
+
+							const selectModal = new window.modal.constructor();
+							selectModal.inner.appendChild(container);
+							selectModal.actionBar.empty();
+							const cancelBtn = new Button("Cancel");
+							cancelBtn.classList.add("cancel");
+							cancelBtn.on("click", () => selectModal.hide(null));
+							selectModal.actionBar.append(cancelBtn);
+
+							container.querySelectorAll('.file-match-option').forEach(el => {
+								el.onclick = () => {
+									const idx = parseInt(el.getAttribute('data-idx'));
+									selectModal.hide(idx);
+								};
+							});
+
+							const choice = await selectModal.show();
+							if (choice !== null && choice >= 0) {
+								await openFileHandle(fmatches[choice].path, fmatches[choice].path, ed);
+							}
+						};
+
+						await handleFileOpening(filename, matches, editor);
+						return;
+					}
+				}
+			}
+
 			symbol = symbol.replace(/[^a-zA-Z0-9_]/g, "");
 			if (!symbol) return;
 

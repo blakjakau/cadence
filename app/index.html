@@ -240,6 +240,8 @@
 	</ui-menu>
 
 	<ui-menu id="editor_context" onclick="(e)=>{ window.ui.execCommand(e) }">
+		<ui-menu-item id="editor_context_goto_file" command="editor:goToFile" icon="folder_open" style="display: none;">Go to File</ui-menu-item>
+		<ui-menu-split id="editor_context_goto_file_split" style="display: none;"></ui-menu-split>
 		<ui-menu-item id="editor_context_goto" command="editor:goToDefinition" icon="shortcut" keyTag="Ctrl-B">Lookup Definition</ui-menu-item>
 		<ui-menu-split id="editor_context_split"></ui-menu-split>
 		<ui-menu-item command="editor:undo" icon="undo" keyTag="Ctrl-Z">Undo</ui-menu-item>
