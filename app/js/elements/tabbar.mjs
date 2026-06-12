@@ -476,6 +476,9 @@ export class TabBar extends Block {
 		
 		this.dispatch('tabs-updated', { isEmpty: this._tabs.length === 0 });
 		// this.updateTabCloseIcons();
+		if (window.ui && window.ui.checkGlobalFileModifiedNotice) {
+			window.ui.checkGlobalFileModifiedNotice();
+		}
 	}
 	resetMargins() {
 		// Reset margins on all tabs to prevent visual gaps from interrupted drag operations.

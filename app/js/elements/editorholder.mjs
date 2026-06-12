@@ -306,6 +306,9 @@ export class EditorHolder extends Panel {
                 if (window.ui && window.ui.hideFileModifiedNotice) {
                     window.ui.hideFileModifiedNotice(side);
                 }
+                if (window.ui && window.ui.checkGlobalFileModifiedNotice) {
+                    window.ui.checkGlobalFileModifiedNotice();
+                }
             };
             
             this.editorHeaderRight.appendChild(reloadBtn);

@@ -50,11 +50,12 @@ conduitClient.on('connect', () => {
 
 	// Proactively check for external modifications on all open tabs
 	const checkTabs = [...(leftTabs?.tabs || []), ...(rightTabs?.tabs || [])];
+	const checkPromises = [];
 	for (const tab of checkTabs) {
 		const path = tab.config.handle;
 		if (!path || tab.config.mode?.mode === "media" || path === "plan_tasks") continue;
 
-		conduitClient.wsRead(path, 1, 1).then(res => {
+		const p = conduitClient.wsRead(path, 1, 1).then(res => {
 			if (res && res.modTime && tab.config.modTime && res.modTime !== tab.config.modTime) {
 				tab.config.fileModified = true;
 				tab.changed = true;
@@ -70,6 +71,14 @@ conduitClient.on('connect', () => {
 				}
 			}
 		}).catch(e => console.warn(`Error checking external changes for ${path}:`, e));
+		checkPromises.push(p);
+	}
+	if (checkPromises.length > 0) {
+		Promise.allSettled(checkPromises).then(() => {
+			if (ui.checkGlobalFileModifiedNotice) {
+				ui.checkGlobalFileModifiedNotice();
+			}
+		});
 	}
 });
 
@@ -327,13 +336,33 @@ const getSuggestedStartDirectory = async () => {
 	return null // Fallback to default behavior
 }
 
+// Global helpers to suppress external file change notices temporarily during write/delete operations
+ui.suppressFileChangeNotice = (path, duration = 5000) => {
+	unobserveFile(path)
+	const allOpenTabs = [...(leftTabs?.tabs || []), ...(rightTabs?.tabs || [])]
+	const tab = allOpenTabs.find(t => t.config?.handle === path || t.config?.path === path)
+	if (tab) {
+		tab.config.ignoreNextNotify = true
+		if (tab.config._ignoreTimeout) {
+			clearTimeout(tab.config._ignoreTimeout)
+		}
+		tab.config._ignoreTimeout = setTimeout(() => {
+			tab.config.ignoreNextNotify = false
+			delete tab.config._ignoreTimeout
+		}, duration)
+	}
+}
+
+ui.resumeFileChangeNotice = (path) => {
+	observeFile(path, onFileModified)
+}
+
 const saveFile = async (tab) => {
 	const path = tab.config.handle
 	if (!path || tab.config.mode?.mode === "media") return
 	const text = tab.config.session.getValue()
 
-	unobserveFile(path) // Stop listening to prevent self-triggering modification events
-	tab.config.ignoreNextNotify = true
+	ui.suppressFileChangeNotice(path, 5000)
 	try {
 		const base64Content = btoa(unescape(encodeURIComponent(text)))
 		const response = await conduitClient.wsWrite(path, base64Content)
@@ -363,14 +392,15 @@ const saveFile = async (tab) => {
 		if (holder && holder.updateNoticeBar) {
 			holder.updateNoticeBar(tab)
 		}
+		
+		if (window.ui && window.ui.checkGlobalFileModifiedNotice) {
+			window.ui.checkGlobalFileModifiedNotice()
+		}
 	} catch (error) {
 		console.error("Error saving file:", error)
 		window.modal.notice(`Failed to save ${path}:<br><small>${error.message}</small>`, "Save Error")
 	} finally {
-		observeFile(path, onFileModified) // Always resume listening
-		setTimeout(() => {
-			tab.config.ignoreNextNotify = false
-		}, 2000)
+		ui.resumeFileChangeNotice(path)
 	}
 }
 window.saveFileTab = saveFile;
@@ -431,6 +461,11 @@ const onFileModified = (path) => {
 		// If the modified tab is the active tab, show the notice bar
 		if (foundTab === currentTabs.activeTab) {
 			ui.showFileModifiedNotice(foundTab, foundTab.config.side)
+		} else {
+			// If not active tab, still update the global notice bar count
+			if (ui.checkGlobalFileModifiedNotice) {
+				ui.checkGlobalFileModifiedNotice()
+			}
 		}
 	}
 }
@@ -841,11 +876,12 @@ const execCommandEditorOptions = () => {
 			editor.$enableLiveAutocompletion = app.enableLiveAutocompletion
 		}
 
-		if (editor.getOption("mode") === "ace/mode/javascript") {
+        // disable workers always because their too old to be very usefull
+// 		if (editor.getOption("mode") === "ace/mode/javascript") {
 			editor.setOption("useWorker", false)
-		} else {
-			editor.setOption("useWorker", true)
-		}
+// 		} else {
+// 			editor.setOption("useWorker", true)
+// 		}
 	}
 }
 
@@ -894,6 +930,13 @@ const execCommandToggleSidebarPanel = (panelId) => {
 	const currentPanel = ui.iconTabBar.activeTab?.iconId
 
 	if (isSidebarVisible && currentPanel === panelId) {
+		if (panelId === "find_in_page") {
+			if (document.activeElement.closest("ui-input") !== ui.searchInput) {
+				// Search input is not focused, focus it instead of closing sidebar
+				ui.focusSearchInput(0)
+				return
+			}
+		}
 		if (panelId == "developer_board") {
 			if (!document.activeElement.classList.contains("ace_text-input")) {
 				// just focus the tab
@@ -910,10 +953,16 @@ const execCommandToggleSidebarPanel = (panelId) => {
 		}
 		ui.toggleSidebar() // Close the sidebar
 	} else if (!isSidebarVisible) {
-		ui.toggleSidebar() // Open the sidebar
 		ui.iconTabBar.activeTabById = panelId
+		ui.toggleSidebar() // Open the sidebar
+		if (panelId === "find_in_page") {
+			ui.focusSearchInput(300)
+		}
 	} else {
 		ui.iconTabBar.activeTabById = panelId // Switch to the new panel
+		if (panelId === "find_in_page") {
+			ui.focusSearchInput(100)
+		}
 	}
 }
 
@@ -2107,7 +2156,7 @@ const keyBinds = [
 	{
 		target: "app",
 		name: "showKeyboardShortcuts",
-		bindKey: { win: "ctrl-alt-k", mac: "Command-Alt-k" },
+		bindKey: { win: "Ctrl+Alt+K", mac: "Command+Alt+K" },
 		exec: function () {
 			ace.config.loadModule("ace/ext/keybinding_menu", function (module) {
 				module.init(leftEdit)
@@ -2118,7 +2167,7 @@ const keyBinds = [
 	{
 		target: "app",
 		name: "find",
-		bindKey: { win: "Ctrl-F", mac: "Command-F" },
+		bindKey: { win: "Ctrl+F", mac: "Command+F" },
 		exec: () => {
 			window.ui.omnibox("find")
 		},
@@ -2134,15 +2183,23 @@ const keyBinds = [
 	{
 		target: "editor",
 		name: "collapselines",
-		bindKey: { win: "Ctrl-Shift-J", mac: "Command-Shift-J" },
+		bindKey: { win: "Ctrl+Shift+J", mac: "Command+Shift+J" },
 		exec: () => {
 			currentEditor.execCommand("joinlines")
 		},
 	},
 	{
 		target: "app",
+		name: "toggleSearchSidebar",
+		bindKey: { win: "Ctrl+Shift+F", mac: "Command+Shift+F" },
+		exec: () => {
+			execCommandToggleSidebarPanel("find_in_page")
+		},
+	},
+	{
+		target: "app",
 		name: "find-regex",
-		bindKey: { win: "Ctrl-Shift-F", mac: "Command-Shift-F" },
+		bindKey: { win: "Ctrl+Alt+F", mac: "Command+Alt+F" },
 		exec: () => {
 			window.ui.omnibox("regex")
 		},
@@ -2150,7 +2207,7 @@ const keyBinds = [
 	{
 		target: "app",
 		name: "find-regex-multiline",
-		bindKey: { win: "Ctrl-Shift-Alt-F", mac: "Command-Shift-Alt-F" },
+		bindKey: { win: "Ctrl+Shift+Alt+F", mac: "Command+Shift+Alt+F" },
 		exec: () => {
 			window.ui.omnibox("regex-m")
 		},
@@ -2158,7 +2215,7 @@ const keyBinds = [
 	{
 		target: "app",
 		name: "goto",
-		bindKey: { win: "Ctrl-G", mac: "Command-G" },
+		bindKey: { win: "Ctrl+G", mac: "Command+G" },
 		exec: () => {
 			window.ui.omnibox("goto")
 		},
@@ -2166,7 +2223,7 @@ const keyBinds = [
 	{
 		target: "editor",
 		name: "lookup",
-		bindKey: { win: "Ctrl-L", mac: "Command-L" },
+		bindKey: { win: "Ctrl+L", mac: "Command+L" },
 		exec: () => {
 			window.ui.omnibox("lookup")
 		},
@@ -2593,7 +2650,7 @@ const keyBinds = [
 	{
 		target: "editor",
 		name: "goToDefinition",
-		bindKey: { win: "Ctrl-B", mac: "Command-B" },
+		bindKey: { win: "Ctrl+B", mac: "Command+B" },
 		exec: async (editor) => {
 			let symbol = "";
 			let pos = null;
@@ -2836,7 +2893,7 @@ const keyBinds = [
 	{
 		target: "editor",
 		name: "showFileOutline",
-		bindKey: { win: "Ctrl-Shift-O", mac: "Command-Shift-O" },
+		bindKey: { win: "Ctrl+Shift+O", mac: "Command+Shift+O" },
 		exec: async (editor) => {
 			const activeTab = editor.tabs?.activeTab;
 			const path = activeTab?.config?.path;
@@ -2984,7 +3041,7 @@ for (let i = 1; i <= 9; i++) {
 	keyBinds.push({
 		target: "app",
 		name: `jump-to-buffer-${i}`,
-		bindKey: { win: `Ctrl-${i}`, mac: `Command-${i}` },
+		bindKey: { win: `Ctrl+${i}`, mac: `Command+${i}` },
 		exec: () => {
 			execCommandJumpToBuffer(i)
 		}

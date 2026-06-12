@@ -692,7 +692,7 @@ class AIManager {
 
 		this.promptEditor.commands.addCommand({
 			name: "submitPrompt",
-			bindKey: { win: "Ctrl-Enter", mac: "Ctrl-Enter|Command-Enter" },
+			bindKey: { win: "Ctrl+Enter", mac: "Ctrl+Enter|Command+Enter" },
 			exec: () => this.generate(),
 		});
 

@@ -1,13 +1,17 @@
 package main
 
 import (
+	"bufio"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"io/ioutil"
 	"log"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -148,7 +152,7 @@ func (wm *watcherManager) broadcastEvent(event fsnotify.Event) {
 				Path:   reqPath,
 				Data:   event.Op.String(), // e.g., "WRITE", "CREATE"
 			}
-			client.WriteJSON(resp)
+			safeWriteJSON(client, resp)
 		} else {
 			dirPath := filepath.Dir(event.Name)
 			reqPathDir, watchedDir := paths[dirPath]
@@ -168,7 +172,7 @@ func (wm *watcherManager) broadcastEvent(event fsnotify.Event) {
 					Path:   childReqPath,
 					Data:   event.Op.String(),
 				}
-				client.WriteJSON(resp)
+				safeWriteJSON(client, resp)
 			}
 		}
 	}
@@ -183,7 +187,7 @@ func (wm *watcherManager) broadcastIndexerStatus(status interface{}) {
 		Data:   status,
 	}
 	for client := range wm.subscribers {
-		client.WriteJSON(resp)
+		safeWriteJSON(client, resp)
 	}
 }
 
@@ -340,6 +344,8 @@ func handleFileWs(w http.ResponseWriter, r *http.Request) {
 	}
 	defer ws.Close()
 	defer fileWatcher.removeClient(ws)
+	defer cancelActiveSearch(ws)
+	defer cleanupWsWriteMutex(ws)
 
 	for {
 		var req fileRequest
@@ -356,7 +362,7 @@ func handleWsRequest(ws *websocket.Conn, req fileRequest) {
 	fullPath, err := securePath(req.Path)
 	if err != nil {
 		log.Printf("[DEBUG] WS Error: securePath failed for path %s: %v", req.Path, err)
-		ws.WriteJSON(fileResponse{Action: req.Action, Path: req.Path, Error: "Forbidden"})
+		safeWriteJSON(ws, fileResponse{Action: req.Action, Path: req.Path, Error: "Forbidden"})
 		return
 	}
 
@@ -464,6 +470,9 @@ func handleWsRequest(ws *websocket.Conn, req fileRequest) {
 			} else {
 				resp.Data = results
 			}
+		} else if req.Type == "grep" {
+			go startGrepSearch(ws, req.RequestId, req.Query)
+			return // Return early, streaming handles responses
 		} else {
 			resp.Error = "Unsupported search type"
 		}
@@ -516,7 +525,7 @@ func handleWsRequest(ws *websocket.Conn, req fileRequest) {
 	}
 
 	log.Printf("[DEBUG] WS Response: action=%s, path=%s, requestId=%d, error=%s", resp.Action, resp.Path, resp.RequestId, resp.Error)
-	ws.WriteJSON(resp)
+	safeWriteJSON(ws, resp)
 }
 
 // walkAndSearchFolders recursively searches for directories matching the query.
@@ -760,4 +769,248 @@ func walkAndSearchContent(rootPath, query string) ([]searchMatch, error) {
 	})
 
 	return matches, err
+}
+
+// --- Thread-Safe WebSocket Write Mutex Manager ---
+
+var (
+	wsWriteMutexes   = make(map[*websocket.Conn]*sync.Mutex)
+	wsWriteMutexesMu sync.Mutex
+)
+
+func getWsWriteMutex(ws *websocket.Conn) *sync.Mutex {
+	wsWriteMutexesMu.Lock()
+	defer wsWriteMutexesMu.Unlock()
+	mu, ok := wsWriteMutexes[ws]
+	if !ok {
+		mu = &sync.Mutex{}
+		wsWriteMutexes[ws] = mu
+	}
+	return mu
+}
+
+func cleanupWsWriteMutex(ws *websocket.Conn) {
+	wsWriteMutexesMu.Lock()
+	defer wsWriteMutexesMu.Unlock()
+	delete(wsWriteMutexes, ws)
+}
+
+func safeWriteJSON(ws *websocket.Conn, v interface{}) error {
+	mu := getWsWriteMutex(ws)
+	mu.Lock()
+	defer mu.Unlock()
+	return ws.WriteJSON(v)
+}
+
+// --- Active Search Process Manager ---
+
+type activeSearch struct {
+	cmds   []*exec.Cmd
+	cancel context.CancelFunc
+}
+
+var (
+	activeSearches   = make(map[*websocket.Conn]*activeSearch)
+	activeSearchesMu sync.Mutex
+)
+
+func cancelActiveSearch(ws *websocket.Conn) {
+	activeSearchesMu.Lock()
+	defer activeSearchesMu.Unlock()
+	if search, ok := activeSearches[ws]; ok {
+		if search.cancel != nil {
+			search.cancel()
+		}
+		for _, cmd := range search.cmds {
+			if cmd != nil && cmd.Process != nil {
+				cmd.Process.Kill()
+			}
+		}
+		delete(activeSearches, ws)
+	}
+}
+
+func startGrepSearch(ws *websocket.Conn, reqId int, query string) {
+	// Cancel previous search
+	cancelActiveSearch(ws)
+
+	im := getIndexManagerAPI()
+	im.mu.RLock()
+	type rootInfo struct {
+		path        string
+		ignorePaths []string
+	}
+	var roots []rootInfo
+	for path, idx := range im.Indexes {
+		idx.mu.RLock()
+		ignores := make([]string, len(idx.IgnorePaths))
+		copy(ignores, idx.IgnorePaths)
+		idx.mu.RUnlock()
+		roots = append(roots, rootInfo{path: path, ignorePaths: ignores})
+	}
+	im.mu.RUnlock()
+
+	if len(roots) == 0 {
+		safeWriteJSON(ws, fileResponse{
+			RequestId: reqId,
+			Action:    "search_done",
+			Path:      ".",
+			Data:      0,
+		})
+		return
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	searchTracker := &activeSearch{
+		cancel: cancel,
+	}
+
+	activeSearchesMu.Lock()
+	activeSearches[ws] = searchTracker
+	activeSearchesMu.Unlock()
+
+	matchChan := make(chan []interface{}, 200)
+	var wg sync.WaitGroup
+
+	for _, root := range roots {
+		wg.Add(1)
+		go func(r rootInfo) {
+			defer wg.Done()
+
+			args := []string{"-rnIi", "--line-buffered"}
+			args = append(args, "--exclude-dir=.*")
+			args = append(args, "--exclude=.*")
+			args = append(args, "--exclude-dir=node_modules")
+			args = append(args, "--exclude-dir=dist")
+			args = append(args, "--exclude-dir=build")
+			args = append(args, "--exclude-dir=.pkgconfig")
+
+			for _, ip := range r.ignorePaths {
+				ip = strings.TrimSpace(ip)
+				if ip == "" {
+					continue
+				}
+				args = append(args, "--exclude-dir="+ip)
+				args = append(args, "--exclude="+ip)
+			}
+			args = append(args, "-e", query, r.path)
+
+			cmd := exec.CommandContext(ctx, "grep", args...)
+
+			// Register cmd so it can be killed on cancel
+			activeSearchesMu.Lock()
+			if activeSearches[ws] == searchTracker {
+				searchTracker.cmds = append(searchTracker.cmds, cmd)
+			} else {
+				activeSearchesMu.Unlock()
+				return
+			}
+			activeSearchesMu.Unlock()
+
+			stdout, err := cmd.StdoutPipe()
+			if err != nil {
+				return
+			}
+
+			if err := cmd.Start(); err != nil {
+				return
+			}
+
+			scanner := bufio.NewScanner(stdout)
+			for scanner.Scan() {
+				select {
+				case <-ctx.Done():
+					return
+				default:
+					line := scanner.Text()
+					line = strings.TrimSpace(line)
+					if line == "" {
+						continue
+					}
+
+					firstColon := strings.Index(line, ":")
+					if firstColon == -1 {
+						continue
+					}
+					if firstColon == 1 && len(line) > 2 && line[2] == '\\' {
+						nextColon := strings.Index(line[firstColon+1:], ":")
+						if nextColon == -1 {
+							continue
+						}
+						firstColon = firstColon + 1 + nextColon
+					}
+
+					filePath := line[:firstColon]
+					rest := line[firstColon+1:]
+
+					secondColon := strings.Index(rest, ":")
+					if secondColon == -1 {
+						continue
+					}
+
+					lineNumStr := rest[:secondColon]
+					snippet := rest[secondColon+1:]
+
+					lineNum, err := strconv.Atoi(lineNumStr)
+					if err != nil {
+						continue
+					}
+
+					relPath, err := filepath.Rel(fileAPIRoot, filePath)
+					if err != nil {
+						relPath = filePath
+					}
+					relPath = strings.ReplaceAll(filepath.ToSlash(relPath), "\\", "/")
+
+					select {
+					case matchChan <- []interface{}{relPath, lineNum, strings.TrimSpace(snippet)}:
+					case <-ctx.Done():
+						return
+					}
+				}
+			}
+
+			cmd.Wait()
+		}(root)
+	}
+
+	// Writer goroutine
+	go func() {
+		defer cancelActiveSearch(ws) // Cleanup active search tracking when done
+
+		limit := 500
+		count := 0
+
+		for {
+			select {
+			case match, ok := <-matchChan:
+				if !ok {
+					goto done
+				}
+				if count < limit {
+					safeWriteJSON(ws, fileResponse{
+						RequestId: reqId,
+						Action:    "search_match",
+						Data:      match,
+					})
+					count++
+				}
+			case <-ctx.Done():
+				goto done
+			}
+		}
+
+	done:
+		safeWriteJSON(ws, fileResponse{
+			RequestId: reqId,
+			Action:    "search_done",
+			Data:      count,
+		})
+	}()
+
+	// Wait for searches and close chan
+	go func() {
+		wg.Wait()
+		close(matchChan)
+	}()
 }

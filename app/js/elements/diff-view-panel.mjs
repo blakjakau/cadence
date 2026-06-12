@@ -739,6 +739,9 @@ export class DiffViewPanel extends Block {
                     const confirmed = await window.modal.confirm(`Are you sure you want to rollback all changes to ${filename}?`, "Rollback Changes");
                     if (!confirmed) return;
 
+                    if (window.ui && window.ui.suppressFileChangeNotice) {
+                        window.ui.suppressFileChangeNotice(filePath, 5000);
+                    }
                     try {
                         rollbackBtn.disabled = true;
                         rollbackBtn.icon = "<ui-icon class='spinner'>sync</ui-icon>";
@@ -813,6 +816,10 @@ export class DiffViewPanel extends Block {
                         rollbackBtn.disabled = false;
                         rollbackBtn.icon = "undo";
                         rollbackBtn.text = "Rollback Changes";
+                    } finally {
+                        if (window.ui && window.ui.resumeFileChangeNotice) {
+                            window.ui.resumeFileChangeNotice(filePath);
+                        }
                     }
                 };
                 const cancelBtn = new Button("Cancel");

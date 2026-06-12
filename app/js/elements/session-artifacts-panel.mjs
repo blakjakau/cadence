@@ -504,6 +504,9 @@ export class SessionArtifactsPanel extends Block {
                 for (const path of validFilePaths) {
                     const list = validatedModifiedFiles[path];
                     const latestBackup = list[list.length - 1];
+                    if (window.ui && window.ui.suppressFileChangeNotice) {
+                        window.ui.suppressFileChangeNotice(path, 5000);
+                    }
                     try {
                         if (latestBackup.isNewFile) {
                             await conduitClient.wsDelete(path);
@@ -583,6 +586,10 @@ export class SessionArtifactsPanel extends Block {
                         }
                     } catch (e) {
                         console.error(`Failed to undo changes for ${path}:`, e);
+                    } finally {
+                        if (window.ui && window.ui.resumeFileChangeNotice) {
+                            window.ui.resumeFileChangeNotice(path);
+                        }
                     }
                 }
 
@@ -684,6 +691,9 @@ export class SessionArtifactsPanel extends Block {
                         const confirmed = await window.modal.confirm(`Are you sure you want to delete file <strong>${filename}</strong>?`, "Confirm Deletion");
                         if (!confirmed) return;
 
+                        if (window.ui && window.ui.suppressFileChangeNotice) {
+                            window.ui.suppressFileChangeNotice(path, 5000);
+                        }
                         try {
                             btn.disabled = true;
                             btn.text = "Deleting...";
@@ -764,8 +774,15 @@ export class SessionArtifactsPanel extends Block {
                             btn.disabled = false;
                             btn.text = "Delete";
                             btn.icon = "delete";
+                        } finally {
+                            if (window.ui && window.ui.resumeFileChangeNotice) {
+                                window.ui.resumeFileChangeNotice(path);
+                            }
                         }
                     } else {
+                        if (window.ui && window.ui.suppressFileChangeNotice) {
+                            window.ui.suppressFileChangeNotice(path, 5000);
+                        }
                         try {
                             btn.disabled = true;
                             btn.text = "Rolling back...";
@@ -819,6 +836,10 @@ export class SessionArtifactsPanel extends Block {
                             btn.disabled = false;
                             btn.text = "Rollback";
                             btn.icon = "undo";
+                        } finally {
+                            if (window.ui && window.ui.resumeFileChangeNotice) {
+                                window.ui.resumeFileChangeNotice(path);
+                            }
                         }
                     }
                 };

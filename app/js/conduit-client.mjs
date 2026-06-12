@@ -162,10 +162,13 @@ class ConduitClient {
                 const { resolve, reject } = this.pendingRequests.get(message.requestId);
                 if (message.error) {
                     reject(new Error(message.error));
+                    this.pendingRequests.delete(message.requestId);
+                } else if (message.action === "search_match") {
+                    // Do not resolve or delete pending request yet since this is a streaming chunk!
                 } else {
                     resolve(message);
+                    this.pendingRequests.delete(message.requestId);
                 }
-                this.pendingRequests.delete(message.requestId);
             }
 
             this.emit(message.action, message); // e.g., emit('list', { path, data, error })
