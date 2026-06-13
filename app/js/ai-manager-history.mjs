@@ -271,10 +271,39 @@ class AIManagerHistory {
 			responseBlock.classList.add("response-block");
 			if (type === "error") responseBlock.classList.add("error-block");
 			responseBlock.dataset.messageId = messageId;
+			responseBlock.finalizedSegmentDivs = [];
+			responseBlock.activeSegmentDiv = null;
 			
 			responseBlock.updateContent = (fullResponse) => {
-				responseBlock.innerHTML = this.manager.messageRenderer.renderResponseContent(fullResponse, null, true);
-				this.manager.messageRenderer.addCodeBlockButtons(responseBlock);
+				if (fullResponse) {
+					const prefillContainer = responseBlock.querySelector('.prefill-progress-container');
+					if (prefillContainer) {
+						prefillContainer.remove();
+					}
+				}
+				const segments = this.manager.messageRenderer.segmentContent(fullResponse);
+				
+				if (!responseBlock.activeSegmentDiv) {
+					responseBlock.activeSegmentDiv = document.createElement("div");
+					responseBlock.append(responseBlock.activeSegmentDiv);
+				}
+
+				while (segments.length > responseBlock.finalizedSegmentDivs.length + 1) {
+					const segmentIndex = responseBlock.finalizedSegmentDivs.length;
+					const finalizedText = segments[segmentIndex];
+					
+					responseBlock.activeSegmentDiv.innerHTML = this.manager.messageRenderer.renderResponseContent(finalizedText, null, true);
+					this.manager.messageRenderer.addCodeBlockButtons(responseBlock.activeSegmentDiv);
+					
+					responseBlock.finalizedSegmentDivs.push(responseBlock.activeSegmentDiv);
+					
+					responseBlock.activeSegmentDiv = document.createElement("div");
+					responseBlock.append(responseBlock.activeSegmentDiv);
+				}
+				
+				const activeText = segments[segments.length - 1];
+				responseBlock.activeSegmentDiv.innerHTML = this.manager.messageRenderer.renderResponseContent(activeText, null, true);
+				this.manager.messageRenderer.addCodeBlockButtons(responseBlock.activeSegmentDiv);
 			};
 			
 			responseBlock.finalize = (fullResponse, finalizedMessage) => {

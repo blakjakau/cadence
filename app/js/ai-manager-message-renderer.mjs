@@ -903,4 +903,99 @@ export default class AIManagerMessageRenderer {
 
         return tasks;
     }
+
+    segmentContent(content) {
+        if (!content) return [""];
+        const segments = [];
+        let currentStart = 0;
+        let inCodeBlock = false;
+        let inReasoning = false;
+        let inXmlBlock = false;
+        let activeXmlTag = "";
+        
+        let i = 0;
+        const len = content.length;
+        
+        while (i < len) {
+            if (!inCodeBlock) {
+                if (!inXmlBlock) {
+                    for (const tag of ["tool_call", "implementation_plan", "task_list", "complete_task"]) {
+                        if (content.startsWith(`<${tag}`, i)) {
+                            inXmlBlock = true;
+                            activeXmlTag = tag;
+                            break;
+                        }
+                    }
+                } else {
+                    if (content.startsWith(`</${activeXmlTag}>`, i)) {
+                        i += activeXmlTag.length + 3;
+                        inXmlBlock = false;
+                        activeXmlTag = "";
+                        continue;
+                    }
+                }
+            }
+
+            if (!inCodeBlock && !inXmlBlock) {
+                if (!inReasoning) {
+                    if (content.startsWith("<thought>", i) || content.startsWith("<think>", i) || content.startsWith("<|channel>thought", i)) {
+                        inReasoning = true;
+                    }
+                } else {
+                    let endTagLen = 0;
+                    if (content.startsWith("</thought>", i)) endTagLen = 10;
+                    else if (content.startsWith("</think>", i)) endTagLen = 8;
+                    else if (content.startsWith("<channel|>", i)) endTagLen = 10;
+                    
+                    if (endTagLen > 0) {
+                        i += endTagLen;
+                        segments.push(content.substring(currentStart, i));
+                        currentStart = i;
+                        inReasoning = false;
+                        continue;
+                    }
+                }
+            }
+
+            if (!inReasoning && !inXmlBlock && content.startsWith("```", i)) {
+                if (inCodeBlock) {
+                    i += 3;
+                    if (content.startsWith("\n", i)) i++;
+                    segments.push(content.substring(currentStart, i));
+                    currentStart = i;
+                    inCodeBlock = false;
+                    continue;
+                } else {
+                    if (i > currentStart) {
+                        segments.push(content.substring(currentStart, i));
+                        currentStart = i;
+                    }
+                    inCodeBlock = true;
+                    i += 3;
+                    continue;
+                }
+            }
+
+            if (!inCodeBlock && !inReasoning && !inXmlBlock) {
+                const currentSegmentLength = i - currentStart;
+                if (currentSegmentLength >= 3200 && content[i] === '\n') {
+                    i++;
+                    segments.push(content.substring(currentStart, i));
+                    currentStart = i;
+                    continue;
+                }
+            }
+
+            i++;
+        }
+
+        if (currentStart < len) {
+            segments.push(content.substring(currentStart));
+        }
+        if (segments.length === 0) {
+            segments.push("");
+        }
+        return segments;
+    }
 }
+
