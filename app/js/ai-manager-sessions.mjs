@@ -214,6 +214,12 @@ class AIManagerSessions {
 		// If we are already on this session, do nothing.
 		if (this.activeSessionId === sessionId && this.activeSession) return;
 
+		// Clear any currently active halt bar
+		if (this.manager.haltBar) {
+			this.manager.haltBar.remove();
+			this.manager.haltBar = null;
+		}
+
 		// Save the state of the *current* active session (if any)
 		if (this.activeSession && this.activeSession.id) {
 			this.activeSession.promptInput = this.manager.promptEditor.getValue();
@@ -267,6 +273,11 @@ class AIManagerSessions {
 		this.promptIndex = (this.activeSession.promptHistory?.length || 0);
 		this.manager._resizePromptArea();
 		this.manager._setButtonsDisabledState(this.manager._isProcessing);
+		if (this.manager._isProcessing) {
+			this.manager._startGlow();
+		} else {
+			this.manager._stopGlow();
+		}
 		this.manager._updateAIInfoDisplay();
 		this.manager._updatePromptAreaPlaceholder(); // Update placeholder after session switch
 		this.manager._updateAgentProgressPanel();

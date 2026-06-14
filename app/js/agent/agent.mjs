@@ -10,6 +10,7 @@ export class Agent {
 		this._abortAgent = false;
 		this.throttleBar = null;
 		this.consecutiveHaltCount = 0;
+		this.repetitionHaltCount = 0;
 	}
 
 	stop(reason = "User requested stop") {
@@ -28,7 +29,7 @@ export class Agent {
 
 		const { aiManager, session, connection } = this;
 
-		while (aiManager._isProcessing) {
+		while (aiManager.runningSessions.has(session.id)) {
 			if (this._abortAgent) break;
 
 			loopCount++;
@@ -63,14 +64,14 @@ export class Agent {
 			}
 
 			const modelMessageId = crypto.randomUUID();
-			const responseBlock = aiManager.historyManager.createStreamingBlock(modelMessageId);
-			aiManager._startGlow();
-			const shouldScrollAtStart = aiManager._shouldAutoScroll();
-			aiManager.conversationArea.append(responseBlock);
-
-			// Auto scroll
-			if (shouldScrollAtStart && aiManager.conversationArea) {
-				aiManager.conversationArea.scrollTop = aiManager.conversationArea.scrollHeight;
+			const responseBlock = aiManager.historyManager.createStreamingBlock(modelMessageId, "model", session.id);
+			if (aiManager.activeSessionId === session.id) {
+				aiManager._startGlow(session.id);
+				aiManager.conversationArea.append(responseBlock);
+				const shouldScrollAtStart = aiManager._shouldAutoScroll();
+				if (shouldScrollAtStart && aiManager.conversationArea) {
+					aiManager.conversationArea.scrollTop = aiManager.conversationArea.scrollHeight;
+				}
 			}
 
 			let currentFullResponse = "";
@@ -86,13 +87,13 @@ export class Agent {
 						if (streamForciblyEnded) return;
 						currentFullResponse = fullResponse;
 						if (callbacks.toolCalls && callbacks.toolCalls.length > 0) {
-							aiManager._startGlow();
+							aiManager._startGlow(session.id);
 						} else {
-							aiManager._stopGlow();
+							aiManager._stopGlow(session.id);
 						}
 						const shouldScroll = aiManager._shouldAutoScroll();
 						responseBlock.updateContent(fullResponse);
-						if (shouldScroll && aiManager.conversationArea) {
+						if (aiManager.activeSessionId === session.id && shouldScroll && aiManager.conversationArea) {
 							aiManager.conversationArea.scrollTop = aiManager.conversationArea.scrollHeight;
 						}
 
@@ -104,7 +105,7 @@ export class Agent {
 							connection.stop(check.reason);
 							
 							// Save immediately since connection.stop throws AbortError which doesn't trigger onError
-							aiManager._finalizeModelMessage(currentFullResponse, forcedReason, callbacks, modelMessageId, responseBlock)
+							aiManager._finalizeModelMessage(currentFullResponse, forcedReason, callbacks, modelMessageId, responseBlock, session)
 								.then(finalizedResponse => resolve(finalizedResponse))
 								.catch(err => reject(err));
 						}
@@ -112,12 +113,12 @@ export class Agent {
 					onDone: async (fullResponse) => {
 						if (streamForciblyEnded) return;
 						currentFullResponse = fullResponse;
-						aiManager._stopGlow();
-						const finalizedResponse = await aiManager._finalizeModelMessage(fullResponse, null, callbacks, modelMessageId, responseBlock);
+						aiManager._stopGlow(session.id);
+						const finalizedResponse = await aiManager._finalizeModelMessage(fullResponse, null, callbacks, modelMessageId, responseBlock, session);
 						resolve(finalizedResponse);
 					},
 					onError: async (err) => {
-						aiManager._stopGlow();
+						aiManager._stopGlow(session.id);
 						if (streamForciblyEnded) {
 							resolve(currentFullResponse);
 							return;
@@ -134,7 +135,7 @@ export class Agent {
 					}
 				};
 
-				messagesForAI = aiManager.historyManager.prepareMessagesForAI();
+				messagesForAI = aiManager.historyManager.prepareMessagesForAI(session);
 				aiManager.getSystemPrompt().then(sysPrompt => {
 					systemPrompt = sysPrompt;
 					connection.chat(messagesForAI, callbacks, systemPrompt);
@@ -144,20 +145,108 @@ export class Agent {
 			try {
 				const responseContent = await runPromise;
 
+				if (forcedReason === "repetition_loop") {
+					if (this.repetitionHaltCount < 3) {
+						this.repetitionHaltCount++;
+						console.warn(`⚠️ [Agent Repetition Loop Detected] Trimming and injecting directive (Attempt ${this.repetitionHaltCount} of 3)...`);
+
+						// 1. Trim the model response content
+						let trimmedContent = responseContent;
+						const repCheck = aiManager._detectRepetition(responseContent);
+						if (repCheck.detected && repCheck.pattern) {
+							const patternLen = repCheck.pattern.length;
+							trimmedContent = responseContent.slice(0, responseContent.length - (patternLen * (repCheck.count - 1)));
+						}
+
+						// 2. Update the model message in session history
+						if (session && session.messages) {
+							const msgIdx = session.messages.findIndex(m => m.id === modelMessageId);
+							if (msgIdx !== -1) {
+								session.messages[msgIdx].content = trimmedContent;
+								session.messages[msgIdx].isTrimmed = true;
+							}
+						}
+
+						// 3. Create and append the system directive message
+						const directiveMsg = {
+							id: crypto.randomUUID(),
+							role: "user",
+							type: "system_directive",
+							content: "[SYSTEM WARNING: You previously entered a generation loop trying to choose a plan. You must immediately choose ONE action and format your response now. Avoid conversational preamble.]",
+							timestamp: Date.now()
+						};
+						session.messages.push(directiveMsg);
+						session.lastModified = Date.now();
+						await workspaceClient.setSession(session.id, session);
+
+						// 4. Update DOM if active
+						if (aiManager.activeSessionId === session.id) {
+							if (responseBlock && typeof responseBlock.updateContent === "function") {
+								responseBlock.updateContent(trimmedContent);
+							}
+							aiManager.historyManager.render();
+							if (aiManager.conversationArea) {
+								aiManager.conversationArea.scrollTop = aiManager.conversationArea.scrollHeight;
+							}
+						}
+
+						// 5. Briefly pause, then continue the loop
+						const autoMsg = document.createElement("div");
+						autoMsg.className = "agent-tool-progress";
+						autoMsg.innerHTML = `<ui-icon class="spin">cached</ui-icon> <span>Recovering from repetition loop (Attempt ${this.repetitionHaltCount} of 3)...</span>`;
+						if (aiManager.activeSessionId === session.id) {
+							aiManager.conversationArea.append(autoMsg);
+							if (aiManager._shouldAutoScroll() && aiManager.conversationArea) {
+								aiManager.conversationArea.scrollTop = aiManager.conversationArea.scrollHeight;
+							}
+						}
+						await new Promise(r => setTimeout(r, 1500));
+						autoMsg.remove();
+
+						loopCount--; // Decrement to retry this turn
+						continue; // Go to next loop iteration
+					} else {
+						// 3 attempts exhausted: close agent loop and notify user
+						console.error("❌ [Agent Repetition Loop] 3 recovery attempts exhausted. Exiting loop.");
+						const errorBlock = document.createElement("div");
+						errorBlock.className = "response-block warning-block";
+						errorBlock.style.border = "1px solid var(--color-error, #dc3545)";
+						errorBlock.style.background = "var(--bg-secondary)";
+						errorBlock.style.padding = "12px 16px";
+						errorBlock.style.borderRadius = "var(--borderRadius)";
+						errorBlock.style.margin = "8px 0 16px 0";
+						errorBlock.innerHTML = `
+							<div style="font-weight: 500; display: flex; align-items: center; gap: 8px;">
+								<ui-icon style="color: var(--color-error, #dc3545);">error</ui-icon>
+								<span><b>Agent Halted:</b> Repetitive generation loop detected. 3 recovery attempts were exhausted.</span>
+							</div>
+						`;
+						if (aiManager.activeSessionId === session.id) {
+							aiManager.conversationArea.append(errorBlock);
+							if (aiManager.conversationArea) {
+								aiManager.conversationArea.scrollTop = aiManager.conversationArea.scrollHeight;
+							}
+						}
+						aiManager.setSessionProcessing(session.id, false);
+						aiManager._updateTabStatus(session.id, "halted");
+						break;
+					}
+				}
+
 				// Parse tool calls
 				const toolCalls = aiManager._parseAllToolCalls(responseContent);
 				const regex = /<[^>]*>/g;
 				
 				if (toolCalls.length === 0 || !aiManager.agentMode) {
 					if (!aiManager.agentMode) {
-						aiManager._isProcessing = false;
-						aiManager._setButtonsDisabledState(false);
-						aiManager._dispatchContextUpdate("append_model");
+						aiManager.setSessionProcessing(session.id, false);
+						if (aiManager.activeSessionId === session.id) {
+							aiManager._dispatchContextUpdate("append_model");
+						}
 						return;
 					}
 					if (responseContent.replace(regex, "").length > 50) {
-						aiManager._isProcessing = false;
-						aiManager._setButtonsDisabledState(false);
+						aiManager.setSessionProcessing(session.id, false);
 						return;
 					}
 					// No more tool calls: agent is done!
@@ -177,13 +266,15 @@ export class Agent {
 								responseBlock.remove();
 							}
 
-							// Render temporary auto-continue indicator
 							const autoMsg = document.createElement("div");
 							autoMsg.className = "agent-tool-progress";
-							autoMsg.innerHTML = `<ui-icon class="spin">cached</ui-icon> Agent loop halted. Auto-continuing (Attempt ${this.consecutiveHaltCount} of 3)...`;
-							aiManager.conversationArea.append(autoMsg);
-							if (aiManager._shouldAutoScroll() && aiManager.conversationArea) {
-								aiManager.conversationArea.scrollTop = aiManager.conversationArea.scrollHeight;
+							autoMsg.innerHTML = `<ui-icon class="spin">cached</ui-icon> <span>Auto-continuing (Attempt ${this.consecutiveHaltCount} of 3)...</span>`;
+
+							if (aiManager.activeSessionId === session.id) {
+								aiManager.conversationArea.append(autoMsg);
+								if (aiManager._shouldAutoScroll() && aiManager.conversationArea) {
+									aiManager.conversationArea.scrollTop = aiManager.conversationArea.scrollHeight;
+								}
 							}
 							await new Promise(r => setTimeout(r, 1200));
 							autoMsg.remove();
@@ -213,7 +304,9 @@ export class Agent {
 								</label>
 							</div>
 						`;
-						aiManager.conversationArea.append(warnBlock);
+							if (aiManager.activeSessionId === session.id) {
+								aiManager.conversationArea.append(warnBlock);
+							}
 
 						// LOG the last request to console.warn() for troubleshooting
 						console.warn("⚠️ [Agent Loop Halted] The model stopped generating without producing a tool call or completing a task. Last Request Details:", {
@@ -223,22 +316,26 @@ export class Agent {
 						});
 
 						const shouldScroll = aiManager._shouldAutoScroll();
-						if (shouldScroll && aiManager.conversationArea) {
-							aiManager.conversationArea.scrollTop = aiManager.conversationArea.scrollHeight;
+						if (aiManager.activeSessionId === session.id) {
+							// Show the persistent bottom halt bar
+							aiManager._showHaltBar(modelMessageId, responseBlock, warnBlock);
+							if (shouldScroll && aiManager.conversationArea) {
+								aiManager.conversationArea.scrollTop = aiManager.conversationArea.scrollHeight;
+							}
 						}
-
-						// Show the persistent bottom halt bar
-						aiManager._showHaltBar(modelMessageId, responseBlock, warnBlock);
 					}
 
-					aiManager._isProcessing = false;
-					aiManager._setButtonsDisabledState(false);
-					aiManager._dispatchContextUpdate("append_model");
+					aiManager.setSessionProcessing(session.id, false);
+					aiManager._updateTabStatus(session.id, "halted");
+					if (aiManager.activeSessionId === session.id) {
+						aiManager._dispatchContextUpdate("append_model");
+					}
 					break;
 				}
 
 				// Reset consecutive halt count since the agent generated valid tool calls
 				this.consecutiveHaltCount = 0;
+				this.repetitionHaltCount = 0;
 
 				// Execute all parsed tool calls sequentially
 				let accumulatedResponses = [];
@@ -262,9 +359,11 @@ export class Agent {
 							<span>Tool <code>${toolCall.name}</code> failed validation.</span>
 						`;
 						const shouldScroll = aiManager._shouldAutoScroll();
-						aiManager.conversationArea.append(toolConfBlock);
-						if (shouldScroll && aiManager.conversationArea) {
-							aiManager.conversationArea.scrollTop = aiManager.conversationArea.scrollHeight;
+						if (aiManager.activeSessionId === session.id) {
+							aiManager.conversationArea.append(toolConfBlock);
+							if (shouldScroll && aiManager.conversationArea) {
+								aiManager.conversationArea.scrollTop = aiManager.conversationArea.scrollHeight;
+							}
 						}
 						continue;
 					}
@@ -281,9 +380,11 @@ export class Agent {
 						progressMsg.className = "agent-tool-progress";
 						progressMsg.innerHTML = `<ui-icon class="spin">cached</ui-icon> Running tool: <code>${toolCall.name}</code>...`;
 						const shouldScroll = aiManager._shouldAutoScroll();
-						aiManager.conversationArea.append(progressMsg);
-						if (shouldScroll && aiManager.conversationArea) {
-							aiManager.conversationArea.scrollTop = aiManager.conversationArea.scrollHeight;
+						if (aiManager.activeSessionId === session.id) {
+							aiManager.conversationArea.append(progressMsg);
+							if (shouldScroll && aiManager.conversationArea) {
+								aiManager.conversationArea.scrollTop = aiManager.conversationArea.scrollHeight;
+							}
 						}
 
 						try {
@@ -329,9 +430,11 @@ export class Agent {
 						<span>Tool <code>${toolCall.name}</code> finished.</span>
 					`;
 					const shouldScroll = aiManager._shouldAutoScroll();
-					aiManager.conversationArea.append(toolConfBlock);
-					if (shouldScroll && aiManager.conversationArea) {
-						aiManager.conversationArea.scrollTop = aiManager.conversationArea.scrollHeight;
+					if (aiManager.activeSessionId === session.id) {
+						aiManager.conversationArea.append(toolConfBlock);
+						if (shouldScroll && aiManager.conversationArea) {
+							aiManager.conversationArea.scrollTop = aiManager.conversationArea.scrollHeight;
+						}
 					}
 				}
 
@@ -393,9 +496,11 @@ export class Agent {
 								const summaryProgressMsg = document.createElement("div");
 								summaryProgressMsg.className = "agent-tool-progress";
 								summaryProgressMsg.innerHTML = `<ui-icon class="spin">cached</ui-icon> Generating cycle summary...`;
-								aiManager.conversationArea.append(summaryProgressMsg);
-								if (aiManager._shouldAutoScroll() && aiManager.conversationArea) {
-									aiManager.conversationArea.scrollTop = aiManager.conversationArea.scrollHeight;
+								if (aiManager.activeSessionId === session.id) {
+									aiManager.conversationArea.append(summaryProgressMsg);
+									if (aiManager._shouldAutoScroll() && aiManager.conversationArea) {
+										aiManager.conversationArea.scrollTop = aiManager.conversationArea.scrollHeight;
+									}
 								}
 
 								const result = await aiManager.generateCycleSummary(cycleMessages);
@@ -417,9 +522,11 @@ export class Agent {
 									session.lastModified = Date.now();
 									await workspaceClient.setSession(session.id, session);
 									
-									aiManager.historyManager.render();
-									if (aiManager.conversationArea) {
-										aiManager.conversationArea.scrollTop = aiManager.conversationArea.scrollHeight;
+									if (aiManager.activeSessionId === session.id) {
+										aiManager.historyManager.render();
+										if (aiManager.conversationArea) {
+											aiManager.conversationArea.scrollTop = aiManager.conversationArea.scrollHeight;
+										}
 									}
 								}
 							}
@@ -430,7 +537,12 @@ export class Agent {
 				}
 
 				if (hasPlan || hasDone) {
-					aiManager._isProcessing = false;
+					aiManager.setSessionProcessing(session.id, false);
+					if (hasPlan) {
+						aiManager._updateTabStatus(session.id, "halted");
+					} else {
+						aiManager._updateTabStatus(session.id, "completed");
+					}
 				}
 
 				// Update the model message block in the DOM
@@ -441,8 +553,9 @@ export class Agent {
 				}
 
 				if (hasPlan || hasDone) {
-					aiManager._setButtonsDisabledState(false);
-					aiManager._dispatchContextUpdate("append_model");
+					if (aiManager.activeSessionId === session.id) {
+						aiManager._dispatchContextUpdate("append_model");
+					}
 					break;
 				}
 
@@ -451,19 +564,23 @@ export class Agent {
 
 				const isUnavailable = connection && typeof connection._isTemporaryUnavailableError === 'function' && connection._isTemporaryUnavailableError(e);
 				if (isUnavailable) {
-					aiManager._showTryAgainBanner(e);
-					aiManager._isProcessing = false;
-					aiManager._setButtonsDisabledState(false);
+					if (aiManager.activeSessionId === session.id) {
+						aiManager._showTryAgainBanner(e);
+					}
+					aiManager.setSessionProcessing(session.id, false);
+					aiManager._updateTabStatus(session.id, "halted");
 					break;
 				}
 
 				const errBlock = document.createElement("div");
 				errBlock.className = "response-block error-block";
 				errBlock.innerHTML = `Agent Execution Error: ${e.message}`;
-				aiManager.conversationArea.append(errBlock);
+				if (aiManager.activeSessionId === session.id) {
+					aiManager.conversationArea.append(errBlock);
+				}
 
-				aiManager._isProcessing = false;
-				aiManager._setButtonsDisabledState(false);
+				aiManager.setSessionProcessing(session.id, false);
+				aiManager._updateTabStatus(session.id, "halted");
 				break;
 			}
 		}

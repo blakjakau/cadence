@@ -31,6 +31,20 @@ class AIManagerHistory {
 		return this.manager.activeSession?.messages || [];
 	}
 
+	get activeStreamingBlock() {
+		const runningSession = this.manager.runningSessions.get(this.manager.activeSessionId);
+		if (runningSession) return runningSession.responseBlock;
+		return this._localActiveStreamingBlock;
+	}
+
+	set activeStreamingBlock(val) {
+		const runningSession = this.manager.runningSessions.get(this.manager.activeSessionId);
+		if (runningSession) {
+			runningSession.responseBlock = val;
+		}
+		this._localActiveStreamingBlock = val;
+	}
+
 	clear() {
 		if (this.manager.activeSession) {
 			this.manager.activeSession.messages = []; // Clear the active session's messages
@@ -184,10 +198,23 @@ class AIManagerHistory {
 		}
 
 		// Re-append the active streaming block if we are currently processing/generating
-		if (this.manager._isProcessing && this.activeStreamingBlock) {
-			this.conversationArea.append(this.activeStreamingBlock);
-		} else {
-			this.activeStreamingBlock = null;
+		const runningSession = this.manager.runningSessions.get(this.manager.activeSessionId);
+		if (runningSession && runningSession.responseBlock) {
+			this.conversationArea.append(runningSession.responseBlock);
+		}
+
+		// Render pending queued prompts
+		if (this.manager.activeSession && this.manager.activeSession.promptQueue) {
+			for (const pendingMsg of this.manager.activeSession.promptQueue) {
+				const pendingElement = this._createMessageElement({
+					id: pendingMsg.id,
+					type: "pending",
+					content: pendingMsg.content
+				});
+				if (pendingElement) {
+					this.conversationArea.append(pendingElement);
+				}
+			}
 		}
 	}
 
@@ -336,7 +363,61 @@ class AIManagerHistory {
 		let element;
 		const tokenCount = typeof message.tokenCount === 'number' ? message.tokenCount : this.ai.estimateTokens([message]);
 
-		if (message.type === "user") {
+		if (message.type === "pending") {
+			const wrapper = new Block();
+			wrapper.classList.add("pending-prompt-pill-wrapper");
+
+			const messageBlock = new Block();
+			messageBlock.classList.add("prompt-pill", "pending-prompt-pill");
+			messageBlock.innerHTML = this.md.render(message.content);
+			wrapper.append(messageBlock);
+
+			const controlsDiv = document.createElement("div");
+			controlsDiv.className = "prompt-controls";
+			controlsDiv.style.display = "flex";
+			controlsDiv.style.gap = "8px";
+			controlsDiv.style.position = "absolute";
+			controlsDiv.style.right = "8px";
+			controlsDiv.style.bottom = "-16px";
+			controlsDiv.style.fontSize = "10px";
+			controlsDiv.style.background = "var(--bg-primary)";
+			controlsDiv.style.padding = "2px 6px";
+			controlsDiv.style.borderRadius = "4px";
+			controlsDiv.style.border = "1px solid var(--border-primary)";
+			controlsDiv.style.zIndex = "5";
+
+			const editLink = document.createElement("a");
+			editLink.href = "#";
+			editLink.textContent = "Edit";
+			editLink.style.color = "var(--theme)";
+			editLink.style.textDecoration = "none";
+			editLink.onclick = (e) => {
+				e.preventDefault();
+				this.manager.editQueuedPrompt(this.manager.activeSessionId, message.id);
+			};
+
+			const divider = document.createElement("span");
+			divider.textContent = "|";
+			divider.style.color = "var(--border-primary)";
+
+			const deleteLink = document.createElement("a");
+			deleteLink.href = "#";
+			deleteLink.textContent = "Delete";
+			deleteLink.style.color = "var(--color-error, #d32f2f)";
+			deleteLink.style.textDecoration = "none";
+			deleteLink.onclick = (e) => {
+				e.preventDefault();
+				this.manager.deleteQueuedPrompt(this.manager.activeSessionId, message.id);
+			};
+
+			controlsDiv.appendChild(editLink);
+			controlsDiv.appendChild(divider);
+			controlsDiv.appendChild(deleteLink);
+			wrapper.appendChild(controlsDiv);
+
+			element = wrapper;
+
+		} else if (message.type === "user") {
 			const wrapper = new Block();
 			wrapper.classList.add("prompt-pill-wrapper");
 			wrapper.dataset.messageId = message.id;
@@ -1138,9 +1219,10 @@ class AIManagerHistory {
 		}
 	}
 
-	prepareMessagesForAI() {
+	prepareMessagesForAI(sessionObj = null) {
+		const targetSession = sessionObj || this.manager.activeSession;
 		// Create a deep enough copy of messages to avoid modifying the original history.
-		let messages = (this.manager.activeSession?.messages || []).map(msg => ({ ...msg }));
+		let messages = (targetSession?.messages || []).map(msg => ({ ...msg }));
 
 		// 1. Extract the Evergreen Task State
 		const taskStateMessage = messages.find(msg => msg.type === "task_state");

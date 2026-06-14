@@ -68,8 +68,8 @@ class AIManager {
 		this._emptyStateElement = null; // NEW: For empty state background
 		this._contextStaleResolve = null; // To resolve/reject the context stale promise		
 		this.useWorkspaceSettings = false;
-		this._isProcessing = false; // Flag to track if AI is busy (generating or summarizing)
-
+		this.runningSessions = new Map(); // sessionId -> { type: 'chat'|'agent', controller: Agent|AI, responseBlock }
+		
 		// Reference to the AI info display element
 		this.aiInfoDisplay = null;
 		this.editBufferDisplay = null; // NEW: Edit buffer display
@@ -567,7 +567,10 @@ class AIManager {
 		return container;
 	}
 
-	_startGlow() {
+	_startGlow(sessionId) {
+		if (sessionId && sessionId !== this.activeSessionId) {
+			return;
+		}
 		if (this.undulatingGlow) {
 			this.undulatingGlow.classList.add('active');
 		}
@@ -580,7 +583,10 @@ class AIManager {
 		}
 	}
 
-	_stopGlow() {
+	_stopGlow(sessionId) {
+		if (sessionId && sessionId !== this.activeSessionId) {
+			return;
+		}
 		if (this.undulatingGlow) {
 			this.undulatingGlow.classList.remove('active');
 		}
@@ -893,23 +899,206 @@ class AIManager {
 		setTimeout(() => updateButton.focus(), 100);
 	}
 
-	_hideContextStaleNotice() {
-		if (this.contextStaleNotice && this.contextStaleNotice.parentElement) {
-			this.contextStaleNotice.remove();
+	get _isProcessing() {
+		return this.activeSessionId ? this.runningSessions.has(this.activeSessionId) : false;
+	}
+
+	set _isProcessing(value) {
+		if (this.activeSessionId) {
+			this.setSessionProcessing(this.activeSessionId, value);
 		}
-		this.contextStaleNotice = null;
+	}
+
+	setSessionProcessing(sessionId, processing, type = 'chat', controller = null) {
+		if (!sessionId) return;
+		if (processing) {
+			if (!this.runningSessions.has(sessionId)) {
+				this.runningSessions.set(sessionId, { type, controller });
+			}
+			this._updateTabStatus(sessionId, "running");
+		} else {
+			this.runningSessions.delete(sessionId);
+			this._updateTabStatus(sessionId, "completed");
+		}
+		this._setButtonsDisabledState(this._isProcessing);
+	}
+
+	_updateTabStatus(sessionId, status) {
+		if (!this.sessionTabBar) return;
+		const tab = this.sessionTabBar.tabs.find(t => t.config.id === sessionId);
+		if (!tab) return;
+
+		tab.classList.remove("tab-status-running", "tab-status-halted", "tab-status-completed");
+
+		if (status === "running") {
+			tab.classList.add("tab-status-running");
+			tab._statusIcon.innerHTML = tab._defaultStatusIcon || "developer_board";
+			tab._statusIcon.style.animation = "";
+		} else if (status === "halted") {
+			tab.classList.add("tab-status-halted");
+			tab._statusIcon.innerHTML = "warning";
+			tab._statusIcon.style.animation = "";
+		} else if (status === "completed") {
+			tab.classList.add("tab-status-completed");
+			tab._statusIcon.innerHTML = "check_circle";
+			tab._statusIcon.style.animation = "";
+		} else {
+			tab._statusIcon.innerHTML = tab._defaultStatusIcon || "developer_board";
+			tab._statusIcon.style.animation = "";
+		}
+	}
+
+	async editQueuedPrompt(sessionId, promptId) {
+		const session = await workspaceClient.getSession(sessionId);
+		if (session && session.promptQueue) {
+			const index = session.promptQueue.findIndex(p => p.id === promptId);
+			if (index !== -1) {
+				const [item] = session.promptQueue.splice(index, 1);
+				this.promptEditor.setValue(item.content, -1);
+				this._resizePromptArea();
+				
+				session.lastModified = Date.now();
+				await workspaceClient.setSession(sessionId, session);
+				if (this.activeSessionId === sessionId) {
+					this.activeSession.promptQueue = session.promptQueue;
+					this.historyManager.render();
+				}
+			}
+		}
+	}
+
+	async deleteQueuedPrompt(sessionId, promptId) {
+		const session = await workspaceClient.getSession(sessionId);
+		if (session && session.promptQueue) {
+			session.promptQueue = session.promptQueue.filter(p => p.id !== promptId);
+			session.lastModified = Date.now();
+			await workspaceClient.setSession(sessionId, session);
+			if (this.activeSessionId === sessionId) {
+				this.activeSession.promptQueue = session.promptQueue;
+				this.historyManager.render();
+			}
+		}
+	}
+
+	async processNextQueuedPrompt(sessionId) {
+		const session = await workspaceClient.getSession(sessionId);
+		if (session && session.promptQueue && session.promptQueue.length > 0) {
+			const nextPrompt = session.promptQueue.shift();
+			session.lastModified = Date.now();
+			await workspaceClient.setSession(sessionId, session);
+			if (this.activeSessionId === sessionId) {
+				this.activeSession.promptQueue = session.promptQueue;
+				this.promptEditor.setValue(nextPrompt.content, -1);
+				this.generate();
+			} else {
+				this.generateBackground(sessionId, nextPrompt.content);
+			}
+		}
+	}
+
+	async generateBackground(sessionId, promptText) {
+		const session = await workspaceClient.getSession(sessionId);
+		if (!session) return;
+		
+		const connId = session.connectionId || AIConnections.defaultConnectionId;
+		const connection = AIConnections.getInstance(connId);
+		if (!connection || !connection.isConfigured()) return;
+
+		const { processedPrompt, contextItems } = await connection._getContextualPrompt(
+			promptText,
+			"chat",
+			session.evergreenFiles,
+			session.agentMode
+		);
+
+		contextItems.forEach(item => {
+			const contextMessage = {
+				type: "file_context",
+				id: item.id,
+				filename: item.filename,
+				language: item.language,
+				content: item.content,
+				timestamp: Date.now(),
+				mode: session.agentMode ? 'outline' : 'full',
+			};
+			session.messages.push(contextMessage);
+		});
+
+		if (!processedPrompt) return;
+		const userMessage = { role: "user", type: "user", content: processedPrompt, timestamp: Date.now(), id: crypto.randomUUID() };
+		session.messages.push(userMessage);
+		session.lastModified = Date.now();
+		await workspaceClient.setSession(sessionId, session);
+
+		if (session.agentMode) {
+			const agent = new Agent(this, session, connection);
+			this.runningSessions.set(sessionId, { type: 'agent', instance: agent });
+			this._updateTabStatus(sessionId, "running");
+			try {
+				await agent.run(userMessage, null);
+				this._updateTabStatus(sessionId, "completed");
+			} catch (e) {
+				this._updateTabStatus(sessionId, "halted");
+				console.error("Background Agent Error:", e);
+			} finally {
+				this.runningSessions.delete(sessionId);
+				this._setButtonsDisabledState(this._isProcessing);
+				this.processNextQueuedPrompt(sessionId);
+			}
+		} else {
+			const modelMessageId = crypto.randomUUID();
+			const responseBlock = this.historyManager.createStreamingBlock(modelMessageId, "model", sessionId);
+			this.setSessionProcessing(sessionId, true, 'chat', connection);
+			
+			const callbacks = {
+				onUpdate: (fullResponse) => {
+					responseBlock.updateContent(fullResponse);
+				},
+				onDone: async (fullResponse) => {
+					const modelMessage = { id: modelMessageId, role: "model", type: "model", content: fullResponse, diffStatuses: [], timestamp: Date.now() };
+					session.messages.push(modelMessage);
+					session.lastModified = Date.now();
+					await workspaceClient.setSession(sessionId, session);
+					
+					responseBlock.finalize(fullResponse, modelMessage);
+					this.setSessionProcessing(sessionId, false);
+					this.processNextQueuedPrompt(sessionId);
+				},
+				onError: async (err) => {
+					const errMessage = { id: modelMessageId, role: "model", type: "error", content: err.message, timestamp: Date.now() };
+					session.messages.push(errMessage);
+					session.lastModified = Date.now();
+					await workspaceClient.setSession(sessionId, session);
+					
+					responseBlock.finalize(err.message, errMessage);
+					this.setSessionProcessing(sessionId, false);
+					this.processNextQueuedPrompt(sessionId);
+				}
+			};
+
+			try {
+				const messagesForAI = session.messages.filter(m => m.role === 'user' || m.role === 'model');
+				const systemPrompt = await this.getSystemPrompt();
+				connection.chat(messagesForAI, callbacks, systemPrompt);
+			} catch (e) {
+				console.error("Background Chat generation failed:", e);
+				this.setSessionProcessing(sessionId, false);
+			}
+		}
 	}
 
 	// Helper to disable/enable relevant buttons
 	_setButtonsDisabledState(disabled) {
-		const isAIConfigured = this.ai && this.ai.isConfigured() && !this._isProcessing; // Also consider overall processing state
+		const isAIConfigured = this.ai && this.ai.isConfigured();
 
 		if (this.submitButton) {
-			this.submitButton.disabled = disabled || !isAIConfigured;
-			this.submitButton.style.display = this._isProcessing ? 'none' : 'flex';
+			this.submitButton.disabled = !isAIConfigured;
+			// Keep submit button visible at all times so they can queue new prompts
+			this.submitButton.style.display = 'flex';
 		}
 
 		if (this.stopButton) {
+			// Stop button is visible if the current active session is processing
 			this.stopButton.style.display = this._isProcessing ? 'flex' : 'none';
 		}
 
@@ -918,12 +1107,12 @@ class AIManager {
 			this.conversationArea.querySelectorAll('.delete-history-button').forEach(btn => btn.disabled = disabled);
 		}
 
-		// Disable session management buttons while processing
-		if (this.newSessionButton) this.newSessionButton.disabled = disabled;
+		// Never disable tabs/pointer-events! Keep them interactive.
+		if (this.newSessionButton) this.newSessionButton.disabled = false;
 		if (this.sessionTabBar) {
 			this.sessionTabBar.querySelectorAll('ui-tab-item').forEach(tab => {
-				tab.close.style.pointerEvents = disabled ? 'none' : '';
-				tab.style.pointerEvents = disabled ? 'none' : 'auto';
+				tab.close.style.pointerEvents = '';
+				tab.style.pointerEvents = 'auto';
 			});
 		}
 
@@ -1181,27 +1370,43 @@ class AIManager {
 		}
 	}
 
-	stopAgent() {
-		this._abortAgent = true;
-		if (this.ai && typeof this.ai.stop === 'function') {
-			this.ai.stop();
+	stopAgent(sessionId = null) {
+		const targetSessionId = sessionId || this.activeSessionId;
+		if (!targetSessionId) return;
+
+		// Abort agent if it's running
+		const running = this.runningSessions.get(targetSessionId);
+		if (running) {
+			if (running.type === 'agent' && running.instance) {
+				running.instance._abortAgent = true;
+			}
+			if (running.controller && typeof running.controller.stop === 'function') {
+				running.controller.stop();
+			}
 		}
-		this._stopGlow();
-		this._isProcessing = false;
-		this._setButtonsDisabledState(false);
-		this.consecutiveHaltCount = 0;
-		if (this.haltBar) {
-			this.haltBar.remove();
-			this.haltBar = null;
+
+		if (targetSessionId === this.activeSessionId) {
+			this._abortAgent = true;
+			if (this.ai && typeof this.ai.stop === 'function') {
+				this.ai.stop();
+			}
+			this._stopGlow();
+			this.consecutiveHaltCount = 0;
+			if (this.haltBar) {
+				this.haltBar.remove();
+				this.haltBar = null;
+			}
+			if (this.throttleBar) {
+				this.throttleBar.remove();
+				this.throttleBar = null;
+			}
+			if (this.conversationArea) {
+				const containers = this.conversationArea.querySelectorAll('.prefill-progress-container');
+				containers.forEach(container => container.remove());
+			}
 		}
-		if (this.throttleBar) {
-			this.throttleBar.remove();
-			this.throttleBar = null;
-		}
-		if (this.conversationArea) {
-			const containers = this.conversationArea.querySelectorAll('.prefill-progress-container');
-			containers.forEach(container => container.remove());
-		}
+
+		this.setSessionProcessing(targetSessionId, false);
 	}
 
 	_showHaltBar(modelMessageId, responseBlock, warnBlock) {
@@ -1303,8 +1508,25 @@ class AIManager {
 
 	async generate() {
 		if (this._isProcessing) {
-			console.warn("AI is currently processing another request. Please wait.")
-			return
+			const promptText = this.promptEditor.getValue().trim();
+			if (!promptText) return;
+
+			if (!this.activeSession.promptQueue) {
+				this.activeSession.promptQueue = [];
+			}
+			this.activeSession.promptQueue.push({
+				id: crypto.randomUUID(),
+				content: promptText,
+				timestamp: Date.now()
+			});
+			this.activeSession.lastModified = Date.now();
+			await workspaceClient.setSession(this.activeSession.id, this.activeSession);
+			this.promptEditor.setValue("");
+			this._resizePromptArea();
+			
+			// Re-render history to show the queued prompts at the bottom
+			this.historyManager.render();
+			return;
 		}
 
 		this.consecutiveHaltCount = 0; // Reset on new user prompt submission
@@ -1332,50 +1554,32 @@ class AIManager {
 			this.promptEditor.setValue(promptValue, -1);
 		}
 
+		const targetSession = this.activeSession;
+		const targetSessionId = this.activeSessionId;
+		const targetAI = this.ai;
+		const targetAgentMode = this.agentMode;
+		const targetForgivenessMode = this.forgivenessMode;
+
 		// Clear min-height from all previous response blocks to let them reflow naturally.
 		this.conversationArea.querySelectorAll('.response-block').forEach(block => {
 			block.style.minHeight = '';
 		});
-		// // NEW: Clear min-height from the previous response block if it exists
-		// const lastResponseBlockInHistory = this.conversationArea.lastElementChild;
-		// if (lastResponseBlockInHistory && lastResponseBlockInHistory.classList.contains("response-block")) {
-		// 	lastResponseBlockInHistory.style.minHeight = '';
-		// }
-
 
 		this._unsentPromptBuffer = null; // Clear the unsent prompt buffer on submission.
-		this._isProcessing = true
-		this._setButtonsDisabledState(true)
+		this.setSessionProcessing(targetSessionId, true, targetAgentMode ? 'agent' : 'chat', targetAgentMode ? null : targetAI);
 
-		const userPrompt = this.promptEditor.getValue().trim()
+		const userPrompt = this.promptEditor.getValue().trim();
 
 		if (!userPrompt) {
-			this._isProcessing = false
-			this._setButtonsDisabledState(false)
-			return
+			this.setSessionProcessing(targetSessionId, false);
+			return;
 		}
 
-		// if (lastPrompt && lastPrompt === userPrompt) {
-		// 	console.log("Skipping adding duplicate contiguous prompt to history.");
-		// 	this.promptIndex = activePromptHistory.length; // Keep index at end
-		// } else {
-		// 	activePromptHistory.push(userPrompt);
-		// 	while (activePromptHistory.length > MAX_PROMPT_HISTORY) {
-		// 		activePromptHistory.shift();
-		// 		if (this.promptIndex > 0) {
-		// 			this.promptIndex--;
-		// 		}
-		// 	}
-		// 	this.promptIndex = activePromptHistory.length; // Set index to end after adding
-		// }
-
-		// No longer dispatch "new-prompt" globally, prompt history is per-session
-
 		// Check for automatic summarization before processing the new prompt
-		const estimatedTokensBeforeNewPrompt = this.ai.estimateTokens(this.activeSession.messages)
-		const maxContextTokens = this.ai.MAX_CONTEXT_TOKENS
+		const estimatedTokensBeforeNewPrompt = targetAI.estimateTokens(targetSession.messages);
+		const maxContextTokens = targetAI.MAX_CONTEXT_TOKENS;
 		if (
-			!this.agentMode &&
+			!targetAgentMode &&
 			maxContextTokens > 0 &&
 			(estimatedTokensBeforeNewPrompt / maxContextTokens) * 100 >= this.config.summarizeThreshold
 		) {
@@ -1383,17 +1587,18 @@ class AIManager {
 				`Context at ${Math.round(
 					(estimatedTokensBeforeNewPrompt / maxContextTokens) * 100
 				)}%, triggering summarization.`
-			)
-			await this.historyManager.performSummarization() // Await summarization before continuing
+			);
+			await this.historyManager.performSummarization(); // Await summarization before continuing
 		}
 		// NEW: Check for stale context files and handle user interaction
 		const proceed = await this._checkForStaleContextFiles(userPrompt);
 		if (!proceed) {
 			// Abort was chosen. _checkForStaleContextFiles handles restoration.
+			this.setSessionProcessing(targetSessionId, false);
 			return;
 		}
 		// Now that checks are passed, add prompt to history and clear the editor
-		const activePromptHistory = this.activeSession.promptHistory;
+		const activePromptHistory = targetSession.promptHistory;
 		const lastPrompt = activePromptHistory.length > 0 ? activePromptHistory[activePromptHistory.length - 1].trim() : null;
 		if (lastPrompt && lastPrompt === userPrompt) {
 			console.log("Skipping adding duplicate contiguous prompt to history.");
@@ -1409,17 +1614,17 @@ class AIManager {
 		this.promptEditor.setValue("");
 		this._resizePromptArea();
 		// Process prompt for @ tags, always using "chat" logic now.
-		const { processedPrompt, contextItems } = await this.ai._getContextualPrompt(
+		const { processedPrompt, contextItems } = await targetAI._getContextualPrompt(
             userPrompt, 
             "chat", 
-            this.activeSession.evergreenFiles,
-            this.agentMode
-        )
+            targetSession.evergreenFiles,
+            targetAgentMode
+        );
 
 		// NEW: Remove any existing context items for the same files being added in this turn
 		if (contextItems.length > 0) {
 			const newFileIds = new Set(contextItems.map(item => item.id));
-			this.activeSession.messages = this.activeSession.messages.filter(msg =>
+			targetSession.messages = targetSession.messages.filter(msg =>
 				!(msg.type === "file_context" && newFileIds.has(msg.id))
 			);
 		}
@@ -1433,67 +1638,90 @@ class AIManager {
 				language: item.language,
 				content: item.content,
 				timestamp: Date.now(),
-				mode: this.agentMode ? 'outline' : 'full',
+				mode: targetAgentMode ? 'outline' : 'full',
 			};
 			
-			if (this.agentMode) {
+			if (targetAgentMode) {
 				window.conduit.wsGetOutline(item.id).then(res => {
 					contextMessage.outline = res.data;
-					this.historyManager.render();
+					if (this.activeSessionId === targetSessionId) {
+						this.historyManager.render();
+					}
 				}).catch(err => console.error("Failed to get outline", err));
 			}
 
-			this.activeSession.messages.push(contextMessage);
+			targetSession.messages.push(contextMessage);
 			// NEW: Add context files to the file bar instead of the main chat area
-			this.fileBar.add(contextMessage);
+			if (this.activeSessionId === targetSessionId) {
+				this.fileBar.add(contextMessage);
+			}
 		});
 
 		let userMessage = null;
 		let userMessageElement = null; // To hold the DOM element of the user's prompt
 		if (processedPrompt) {
 			userMessage = { role: "user", type: "user", content: processedPrompt, timestamp: Date.now(), id: crypto.randomUUID() };
-			this.activeSession.messages.push(userMessage);
-			userMessageElement = this.historyManager.appendMessageElement(userMessage);
+			targetSession.messages.push(userMessage);
+			if (this.activeSessionId === targetSessionId) {
+				userMessageElement = this.historyManager.appendMessageElement(userMessage);
+			}
 		} else {
 			// Scenario: Context items were added, but no user prompt was given.
 			// In this case, we don't call the AI, acknowledge the context addition, and abort.
 			if (contextItems.length > 0) {
 				const fileNames = contextItems.map(item => `**${item.filename}**`).join(', ');
-				this.historyManager.addMessage({
-					type: "system_message",
-					content: `Files added to context: ${fileNames}.`,
-					timestamp: Date.now(),
-				}, false);
+				if (this.activeSessionId === targetSessionId) {
+					this.historyManager.addMessage({
+						type: "system_message",
+						content: `Files added to context: ${fileNames}.`,
+						timestamp: Date.now(),
+					}, false);
+				}
 				// We still need to save the session since context items were added.
-				this.activeSession.lastModified = Date.now();
-				await workspaceClient.setSession(this.activeSession.id, this.activeSession);
-				this._dispatchContextUpdate("context_files_updated");
+				targetSession.lastModified = Date.now();
+				await workspaceClient.setSession(targetSession.id, targetSession);
+				if (this.activeSessionId === targetSessionId) {
+					this._dispatchContextUpdate("context_files_updated");
+				}
 			}
-			this._isProcessing = false; // Release lock
-			this._setButtonsDisabledState(false); // Re-enable buttons
+			this.setSessionProcessing(targetSessionId, false);
 			return; // Exit the function as there's no prompt to send to the AI.
 		}
 
 		// Save session and dispatch update now that we've confirmed there's a user prompt.
 		// Update lastModified timestamp for the session
-		this.activeSession.lastModified = Date.now();
+		targetSession.lastModified = Date.now();
 		// Save the active session to IndexedDB immediately after adding user prompt and context
-		await workspaceClient.setSession(this.activeSession.id, this.activeSession);
+		await workspaceClient.setSession(targetSession.id, targetSession);
 
 		// Render updated history in UI and dispatch event
-		// this.historyManager.render(); // NO LONGER NEEDED, using dynamic appends
-		this._dispatchContextUpdate("append_user"); // This will also save workspace metadata
+		if (this.activeSessionId === targetSessionId) {
+			this._dispatchContextUpdate("append_user"); // This will also save workspace metadata
+		}
 
 		// Auto-rename if this is the first message and the name is default
-		if (this.activeSession.messages.filter(m => m.type === 'user').length === 1 && this.activeSession.name.startsWith("Chat ")) {
+		if (targetSession.messages.filter(m => m.type === 'user').length === 1 && targetSession.name.startsWith("Chat ")) {
 			// Don't await it, let it run in the background
 			this.sessionsManager.autoRenameSession(userMessage.content);
 		}
 
-		if (this.agentMode) {
-			this.activeAgent = new Agent(this, this.activeSession, this.ai);
-			await this.activeAgent.run(userMessage, userMessageElement);
-			this.activeAgent = null;
+		if (targetAgentMode) {
+			const agent = new Agent(this, targetSession, targetAI);
+			const runningSession = this.runningSessions.get(targetSessionId);
+			if (runningSession) {
+				runningSession.instance = agent;
+			}
+			try {
+				await agent.run(userMessage, userMessageElement);
+				this.setSessionProcessing(targetSessionId, false);
+			} catch (e) {
+				console.error(e);
+				this._updateTabStatus(targetSessionId, "halted");
+				this.runningSessions.delete(targetSessionId);
+				this._setButtonsDisabledState(this._isProcessing);
+			} finally {
+				this.processNextQueuedPrompt(targetSessionId);
+			}
 			return;
 		}
 		// NEW: Create and append the new ui-loader-bar *before* the response block
@@ -1504,36 +1732,42 @@ class AIManager {
 
 		// Prepare placeholder for AI response
 		const modelMessageId = crypto.randomUUID(); // Pre-generate ID for the upcoming model response
-		const responseBlock = this.historyManager.createStreamingBlock(modelMessageId);
-		this._startGlow();
-		// NEW: Set a temporary min-height to ensure the scroll area is large enough
-		this.conversationArea.append(responseBlock);
-		responseBlock.style.minHeight = `${Math.max(50, availableHeightForResponse)}px`; // Ensure a minimum of 50px
+		const responseBlock = this.historyManager.createStreamingBlock(modelMessageId, "model", targetSessionId);
+		
+		if (this.activeSessionId === targetSessionId) {
+			this._startGlow();
+			this.conversationArea.append(responseBlock);
+			responseBlock.style.minHeight = `${Math.max(50, availableHeightForResponse)}px`; // Ensure a minimum of 50px
 
-		// NEW: Scroll the conversation area so the user's prompt is near the top.
-		if (userMessageElement) {
-			// We account for the sticky file bar's height, just like you remembered!
-			const fileBarContainer = this.panel.querySelector('.ai-filebar-container');
-			const fileBarOffset = fileBarContainer ? fileBarContainer.offsetHeight : 0;
-			const PADDING_FROM_TOP = 8; // A little extra breathing room
-			this.conversationArea.scrollTop = userMessageElement.offsetTop - fileBarOffset - PADDING_FROM_TOP;
+			// NEW: Scroll the conversation area so the user's prompt is near the top.
+			if (userMessageElement) {
+				// We account for the sticky file bar's height, just like you remembered!
+				const fileBarContainer = this.panel.querySelector('.ai-filebar-container');
+				const fileBarOffset = fileBarContainer ? fileBarContainer.offsetHeight : 0;
+				const PADDING_FROM_TOP = 8; // A little extra breathing room
+				this.conversationArea.scrollTop = userMessageElement.offsetTop - fileBarOffset - PADDING_FROM_TOP;
+			}
 		}
 
 		const callbacks = {
 			onUpdate: (fullResponse) => { // Update the responseBlock directly
-				if (callbacks.toolCalls && callbacks.toolCalls.length > 0) {
-					this._startGlow();
-				} else {
-					this._stopGlow();
+				if (this.activeSessionId === targetSessionId) {
+					if (callbacks.toolCalls && callbacks.toolCalls.length > 0) {
+						this._startGlow();
+					} else {
+						this._stopGlow();
+					}
 				}
 				const shouldScroll = this._shouldAutoScroll();
 				responseBlock.updateContent(fullResponse);
-				if (shouldScroll && this.conversationArea) {
+				if (this.activeSessionId === targetSessionId && shouldScroll && this.conversationArea) {
 					this.conversationArea.scrollTop = this.conversationArea.scrollHeight;
 				}
 			},
 			onDone: async (fullResponse, contextRatioPercent) => { // Mark async to await set
-				this._stopGlow();
+				if (this.activeSessionId === targetSessionId) {
+					this._stopGlow();
+				}
 				// First, update the session data and add the delete button to the user's prompt.
 				const modelMessage = { id: modelMessageId, role: "model", type: "model", content: fullResponse, diffStatuses: [], timestamp: Date.now() };
 				if (callbacks.toolCalls && callbacks.toolCalls.length > 0) {
@@ -1542,16 +1776,18 @@ class AIManager {
 				if (callbacks.thoughtSignature) {
 					modelMessage.thoughtSignature = callbacks.thoughtSignature;
 				}
-				this.activeSession.messages.push(modelMessage);
-				this.historyManager.addInteractionToLastUserMessage(userMessage); // Add delete button to user prompt
-				this.activeSession.lastModified = Date.now();
-				await workspaceClient.setSession(this.activeSession.id, this.activeSession);
+				targetSession.messages.push(modelMessage);
+				if (this.activeSessionId === targetSessionId) {
+					this.historyManager.addInteractionToLastUserMessage(userMessage); // Add delete button to user prompt
+				}
+				targetSession.lastModified = Date.now();
+				await workspaceClient.setSession(targetSession.id, targetSession);
 
 				// Now, render the final response in the UI using finalize().
 				responseBlock.finalize(fullResponse, modelMessage);
 
 				// NEW: Chat-mode output checks for diff blocks
-				if (!this.agentMode) {
+				if (!targetAgentMode) {
 					const diffBlocks = responseBlock.querySelectorAll("pre[data-original-diff-content]");
 					if (diffBlocks.length > 0) {
 						let anyFailed = false;
@@ -1567,12 +1803,12 @@ class AIManager {
 							if (!targetPathMatch || !targetPathMatch[1]) continue;
 
 							const targetPath = targetPathMatch[1];
-							let tab = await this.ai._getTabSessionByPath(targetPath);
+							let tab = await targetAI._getTabSessionByPath(targetPath);
 							if (!tab) {
-								const fileData = this.ai._findFileByPath(targetPath);
+								const fileData = targetAI._findFileByPath(targetPath);
 								if (fileData && window.ui && window.ui.fileList && window.ui.fileList.open) {
 									await window.ui.fileList.open(fileData);
-									tab = await this.ai._getTabSessionByPath(fileData.path);
+									tab = await targetAI._getTabSessionByPath(fileData.path);
 								}
 							}
 
@@ -1583,8 +1819,8 @@ class AIManager {
 								// Fallback: try looking in file_context from history
 								let contextContent = null;
 								const normalizedTargetPath = targetPath.startsWith('/') ? targetPath.substring(1) : targetPath;
-								for (let i = this.activeSession.messages.length - 1; i >= 0; i--) {
-									const msg = this.activeSession.messages[i];
+								for (let i = targetSession.messages.length - 1; i >= 0; i--) {
+									const msg = targetSession.messages[i];
 									if (msg.type === "file_context" && msg.id) {
 										const normalizedMsgId = msg.id.startsWith('/') ? msg.id.substring(1) : msg.id;
 										if (normalizedMsgId === normalizedTargetPath || normalizedMsgId.endsWith(normalizedTargetPath)) {
@@ -1604,12 +1840,12 @@ class AIManager {
 								failedPath = targetPath;
 								failedFilename = targetPath.split('/').pop();
 								break;
-							} else if (this.forgivenessMode) {
+							} else if (targetForgivenessMode) {
 								// Chat+forgiveness mode: Successful merge commits directly to the current file buffer (Ace session)
 								if (tab && tab.config && tab.config.session) {
 									const filePathForBackup = tab.config.path;
 									let backupId = "";
-									const activeSession = this.activeSession;
+									const activeSession = targetSession;
 									const hasExistingBackup = activeSession && activeSession.modifiedFiles && activeSession.modifiedFiles[filePathForBackup] && activeSession.modifiedFiles[filePathForBackup].length > 0;
 
 									if (hasExistingBackup) {
@@ -1660,18 +1896,22 @@ class AIManager {
 									}
 
 									// Focus and Redraw (activates split diff view automatically)
-									tab.click();
+									if (this.activeSessionId === targetSessionId) {
+										tab.click();
+									}
 
-									this.historyManager.addMessage({
-										type: "system_message",
-										content: `Diff successfully applied to **${targetPath}** in Forgiveness Mode. Remember to save the file.`,
-										timestamp: Date.now(),
-									});
+									if (this.activeSessionId === targetSessionId) {
+										this.historyManager.addMessage({
+											type: "system_message",
+											content: `Diff successfully applied to **${targetPath}** in Forgiveness Mode. Remember to save the file.`,
+											timestamp: Date.now(),
+										});
+									}
 								}
 							}
 						}
 
-						if (anyFailed) {
+						if (anyFailed && this.activeSessionId === targetSessionId) {
 							// Notify user of failed merge and ask for choice
 							const choice = await window.modal.confirm(
 								`The generated diff for <strong>${failedFilename}</strong> could not be applied automatically. Would you like to review it manually or retry?`,
@@ -1682,20 +1922,24 @@ class AIManager {
 								this.promptEditor.setValue(`your diff for ${failedPath} could not be applied, please try again`);
 								this.generate();
 							}
-						} else if (this.forgivenessMode) {
+						} else if (targetForgivenessMode) {
 							// Update IndexedDB to persist the updated diffStatuses and backup references
-							await workspaceClient.setSession(this.activeSession.id, this.activeSession);
+							await workspaceClient.setSession(targetSession.id, targetSession);
 						}
 					}
 				}
 
-				this._dispatchContextUpdate("append_model") // Dispatch after model response
+				if (this.activeSessionId === targetSessionId) {
+					this._dispatchContextUpdate("append_model"); // Dispatch after model response
+				}
 
-				this._isProcessing = false // Release lock
-				this._setButtonsDisabledState(false) // Re-enable buttons
+				this.setSessionProcessing(targetSessionId, false);
+				this.processNextQueuedPrompt(targetSessionId);
 			},
 			onError: async (error) => { // Mark async to await set
-				this._stopGlow();
+				if (this.activeSessionId === targetSessionId) {
+					this._stopGlow();
+				}
 				// The spinner is also removed here when innerHTML is overwritten.
 				responseBlock.style.minHeight = ''; // Reset min-height on error too
 				if (typeof responseBlock.updateContent === 'function') {
@@ -1703,7 +1947,7 @@ class AIManager {
 				} else {
 					responseBlock.innerHTML = `Error: ${error.message}`;
 				}
-				console.error(`Error calling ${this.ai.config.model} API:`, error);
+				console.error(`Error calling ${targetAI.config?.model || "AI"} API:`, error);
 
 				const errorMessage = {
 					id: modelMessageId, // Use the pre-generated ID for the block
@@ -1713,31 +1957,35 @@ class AIManager {
 					timestamp: Date.now(),
 					diffStatuses: [], // Initialize even for errors, though no diffs expected here
 				};
-				this.activeSession.messages.push(errorMessage);
+				targetSession.messages.push(errorMessage);
 				// Update lastModified timestamp and save the active session
 				// No interaction added for errors.
-				this.activeSession.lastModified = Date.now();
-				await workspaceClient.setSession(this.activeSession.id, this.activeSession);
+				targetSession.lastModified = Date.now();
+				await workspaceClient.setSession(targetSession.id, targetSession);
 
-				this._dispatchContextUpdate("append_error")
+				if (this.activeSessionId === targetSessionId) {
+					this._dispatchContextUpdate("append_error");
+				}
 
-				this._isProcessing = false
-				this._setButtonsDisabledState(false)
+				this.setSessionProcessing(targetSessionId, false);
+				this.processNextQueuedPrompt(targetSessionId);
 			},
 			onContextRatioUpdate: (ratio) => { /* ... */ },
 			onPrefillProgress: (progressData) => {
-				const total = progressData.total;
-				const cache = progressData.cache || 0;
-				const processed = progressData.processed;
-				const pct = (total - cache > 0) ? Math.round(((processed - cache) / (total - cache)) * 100) : (total > 0 ? Math.round((processed / total) * 100) : 0);
-				this._showPrefillProgress(responseBlock, pct, progressData);
+				if (this.activeSessionId === targetSessionId) {
+					const total = progressData.total;
+					const cache = progressData.cache || 0;
+					const processed = progressData.processed;
+					const pct = (total - cache > 0) ? Math.round(((processed - cache) / (total - cache)) * 100) : (total > 0 ? Math.round((processed / total) * 100) : 0);
+					this._showPrefillProgress(responseBlock, pct, progressData);
+				}
 			},
-		}
+		};
 
 		// Since we now return early if `processedPrompt` is empty, we can unconditionally call the AI here.
-		const messagesForAI = this.historyManager.prepareMessagesForAI()
+		const messagesForAI = this.historyManager.prepareMessagesForAI();
 		const systemPrompt = await this.getSystemPrompt();
-		this.ai.chat(messagesForAI, callbacks, systemPrompt)
+		targetAI.chat(messagesForAI, callbacks, systemPrompt);
 	}
 
 	_parseToolCalls(content) {
@@ -2034,7 +2282,7 @@ ${summarizationPromptContent}`;
 		this.haltBar = banner;
 	}
 
-	async _finalizeModelMessage(fullResponse, forcedReason, callbacks, modelMessageId, responseBlock) {
+	async _finalizeModelMessage(fullResponse, forcedReason, callbacks, modelMessageId, responseBlock, sessionObj = null) {
 		let finalizedResponse = fullResponse;
 		if (forcedReason) {
 			if (forcedReason === "tool_call_closed") {
@@ -2099,14 +2347,15 @@ ${summarizationPromptContent}`;
 			modelMessage.toolCalls = callbacks.toolCalls;
 		}
 
-		const existingIndex = this.activeSession.messages.findIndex(m => m.id === modelMessage.id);
+		const targetSession = sessionObj || this.activeSession;
+		const existingIndex = targetSession.messages.findIndex(m => m.id === modelMessage.id);
 		if (existingIndex !== -1) {
-			this.activeSession.messages[existingIndex] = modelMessage;
+			targetSession.messages[existingIndex] = modelMessage;
 		} else {
-			this.activeSession.messages.push(modelMessage);
+			targetSession.messages.push(modelMessage);
 		}
-		this.activeSession.lastModified = Date.now();
-		await workspaceClient.setSession(this.activeSession.id, this.activeSession);
+		targetSession.lastModified = Date.now();
+		await workspaceClient.setSession(targetSession.id, targetSession);
 
 		if (typeof responseBlock.finalize === 'function') {
 			responseBlock.finalize(finalizedResponse, modelMessage);
@@ -2123,11 +2372,17 @@ ${summarizationPromptContent}`;
 				const blockType = forcedReason === "secondary_thought" ? "thought" : "tool call";
 				alertContent = `⚠️ **Agent Protocol Flag:** The model attempted to generate a secondary **${blockType}** block. The stream was forcibly truncated to enforce single-turn execution structure.`;
 			}
-			this.historyManager.addMessage({
+			const alertMsg = {
 				type: "system_message",
 				content: alertContent,
 				timestamp: Date.now()
-			});
+			};
+			targetSession.messages.push(alertMsg);
+			if (this.activeSessionId === targetSession.id) {
+				this.historyManager.appendMessageElement(alertMsg);
+			}
+			targetSession.lastModified = Date.now();
+			await workspaceClient.setSession(targetSession.id, targetSession);
 		}
 
 		return finalizedResponse;
