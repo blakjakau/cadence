@@ -19,13 +19,8 @@ class Gemini extends AI {
         };
         this.MAX_CONTEXT_TOKENS = 32768*2; 
 
-        try {
-            this.requestTimestamps = JSON.parse(localStorage.getItem('gemini_request_timestamps') || '[]');
-            this.tokenTimestamps = JSON.parse(localStorage.getItem('gemini_token_timestamps') || '[]');
-        } catch(e) {
-            this.requestTimestamps = [];
-            this.tokenTimestamps = [];
-        }
+        this.requestTimestamps = [];
+        this.tokenTimestamps = [];
 
         this._settingsSchema = {
             apiKey: { type: "string", label: "Gemini API Key", default: "" },
@@ -186,7 +181,8 @@ class Gemini extends AI {
 
         const finalTime = Date.now();
         this.requestTimestamps.push(finalTime);
-        localStorage.setItem('gemini_request_timestamps', JSON.stringify(this.requestTimestamps));
+        const keyId = this.connectionId || 'gemini';
+        localStorage.setItem(`${keyId}_request_timestamps`, JSON.stringify(this.requestTimestamps));
     }
 
     async _getAvailableModels() {
@@ -303,6 +299,14 @@ class Gemini extends AI {
 
 	async init() {
         await super.init(); 
+        const keyId = this.connectionId || 'gemini';
+        try {
+            this.requestTimestamps = JSON.parse(localStorage.getItem(`${keyId}_request_timestamps`) || '[]');
+            this.tokenTimestamps = JSON.parse(localStorage.getItem(`${keyId}_token_timestamps`) || '[]');
+        } catch(e) {
+            this.requestTimestamps = [];
+            this.tokenTimestamps = [];
+        }
         
         await this._getAvailableModels(); 
 
@@ -767,7 +771,7 @@ class Gemini extends AI {
                 const finalContextRatio = finalTokens / this.MAX_CONTEXT_TOKENS;
 
                 this.tokenTimestamps.push({ time: Date.now(), tokens: finalTokens });
-                localStorage.setItem('gemini_token_timestamps', JSON.stringify(this.tokenTimestamps));
+                localStorage.setItem(`${keyId}_token_timestamps`, JSON.stringify(this.tokenTimestamps));
 
                 this.recordTelemetry(currentTokens, outputTokens, requestEndTime - requestStartTime, Math.round(totalThinkingMs / 1000));
 
@@ -930,7 +934,8 @@ class Gemini extends AI {
                 }
 
                 this.tokenTimestamps.push({ time: Date.now(), tokens: finalTokens });
-                localStorage.setItem('gemini_token_timestamps', JSON.stringify(this.tokenTimestamps));
+                const keyId = this.connectionId || 'gemini';
+                localStorage.setItem(`${keyId}_token_timestamps`, JSON.stringify(this.tokenTimestamps));
 
                 this.recordTelemetry(currentTokens, outputTokens, requestEndTime - requestStartTime, Math.round(totalThinkingMs / 1000));
 

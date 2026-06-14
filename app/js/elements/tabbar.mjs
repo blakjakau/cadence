@@ -348,11 +348,13 @@ export class TabBar extends Block {
 	}
 
 	enforceTabOrder() {
+		const agentConfigTab = this._tabs.find(t => t.config?.path === "agent_config");
 		const planTab = this._tabs.find(t => t.config?.path === "plan_tasks");
 		const diffTabs = this._tabs.filter(t => t.config?.path && t.config.path.startsWith("diff_"));
-		const otherTabs = this._tabs.filter(t => t !== planTab && !diffTabs.includes(t));
+		const otherTabs = this._tabs.filter(t => t !== agentConfigTab && t !== planTab && !diffTabs.includes(t));
 
 		const orderedTabs = [];
+		if (agentConfigTab) orderedTabs.push(agentConfigTab);
 		if (planTab) orderedTabs.push(planTab);
 		orderedTabs.push(...diffTabs);
 		orderedTabs.push(...otherTabs);

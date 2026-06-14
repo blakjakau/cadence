@@ -1,6 +1,7 @@
 // ai-manager-sessions.mjs
 // Handles AI session database interaction, switching, creation, and tab rendering.
 import workspaceClient from "./workspace-client.mjs"
+import AIConnections from "./ai-connections.mjs";
 
 class AIManagerSessions {
 	constructor(aiManager) {
@@ -77,6 +78,12 @@ class AIManagerSessions {
 		const lastForgivenessMode = this.activeSession ? (this.activeSession.forgivenessMode ?? false) : (this.manager.forgivenessMode ?? false);
 		const defaultAgent = this.manager.config.defaultAgentMode ?? false;
 		const defaultPlanning = this.manager.config.defaultPlanningMode ?? true;
+		
+		let defaultConnectionId = localStorage.getItem("cadence_default_connection_id");
+		if (!defaultConnectionId && window.ui?.aiManager?.connectionsManager) {
+			defaultConnectionId = window.ui.aiManager.connectionsManager.defaultConnectionId;
+		}
+
 		const newSessionData = {
 			id: newId, name: newName, createdAt: Date.now(), lastModified: Date.now(),
 			messages: [], promptInput: "", promptHistory: [], scrollTop: 0,
@@ -84,6 +91,7 @@ class AIManagerSessions {
 			agentMode: defaultAgent,
 			planningMode: defaultPlanning,
 			forgivenessMode: lastForgivenessMode,
+			connectionId: defaultConnectionId,
 		};
 
 		await workspaceClient.setSession(newId, newSessionData);
@@ -259,6 +267,7 @@ class AIManagerSessions {
 		this.promptIndex = (this.activeSession.promptHistory?.length || 0);
 		this.manager._resizePromptArea();
 		this.manager._setButtonsDisabledState(this.manager._isProcessing);
+		this.manager._updateAIInfoDisplay();
 		this.manager._updatePromptAreaPlaceholder(); // Update placeholder after session switch
 		this.manager._updateAgentProgressPanel();
 		// Force redraw the Plan/Tasks view to align checkboxes
@@ -602,13 +611,40 @@ class AIManagerSessions {
 	 * Automatically renames the session based on the first prompt.
 	 */
 	async autoRenameSession(firstPromptContent) {
-		if (!this.manager.ai.isConfigured()) return;
+		// Yield immediately to let the initial prompt generation and UI rendering proceed async
+		await new Promise(resolve => setTimeout(resolve, 500));
+
+		const sizeRank = {
+			tiny: 1,
+			small: 2,
+			medium: 3,
+			large: 4,
+			ultra: 5
+		};
+		const connections = AIConnections.getConnections();
+		let smallestConn = null;
+		let smallestRank = Infinity;
+		
+		for (const conn of connections) {
+			const inst = AIConnections.getInstance(conn.id);
+			if (inst && inst.isConfigured()) {
+				const size = conn.size || "medium";
+				const rank = sizeRank[size] || 3;
+				if (rank < smallestRank) {
+					smallestRank = rank;
+					smallestConn = inst;
+				}
+			}
+		}
+
+		const aiInstance = smallestConn || this.manager.ai;
+		if (!aiInstance || !aiInstance.isConfigured()) return;
 		try {
 			const prompt = `Based on this initial prompt, generate a very short title (max 5 words) summarizing the topic. Do not use quotes or any prefix. Prompt: "${firstPromptContent}"`;
 			
 			let fullResponse = "";
 			await new Promise((resolve, reject) => {
-				this.manager.ai.generate(prompt, {
+				aiInstance.generate(prompt, {
 					onUpdate: () => {},
 					onDone: (res) => { fullResponse = res; resolve(); },
 					onError: (err) => { reject(err); }

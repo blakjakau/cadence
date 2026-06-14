@@ -21,6 +21,7 @@ export { MenuItem } from './elements/menuitem.mjs';
 export { FileUploadList } from './elements/fileuploadlist.mjs'; // Re-export FileUploadList
 export { EditorHolder } from './elements/editorholder.mjs';
 export { SessionArtifactsPanel } from './elements/session-artifacts-panel.mjs';
+export { AgentConfigPanel } from './elements/agent-config-panel.mjs';
 export { DiffViewPanel } from './elements/diff-view-panel.mjs';
 export { IconTabBar } from './elements/icon-tabbar.mjs';
 export { IconTab } from './elements/icon-tab.mjs';
@@ -58,6 +59,7 @@ import { Effect } from './elements/effect.mjs';
 import { Ripple } from './elements/ripple.mjs';
 import { EditorHolder } from './elements/editorholder.mjs';
 import { SessionArtifactsPanel } from './elements/session-artifacts-panel.mjs';
+import { AgentConfigPanel } from './elements/agent-config-panel.mjs';
 import { DiffViewPanel } from './elements/diff-view-panel.mjs';
 import { LoaderBar } from "./elements/loader-bar.mjs"
 

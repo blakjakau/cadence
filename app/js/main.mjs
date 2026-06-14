@@ -482,6 +482,8 @@ const _saveWorkspace = async () => {
 				if (tab.config && tab.config.handle) {
 					if (tab.config.path === "plan_tasks") {
 						planTasksSide = tab.config.side
+					} else if (tab.config.path === "agent_config") {
+						workspace.agentConfigSide = tab.config.side
 					} else {
 						orderedFiles.push({
 							name: tab.config.name,
@@ -494,6 +496,7 @@ const _saveWorkspace = async () => {
 			})
 		}
 	}
+	workspace.agentConfigSide = null
 	addTabsFrom(leftTabs)
 	addTabsFrom(rightTabs)
 	workspace.files = orderedFiles
@@ -676,6 +679,9 @@ const openWorkspace = (() => {
 					: app.systemPromptConfig
 			}
 
+			workspace.agentConfigSide = load.agentConfigSide || null
+			workspace.planTasksSide = load.planTasksSide || null
+
 			// NEW: Load AI session metadata and active session ID
 			workspace.aiSessionsMetadata = load.aiSessionsMetadata || []
 			workspace.activeAiSessionId = load.activeAiSessionId || null
@@ -688,13 +694,15 @@ const openWorkspace = (() => {
 			// This assumes ui.aiManager.aiProvider is already set by ui.aiManager.loadSettings() in its init
 			const currentProvider = ui.aiManager.aiProvider
 			updateFileListBackground()
-			if (workspace.aiConfig[currentProvider]) {
-				ui.aiManager.ai.setOptions(workspace.aiConfig[currentProvider], null, null, true, "workspace")
-			} else if (app.aiConfig[currentProvider]) {
-				ui.aiManager.ai.setOptions(app.aiConfig[currentProvider], null, null, false, "global")
-			} else {
-				// If no specific config for the current provider, reset to default for that provider
-				ui.aiManager.ai.setOptions({}, null, null, false, "global")
+			if (ui.aiManager.ai) {
+				if (workspace.aiConfig[currentProvider]) {
+					ui.aiManager.ai.setOptions(workspace.aiConfig[currentProvider], null, null, true, "workspace")
+				} else if (app.aiConfig[currentProvider]) {
+					ui.aiManager.ai.setOptions(app.aiConfig[currentProvider], null, null, false, "global")
+				} else {
+					// If no specific config for the current provider, reset to default for that provider
+					ui.aiManager.ai.setOptions({}, null, null, false, "global")
+				}
 			}
 
 			setTimeout(() => {
@@ -1478,6 +1486,41 @@ const openPlanAndTaskList = (targetEditor = leftEdit) => {
 	tab.click()
 }
 
+const openAgentConfig = (targetEditor = leftEdit) => {
+	{
+		let tab = leftTabs.tabs.find(t => t.config?.path === "agent_config")
+		if (tab) return tab.click()
+		tab = rightTabs.tabs.find(t => t.config?.path === "agent_config")
+		if (tab) return tab.click()
+	}
+
+	const removeEmptyUntitledTab = (tabGroup) => {
+		if (tabGroup.tabs.length === 1) {
+			const tab = tabGroup.tabs[0]
+			if (tab.config.name === "untitled" && tab.config.session.getValue() === "") {
+				tabGroup.remove(tab, true)
+			}
+		}
+	}
+	removeEmptyUntitledTab(leftTabs)
+	removeEmptyUntitledTab(rightTabs)
+
+	const tab = targetEditor.tabs.add({
+		name: "Agent Config",
+		path: "agent_config",
+		mode: { mode: "agent_config" },
+		session: null,
+		side: targetEditor === leftEdit ? "left" : "right",
+		handle: "agent_config",
+		folder: "",
+		fileModified: false,
+		defaultStatusIcon: "settings",
+	})
+	
+	tab.classList.add("agent-config-tab")
+	tab.click()
+}
+
 const openDiffTab = (filePath, backupId, targetEditor = leftEdit) => {
 	const clean = (p) => p ? p.replace(/\\/g, '/') : '';
 	const normPath = clean(filePath);
@@ -1523,6 +1566,7 @@ const openDiffTab = (filePath, backupId, targetEditor = leftEdit) => {
 
 ui.renderPlanTasksView = renderPlanTasksView
 ui.openPlanAndTaskList = openPlanAndTaskList
+ui.openAgentConfig = openAgentConfig
 ui.openDiffTab = openDiffTab
 
 const openFileHandle = async (handle, knownPath = null, targetEditor = currentEditor) => {
@@ -1853,6 +1897,7 @@ const updateEditorUI = async (targetEditor, targetMediaView, tab) => {
 		targetEditor.container.style.display = "none"
 		targetMediaView.style.display = "none"
 		if (holder.planTasksView) holder.planTasksView.style.display = "none"
+		if (holder.agentConfigView) holder.agentConfigView.style.display = "none"
 		if (holder.diffView) {
 			holder.diffView.style.display = "block"
 			await holder.diffView.update(tab.config.path, tab.config.backupId, tab)
@@ -1863,14 +1908,24 @@ const updateEditorUI = async (targetEditor, targetMediaView, tab) => {
 	if (tab.config.mode.mode === "plan_tasks") {
 		targetEditor.container.style.display = "none"
 		targetMediaView.style.display = "none"
+		if (holder.agentConfigView) holder.agentConfigView.style.display = "none"
 		if (holder.planTasksView) {
 			holder.planTasksView.style.display = "block"
 			renderPlanTasksView(holder.planTasksView)
+		}
+	} else if (tab.config.mode.mode === "agent_config") {
+		targetEditor.container.style.display = "none"
+		targetMediaView.style.display = "none"
+		if (holder.planTasksView) holder.planTasksView.style.display = "none"
+		if (holder.agentConfigView) {
+			holder.agentConfigView.style.display = "block"
+			holder.agentConfigView.update()
 		}
 	} else if (tab.config.mode.mode === "diff") {
 		targetEditor.container.style.display = "none"
 		targetMediaView.style.display = "none"
 		if (holder.planTasksView) holder.planTasksView.style.display = "none"
+		if (holder.agentConfigView) holder.agentConfigView.style.display = "none"
 		if (holder.diffView) {
 			holder.diffView.style.display = "block"
 			await holder.diffView.update(tab.config.mode.filePath, tab.config.mode.backupId, tab)
@@ -1879,6 +1934,7 @@ const updateEditorUI = async (targetEditor, targetMediaView, tab) => {
 		targetEditor.container.style.display = "none"
 		targetMediaView.style.display = "block"
 		if (holder.planTasksView) holder.planTasksView.style.display = "none"
+		if (holder.agentConfigView) holder.agentConfigView.style.display = "none"
 
 		let data = tab.config.rawData
 		if (!data) {
@@ -1891,6 +1947,7 @@ const updateEditorUI = async (targetEditor, targetMediaView, tab) => {
 		targetEditor.container.style.display = "block"
 		targetMediaView.style.display = "none"
 		if (holder.planTasksView) holder.planTasksView.style.display = "none"
+		if (holder.agentConfigView) holder.agentConfigView.style.display = "none"
 		targetEditor.setSession(tab.config.session)
 		targetEditor.focus()
 
@@ -2113,6 +2170,11 @@ const restoreWorkspaceContent = async () => {
 				}
 			}
 			// -----------------------------
+		}
+
+		if (workspace.agentConfigSide) {
+			const targetEditor = workspace.agentConfigSide === "right" ? rightEdit : leftEdit
+			openAgentConfig(targetEditor)
 		}
 
 		if (workspace.planTasksSide) {
@@ -3265,11 +3327,13 @@ setTimeout(async () => {
 
 		// After appConfig is loaded and aiManager is initialized, apply global AI settings
 		const currentProvider = ui.aiManager.aiProvider
-		if (app.aiConfig[currentProvider]) {
-			ui.aiManager.ai.setOptions(app.aiConfig[currentProvider], null, null, false, "global")
-		} else {
-			// If no specific config for the current provider, reset to default for that provider
-			ui.aiManager.ai.setOptions({}, null, null, false, "global")
+		if (ui.aiManager.ai) {
+			if (app.aiConfig[currentProvider]) {
+				ui.aiManager.ai.setOptions(app.aiConfig[currentProvider], null, null, false, "global")
+			} else {
+				// If no specific config for the current provider, reset to default for that provider
+				ui.aiManager.ai.setOptions({}, null, null, false, "global")
+			}
 		}
 
 		// set supported files in our FileList control

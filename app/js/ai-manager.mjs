@@ -1,16 +1,13 @@
 // ai-manager.mjs
 // Styles for this module are located in css/ai-manager.css
 import { Block, Button, Icon, TabBar, TabItem, FileBar } from "./elements.mjs"
-import Ollama from "./ai-ollama.mjs"
-import Claude from "./ai-claude.mjs"
-import Gemini from "./ai-gemini.mjs"
-import LlamaCpp from "./ai-llamacpp.mjs"
 import AIManagerHistory, { MAX_RECENT_MESSAGES_TO_PRESERVE } from "./ai-manager-history.mjs"
-import AIManagerSettings from "./ai-manager-settings.mjs"
 import AIManagerMessageRenderer from "./ai-manager-message-renderer.mjs" // NEW: Settings manager
 import AIManagerSessions from "./ai-manager-sessions.mjs" // NEW: Sessions manager
 import workspaceClient from "./workspace-client.mjs"
 import agentTools from "./agent/agent-tools.mjs"
+import AIConnections from "./ai-connections.mjs"
+import { Agent } from "./agent/agent.mjs"
 
 import DiffHandler from "./tools/diff-handler.mjs"
 import AgentBackup from "./agent/agent-backup.mjs"
@@ -39,16 +36,8 @@ const promptEditorSettings = {
 }
 class AIManager {
 	constructor() {
-		this.ai = null
-		this.aiProvider = "ollama" // Default AI provider
-		this.aiProviders = {
-			ollama: Ollama,
-			claude: Claude,
-			gemini: Gemini,
-			llamacpp: LlamaCpp,
-		}
-		// NEW: Settings logic is moved to AIManagerSettings
-		this.settingsManager = new AIManagerSettings(this);
+		this.connectionsManager = AIConnections;
+		this.activeAgent = null;
 		this.messageRenderer = new AIManagerMessageRenderer(this);
 		this.sessionsManager = new AIManagerSessions(this);
 
@@ -57,31 +46,29 @@ class AIManager {
 			specialization: "JavaScript (ECMAScript), HTML, CSS, and Node.js", technologies: [], avoidedTechnologies: [], tone: ["warm", "playful", "cheeky"],
 		};
 
-		this.panel = null
-		this.promptEditor = null // Will hold the ACE editor instance
-		this.conversationArea = null
+		this.panel = null;
+		this.promptEditor = null; // Will hold the ACE editor instance
+		this.conversationArea = null;
 		this.chatContainer = null;
 		this.fileBar = null; // NEW: for file context chips
-		this.submitButton = null
+		this.submitButton = null;
 		// Initialize markdown-it with highlight.js for code highlighting
 		this.md = window.markdownit({ // hljs is available globally via <script> tag
 			highlight: function (str, lang) {
 				if (lang && hljs.getLanguage(lang)) {
 					return hljs.highlight(str, { language: lang, ignoreIllegals: true }).value;
 				}
-				// For 'diff' or other unhandled languages, return empty string to let markdown-it
-				// perform its default escaping. The raw content is then read by _addCodeBlockButtons.
 				return '';
 			}
 		});
 
-		this.historyManager = new AIManagerHistory(this)
+		this.historyManager = new AIManagerHistory(this);
 
 		this.contextStaleNotice = null; // New element for context currency check
 		this._emptyStateElement = null; // NEW: For empty state background
 		this._contextStaleResolve = null; // To resolve/reject the context stale promise		
-		this.useWorkspaceSettings = false
-		this._isProcessing = false // Flag to track if AI is busy (generating or summarizing)
+		this.useWorkspaceSettings = false;
+		this._isProcessing = false; // Flag to track if AI is busy (generating or summarizing)
 
 		// Reference to the AI info display element
 		this.aiInfoDisplay = null;
@@ -93,7 +80,7 @@ class AIManager {
 			summarizeTargetPercentage: 50,
 			defaultAgentMode: false,
 			defaultPlanningMode: true,
-		}
+		};
 
 		// NEW: Session Management Properties
 		this.allSessionMetadata = []; // Array of {id, name, createdAt, lastModified} - used for UI list
@@ -120,43 +107,55 @@ class AIManager {
 		this.haltBar = null; // NEW: Persistent halt notification bar
 	}
 
+	get ai() {
+		if (!this.activeSession) return null;
+		const connId = this.activeSession.connectionId || AIConnections.defaultConnectionId;
+		return AIConnections.getInstance(connId);
+	}
+
 	async init(panel) {
-		this.panel = panel
-		await this.loadSettings()
+		this.panel = panel;
+		AIConnections.init();
+		
+		// Listen for connection updates to redraw the Connection Selector
+		window.addEventListener('connections-changed', () => {
+			this._updateAIInfoDisplay();
+			this._updatePromptAreaPlaceholder();
+			this.historyManager.render();
+		});
+
+		await this.loadSettings();
 		this._loadSystemPromptConfig(); // NEW: Load prompt settings
 
-		// Initialize the AI provider instance
-		this.ai = new this.aiProviders[this.aiProvider]();
-
-		// Wrap AI initialization in try-catch to prevent UI freeze on configuration errors
+		// Try initializing the active connection
 		try {
-			await this.ai.init(); // Initialize with loaded settings. This is where the Ollama error occurs.
+			const activeConn = this.ai;
+			if (activeConn) {
+				await activeConn.init();
+			}
 		} catch (error) {
-			console.error("AIManager: Error initializing AI provider:", error);
-			// Display an error message to the user in the conversation area
+			console.error("AIManager: Error initializing AI connection:", error);
 			this.historyManager.addMessage({
 				type: "system_message",
-				content: `Error initializing AI provider (${this.aiProvider}). Please check your settings. Details: ${error.message}`,
+				content: `Error initializing AI connection. Please check your config. Details: ${error.message}`,
 				timestamp: Date.now(),
 			}, false);
-			// Ensure UI is not blocked
 			this._isProcessing = false;
 			this._setButtonsDisabledState(false);
 		}
 
 		// Load summarization settings from storage, overriding defaults
-		const storedSummarizeThreshold = localStorage.getItem("summarizeThreshold")
+		const storedSummarizeThreshold = localStorage.getItem("summarizeThreshold");
 		if (storedSummarizeThreshold !== null) {
 			this.config.summarizeThreshold = parseInt(storedSummarizeThreshold);
 		}
-		const storedSummarizeTargetPercentage = localStorage.getItem("summarizeTargetPercentage")
+		const storedSummarizeTargetPercentage = localStorage.getItem("summarizeTargetPercentage");
 		if (storedSummarizeTargetPercentage !== null) {
 			this.config.summarizeTargetPercentage = parseInt(storedSummarizeTargetPercentage);
 		}
 
 		this._createUI();
 		this._initPromptEditor();
-		this.settingsManager.init(); // NEW: Initialize settings manager
 		this._setupPanel();
 
 		this._updateAIInfoDisplay();
@@ -387,7 +386,6 @@ class AIManager {
 		this.conversationArea = this._createConversationArea();
 		this.submitButton = this._createSubmitButton();
 		const promptContainer = this._createPromptContainer();
-		this.settingsPanel = this.settingsManager.createPanel(); // NEW: Create panel via manager
 
 		this.chatContainer = new Block();
 		this.chatContainer.classList.add('ai-chat-container');
@@ -427,7 +425,7 @@ class AIManager {
 			}
 		});
 
-		this.panel.append(this.chatContainer, this.settingsPanel, this.sessionTabBar, promptContainer);
+		this.panel.append(this.chatContainer, this.sessionTabBar, promptContainer);
 	}
 
 	_createEditBufferDisplay() {
@@ -626,7 +624,7 @@ class AIManager {
 		this.aiInfoDisplay = document.createElement("select");
 		this.aiInfoDisplay.classList.add("ai-info-display", "ai-provider-select");
 		this.aiInfoDisplay.addEventListener('change', (e) => {
-			this.switchAiProvider(e.target.value);
+			this.switchConnection(e.target.value);
 		});
 
 
@@ -933,61 +931,43 @@ class AIManager {
 	}
 
 	/**
-	 * NEW: Switches the AI provider, re-initializes it, and updates the UI.
-	 * This is called by the settings manager.
-	 * @param {string} newProviderValue - The key for the new provider (e.g., 'ollama').
+	 * Switches the AI connection, re-initializes it, and updates the UI.
+	 * @param {string} connId - The connection config ID.
 	 */
-	async switchAiProvider(newProviderValue) {
-		this.aiProvider = newProviderValue;
-		localStorage.setItem("aiProvider", this.aiProvider);
+	async switchConnection(connId) {
+		if (!this.activeSession) return;
+		this.activeSession.connectionId = connId;
+		await workspaceClient.setSession(this.activeSession.id, this.activeSession);
 
-		this.ai = new this.aiProviders[this.aiProvider]();
-
-		try {
-			const providerConfig = window.workspace.aiConfig?.[this.aiProvider] || window.app.aiConfig?.[this.aiProvider];
-			if (providerConfig) {
-				const useWorkspaceSettings = !!window.workspace.aiConfig?.[this.aiProvider];
-				await this.ai.setOptions(providerConfig, null, null, useWorkspaceSettings, useWorkspaceSettings ? 'workspace' : 'global');
+		const conn = AIConnections.getInstance(connId);
+		if (conn) {
+			try {
+				await conn.init();
+				this.historyManager.addMessage({
+					type: "system_message",
+					content: `Connection switched to **${conn.config.model || conn.providerId}** (${conn.connectionId}).`,
+					timestamp: Date.now()
+				}, false);
+			} catch (error) {
+				console.error("AIManager: Error initializing connection during switch:", error);
+				this.historyManager.addMessage({
+					type: "system_message",
+					content: `Error switching connection. Check settings. Details: ${error.message}`,
+					timestamp: Date.now()
+				}, false);
 			}
-			await this.ai.init();
-			this.historyManager.addMessage({
-				type: "system_message",
-				content: `AI provider switched to **${this.aiProvider}**. ` +
-					(this.ai.isConfigured()
-						? `Current model: **${this.ai.config.model}**`
-						: `Please configure the provider settings.`),
-				timestamp: Date.now()
-			}, false);
-		} catch (error) {
-			console.error("AIManager: Error initializing new AI provider during switch:", error);
-			this.historyManager.addMessage({
-				type: "system_message",
-				content: `Error switching to ${this.aiProvider} provider. Check settings. Details: ${error.message}`,
-				timestamp: Date.now()
-			}, false);
-		} finally {
-			// Always re-render settings form, update UI, and dispatch events
-			this.settingsManager.renderForm();
-			this._updateAIInfoDisplay();
-			this._dispatchContextUpdate("ai_provider_switched");
-			this.historyManager.render();
-			this._setButtonsDisabledState(this._isProcessing);
-			this._updatePromptAreaPlaceholder();
 		}
+
+		this._updateAIInfoDisplay();
+		this._dispatchContextUpdate("ai_connection_switched");
+		this.historyManager.render();
+		this._setButtonsDisabledState(this._isProcessing);
+		this._updatePromptAreaPlaceholder();
 	}
 
 	toggleSettingsPanel() {
-		this.chatContainer.classList.toggle("hidden")
-		this.settingsManager.toggle(); // NEW: Use the manager
-
-		// If settings panel is being hidden, re-render chat history
-		if (!this.settingsPanel.classList.contains("active")) {
-			this.historyManager.render() // Re-render history to show/hide welcome message
-			this._dispatchContextUpdate("settings_closed") // Dispatch on settings panel close
-		} else {
-			// If settings panel is being shown, (re)render its content to reflect current values
-			this._updateAIInfoDisplay(); // Ensure display is updated when panel opens
-			this._dispatchContextUpdate("settings_opened") // Dispatch on settings panel open
+		if (window.ui?.openAgentConfig) {
+			window.ui.openAgentConfig();
 		}
 	}
 
@@ -1009,7 +989,7 @@ class AIManager {
 
 	/**
 	 * Centralized method to update context-sensitive UI elements like the progress bar and AI info display.
-	 * This is now called directly by _dispatchContextUpdate.
+	 * Centralized update calls this.
 	 * @param {object} detail - The event detail object from _dispatchContextUpdate.
 	 */
 	_updateContextUI(detail) {
@@ -1048,44 +1028,43 @@ class AIManager {
 				if (progressBarFullHistory) this._updateProgressBarColor(progressBarFullHistory, 0);
 			}
 		}
-		// AI Info Display is updated by _updateAIInfoDisplay() directly.
 	}
 
 	// Method to update the AI info display element
 	_updateAIInfoDisplay() {
-		if (this.aiInfoDisplay && this.ai) {
-			// Clear existing options
+		if (this.aiInfoDisplay) {
 			this.aiInfoDisplay.innerHTML = "";
+			const currentConnId = this.activeSession?.connectionId || AIConnections.defaultConnectionId;
+			const connections = AIConnections.getConnections();
 			
-			// Populate options
-			Object.keys(this.aiProviders).forEach(provider => {
-				// Try to find the model name in current config or workspace/app settings
-				const config = (provider === this.aiProvider) 
-					? this.ai.config 
-					: (window.workspace.aiConfig?.[provider] || window.app.aiConfig?.[provider]);
-
-				// Suppress unconfigured providers from the quick list
-				if (!config?.model) {
-					return;
-				}
-
+			connections.forEach(conn => {
 				const option = document.createElement("option");
-				option.value = provider;
-				let label = provider.charAt(0).toUpperCase() + provider.slice(1);
-				label += ` (${config.model})`;
-				
+				option.value = conn.id;
+				let prefix = "";
+				const size = conn.size || "medium";
+				if (size === "tiny") prefix = "[T] ";
+				else if (size === "small") prefix = "[S] ";
+				else if (size === "medium") prefix = "[M] ";
+				else if (size === "large") prefix = "[L] ";
+				else if (size === "ultra") prefix = "[U] ";
+
+				let label = prefix + conn.name;
+				if (conn.config?.model) {
+					label += ` (${conn.config.model})`;
+				}
 				option.textContent = label;
-				if (provider === this.aiProvider) {
+				if (conn.id === currentConnId) {
 					option.selected = true;
 				}
 				this.aiInfoDisplay.appendChild(option);
 			});
 
-			if (this.ai.isConfigured()) {
-				const modelName = this.ai.config?.model || "No Model";
-				this.aiInfoDisplay.setAttribute("title", `Provider: ${this.aiProvider}, Model: ${modelName}`);
+			const activeAi = this.ai;
+			if (activeAi && activeAi.isConfigured()) {
+				const modelName = activeAi.config?.model || "No Model";
+				this.aiInfoDisplay.setAttribute("title", `Connection: ${activeAi.connectionId}, Model: ${modelName}`);
 			} else {
-				this.aiInfoDisplay.setAttribute("title", `Provider: ${this.aiProvider}, Status: Not Configured`);
+				this.aiInfoDisplay.setAttribute("title", `Connection Status: Not Configured`);
 			}
 		}
 	}
@@ -1296,7 +1275,9 @@ class AIManager {
 			this.consecutiveHaltCount = 0; // Reset manual continue count
 			this._isProcessing = true;
 			this._setButtonsDisabledState(true);
-			await this._runAgentLoop(null, null);
+			this.activeAgent = new Agent(this, this.activeSession, this.ai);
+			await this.activeAgent.run(null, null);
+			this.activeAgent = null;
 		};
 
 		toggleBtn.onclick = handleToggle;
@@ -1510,7 +1491,9 @@ class AIManager {
 		}
 
 		if (this.agentMode) {
-			await this._runAgentLoop(userMessage, userMessageElement);
+			this.activeAgent = new Agent(this, this.activeSession, this.ai);
+			await this.activeAgent.run(userMessage, userMessageElement);
+			this.activeAgent = null;
 			return;
 		}
 		// NEW: Create and append the new ui-loader-bar *before* the response block
@@ -2012,458 +1995,7 @@ ${summarizationPromptContent}`;
 	}
 
 	async _runAgentLoop(userMessage, userMessageElement) {
-		let loopCount = 0;
-		const maxLoops = 15;
-		this._abortAgent = false;
-		let isThrottled = true;
-		this.throttleBar = null;
-
-		while (this._isProcessing) {
-			if (this._abortAgent) break;
-
-			loopCount++;
-
-			if (loopCount > maxLoops) {
-				if (!this.throttleBar) {
-					this.throttleBar = document.createElement("div");
-					this.throttleBar.className = "agent-throttle-bar";
-					this.throttleBar.innerHTML = `
-						<ui-icon style="vertical-align: middle; margin-right: 4px; font-size: 16px;">speed</ui-icon>
-						<span class="throttle-text"></span>
-						<ui-button class="throttle-toggle theme-button" style="padding: 4px 8px; font-size: 11px; margin-left: 12px; min-width: 80px;">Continue &gt;</ui-button>
-					`;
-					const btn = this.throttleBar.querySelector('.throttle-toggle');
-					btn.onclick = () => {
-						isThrottled = !isThrottled;
-						if (isThrottled) {
-							btn.innerText = "Continue >";
-							this.throttleBar.classList.remove('unthrottled');
-						} else {
-							btn.innerText = "Throttle";
-							this.throttleBar.classList.add('unthrottled');
-						}
-					};
-					this.chatContainer.append(this.throttleBar);
-				}
-				this.throttleBar.querySelector('.throttle-text').innerText = `Agent execution throttled due to long running task: ${loopCount} of ${maxLoops} iterations`;
-
-				if (isThrottled) {
-					await new Promise(r => setTimeout(r, 7000));
-				}
-			}
-
-			const modelMessageId = crypto.randomUUID();
-			const responseBlock = this.historyManager.createStreamingBlock(modelMessageId);
-			this._startGlow();
-			const shouldScrollAtStart = this._shouldAutoScroll();
-			this.conversationArea.append(responseBlock);
-
-			// Auto scroll
-			if (shouldScrollAtStart && this.conversationArea) {
-				this.conversationArea.scrollTop = this.conversationArea.scrollHeight;
-			}
-
-			let currentFullResponse = "";
-			let streamForciblyEnded = false;
-			let forcedReason = "";
-
-			let messagesForAI = null;
-			let systemPrompt = null;
-
-			const runPromise = new Promise((resolve, reject) => {
-				const callbacks = {
-					onUpdate: (fullResponse) => {
-						if (streamForciblyEnded) return;
-						currentFullResponse = fullResponse;
-						if (callbacks.toolCalls && callbacks.toolCalls.length > 0) {
-							this._startGlow();
-						} else {
-							this._stopGlow();
-						}
-						const shouldScroll = this._shouldAutoScroll();
-						responseBlock.updateContent(fullResponse);
-						if (shouldScroll && this.conversationArea) {
-							this.conversationArea.scrollTop = this.conversationArea.scrollHeight;
-						}
-
-						// Scan streaming tokens for early truncation
-						const check = this._checkStreamingResponse(fullResponse);
-						if (check.shouldAbort) {
-							streamForciblyEnded = true;
-							forcedReason = check.reason;
-							this.ai.stop(check.reason);
-							
-							// Save immediately since ai.stop throws AbortError which doesn't trigger onError
-							this._finalizeModelMessage(currentFullResponse, forcedReason, callbacks, modelMessageId, responseBlock)
-								.then(finalizedResponse => resolve(finalizedResponse))
-								.catch(err => reject(err));
-						}
-					},
-					onDone: async (fullResponse) => {
-						if (streamForciblyEnded) return;
-						currentFullResponse = fullResponse;
-						this._stopGlow();
-						const finalizedResponse = await this._finalizeModelMessage(fullResponse, null, callbacks, modelMessageId, responseBlock);
-						resolve(finalizedResponse);
-					},
-					onError: async (err) => {
-						this._stopGlow();
-						// Stream forcibly ended logic is now handled in onUpdate directly.
-						if (streamForciblyEnded) {
-							// We shouldn't hit this, but just in case, resolve without saving twice.
-							resolve(currentFullResponse);
-							return;
-						}
-						reject(err);
-					},
-					onPrefillProgress: (progressData) => {
-						if (streamForciblyEnded) return;
-						const total = progressData.total;
-						const cache = progressData.cache || 0;
-						const processed = progressData.processed;
-						const pct = (total - cache > 0) ? Math.round(((processed - cache) / (total - cache)) * 100) : (total > 0 ? Math.round((processed / total) * 100) : 0);
-						this._showPrefillProgress(responseBlock, pct, progressData);
-					}
-				};
-
-				messagesForAI = this.historyManager.prepareMessagesForAI();
-				this.getSystemPrompt().then(sysPrompt => {
-					systemPrompt = sysPrompt;
-					this.ai.chat(messagesForAI, callbacks, systemPrompt);
-				}).catch(reject);
-			});
-
-			try {
-				const responseContent = await runPromise;
-
-				// Removed legacy XML plan parsing logic
-
-				// Parse tool calls
-				const toolCalls = this._parseAllToolCalls(responseContent);
-				const regex = /<[^>]*>/g;
-				
-				if (toolCalls.length === 0) {
-					if(responseContent.replace(regex, "").length > 50) {
-						this._isProcessing = false;
-						this._setButtonsDisabledState(false);
-						return
-					}
-					// No more tool calls: agent is done!
-					if (!responseContent.includes("<complete_task>")) {
-						// Auto-continue logic
-						if (this.autoContinue && this.consecutiveHaltCount < 3) {
-							this.consecutiveHaltCount++;
-							console.warn(`⚠️ [Agent Loop Halted] Auto-continuing (Attempt ${this.consecutiveHaltCount} of 3)...`);
-
-							// Strip the last model turn
-							if (this.activeSession && this.activeSession.messages) {
-								this.activeSession.messages = this.activeSession.messages.filter(m => m.id !== modelMessageId);
-								this.activeSession.lastModified = Date.now();
-								await workspaceClient.setSession(this.activeSession.id, this.activeSession);
-							}
-							if (responseBlock && responseBlock.parentNode) {
-								responseBlock.remove();
-							}
-
-							// Render temporary auto-continue indicator
-							const autoMsg = document.createElement("div");
-							autoMsg.className = "agent-tool-progress";
-							autoMsg.innerHTML = `<ui-icon class="spin">cached</ui-icon> Agent loop halted. Auto-continuing (Attempt ${this.consecutiveHaltCount} of 3)...`;
-							this.conversationArea.append(autoMsg);
-							if (this._shouldAutoScroll() && this.conversationArea) {
-								this.conversationArea.scrollTop = this.conversationArea.scrollHeight;
-							}
-							await new Promise(r => setTimeout(r, 1200));
-							autoMsg.remove();
-
-							loopCount--; // Decrement since we stripped this turn and want to retry
-							continue; // Go to next loop iteration
-						}
-
-						// Manual Continue and Halt Bar logic
-						const warnBlock = document.createElement("div");
-						warnBlock.className = "response-block warning-block";
-						warnBlock.style.border = "1px solid var(--color-warning, #b58900)";
-						warnBlock.style.background = "var(--bg-secondary)";
-						warnBlock.style.padding = "12px 16px";
-						warnBlock.style.borderRadius = "var(--borderRadius)";
-						warnBlock.style.margin = "8px 0 16px 0";
-						warnBlock.innerHTML = `
-							<div style="font-weight: 500; display: flex; align-items: center; gap: 8px;">
-								<ui-icon style="color: var(--color-warning, #b58900);">warning</ui-icon>
-								<span><b>Agent Loop Halted:</b> The model stopped generating without producing a tool call or completing a task.</span>
-							</div>
-							<div style="margin-top: 8px; display: flex; gap: 12px; align-items: center; margin-left: 24px;">
-								<button class="warn-continue-btn theme-button" style="padding: 4px 10px; font-size: 11px; font-weight: 600; min-width: 80px; cursor: pointer; border-radius: var(--borderRadius); border: none;">Continue</button>
-								<label style="font-size: 11px; font-weight: 500; display: flex; align-items: center; gap: 6px; cursor: pointer; user-select: none; color: var(--text-secondary);">
-									<input type="checkbox" class="warn-auto-toggle" ${this.autoContinue ? 'checked' : ''} style="cursor: pointer; width: 13px; height: 13px;">
-									Auto-Continue
-								</label>
-							</div>
-						`;
-						this.conversationArea.append(warnBlock);
-
-						// LOG the last request to console.warn() for troubleshooting
-						console.warn("⚠️ [Agent Loop Halted] The model stopped generating without producing a tool call or completing a task. Last Request Details:", {
-							systemPrompt,
-							messages: messagesForAI,
-							modelResponse: responseContent
-						});
-
-						const shouldScroll = this._shouldAutoScroll();
-						if (shouldScroll && this.conversationArea) {
-							this.conversationArea.scrollTop = this.conversationArea.scrollHeight;
-						}
-
-						// Show the persistent bottom halt bar
-						this._showHaltBar(modelMessageId, responseBlock, warnBlock);
-					}
-
-					this._isProcessing = false;
-					this._setButtonsDisabledState(false);
-					this._dispatchContextUpdate("append_model");
-					break;
-				}
-
-				// Reset consecutive halt count since the agent generated valid tool calls
-				this.consecutiveHaltCount = 0;
-
-				// Execute all parsed tool calls sequentially
-				let accumulatedResponses = [];
-				let hasPlan = false;
-				let hasDone = false;
-
-				for (const toolCall of toolCalls) {
-					let toolResult = "";
-					let approved = true;
-
-					// Validate required arguments before executing or showing approvals
-					const validationError = this._validateToolArguments(toolCall);
-					if (validationError) {
-						accumulatedResponses.push(`[Tool Response: ${toolCall.name}]\n\n${validationError}`);
-
-						// Render tool finished/failed block in the chat
-						const toolConfBlock = document.createElement("div");
-						toolConfBlock.className = "agent-tool-finished";
-						toolConfBlock.innerHTML = `
-							<ui-icon style="color: var(--color-error, #dc3545);">close</ui-icon>
-							<span>Tool <code>${toolCall.name}</code> failed validation.</span>
-						`;
-						const shouldScroll = this._shouldAutoScroll();
-						this.conversationArea.append(toolConfBlock);
-						if (shouldScroll && this.conversationArea) {
-							this.conversationArea.scrollTop = this.conversationArea.scrollHeight;
-						}
-						continue;
-					}
-
-					// Identify if tool is destructive
-					const isDestructive = ["create_file"].includes(toolCall.name);
-					if (isDestructive && !this.forgivenessMode) {
-						approved = await this._showAgentApprovalCard(toolCall);
-					}
-
-					if (approved) {
-						// Add temporary message block explaining what tool is running
-						const progressMsg = document.createElement("div");
-						progressMsg.className = "agent-tool-progress";
-						progressMsg.innerHTML = `<ui-icon class="spin">cached</ui-icon> Running tool: <code>${toolCall.name}</code>...`;
-						const shouldScroll = this._shouldAutoScroll();
-						this.conversationArea.append(progressMsg);
-						if (shouldScroll && this.conversationArea) {
-							this.conversationArea.scrollTop = this.conversationArea.scrollHeight;
-						}
-
-						try {
-							toolResult = await agentTools.execute(toolCall.name, toolCall.arguments, this.activeSession.id);
-						} catch (e) {
-							toolResult = `Error executing tool: ${e.message}`;
-						}
-
-						progressMsg.remove();
-					} else {
-						toolResult = `Error: User rejected the change to ${toolCall.arguments.path || "file"}.`;
-					}
-
-					let responseTitle = `[Tool Response: ${toolCall.name}]`;
-					if (toolCall.name === "read_file" && toolCall.arguments && toolCall.arguments.path) {
-						const path = toolCall.arguments.path;
-						const start = parseInt(toolCall.arguments.startLine);
-						const count = parseInt(toolCall.arguments.lineCount);
-						if (!isNaN(start) && !isNaN(count)) {
-							const end = start + count - 1;
-							responseTitle = `[Tool Response: read_file ${path} #L${start}-${end}]`;
-						} else if (!isNaN(start)) {
-							responseTitle = `[Tool Response: read_file ${path} #L${start}]`;
-						} else {
-							responseTitle = `[Tool Response: read_file ${path}]`;
-						}
-					}
-					accumulatedResponses.push(`${responseTitle}\n\n${toolResult}`);
-
-					if (toolCall.name === "create_implementation_plan") {
-						hasPlan = true;
-					}
-
-					if (toolCall.name === "done") {
-						hasDone = true;
-					}
-
-					// Render simple system or message confirmation of tool run in the chat
-					const toolConfBlock = document.createElement("div");
-					toolConfBlock.className = "agent-tool-finished";
-					toolConfBlock.innerHTML = `
-						<ui-icon>${approved ? 'done' : 'close'}</ui-icon>
-						<span>Tool <code>${toolCall.name}</code> finished.</span>
-					`;
-					const shouldScroll = this._shouldAutoScroll();
-					this.conversationArea.append(toolConfBlock);
-					if (shouldScroll && this.conversationArea) {
-						this.conversationArea.scrollTop = this.conversationArea.scrollHeight;
-					}
-				}
-
-				// Append all accumulated tool results as a single user response to feed back into conversation
-				if (accumulatedResponses.length > 0) {
-					const toolResponseMessage = {
-						id: crypto.randomUUID(),
-						role: "user",
-						type: "tool_response",
-						content: accumulatedResponses.join("\n\n---\n\n"),
-						timestamp: Date.now()
-					};
-					this.activeSession.messages.push(toolResponseMessage);
-					this.activeSession.lastModified = Date.now();
-					await workspaceClient.setSession(this.activeSession.id, this.activeSession);
-				}
-
-				if (hasPlan) {
-					try {
-						const messages = this.activeSession.messages;
-						// Find the last completed cycle's done message
-						let lastDoneMsgIdx = -1;
-						for (let i = messages.length - 1; i >= 0; i--) {
-							const msg = messages[i];
-							if ((msg.type === "tool_response" && msg.content && msg.content.includes("[Tool Response: done]")) ||
-								(msg.role === "model" && msg.toolCalls && msg.toolCalls.some(tc => (tc.functionCall?.name || tc.name) === "done"))) {
-								// Check if this done message already has an associated summary in messages
-								const hasSummary = messages.some(m => m.type === "cycle_summary" && (m.cycleEndMsgId === msg.id || m.cycleEndMsgId === messages[i+1]?.id));
-								if (!hasSummary) {
-									lastDoneMsgIdx = i;
-									break;
-								}
-							}
-						}
-
-						if (lastDoneMsgIdx !== -1) {
-							let endIdx = lastDoneMsgIdx;
-							if (messages[lastDoneMsgIdx].role === "model" && 
-								messages[lastDoneMsgIdx + 1] && 
-								messages[lastDoneMsgIdx + 1].type === "tool_response") {
-								endIdx = lastDoneMsgIdx + 1;
-							}
-							
-							let cycleStartIdx = -1;
-							for (let i = endIdx - 2; i >= 0; i--) {
-								const msg = messages[i];
-								if (msg.type === "cycle_summary" || 
-									(msg.type === "tool_response" && msg.content && msg.content.includes("[Tool Response: done]")) ||
-									(msg.role === "model" && msg.toolCalls && msg.toolCalls.some(tc => (tc.functionCall?.name || tc.name) === "done"))) {
-									cycleStartIdx = i + 1;
-									break;
-								}
-							}
-							if (cycleStartIdx === -1) {
-								cycleStartIdx = messages.findIndex(msg => msg.type === "user" || msg.type === "model");
-							}
-
-							if (cycleStartIdx !== -1 && cycleStartIdx <= endIdx) {
-								const cycleMessages = messages.slice(cycleStartIdx, endIdx + 1);
-								
-								const summaryProgressMsg = document.createElement("div");
-								summaryProgressMsg.className = "agent-tool-progress";
-								summaryProgressMsg.innerHTML = `<ui-icon class="spin">cached</ui-icon> Generating cycle summary...`;
-								this.conversationArea.append(summaryProgressMsg);
-								if (this._shouldAutoScroll() && this.conversationArea) {
-									this.conversationArea.scrollTop = this.conversationArea.scrollHeight;
-								}
-
-								const result = await this.generateCycleSummary(cycleMessages);
-								
-								summaryProgressMsg.remove();
-
-								if (result && result.summary) {
-									const summaryMessage = {
-										id: crypto.randomUUID(),
-										role: "system",
-										type: "cycle_summary",
-										title: result.title,
-										content: result.summary,
-										timestamp: Date.now(),
-										cycleStartMsgId: messages[cycleStartIdx].id,
-										cycleEndMsgId: messages[endIdx].id
-									};
-									this.activeSession.messages.splice(endIdx + 1, 0, summaryMessage);
-									this.activeSession.lastModified = Date.now();
-									await workspaceClient.setSession(this.activeSession.id, this.activeSession);
-									
-									this.historyManager.render();
-									if (this.conversationArea) {
-										this.conversationArea.scrollTop = this.conversationArea.scrollHeight;
-									}
-								}
-							}
-						}
-					} catch (e) {
-						console.error("Error generating cycle summary:", e);
-					}
-				}
-
-				if (hasPlan || hasDone) {
-					this._isProcessing = false;
-				}
-
-				// Update the model message block in the DOM to reflect the actual tool execution status (failed or invoked)
-				const modelMessage = this.activeSession.messages.find(m => m.id === modelMessageId);
-				if (modelMessage) {
-					responseBlock.innerHTML = this.messageRenderer.renderResponseContent(responseContent, modelMessage, true);
-					this.messageRenderer.addCodeBlockButtons(responseBlock, modelMessage);
-				}
-
-				// If the agent created a plan or finished, we stop the loop to wait for user feedback/actions.
-				if (hasPlan || hasDone) {
-					this._setButtonsDisabledState(false);
-					this._dispatchContextUpdate("append_model");
-					break;
-				}
-
-			} catch (e) {
-				console.error("Agent Loop Error:", e);
-
-				// Check if this is a temporary unavailable (503/UNAVAILABLE) error
-				const isUnavailable = this.ai && typeof this.ai._isTemporaryUnavailableError === 'function' && this.ai._isTemporaryUnavailableError(e);
-				if (isUnavailable) {
-					this._showTryAgainBanner(e);
-					this._isProcessing = false;
-					this._setButtonsDisabledState(false);
-					break;
-				}
-
-				const errBlock = document.createElement("div");
-				errBlock.className = "response-block error-block";
-				errBlock.innerHTML = `Agent Execution Error: ${e.message}`;
-				this.conversationArea.append(errBlock);
-
-				this._isProcessing = false;
-				this._setButtonsDisabledState(false);
-				break;
-			}
-		}
-
-		if (this.throttleBar) {
-			this.throttleBar.remove();
-			this.throttleBar = null;
-		}
+		throw new Error("_runAgentLoop is retired and moved to Agent class");
 	}
 
 	_showTryAgainBanner(error) {
@@ -2843,7 +2375,9 @@ ${summarizationPromptContent}`;
 
 		if (this.agentMode) {
 			const userMessageElement = this.conversationArea.querySelector(`[data-message-id="${messageId}"]`);
-			await this._runAgentLoop(userMessage, userMessageElement);
+			this.activeAgent = new Agent(this, this.activeSession, this.ai);
+			await this.activeAgent.run(userMessage, userMessageElement);
+			this.activeAgent = null;
 			return;
 		}
 
@@ -3074,7 +2608,8 @@ ${summarizationPromptContent}`;
 
 	async loadSettings() {
 		const storedProvider = localStorage.getItem("aiProvider")
-		if (storedProvider && this.aiProviders[storedProvider]) {
+		const supportedProviders = ["gemini", "llamacpp", "ollama", "claude"];
+		if (storedProvider && supportedProviders.includes(storedProvider)) {
 			this.aiProvider = storedProvider
 		}
 

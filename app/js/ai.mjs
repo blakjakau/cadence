@@ -2,6 +2,7 @@
 export default class AI {
 	constructor() {
 		this._editor = null;
+		this.connectionId = null; // Associated connection config ID
 		this.config = {}; // Internal configuration object
 		this._settingsSchema = {}; // Schema for settings metadata
         this._settingsSource = 'global'; // 'global' or 'workspace'
@@ -18,7 +19,8 @@ export default class AI {
 
 	_loadTelemetry() {
 		try {
-			const data = localStorage.getItem(`telemetry_${this.providerId}`);
+			const keyId = this.connectionId || this.providerId;
+			const data = localStorage.getItem(`telemetry_${keyId}`);
 			if (data) {
 				const parsed = JSON.parse(data);
 				this._telemetryRequests = parsed.requests || [];
@@ -36,9 +38,18 @@ export default class AI {
 			// Clean up old telemetry data (older than 1 minute)
 			const oneMinuteAgo = Date.now() - 60000;
 			this._telemetryRequests = this._telemetryRequests.filter(t => t > oneMinuteAgo);
-			this._telemetryTokens = this._telemetryTokens.filter(t => t.time > oneMinuteAgo);
+			
+			// Always preserve at least the last 5 tokens entries for rolling average calculations
+			if (this._telemetryTokens.length > 5) {
+				const lastFive = this._telemetryTokens.slice(-5);
+				const others = this._telemetryTokens.slice(0, -5).filter(t => t.time > oneMinuteAgo);
+				this._telemetryTokens = [...others, ...lastFive];
+			} else {
+				this._telemetryTokens = this._telemetryTokens.filter(t => t.time > oneMinuteAgo);
+			}
 
-			localStorage.setItem(`telemetry_${this.providerId}`, JSON.stringify({
+			const keyId = this.connectionId || this.providerId;
+			localStorage.setItem(`telemetry_${keyId}`, JSON.stringify({
 				requests: this._telemetryRequests,
 				tokens: this._telemetryTokens,
 				totalTokensIn: this._totalTokensIn,
@@ -66,6 +77,21 @@ export default class AI {
 			}
 		}
 		return 0;
+	}
+
+	get averageTokensPerSec() {
+		const validResponses = this._telemetryTokens
+			.filter(t => t.elapsedMs > 0)
+			.slice(-5);
+		
+		if (validResponses.length === 0) return 0;
+		
+		const sumTps = validResponses.reduce((sum, t) => {
+			const tps = t.tokens / (t.elapsedMs / 1000);
+			return sum + tps;
+		}, 0);
+		
+		return Math.round(sumTps / validResponses.length);
 	}
 
 	get tokensPerMin() {

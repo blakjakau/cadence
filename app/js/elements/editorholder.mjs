@@ -3,6 +3,7 @@ import { MediaView } from './mediaview.mjs';
 import { TabItem } from './tabitem.mjs';
 import { TabBar } from './tabbar.mjs';
 import { SessionArtifactsPanel } from './session-artifacts-panel.mjs';
+import { AgentConfigPanel } from './agent-config-panel.mjs';
 import { DiffViewPanel } from './diff-view-panel.mjs';
 
 export class EditorHolder extends Panel {
@@ -15,11 +16,14 @@ export class EditorHolder extends Panel {
         this.mediaView.style.display = "block";
         this.planTasksView = new SessionArtifactsPanel();
         this.planTasksView.style.display = "none";
+        this.agentConfigView = new AgentConfigPanel();
+        this.agentConfigView.style.display = "none";
         this.diffView = new DiffViewPanel();
         this.diffView.style.display = "none";
         this.appendChild(this.editorElement);
         this.appendChild(this.mediaView);
         this.appendChild(this.planTasksView);
+        this.appendChild(this.agentConfigView);
         this.appendChild(this.diffView);
 
         this.dragCounter = 0;
@@ -164,6 +168,7 @@ export class EditorHolder extends Panel {
             this.editorElement.style.display = 'none';
             this.mediaView.style.display = 'none';
             if (this.planTasksView) this.planTasksView.style.display = 'none';
+            if (this.agentConfigView) this.agentConfigView.style.display = 'none';
             if (this.diffView) this.diffView.style.display = 'none';
         } else {
             const activeTab = this._tabs.activeTab;
@@ -245,7 +250,7 @@ export class EditorHolder extends Panel {
     }
 
     async updateNoticeBar(tab) {
-        if (!tab || !tab.config || tab.config.viewMode === "diff" || tab.config.path === "plan_tasks") {
+        if (!tab || !tab.config || tab.config.viewMode === "diff" || tab.config.path === "plan_tasks" || tab.config.path === "agent_config") {
             this.editorHeaderBar.style.display = "none";
             this.editorElement.style.top = "";
             this.editorElement.style.height = "";

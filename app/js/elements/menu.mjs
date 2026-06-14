@@ -1,6 +1,5 @@
 import { Panel } from './panel.mjs';
 import { isFunction } from './utils.mjs';
-import { Input } from '../elements.mjs';
 
 let MenuOpen = false
 let CurrentMenu = null
@@ -57,17 +56,6 @@ export class Menu extends Panel {
 		if ("function" == typeof this._click) {
 			this._click(command)
 		}
-	}
-
-	_clearFilter() {
-		if (this._filterInput) {
-			this._filterInput.remove()
-			this._filterInput = null
-		}
-		const items = Array.from(this.children).filter(child => child.tagName !== 'UI-INPUT')
-		items.forEach(item => {
-			item.style.display = ""
-		})
 	}
 
 	showAt(origin) {
@@ -134,7 +122,6 @@ export class Menu extends Panel {
 			this.on("click",
 				() => {
 					clicked = true
-					this._clearFilter()
 					MenuOpen = false
 					CurrentMenu = null
 					setTimeout(() => {
@@ -146,7 +133,6 @@ export class Menu extends Panel {
 			document.addEventListener("click",
 				() => {
 					if (!clicked && MenuOpen) {
-						this._clearFilter()
 						setTimeout(() => {
 							this.removeAttribute("active")
 							MenuOpen = false
@@ -159,12 +145,10 @@ export class Menu extends Panel {
 			document.addEventListener("contextmenu",
 				() => {
 					if (CurrentMenu == this) {
-						this.removeAttribute("active")
-						this._clearFilter()
+						CurrentMenu.removeAttribute("active")
 						return
 					}
 					if (!clicked && MenuOpen) {
-						this._clearFilter()
 						setTimeout(() => {
 							this.removeAttribute("active")
 							MenuOpen = false
@@ -174,26 +158,6 @@ export class Menu extends Panel {
 				},
 				{ once: true }
 			)
-
-			// Filtering logic
-			const items = Array.from(this.children).filter(child => child.tagName !== 'UI-INPUT')
-			if (items.length > 15) {
-				const input = new Input()
-				this._filterInput = input
-				if (this.hasAttribute("up")) {
-					this.appendChild(input)
-				} else {
-					this.prepend(input)
-				}
-
-				input.on("input", () => {
-					const val = input.value.toLowerCase()
-					items.forEach(item => {
-						const text = item.textContent.toLowerCase()
-						item.style.display = text.includes(val) ? "" : "none"
-					})
-				})
-			}
 		})
 		this.setAttribute("active", "true")
 	}
