@@ -111,13 +111,18 @@ export class AgentConfigPanel extends Block {
 			const input = document.createElement("input");
 			input.type = "checkbox";
 			input.id = id;
-			input.checked = localStorage.getItem(key) === "true";
+			if (key === "defaultAllowSubAgents") {
+				input.checked = localStorage.getItem(key) !== "false";
+			} else {
+				input.checked = localStorage.getItem(key) === "true";
+			}
 			input.onchange = () => {
 				localStorage.setItem(key, input.checked);
 				if (window.ui?.aiManager) {
 					if (key === "aiForgivenessMode") window.ui.aiManager.forgivenessMode = input.checked;
 					if (key === "defaultAgentMode") window.ui.aiManager.config.defaultAgentMode = input.checked;
 					if (key === "defaultPlanningMode") window.ui.aiManager.config.defaultPlanningMode = input.checked;
+					if (key === "defaultAllowSubAgents") window.ui.aiManager.config.defaultAllowSubAgents = input.checked;
 					window.ui.aiManager._updatePromptAreaPlaceholder();
 				}
 			};
@@ -151,6 +156,57 @@ export class AgentConfigPanel extends Block {
 		createToggleRow("default-forgiveness-mode", "Forgiveness Mode", "Commit edits immediately to disk with robust single-click rollback safety.", "aiForgivenessMode");
 		createToggleRow("default-agent-mode", "Default Agent Mode", "Start new sessions in Agent Mode automatically.", "defaultAgentMode");
 		createToggleRow("default-planning-mode", "Default Planning Mode", "Start new sessions with Planning Mode enabled.", "defaultPlanningMode");
+		createToggleRow("default-allow-sub-agents", "Default Allow Sub-Agents", "Start new sessions with sub-agents allowed automatically.", "defaultAllowSubAgents");
+
+		const createNumberInputRow = (id, title, desc, key, defaultValue) => {
+			const wrapper = document.createElement("div");
+			wrapper.className = "toggle-row";
+			wrapper.style.display = "flex";
+			wrapper.style.alignItems = "center";
+			wrapper.style.gap = "12px";
+
+			const input = document.createElement("input");
+			input.type = "number";
+			input.id = id;
+			input.min = "1";
+			input.max = "10";
+			input.style.width = "60px";
+			input.style.padding = "4px";
+			input.style.borderRadius = "4px";
+			input.style.border = "1px solid var(--border)";
+			input.style.background = "var(--bg-input, rgba(0,0,0,0.1))";
+			input.style.color = "var(--text)";
+			
+			const stored = localStorage.getItem(key);
+			input.value = stored !== null ? stored : defaultValue;
+			input.onchange = () => {
+				localStorage.setItem(key, input.value);
+				if (window.ui?.aiManager) {
+					window.ui.aiManager.config[key] = parseInt(input.value);
+				}
+			};
+
+			const meta = document.createElement("div");
+			meta.className = "setting-meta";
+			meta.style.flex = "1";
+
+			const titleSpan = document.createElement("span");
+			titleSpan.className = "toggle-label";
+			titleSpan.textContent = title;
+
+			const descSpan = document.createElement("span");
+			descSpan.className = "setting-desc";
+			descSpan.textContent = desc;
+
+			meta.appendChild(titleSpan);
+			meta.appendChild(descSpan);
+
+			wrapper.appendChild(input);
+			wrapper.appendChild(meta);
+			grid.appendChild(wrapper);
+		};
+
+		createNumberInputRow("max-sub-agents", "Max Sub-Agents", "Maximum number of parallel sub-agents the main agent is permitted to spawn.", "maxSubAgents", "3");
 
 		this.container.appendChild(this.defaultsAccordion);
 	}

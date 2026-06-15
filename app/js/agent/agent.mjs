@@ -11,12 +11,20 @@ export class Agent {
 		this.throttleBar = null;
 		this.consecutiveHaltCount = 0;
 		this.repetitionHaltCount = 0;
+		this.subAgentsCreated = [];
+		this.reportedSubAgents = new Set();
 	}
 
 	stop(reason = "User requested stop") {
 		this._abortAgent = true;
 		if (this.connection) {
 			this.connection.stop(reason);
+		}
+		// Cascade abort to all active child sub-agents
+		for (const [id, run] of this.aiManager.runningSessions) {
+			if (run.type === 'agent' && run.instance?.session?.parentId === this.session.id) {
+				run.instance.stop(reason);
+			}
 		}
 	}
 
@@ -63,9 +71,29 @@ export class Agent {
 				}
 			}
 
+			// Check and compile any newly completed sub-agents at start of turn
+			const compiledResults = await this.checkAndCompileSubAgentResults(session);
+			if (compiledResults) {
+				const toolResponseMessage = {
+					id: crypto.randomUUID(),
+					role: "user",
+					type: "tool_response",
+					content: compiledResults,
+					timestamp: Date.now()
+				};
+				session.messages.push(toolResponseMessage);
+				session.lastModified = Date.now();
+				await workspaceClient.setSession(session.id, session);
+				
+				// Re-render UI to display the new tool response message
+				if (aiManager.isSessionViewed(session.id)) {
+					aiManager.historyManager.render();
+				}
+			}
+
 			const modelMessageId = crypto.randomUUID();
 			const responseBlock = aiManager.historyManager.createStreamingBlock(modelMessageId, "model", session.id);
-			if (aiManager.activeSessionId === session.id) {
+			if (aiManager.isSessionViewed(session.id)) {
 				aiManager._startGlow(session.id);
 				aiManager.conversationArea.append(responseBlock);
 				const shouldScrollAtStart = aiManager._shouldAutoScroll();
@@ -93,7 +121,7 @@ export class Agent {
 						}
 						const shouldScroll = aiManager._shouldAutoScroll();
 						responseBlock.updateContent(fullResponse);
-						if (aiManager.activeSessionId === session.id && shouldScroll && aiManager.conversationArea) {
+						if (aiManager.isSessionViewed(session.id) && shouldScroll && aiManager.conversationArea) {
 							aiManager.conversationArea.scrollTop = aiManager.conversationArea.scrollHeight;
 						}
 
@@ -136,9 +164,9 @@ export class Agent {
 				};
 
 				messagesForAI = aiManager.historyManager.prepareMessagesForAI(session);
-				aiManager.getSystemPrompt().then(sysPrompt => {
+				aiManager.getSystemPrompt(session).then(sysPrompt => {
 					systemPrompt = sysPrompt;
-					connection.chat(messagesForAI, callbacks, systemPrompt);
+					connection.chat(messagesForAI, callbacks, systemPrompt, session);
 				}).catch(reject);
 			});
 
@@ -180,7 +208,7 @@ export class Agent {
 						await workspaceClient.setSession(session.id, session);
 
 						// 4. Update DOM if active
-						if (aiManager.activeSessionId === session.id) {
+						if (aiManager.isSessionViewed(session.id)) {
 							if (responseBlock && typeof responseBlock.updateContent === "function") {
 								responseBlock.updateContent(trimmedContent);
 							}
@@ -194,7 +222,7 @@ export class Agent {
 						const autoMsg = document.createElement("div");
 						autoMsg.className = "agent-tool-progress";
 						autoMsg.innerHTML = `<ui-icon class="spin">cached</ui-icon> <span>Recovering from repetition loop (Attempt ${this.repetitionHaltCount} of 3)...</span>`;
-						if (aiManager.activeSessionId === session.id) {
+						if (aiManager.isSessionViewed(session.id)) {
 							aiManager.conversationArea.append(autoMsg);
 							if (aiManager._shouldAutoScroll() && aiManager.conversationArea) {
 								aiManager.conversationArea.scrollTop = aiManager.conversationArea.scrollHeight;
@@ -221,7 +249,7 @@ export class Agent {
 								<span><b>Agent Halted:</b> Repetitive generation loop detected. 3 recovery attempts were exhausted.</span>
 							</div>
 						`;
-						if (aiManager.activeSessionId === session.id) {
+						if (aiManager.isSessionViewed(session.id)) {
 							aiManager.conversationArea.append(errorBlock);
 							if (aiManager.conversationArea) {
 								aiManager.conversationArea.scrollTop = aiManager.conversationArea.scrollHeight;
@@ -240,7 +268,7 @@ export class Agent {
 				if (toolCalls.length === 0 || !aiManager.agentMode) {
 					if (!aiManager.agentMode) {
 						aiManager.setSessionProcessing(session.id, false);
-						if (aiManager.activeSessionId === session.id) {
+						if (aiManager.isSessionViewed(session.id)) {
 							aiManager._dispatchContextUpdate("append_model");
 						}
 						return;
@@ -249,7 +277,63 @@ export class Agent {
 						aiManager.setSessionProcessing(session.id, false);
 						return;
 					}
+
+					// Sub-agents MUST always end with a tool call — re-inject a directive instead of halting
+					if (session.parentId) {
+						if (this.consecutiveHaltCount < 3) {
+							this.consecutiveHaltCount++;
+							console.warn(`⚠️ [Sub-Agent] Ended turn without a tool call. Injecting directive (Attempt ${this.consecutiveHaltCount} of 3)...`);
+
+							// Strip the empty model turn from history
+							if (session && session.messages) {
+								session.messages = session.messages.filter(m => m.id !== modelMessageId);
+								session.lastModified = Date.now();
+								await workspaceClient.setSession(session.id, session);
+							}
+							if (responseBlock && responseBlock.parentNode) {
+								responseBlock.remove();
+							}
+
+							// Inject a firm directive as a user message
+							const directiveMsg = {
+								id: crypto.randomUUID(),
+								role: "user",
+								type: "system_directive",
+								content: "You MUST finish your turn with a tool call. If you have completed your task, call `sub_agent_complete`. If you are blocked or need information from the user, call `query`. Otherwise, continue your work with another tool call.",
+								timestamp: Date.now()
+							};
+							session.messages.push(directiveMsg);
+							session.lastModified = Date.now();
+							await workspaceClient.setSession(session.id, session);
+
+							if (aiManager.isSessionViewed(session.id)) {
+								aiManager.historyManager.render();
+							}
+
+							loopCount--; // Don't count this as a real iteration
+							continue;
+						} else {
+							console.error("❌ [Sub-Agent] 3 directive attempts exhausted. Forcing sub_agent_complete.");
+							// Force a completion so the parent agent isn't left hanging
+							try {
+								await this.aiManager.historyManager && true; // no-op to ensure we're still live
+								const subSession = await workspaceClient.getSession(session.id);
+								if (subSession && !subSession.completedResult) {
+									subSession.completedResult = "Sub-agent halted: model repeatedly ended turns without a tool call.";
+									subSession.lastModified = Date.now();
+									await workspaceClient.setSession(session.id, subSession);
+								}
+							} catch (e) {
+								console.error("[Sub-Agent] Failed to force completion:", e);
+							}
+							aiManager.setSessionProcessing(session.id, false);
+							aiManager._updateTabStatus(session.id, "halted");
+							break;
+						}
+					}
+
 					// No more tool calls: agent is done!
+
 					if (!responseContent.includes("<complete_task>")) {
 						// Auto-continue logic
 						if (aiManager.autoContinue && this.consecutiveHaltCount < 3) {
@@ -270,7 +354,7 @@ export class Agent {
 							autoMsg.className = "agent-tool-progress";
 							autoMsg.innerHTML = `<ui-icon class="spin">cached</ui-icon> <span>Auto-continuing (Attempt ${this.consecutiveHaltCount} of 3)...</span>`;
 
-							if (aiManager.activeSessionId === session.id) {
+							if (aiManager.isSessionViewed(session.id)) {
 								aiManager.conversationArea.append(autoMsg);
 								if (aiManager._shouldAutoScroll() && aiManager.conversationArea) {
 									aiManager.conversationArea.scrollTop = aiManager.conversationArea.scrollHeight;
@@ -304,7 +388,7 @@ export class Agent {
 								</label>
 							</div>
 						`;
-							if (aiManager.activeSessionId === session.id) {
+							if (aiManager.isSessionViewed(session.id)) {
 								aiManager.conversationArea.append(warnBlock);
 							}
 
@@ -316,7 +400,7 @@ export class Agent {
 						});
 
 						const shouldScroll = aiManager._shouldAutoScroll();
-						if (aiManager.activeSessionId === session.id) {
+						if (aiManager.isSessionViewed(session.id)) {
 							// Show the persistent bottom halt bar
 							aiManager._showHaltBar(modelMessageId, responseBlock, warnBlock);
 							if (shouldScroll && aiManager.conversationArea) {
@@ -327,7 +411,7 @@ export class Agent {
 
 					aiManager.setSessionProcessing(session.id, false);
 					aiManager._updateTabStatus(session.id, "halted");
-					if (aiManager.activeSessionId === session.id) {
+					if (aiManager.isSessionViewed(session.id)) {
 						aiManager._dispatchContextUpdate("append_model");
 					}
 					break;
@@ -341,8 +425,25 @@ export class Agent {
 				let accumulatedResponses = [];
 				let hasPlan = false;
 				let hasDone = false;
+				let blockRemainingTools = false;
+				let mustWait = false;
+
+				const getActiveSubAgentIds = () => {
+					const activeIds = [];
+					for (const [id, run] of aiManager.runningSessions) {
+						if (run.type === 'agent' && run.instance?.session?.parentId === session.id) {
+							activeIds.push(id);
+						}
+					}
+					return activeIds;
+				};
 
 				for (const toolCall of toolCalls) {
+					if (blockRemainingTools) {
+						accumulatedResponses.push(`[Tool Response: ${toolCall.name}]\n\nError: Tool execution blocked because sub-agents are running.`);
+						continue;
+					}
+
 					let toolResult = "";
 					let approved = true;
 
@@ -359,7 +460,7 @@ export class Agent {
 							<span>Tool <code>${toolCall.name}</code> failed validation.</span>
 						`;
 						const shouldScroll = aiManager._shouldAutoScroll();
-						if (aiManager.activeSessionId === session.id) {
+						if (aiManager.isSessionViewed(session.id)) {
 							aiManager.conversationArea.append(toolConfBlock);
 							if (shouldScroll && aiManager.conversationArea) {
 								aiManager.conversationArea.scrollTop = aiManager.conversationArea.scrollHeight;
@@ -380,7 +481,7 @@ export class Agent {
 						progressMsg.className = "agent-tool-progress";
 						progressMsg.innerHTML = `<ui-icon class="spin">cached</ui-icon> Running tool: <code>${toolCall.name}</code>...`;
 						const shouldScroll = aiManager._shouldAutoScroll();
-						if (aiManager.activeSessionId === session.id) {
+						if (aiManager.isSessionViewed(session.id)) {
 							aiManager.conversationArea.append(progressMsg);
 							if (shouldScroll && aiManager.conversationArea) {
 								aiManager.conversationArea.scrollTop = aiManager.conversationArea.scrollHeight;
@@ -396,6 +497,32 @@ export class Agent {
 						progressMsg.remove();
 					} else {
 						toolResult = `Error: User rejected the change to ${toolCall.arguments.path || "file"}.`;
+					}
+
+					// Check wait conditions
+					if (toolCall.name === "create_sub_agent") {
+						const match = toolResult.match(/\[Sub-Agent (ai-session-[a-f0-9-]+) spawned/);
+						if (match) {
+							const subAgentId = match[1];
+							if (!this.subAgentsCreated) {
+								this.subAgentsCreated = [];
+							}
+							if (!this.subAgentsCreated.includes(subAgentId)) {
+								this.subAgentsCreated.push(subAgentId);
+							}
+						}
+						
+						const createAnother = toolCall.arguments.create_another === true || toolCall.arguments.create_another === "true";
+						if (!createAnother) {
+							blockRemainingTools = true;
+							mustWait = true;
+						}
+					} else {
+						const activeSubAgents = getActiveSubAgentIds();
+						if (activeSubAgents.length > 0) {
+							blockRemainingTools = true;
+							mustWait = true;
+						}
 					}
 
 					let responseTitle = `[Tool Response: ${toolCall.name}]`;
@@ -430,11 +557,46 @@ export class Agent {
 						<span>Tool <code>${toolCall.name}</code> finished.</span>
 					`;
 					const shouldScroll = aiManager._shouldAutoScroll();
-					if (aiManager.activeSessionId === session.id) {
+					if (aiManager.isSessionViewed(session.id)) {
 						aiManager.conversationArea.append(toolConfBlock);
 						if (shouldScroll && aiManager.conversationArea) {
 							aiManager.conversationArea.scrollTop = aiManager.conversationArea.scrollHeight;
 						}
+					}
+				}
+
+				if (mustWait) {
+					const waitMsg = document.createElement("div");
+					waitMsg.className = "agent-tool-progress";
+					waitMsg.innerHTML = `<ui-icon class="spin">cached</ui-icon> Waiting for sub-agents to complete...`;
+					const shouldScroll = aiManager._shouldAutoScroll();
+					if (aiManager.isSessionViewed(session.id)) {
+						aiManager.conversationArea.append(waitMsg);
+						if (shouldScroll && aiManager.conversationArea) {
+							aiManager.conversationArea.scrollTop = aiManager.conversationArea.scrollHeight;
+						}
+					}
+
+					await new Promise(resolve => {
+						const interval = setInterval(() => {
+							if (this._abortAgent) {
+								clearInterval(interval);
+								resolve();
+								return;
+							}
+							const activeIds = getActiveSubAgentIds();
+							if (activeIds.length === 0) {
+								clearInterval(interval);
+								resolve();
+							}
+						}, 1000);
+					});
+
+					waitMsg.remove();
+
+					const compiled = await this.checkAndCompileSubAgentResults(session);
+					if (compiled) {
+						accumulatedResponses.push(compiled);
 					}
 				}
 
@@ -496,7 +658,7 @@ export class Agent {
 								const summaryProgressMsg = document.createElement("div");
 								summaryProgressMsg.className = "agent-tool-progress";
 								summaryProgressMsg.innerHTML = `<ui-icon class="spin">cached</ui-icon> Generating cycle summary...`;
-								if (aiManager.activeSessionId === session.id) {
+								if (aiManager.isSessionViewed(session.id)) {
 									aiManager.conversationArea.append(summaryProgressMsg);
 									if (aiManager._shouldAutoScroll() && aiManager.conversationArea) {
 										aiManager.conversationArea.scrollTop = aiManager.conversationArea.scrollHeight;
@@ -522,7 +684,7 @@ export class Agent {
 									session.lastModified = Date.now();
 									await workspaceClient.setSession(session.id, session);
 									
-									if (aiManager.activeSessionId === session.id) {
+									if (aiManager.isSessionViewed(session.id)) {
 										aiManager.historyManager.render();
 										if (aiManager.conversationArea) {
 											aiManager.conversationArea.scrollTop = aiManager.conversationArea.scrollHeight;
@@ -553,7 +715,7 @@ export class Agent {
 				}
 
 				if (hasPlan || hasDone) {
-					if (aiManager.activeSessionId === session.id) {
+					if (aiManager.isSessionViewed(session.id)) {
 						aiManager._dispatchContextUpdate("append_model");
 					}
 					break;
@@ -564,7 +726,7 @@ export class Agent {
 
 				const isUnavailable = connection && typeof connection._isTemporaryUnavailableError === 'function' && connection._isTemporaryUnavailableError(e);
 				if (isUnavailable) {
-					if (aiManager.activeSessionId === session.id) {
+					if (aiManager.isSessionViewed(session.id)) {
 						aiManager._showTryAgainBanner(e);
 					}
 					aiManager.setSessionProcessing(session.id, false);
@@ -575,7 +737,7 @@ export class Agent {
 				const errBlock = document.createElement("div");
 				errBlock.className = "response-block error-block";
 				errBlock.innerHTML = `Agent Execution Error: ${e.message}`;
-				if (aiManager.activeSessionId === session.id) {
+				if (aiManager.isSessionViewed(session.id)) {
 					aiManager.conversationArea.append(errBlock);
 				}
 
@@ -589,5 +751,41 @@ export class Agent {
 			this.throttleBar.remove();
 			this.throttleBar = null;
 		}
+	}
+
+	async checkAndCompileSubAgentResults(session) {
+		try {
+			const allSessions = await workspaceClient.getSessions();
+			const subSessions = allSessions.filter(s => s && s.parentId === session.id);
+			if (subSessions.length === 0) return null;
+
+			if (!session.reportedSubAgents) {
+				session.reportedSubAgents = [];
+			}
+
+			let compiledResults = "\n=== SUB-AGENT RESULTS ===\n";
+			let hasNewResults = false;
+
+			for (const subSession of subSessions) {
+				const isRunning = this.aiManager.runningSessions.has(subSession.id);
+				const isCompleted = !!subSession.completedResult;
+
+				if (!isRunning && !session.reportedSubAgents.includes(subSession.id)) {
+					session.reportedSubAgents.push(subSession.id);
+					hasNewResults = true;
+
+					const status = isCompleted ? "Completed" : "Failed/Halted";
+					const resultText = subSession.completedResult || "No result reported (crashed or aborted).";
+					compiledResults += `\nSub-Agent ID: ${subSession.id}\nObjective: ${subSession.name}\nStatus: ${status}\nResult:\n${resultText}\n-----------------------\n`;
+				}
+			}
+
+			if (hasNewResults) {
+				return compiledResults;
+			}
+		} catch (e) {
+			console.error("[Agent] Error compiling sub-agent results:", e);
+		}
+		return null;
 	}
 }

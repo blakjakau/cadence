@@ -115,40 +115,40 @@ export const tools = [
             required: ["path", "search", "replace"]
         }
     },
-    {
-        name: "refactor_copy_lines",
-        description: "Copy a range of lines from a source file and insert them into a destination file. If destination file does not exist, it will be created.",
-        parameters: {
-            type: "object",
-            properties: {
-                source: { type: "string", description: "The path of the source file to copy from." },
-                startLine: { type: "number", description: "The starting line number (1-indexed) in the source file." },
-                lineCount: { type: "number", description: "The number of lines to copy." },
-                destination: { type: "string", description: "The path of the destination file to insert into. Can be a new or existing file." },
-                insertAt: { type: "number", description: "The line number (1-indexed) in the destination file where the lines should be inserted." },
-                startAnchor: { type: "string", description: "Required. The exact line text expected at startLine in the source file for auto-alignment." },
-                endAnchor: { type: "string", description: "Required. The exact line text expected at startLine+lineCount in the source file auto-alignment." },
-                removeFromSource: { type: "boolean", description: "Optional. If true, remove the copied lines from the source file." }
-            },
-            required: ["source", "startLine", "lineCount", "destination", "insertAt", "startAnchor", "endAnchor"]
-        }
-    },
-    {
-        name: "edit_remove_lines",
-        description: "Remove lines from a file, you must provide either the exact text to remove OR the startLine and lineCount to remove.",
-        parameters: {
-            type: "object",
-            properties: {
-                path: { type: "string", description: "The path of the file to edit." },
-                search: { type: "string", description: "The exact lines of text to remove." },
-                startLine: { type: "number", description: "The starting line number (1-indexed) of the lines to remove." },
-                lineCount: { type: "number", description: "The number of lines to remove." },
-                startAnchor: { type: "string", description: "Optional. Required if startLine and lineCount are provided. The exact line text expected at startLine for auto-alignment." },
-                endAnchor: { type: "string", description: "Optional. Required if startLine and lineCount are provided. The exact line text expected at startLine+lineCount for auto-alignment." }
-            },
-            required: ["path"]
-        }
-    },
+    // {
+    //     name: "refactor_copy_lines",
+    //     description: "Copy a range of lines from a source file and insert them into a destination file. If destination file does not exist, it will be created.",
+    //     parameters: {
+    //         type: "object",
+    //         properties: {
+    //             source: { type: "string", description: "The path of the source file to copy from." },
+    //             startLine: { type: "number", description: "The starting line number (1-indexed) in the source file." },
+    //             lineCount: { type: "number", description: "The number of lines to copy." },
+    //             destination: { type: "string", description: "The path of the destination file to insert into. Can be a new or existing file." },
+    //             insertAt: { type: "number", description: "The line number (1-indexed) in the destination file where the lines should be inserted." },
+    //             startAnchor: { type: "string", description: "Required. The exact line text expected at startLine in the source file for auto-alignment." },
+    //             endAnchor: { type: "string", description: "Required. The exact line text expected at startLine+lineCount in the source file auto-alignment." },
+    //             removeFromSource: { type: "boolean", description: "Optional. If true, remove the copied lines from the source file." }
+    //         },
+    //         required: ["source", "startLine", "lineCount", "destination", "insertAt", "startAnchor", "endAnchor"]
+    //     }
+    // },
+    // {
+    //     name: "edit_remove_lines",
+    //     description: "Remove lines from a file, you must provide either the exact text to remove OR the startLine and lineCount to remove.",
+    //     parameters: {
+    //         type: "object",
+    //         properties: {
+    //             path: { type: "string", description: "The path of the file to edit." },
+    //             search: { type: "string", description: "The exact lines of text to remove." },
+    //             startLine: { type: "number", description: "The starting line number (1-indexed) of the lines to remove." },
+    //             lineCount: { type: "number", description: "The number of lines to remove." },
+    //             startAnchor: { type: "string", description: "Optional. Required if startLine and lineCount are provided. The exact line text expected at startLine for auto-alignment." },
+    //             endAnchor: { type: "string", description: "Optional. Required if startLine and lineCount are provided. The exact line text expected at startLine+lineCount for auto-alignment." }
+    //         },
+    //         required: ["path"]
+    //     }
+    // },
     {
         name: "create_implementation_plan",
         description: "Create a detailed implementation plan before modifying code.",
@@ -190,5 +190,55 @@ export const tools = [
             type: "object",
             properties: {}
         }
+    },
+    {
+        name: "create_sub_agent",
+        description: "Spawns a linked sub-agent session with a specific objective and size constraints. The sub-agent has a clean context and limited toolset.",
+        parameters: {
+            type: "object",
+            properties: {
+                objective: { type: "string", description: "The specific task/objective for the sub-agent to perform." },
+                size: { type: "string", enum: ["tiny", "small", "medium"], description: "The suggested size/capability of the connection/model for this task." },
+                create_another: { type: "boolean", description: "If true, the main agent can continue to create more sub-agents in this turn. If false, the main agent will immediately enter a waiting state for all sub-agents to complete." }
+            },
+            required: ["objective", "size", "create_another"]
+        }
+    },
+    {
+        name: "query",
+        description: "Ask the user a question and wait for their response before continuing. Use when you need clarification or a decision from the user that you cannot determine from the codebase alone.",
+        parameters: {
+            type: "object",
+            properties: {
+                question: { type: "string", description: "The question to ask the user." }
+            },
+            required: ["question"]
+        }
+    },
+    {
+        name: "sub_agent_complete",
+        description: "Signals that this sub-agent has completed its task and returns the result/summary to the parent agent.",
+        parameters: {
+            type: "object",
+            properties: {
+                result: { type: "string", description: "The detailed result or summary of the work completed by the sub-agent." }
+            },
+            required: ["result"]
+        }
     }
+];
+
+export const subAgentToolsList = [
+    "list_files",
+    "read_file",
+    "read_file_outline",
+    "read_symbol",
+    "search_files",
+    "search_in_file",
+    "edit_file",
+    // "edit_remove_lines",
+    // "refactor_copy_lines",
+    "create_file",
+    "query",
+    "sub_agent_complete"
 ];

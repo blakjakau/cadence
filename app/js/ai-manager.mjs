@@ -69,6 +69,7 @@ class AIManager {
 		this._contextStaleResolve = null; // To resolve/reject the context stale promise		
 		this.useWorkspaceSettings = false;
 		this.runningSessions = new Map(); // sessionId -> { type: 'chat'|'agent', controller: Agent|AI, responseBlock }
+		this.glowingSessions = new Set(); // Set of sessionIds currently triggering the glow animation
 		
 		// Reference to the AI info display element
 		this.aiInfoDisplay = null;
@@ -80,6 +81,8 @@ class AIManager {
 			summarizeTargetPercentage: 50,
 			defaultAgentMode: false,
 			defaultPlanningMode: true,
+			maxSubAgents: parseInt(localStorage.getItem("maxSubAgents") || "3"),
+			defaultAllowSubAgents: localStorage.getItem("defaultAllowSubAgents") !== "false",
 		};
 
 		// NEW: Session Management Properties
@@ -164,19 +167,26 @@ class AIManager {
 		window.addEventListener('setting-changed', this._handleSettingChangedExternally.bind(this));
 	}
 
-	async getSystemPrompt() {
+	async getSystemPrompt(session = null) {
+		const targetSession = session || this.activeSession;
+		if (targetSession && targetSession.systemPromptOverride) {
+			return targetSession.systemPromptOverride;
+		}
 		let basePrompt = "";
-		if (this.agentMode) {
-			const modelName = (this.ai && this.ai.config && this.ai.config.model) ? this.ai.config.model.toLowerCase() : '';
-			const supportsJSONTools = !!(this.ai && this.ai.supportsJSONTools);
+		const targetAgentMode = targetSession ? (targetSession.agentMode ?? this.agentMode) : this.agentMode;
+		const targetPlanningMode = targetSession ? (targetSession.planningMode ?? this.planningMode) : this.planningMode;
+		if (targetAgentMode) {
+			const activeAi = targetSession?.connectionId ? AIConnections.getInstance(targetSession.connectionId) : this.ai;
+			const modelName = (activeAi && activeAi.config && activeAi.config.model) ? activeAi.config.model.toLowerCase() : '';
+			const supportsJSONTools = !!(activeAi && activeAi.supportsJSONTools);
 			
-			const hasPlan = !!this.activeSession?.implementationPlan;
-			const hasTasks = !!this.activeSession?.taskList;
-			const hasAcceptedPlan = this.activeSession?.messages?.some(m => m.planStatus === "accepted") || false;
+			const hasPlan = !!targetSession?.implementationPlan;
+			const hasTasks = !!targetSession?.taskList;
+			const hasAcceptedPlan = targetSession?.messages?.some(m => m.planStatus === "accepted") || false;
 			
 			let hasCompletedAllTasks = false;
-			if (hasTasks && this.activeSession.taskList) {
-				hasCompletedAllTasks = !this.activeSession.taskList.includes("- [ ]") && !this.activeSession.taskList.includes("* [ ]");
+			if (hasTasks && targetSession?.taskList) {
+				hasCompletedAllTasks = !targetSession.taskList.includes("- [ ]") && !targetSession.taskList.includes("* [ ]");
 			}
 
 			basePrompt = getAgentSystemPrompt(modelName, {
@@ -185,7 +195,7 @@ class AIManager {
 				hasTasks,
 				hasAcceptedPlan,
 				hasCompletedAllTasks,
-				planningMode: this.planningMode
+				planningMode: targetPlanningMode
 			});
 		} else {
 			basePrompt = systemPromptBuilder(this.getSystemPromptConfig());
@@ -568,30 +578,58 @@ class AIManager {
 	}
 
 	_startGlow(sessionId) {
-		if (sessionId && sessionId !== this.activeSessionId) {
-			return;
+		const targetId = sessionId || this.activeSession?.activeSubAgentSessionId || this.activeSessionId;
+		if (targetId) {
+			this.glowingSessions.add(targetId);
 		}
-		if (this.undulatingGlow) {
-			this.undulatingGlow.classList.add('active');
-		}
-		if (this.conversationArea) {
-			const shouldScroll = this._shouldAutoScroll();
-			this.conversationArea.classList.add('glow-active');
-			if (shouldScroll) {
-				this.conversationArea.scrollTop = this.conversationArea.scrollHeight;
+
+		if (this.isSessionViewed(targetId)) {
+			if (this.undulatingGlow) {
+				this.undulatingGlow.classList.add('active');
+			}
+			if (this.conversationArea) {
+				const shouldScroll = this._shouldAutoScroll();
+				this.conversationArea.classList.add('glow-active');
+				if (shouldScroll) {
+					this.conversationArea.scrollTop = this.conversationArea.scrollHeight;
+				}
 			}
 		}
 	}
 
 	_stopGlow(sessionId) {
-		if (sessionId && sessionId !== this.activeSessionId) {
-			return;
+		const targetId = sessionId || this.activeSession?.activeSubAgentSessionId || this.activeSessionId;
+		if (targetId) {
+			this.glowingSessions.delete(targetId);
 		}
-		if (this.undulatingGlow) {
-			this.undulatingGlow.classList.remove('active');
+
+		const viewedSessionId = this.activeSession?.activeSubAgentSessionId || this.activeSessionId;
+		if (!viewedSessionId || !this.glowingSessions.has(viewedSessionId)) {
+			if (this.undulatingGlow) {
+				this.undulatingGlow.classList.remove('active');
+			}
+			if (this.conversationArea) {
+				this.conversationArea.classList.remove('glow-active');
+			}
 		}
-		if (this.conversationArea) {
-			this.conversationArea.classList.remove('glow-active');
+	}
+
+	_updateGlowForViewedSession() {
+		const viewedSessionId = this.activeSession?.activeSubAgentSessionId || this.activeSessionId;
+		if (viewedSessionId && this.glowingSessions.has(viewedSessionId)) {
+			if (this.undulatingGlow) {
+				this.undulatingGlow.classList.add('active');
+			}
+			if (this.conversationArea) {
+				this.conversationArea.classList.add('glow-active');
+			}
+		} else {
+			if (this.undulatingGlow) {
+				this.undulatingGlow.classList.remove('active');
+			}
+			if (this.conversationArea) {
+				this.conversationArea.classList.remove('glow-active');
+			}
 		}
 	}
 
@@ -928,11 +966,15 @@ class AIManager {
 		const tab = this.sessionTabBar.tabs.find(t => t.config.id === sessionId);
 		if (!tab) return;
 
-		tab.classList.remove("tab-status-running", "tab-status-halted", "tab-status-completed");
+		tab.classList.remove("tab-status-running", "tab-status-halted", "tab-status-completed", "tab-status-pending-query");
 
 		if (status === "running") {
 			tab.classList.add("tab-status-running");
 			tab._statusIcon.innerHTML = tab._defaultStatusIcon || "developer_board";
+			tab._statusIcon.style.animation = "";
+		} else if (status === "pending-query") {
+			tab.classList.add("tab-status-pending-query");
+			tab._statusIcon.innerHTML = "help";
 			tab._statusIcon.style.animation = "";
 		} else if (status === "halted") {
 			tab.classList.add("tab-status-halted");
@@ -1078,7 +1120,7 @@ class AIManager {
 
 			try {
 				const messagesForAI = session.messages.filter(m => m.role === 'user' || m.role === 'model');
-				const systemPrompt = await this.getSystemPrompt();
+				const systemPrompt = await this.getSystemPrompt(session);
 				connection.chat(messagesForAI, callbacks, systemPrompt);
 			} catch (e) {
 				console.error("Background Chat generation failed:", e);
@@ -1117,6 +1159,107 @@ class AIManager {
 		}
 
 		this._updatePromptAreaPlaceholder(); // Update prompt area disabled state
+	}
+
+	/**
+	 * Selects the most appropriate connection for a sub-agent based on hint size and parent connection.
+	 * Available connections are tested first before matching.
+	 * @param {string} hintSize - 'tiny', 'small', or 'medium'.
+	 * @param {string} parentConnectionId - The connection ID of the parent session.
+	 * @returns {Promise<string>} The selected connection ID.
+	 */
+	async selectConnectionForSubAgent(hintSize, parentConnectionId) {
+		const allConfiguredConnections = AIConnections.getConnections().filter(c => {
+			const inst = AIConnections.getInstance(c.id);
+			return inst && inst.isConfigured();
+		});
+
+		// Test configured connections for availability in parallel
+		const testedResults = await Promise.all(
+			allConfiguredConnections.map(async (conn) => {
+				try {
+					await AIConnections.testConnection(conn);
+					return { conn, available: true };
+				} catch (e) {
+					console.warn(`[Connection Selector] Skipping connection '${conn.id}' because availability test failed:`, e.message);
+					return { conn, available: false };
+				}
+			})
+		);
+
+		const connections = testedResults
+			.filter(r => r.available)
+			.map(r => r.conn);
+
+		const isBusy = (connId) => {
+			for (const [sessionId, running] of this.runningSessions) {
+				let conn = null;
+				if (running.type === 'agent' && running.instance) {
+					conn = running.instance.connection;
+				} else if (running.type === 'chat' && running.controller) {
+					conn = running.controller;
+				}
+				if (conn && conn.connectionId === connId) {
+					return true;
+				}
+			}
+			return false;
+		};
+
+		let nearOrder = [];
+		if (hintSize === 'tiny') {
+			nearOrder = ['tiny', 'small'];
+		} else if (hintSize === 'small') {
+			nearOrder = ['small', 'medium', 'tiny'];
+		} else if (hintSize === 'medium') {
+			nearOrder = ['medium', 'small', 'tiny'];
+		} else {
+			nearOrder = [hintSize];
+		}
+
+		// Step 1: Exact size match, not busy.
+		for (const conn of connections) {
+			if (conn.size === hintSize && !isBusy(conn.id)) {
+				return conn.id;
+			}
+		}
+
+		// Step 2: Near size match, not busy (in nearOrder, excluding exact).
+		const nearCandidatesOnly = nearOrder.filter(size => size !== hintSize);
+		for (const size of nearCandidatesOnly) {
+			for (const conn of connections) {
+				if (conn.size === size && !isBusy(conn.id)) {
+					return conn.id;
+				}
+			}
+		}
+
+		// Step 3: Exact size match, busy.
+		for (const conn of connections) {
+			if (conn.size === hintSize) {
+				return conn.id;
+			}
+		}
+
+		// Step 4: Near size match, busy.
+		for (const size of nearCandidatesOnly) {
+			for (const conn of connections) {
+				if (conn.size === size) {
+					return conn.id;
+				}
+			}
+		}
+
+		// Step 5: Reuse the same connection as parent session (regardless of size).
+		if (parentConnectionId) {
+			const parentConn = AIConnections.getConnection(parentConnectionId);
+			if (parentConn) {
+				return parentConn.id;
+			}
+		}
+
+		// Fallback to default connection
+		return parentConnectionId || AIConnections.defaultConnectionId;
 	}
 
 	/**
@@ -1281,6 +1424,13 @@ class AIManager {
 	get activeSessionId() { return this.sessionsManager.activeSessionId; }
 	set activeSessionId(val) { this.sessionsManager.activeSessionId = val; }
 
+	isSessionViewed(sessionId) {
+		if (this.activeSession?.activeSubAgentSessionId) {
+			return this.activeSession.activeSubAgentSessionId === sessionId;
+		}
+		return this.activeSessionId === sessionId;
+	}
+
 	get activeSession() { return this.sessionsManager.activeSession; }
 	set activeSession(val) { this.sessionsManager.activeSession = val; }
 
@@ -1370,15 +1520,30 @@ class AIManager {
 		}
 	}
 
-	stopAgent(sessionId = null) {
+	async stopAgent(sessionId = null) {
 		const targetSessionId = sessionId || this.activeSessionId;
 		if (!targetSessionId) return;
+
+		// Count active sub-agents
+		let activeSubAgentsCount = 0;
+		for (const [id, run] of this.runningSessions) {
+			if (run.type === 'agent' && run.instance?.session?.parentId === targetSessionId) {
+				activeSubAgentsCount++;
+			}
+		}
+
+		if (activeSubAgentsCount > 0) {
+			const confirmed = await window.modal.confirm(`This session has ${activeSubAgentsCount} active sub-agents, are you sure?`, "Stop Execution");
+			if (!confirmed) {
+				return;
+			}
+		}
 
 		// Abort agent if it's running
 		const running = this.runningSessions.get(targetSessionId);
 		if (running) {
 			if (running.type === 'agent' && running.instance) {
-				running.instance._abortAgent = true;
+				running.instance.stop("User requested stop");
 			}
 			if (running.controller && typeof running.controller.stop === 'function') {
 				running.controller.stop();
@@ -1390,7 +1555,7 @@ class AIManager {
 			if (this.ai && typeof this.ai.stop === 'function') {
 				this.ai.stop();
 			}
-			this._stopGlow();
+			this._stopGlow(targetSessionId);
 			this.consecutiveHaltCount = 0;
 			if (this.haltBar) {
 				this.haltBar.remove();
@@ -1734,8 +1899,8 @@ class AIManager {
 		const modelMessageId = crypto.randomUUID(); // Pre-generate ID for the upcoming model response
 		const responseBlock = this.historyManager.createStreamingBlock(modelMessageId, "model", targetSessionId);
 		
-		if (this.activeSessionId === targetSessionId) {
-			this._startGlow();
+		if (this.isSessionViewed(targetSessionId)) {
+			this._startGlow(targetSessionId);
 			this.conversationArea.append(responseBlock);
 			responseBlock.style.minHeight = `${Math.max(50, availableHeightForResponse)}px`; // Ensure a minimum of 50px
 
@@ -1751,23 +1916,19 @@ class AIManager {
 
 		const callbacks = {
 			onUpdate: (fullResponse) => { // Update the responseBlock directly
-				if (this.activeSessionId === targetSessionId) {
-					if (callbacks.toolCalls && callbacks.toolCalls.length > 0) {
-						this._startGlow();
-					} else {
-						this._stopGlow();
-					}
+				if (callbacks.toolCalls && callbacks.toolCalls.length > 0) {
+					this._startGlow(targetSessionId);
+				} else {
+					this._stopGlow(targetSessionId);
 				}
 				const shouldScroll = this._shouldAutoScroll();
 				responseBlock.updateContent(fullResponse);
-				if (this.activeSessionId === targetSessionId && shouldScroll && this.conversationArea) {
+				if (this.isSessionViewed(targetSessionId) && shouldScroll && this.conversationArea) {
 					this.conversationArea.scrollTop = this.conversationArea.scrollHeight;
 				}
 			},
 			onDone: async (fullResponse, contextRatioPercent) => { // Mark async to await set
-				if (this.activeSessionId === targetSessionId) {
-					this._stopGlow();
-				}
+				this._stopGlow(targetSessionId);
 				// First, update the session data and add the delete button to the user's prompt.
 				const modelMessage = { id: modelMessageId, role: "model", type: "model", content: fullResponse, diffStatuses: [], timestamp: Date.now() };
 				if (callbacks.toolCalls && callbacks.toolCalls.length > 0) {
@@ -1777,7 +1938,7 @@ class AIManager {
 					modelMessage.thoughtSignature = callbacks.thoughtSignature;
 				}
 				targetSession.messages.push(modelMessage);
-				if (this.activeSessionId === targetSessionId) {
+				if (this.isSessionViewed(targetSessionId)) {
 					this.historyManager.addInteractionToLastUserMessage(userMessage); // Add delete button to user prompt
 				}
 				targetSession.lastModified = Date.now();
@@ -1911,7 +2072,7 @@ class AIManager {
 							}
 						}
 
-						if (anyFailed && this.activeSessionId === targetSessionId) {
+						if (anyFailed && this.isSessionViewed(targetSessionId)) {
 							// Notify user of failed merge and ask for choice
 							const choice = await window.modal.confirm(
 								`The generated diff for <strong>${failedFilename}</strong> could not be applied automatically. Would you like to review it manually or retry?`,
@@ -1929,7 +2090,7 @@ class AIManager {
 					}
 				}
 
-				if (this.activeSessionId === targetSessionId) {
+				if (this.isSessionViewed(targetSessionId)) {
 					this._dispatchContextUpdate("append_model"); // Dispatch after model response
 				}
 
@@ -1937,9 +2098,7 @@ class AIManager {
 				this.processNextQueuedPrompt(targetSessionId);
 			},
 			onError: async (error) => { // Mark async to await set
-				if (this.activeSessionId === targetSessionId) {
-					this._stopGlow();
-				}
+				this._stopGlow(targetSessionId);
 				// The spinner is also removed here when innerHTML is overwritten.
 				responseBlock.style.minHeight = ''; // Reset min-height on error too
 				if (typeof responseBlock.updateContent === 'function') {
@@ -1963,7 +2122,7 @@ class AIManager {
 				targetSession.lastModified = Date.now();
 				await workspaceClient.setSession(targetSession.id, targetSession);
 
-				if (this.activeSessionId === targetSessionId) {
+				if (this.isSessionViewed(targetSessionId)) {
 					this._dispatchContextUpdate("append_error");
 				}
 
@@ -2601,6 +2760,30 @@ ${summarizationPromptContent}`;
 		}
 		return true; // No stale files, proceed
 	}
+	/**
+	 * Scans messages for sub-agent session IDs and permanently deletes their data.
+	 * @param {Array} messages - The list of message objects.
+	 */
+	async deleteSubAgentsInMessages(messages) {
+		if (!messages || !Array.isArray(messages)) return;
+		for (const msg of messages) {
+			if (msg.type === "user" && msg.content && msg.content.startsWith("[sub-agent:")) {
+				const subId = msg.content.substring(11, msg.content.length - 1);
+				try {
+					// Stop the sub-agent if it is currently running
+					const running = this.runningSessions?.get(subId);
+					if (running && running.type === 'agent' && running.instance) {
+						running.instance.stop("Sub-agent deleted from history");
+					}
+					// Cascade delete session files
+					await this.sessionsManager._deleteSessionDataWithCascade(subId);
+				} catch (e) {
+					console.error("Failed to delete sub-agent session:", subId, e);
+				}
+			}
+		}
+	}
+
 	async replayMessage(messageId) {
 		if (this._isProcessing) {
 			console.warn("AI is currently processing another request. Please wait.")
@@ -2615,7 +2798,10 @@ ${summarizationPromptContent}`;
 		const userMessage = this.activeSession.messages[msgIndex];
 		if (userMessage.type !== "user") return;
 
-		// 1. Delete all turns AFTER the target turn
+		// 1. Delete all turns AFTER the target turn and their sub-agents
+		const deletedMessages = this.activeSession.messages.slice(msgIndex + 1);
+		await this.deleteSubAgentsInMessages(deletedMessages);
+
 		this.activeSession.messages.splice(msgIndex + 1);
 		this.activeSession.lastModified = Date.now();
 		await workspaceClient.setSession(this.activeSession.id, this.activeSession);
@@ -2642,8 +2828,8 @@ ${summarizationPromptContent}`;
 		const availableHeightForResponse = this.conversationArea.clientHeight - (fileBarHeight + 16);
 
 		const modelMessageId = crypto.randomUUID();
-		const responseBlock = this.historyManager.createStreamingBlock(modelMessageId);
-		this._startGlow();
+		const responseBlock = this.historyManager.createStreamingBlock(modelMessageId, "model", this.activeSessionId);
+		this._startGlow(this.activeSessionId);
 		this.conversationArea.append(responseBlock);
 		responseBlock.style.minHeight = `${Math.max(50, availableHeightForResponse)}px`;
 
@@ -2656,9 +2842,9 @@ ${summarizationPromptContent}`;
 		const callbacks = {
 			onUpdate: (fullResponse) => {
 				if (callbacks.toolCalls && callbacks.toolCalls.length > 0) {
-					this._startGlow();
+					this._startGlow(this.activeSessionId);
 				} else {
-					this._stopGlow();
+					this._stopGlow(this.activeSessionId);
 				}
 				const shouldScroll = this._shouldAutoScroll();
 				responseBlock.updateContent(fullResponse);
@@ -2667,7 +2853,7 @@ ${summarizationPromptContent}`;
 				}
 			},
 			onDone: async (fullResponse) => {
-				this._stopGlow();
+				this._stopGlow(this.activeSessionId);
 				const modelMessage = { id: modelMessageId, role: "model", type: "model", content: fullResponse, diffStatuses: [], timestamp: Date.now() };
 				if (callbacks.toolCalls && callbacks.toolCalls.length > 0) {
 					modelMessage.toolCalls = callbacks.toolCalls;
@@ -2827,7 +3013,7 @@ ${summarizationPromptContent}`;
 				this._setButtonsDisabledState(false);
 			},
 			onError: async (error) => {
-				this._stopGlow();
+				this._stopGlow(this.activeSessionId);
 				responseBlock.style.minHeight = '';
 				if (typeof responseBlock.updateContent === 'function') {
 					responseBlock.updateContent(`Error: ${error.message}`);
@@ -2899,6 +3085,16 @@ ${summarizationPromptContent}`;
 		const storedForgivenessMode = localStorage.getItem("aiForgivenessMode")
 		if (storedForgivenessMode !== null) {
 			this.forgivenessMode = storedForgivenessMode === "true"
+		}
+
+		const storedMaxSubAgents = localStorage.getItem("maxSubAgents")
+		if (storedMaxSubAgents !== null) {
+			this.config.maxSubAgents = parseInt(storedMaxSubAgents)
+		}
+
+		const storedDefaultAllowSubAgents = localStorage.getItem("defaultAllowSubAgents")
+		if (storedDefaultAllowSubAgents !== null) {
+			this.config.defaultAllowSubAgents = storedDefaultAllowSubAgents === "true"
 		}
 	}
 }

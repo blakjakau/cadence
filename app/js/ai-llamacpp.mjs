@@ -1,7 +1,7 @@
 // ai-llamacpp.mjs
 import AI from './ai.mjs';
 import systemPrompt from "./llamacppSystemPrompt.mjs";
-import { tools as cadenceTools } from "./ai-manager-tools-schema.mjs";
+import { tools as cadenceTools, subAgentToolsList } from "./ai-manager-tools-schema.mjs";
 
 class LlamaCpp extends AI {
     constructor() {
@@ -246,7 +246,7 @@ class LlamaCpp extends AI {
         return this.chat(messages, callbacks);
     }
 
-    async chat(messages, callbacks = {}, systemPromptOverride = null) {
+    async chat(messages, callbacks = {}, systemPromptOverride = null, session = null) {
         const { onStart, onUpdate, onDone, onError, onContextRatioUpdate, onPrefillProgress } = callbacks;
         if (onStart) onStart();
 
@@ -283,9 +283,18 @@ class LlamaCpp extends AI {
                 }
             }
 
-            if (window.ui?.aiManager?.agentMode && cadenceTools && cadenceTools.length > 0) {
-                const isPlanning = window.ui?.aiManager?.planningMode === true;
-                const filteredTools = cadenceTools.filter(t => !(isPlanning && (t.name === "create_file" || t.name === "edit_file")));
+            if ((window.ui?.aiManager?.agentMode || (session && session.parentId)) && cadenceTools && cadenceTools.length > 0) {
+                let filteredTools;
+                if (session && session.parentId) {
+                    filteredTools = cadenceTools.filter(t => subAgentToolsList.includes(t.name));
+                } else {
+                    const isPlanning = window.ui?.aiManager?.planningMode === true;
+                    filteredTools = cadenceTools.filter(t => {
+                        if (isPlanning && (t.name === "create_file" || t.name === "edit_file")) return false;
+                        if (session && session.allowSubAgents === false && t.name === "create_sub_agent") return false;
+                        return true;
+                    });
+                }
                 requestBody.tools = filteredTools.map(t => ({
                     type: "function",
                     function: {

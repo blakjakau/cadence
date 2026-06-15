@@ -373,7 +373,7 @@ export default class AIManagerMessageRenderer {
             }
 
             // Parse unclosed tags at the end of the streaming tool args
-            const openTags = ['path', 'query', 'search', 'replace', 'content', 'plan', 'tasks', 'taskName', 'startLine', 'lineCount', 'startline', 'linecount'];
+            const openTags = ['path', 'query', 'search', 'replace', 'content', 'plan', 'tasks', 'taskName', 'startLine', 'lineCount', 'startline', 'linecount', 'result'];
             for (const tag of openTags) {
                 if (args[tag] === undefined) {
                     const tagStartStr = `<${tag}>`;
@@ -531,6 +531,7 @@ export default class AIManagerMessageRenderer {
             else if (toolName.includes("edit")) icon = "edit";
             else if (toolName.includes("create")) icon = "create_new_folder";
             else if (toolName.includes("open")) icon = "launch";
+            else if (toolName === "query") icon = "help";
 
             let label = `<code>${toolName}</code>`;
             const fileActions = ["edit_file", "read_file", "create_file", "find_file", "open_file", "search_in_file"];
@@ -564,20 +565,47 @@ export default class AIManagerMessageRenderer {
                 }
             } else if (args.query) {
                 label = `<code>${toolName}:</code> <span class="tool-call-query">"${this._escapeHtml(args.query)}"</span>`;
+            } else if (args.question) {
+                const truncated = args.question.length > 60 ? args.question.substring(0, 60) + "..." : args.question;
+                label = `<code>${toolName}:</code> <span class="tool-call-query">"${this._escapeHtml(truncated)}"</span>`;
             }
 
-            const badgeClass = isClosed ? (isFailed ? 'failed' : 'invoked') : 'preparing';
-            const badgeText = isClosed ? (isFailed ? 'Failed' : 'Invoked') : 'Preparing...';
+            let badgeClass = isClosed ? (isFailed ? 'failed' : 'invoked') : 'preparing';
+            let badgeText = isClosed ? (isFailed ? 'Failed' : 'Invoked') : 'Preparing...';
+            if (toolName === "sub_agent_complete") {
+                badgeText = isClosed ? (isFailed ? 'Failed' : 'Completed') : 'Reporting...';
+            } else if (toolName === "query") {
+                badgeText = isClosed ? (isFailed ? 'Failed' : 'Answered') : 'Waiting...';
+            }
 
-            const toolCardHtml = `
-                <div class="tool-call-block compact">
-                    <div class="tool-call-header compact">
-                        <ui-icon>${icon}</ui-icon>
-                        <span class="tool-call-title compact">${label}</span>
-                        <span class="tool-call-status-badge compact ${badgeClass}">${badgeText}</span>
+            let toolCardHtml;
+            if (toolName === "sub_agent_complete") {
+                const resultText = args.result || "";
+                const renderedResult = resultText.trim() ? this.aiManager.md.render(resultText) : "";
+                toolCardHtml = `
+                    <div class="tool-call-block sub-agent-complete-card">
+                        <div class="tool-call-header">
+                            <ui-icon>check_circle</ui-icon>
+                            <span class="tool-call-title">Sub-Agent Task Completed</span>
+                            <span class="tool-call-status-badge ${badgeClass}">${badgeText}</span>
+                        </div>
+                        <div class="tool-call-body">
+                            <div class="sub-agent-result-label">Result:</div>
+                            <div class="sub-agent-result-text">${renderedResult}</div>
+                        </div>
                     </div>
-                </div>
-            `;
+                `;
+            } else {
+                toolCardHtml = `
+                    <div class="tool-call-block compact">
+                        <div class="tool-call-header compact">
+                            <ui-icon>${icon}</ui-icon>
+                            <span class="tool-call-title compact">${label}</span>
+                            <span class="tool-call-status-badge compact ${badgeClass}">${badgeText}</span>
+                        </div>
+                    </div>
+                `;
+            }
 
             const beforeText = mainContent.substring(0, tc.startIdx) || "";
             const afterText = mainContent.substring(tc.endIdx) || "";

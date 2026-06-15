@@ -92,6 +92,7 @@ class AIManagerSessions {
 			planningMode: defaultPlanning,
 			forgivenessMode: lastForgivenessMode,
 			connectionId: defaultConnectionId,
+			allowSubAgents: this.manager.config.defaultAllowSubAgents ?? true,
 		};
 
 		await workspaceClient.setSession(newId, newSessionData);
@@ -232,8 +233,11 @@ class AIManagerSessions {
 			await workspaceClient.setSession(this.activeSession.id, this.activeSession);
 		}
 
-		// Load the new session's data
-		const newSessionData = await workspaceClient.getSession(sessionId);
+		// Load the new session's data: reuse running session object if it exists to maintain reference identity
+		const running = this.manager.runningSessions.get(sessionId);
+		const newSessionData = (running && running.instance && running.instance.session)
+			? running.instance.session
+			: await workspaceClient.getSession(sessionId);
 		if (!newSessionData) {
 			// This is a recovery case. The tab exists but data is gone.
 			console.error(`Data for session ID ${sessionId} not found!`);
@@ -241,6 +245,9 @@ class AIManagerSessions {
 			if (staleTab) this.deleteSession(sessionId, staleTab); // Trigger a proper delete.
 			return; // Abort this switch.
 		}
+
+		// Self-healing: Automatically scan and re-link any disconnected sub-agents for this session
+		await this.repairDisconnectedSubAgents(newSessionData);
 
 		// Update manager's state
 		this.activeSession = newSessionData;
@@ -273,11 +280,7 @@ class AIManagerSessions {
 		this.promptIndex = (this.activeSession.promptHistory?.length || 0);
 		this.manager._resizePromptArea();
 		this.manager._setButtonsDisabledState(this.manager._isProcessing);
-		if (this.manager._isProcessing) {
-			this.manager._startGlow();
-		} else {
-			this.manager._stopGlow();
-		}
+		this.manager._updateGlowForViewedSession();
 		this.manager._updateAIInfoDisplay();
 		this.manager._updatePromptAreaPlaceholder(); // Update placeholder after session switch
 		this.manager._updateAgentProgressPanel();
@@ -303,12 +306,91 @@ class AIManagerSessions {
 		this.manager.promptEditor.focus(); // Ensure focus returns to the prompt editor after a switch
 	}
 
+	async repairDisconnectedSubAgents(session) {
+		if (!session || !session.messages) return;
+
+		try {
+			const allSessions = await workspaceClient.getSessions();
+			const subSessions = allSessions.filter(s => s && s.parentId === session.id);
+			if (subSessions.length === 0) return;
+
+			const linkedSubAgentIds = new Set();
+			for (const msg of session.messages) {
+				if (msg.type === "user" && msg.content && msg.content.startsWith("[sub-agent:")) {
+					const match = msg.content.match(/^\[sub-agent:(ai-session-[a-f0-9-]+)\]$/);
+					if (match) {
+						linkedSubAgentIds.add(match[1]);
+					}
+				}
+			}
+
+			let modified = false;
+			for (const subSession of subSessions) {
+				if (!linkedSubAgentIds.has(subSession.id)) {
+					console.log(`[Self-Healing] Found disconnected sub-agent: ${subSession.id}. Re-linking to parent session.`);
+
+					// Find the model message that contains the tool call to create this sub-agent
+					let insertIndex = -1;
+					for (let i = session.messages.length - 1; i >= 0; i--) {
+						const msg = session.messages[i];
+						if (msg.role === "model" && msg.toolCalls) {
+							const hasCreateCall = msg.toolCalls.some(tc => {
+								const name = tc.name || tc.functionCall?.name;
+								return name === "create_sub_agent";
+							});
+							if (hasCreateCall) {
+								insertIndex = i + 1;
+								break;
+							}
+						}
+					}
+
+					const triggerMessage = {
+						role: "user",
+						type: "user",
+						content: `[sub-agent:${subSession.id}]`,
+						timestamp: subSession.createdAt || Date.now(),
+						id: crypto.randomUUID()
+					};
+
+					if (insertIndex !== -1 && insertIndex <= session.messages.length) {
+						session.messages.splice(insertIndex, 0, triggerMessage);
+					} else {
+						session.messages.push(triggerMessage);
+					}
+					modified = true;
+				}
+			}
+
+			if (modified) {
+				session.lastModified = Date.now();
+				await workspaceClient.setSession(session.id, session);
+			}
+		} catch (err) {
+			console.error("[Self-Healing] Failed to repair disconnected sub-agents:", err);
+		}
+	}
+
+	async _deleteSessionDataWithCascade(sessionId) {
+		try {
+			const allSessions = await workspaceClient.getSessions();
+			for (const sub of allSessions) {
+				if (sub.parentId === sessionId) {
+					await workspaceClient.deleteSession(sub.id);
+				}
+			}
+		} catch (e) {
+			console.error("Failed to cascade delete sub-agent sessions:", e);
+		}
+		await workspaceClient.deleteSession(sessionId);
+	}
+
 	async closeSessionTab(sessionId, tab) {
 		const fullSessionData = await workspaceClient.getSession(sessionId);
 		const hasModelResponse = fullSessionData?.messages?.some(m => m.role === 'model');
 
 		if (!hasModelResponse) {
-			await workspaceClient.deleteSession(sessionId);
+			await this._deleteSessionDataWithCascade(sessionId);
 			window.modal.toast("Empty session deleted.");
 		} else {
 			window.modal.toast("Chat session archived to history.");
@@ -342,7 +424,7 @@ class AIManagerSessions {
 		}
 
 		// Delete data
-		await workspaceClient.deleteSession(sessionId);
+		await this._deleteSessionDataWithCascade(sessionId);
 		window.modal.toast("Chat session permanently deleted.");
 		
 		if (sessionMeta) {
@@ -376,7 +458,15 @@ class AIManagerSessions {
 		allSessions.sort((a, b) => b.lastModified - a.lastModified);
 		
 		const activeIds = new Set(this.allSessionMetadata.map(s => s.id));
-		const historySessions = allSessions.filter(s => !activeIds.has(s.id));
+		const allSessionIds = new Set(allSessions.map(s => s.id));
+		const historySessions = allSessions.filter(s => {
+			if (activeIds.has(s.id)) return false;
+			// Suppress sub-agent sessions if their parent still exists in the database
+			if (s.parentId && allSessionIds.has(s.parentId)) {
+				return false;
+			}
+			return true;
+		});
 
 		let isMultiSelectMode = false;
 		let selectedSessions = new Set();
@@ -534,7 +624,7 @@ class AIManagerSessions {
 					if (confirmed) {
 						const deletedCount = selectedSessions.size;
 						for (const id of selectedSessions) {
-							await workspaceClient.deleteSession(id);
+							await this._deleteSessionDataWithCascade(id);
 							const idx = historySessions.findIndex(s => s.id === id);
 							if (idx > -1) historySessions.splice(idx, 1);
 						}

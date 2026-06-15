@@ -1,6 +1,6 @@
 // ai-manager-history.mjs
 
-import { Block, Button } from "./elements.mjs"
+import { Block, Button, Inline, Icon } from "./elements.mjs"
 import DEFAULT_WELCOME_MESSAGE_MARKDOWN from "./ai-manager-setup-guide.mjs"
 import workspaceClient from "./workspace-client.mjs"
 import { getAgentDirectives } from "./ai-manager-agent-prompt.mjs"
@@ -38,7 +38,8 @@ class AIManagerHistory {
 	}
 
 	set activeStreamingBlock(val) {
-		const runningSession = this.manager.runningSessions.get(this.manager.activeSessionId);
+		const targetSessionId = val?.sessionId || this.manager.activeSessionId;
+		const runningSession = this.manager.runningSessions.get(targetSessionId);
 		if (runningSession) {
 			runningSession.responseBlock = val;
 		}
@@ -47,6 +48,7 @@ class AIManagerHistory {
 
 	clear() {
 		if (this.manager.activeSession) {
+			this.manager.deleteSubAgentsInMessages(this.manager.activeSession.messages);
 			this.manager.activeSession.messages = []; // Clear the active session's messages
 			this.manager.activeSession.promptInput = ""; // Clear its current prompt input
 			this.manager.activeSession.promptHistory = []; // Clear its command history
@@ -125,13 +127,77 @@ class AIManagerHistory {
 	async render({ isNewMessage = false } = {}) {
 		if (!this.conversationArea) return;
 
-		// console.debug("[History Render Debug] rendering messages:", this.chatHistory.map(m => ({ id: m.id, role: m.role, type: m.type, contentPreview: m.content ? m.content.substring(0, 60) : "" })));
+		this.manager._updateGlowForViewedSession();
+
+		const activeSubAgentSessionId = this.manager.activeSession?.activeSubAgentSessionId;
+		if (activeSubAgentSessionId) {
+			this.conversationArea.innerHTML = ""; // Clear existing messages
+			this.populateFileBar(); // Always populate file bar
+
+			// Sticky back button
+			const header = new Block();
+			header.className = "sub-agent-back-header";
+			header.innerHTML = `<ui-icon>arrow_back</ui-icon> <span>Back to parent thread</span>`;
+			header.onclick = () => {
+				if (this.manager.activeSession) {
+					delete this.manager.activeSession.activeSubAgentSessionId;
+					this.render();
+				}
+			};
+			this.conversationArea.appendChild(header);
+
+			// Load sub-agent session data: reuse running sub-agent session if active
+			const runningSubAgent = this.manager.runningSessions.get(activeSubAgentSessionId);
+			const subSession = (runningSubAgent && runningSubAgent.instance?.session)
+				? runningSubAgent.instance.session
+				: await workspaceClient.getSession(activeSubAgentSessionId);
+			if (!subSession) {
+				const errorMsg = new Block();
+				errorMsg.className = "sub-agent-error-msg";
+				errorMsg.textContent = "Error: Sub-agent session not found or deleted.";
+				this.conversationArea.appendChild(errorMsg);
+				return;
+			}
+
+			// Render messages
+			const subMessages = subSession.messages || [];
+			const summarizedIds = new Set();
+			const summaries = subMessages.filter(msg => msg.type === "cycle_summary");
+			for (const summary of summaries) {
+				const startId = summary.cycleStartMsgId;
+				const endId = summary.cycleEndMsgId;
+				if (startId && endId) {
+					const startIdx = subMessages.findIndex(m => m.id === startId);
+					const endIdx = subMessages.findIndex(m => m.id === endId);
+					if (startIdx !== -1 && endIdx !== -1 && startIdx <= endIdx) {
+						for (let j = startIdx; j <= endIdx; j++) {
+							summarizedIds.add(subMessages[j].id);
+						}
+					}
+				}
+			}
+
+			for (let i = 0; i < subMessages.length; i++) {
+				const message = subMessages[i];
+				if (message.type === 'file_context') continue;
+				if (summarizedIds.has(message.id)) continue;
+				
+				const element = this._createMessageElement(message, i);
+				if (element) this.conversationArea.append(element);
+			}
+
+			if (runningSubAgent && runningSubAgent.responseBlock) {
+				this.conversationArea.append(runningSubAgent.responseBlock);
+			}
+
+			return;
+		}
 
 		this.conversationArea.innerHTML = ""; // Clear existing messages
 		this.populateFileBar(); // Always populate file bar
 
 		// If AI is not configured, show the setup guide and hide empty state.
-		if (!this.manager.ai.isConfigured()) {
+		if (!this.manager.ai || !this.manager.ai.isConfigured()) {
 			this._showDefaultWelcomeMessage();
 			this.manager._emptyStateElement.style.display = 'none';
 			return;
@@ -226,6 +292,11 @@ class AIManagerHistory {
 	 */
 	appendMessageElement(message) {
 		if (!this.conversationArea) return;
+
+		// If viewing a sub-agent session, do not append parent messages to DOM
+		if (this.manager.activeSession?.activeSubAgentSessionId) {
+			return;
+		}
 		
 		// Hide empty state background if it's visible
 		this.manager._emptyStateElement.style.display = 'none';
@@ -250,10 +321,12 @@ class AIManagerHistory {
 		return element;
 	}
 
-	createStreamingBlock(messageId, type = "model") {
+	createStreamingBlock(messageId, type = "model", sessionId = null) {
+		const targetSessionId = sessionId || this.manager.activeSessionId;
 		if (this.manager.rawViewMode) {
 			const message = { id: messageId, type, content: "" };
 			const element = this._createExpanderMessageElement(message, this.chatHistory.length);
+			element.sessionId = targetSessionId;
 			// Open the expander by default for active streaming
 			const contentDiv = element.querySelector(".expander-content");
 			if (contentDiv) contentDiv.style.display = "block";
@@ -281,7 +354,9 @@ class AIManagerHistory {
 			};
 			
 			element.finalize = (fullResponse, finalizedMessage) => {
-				this.activeStreamingBlock = null; // Clear active streaming reference
+				const running = this.manager.runningSessions.get(targetSessionId);
+				if (running) running.responseBlock = null;
+				this._localActiveStreamingBlock = null;
 				element.updateContent(fullResponse);
 				const deleteIcon = element.querySelector(".delete-raw-item");
 				if (deleteIcon) {
@@ -291,10 +366,13 @@ class AIManagerHistory {
 					};
 				}
 			};
-			this.activeStreamingBlock = element;
+			const running = this.manager.runningSessions.get(targetSessionId);
+			if (running) running.responseBlock = element;
+			this._localActiveStreamingBlock = element;
 			return element;
 		} else {
 			const responseBlock = new Block();
+			responseBlock.sessionId = targetSessionId;
 			responseBlock.classList.add("response-block");
 			if (type === "error") responseBlock.classList.add("error-block");
 			responseBlock.dataset.messageId = messageId;
@@ -334,7 +412,9 @@ class AIManagerHistory {
 			};
 			
 			responseBlock.finalize = (fullResponse, finalizedMessage) => {
-				this.activeStreamingBlock = null; // Clear active streaming reference
+				const running = this.manager.runningSessions.get(targetSessionId);
+				if (running) running.responseBlock = null;
+				this._localActiveStreamingBlock = null;
 				responseBlock.innerHTML = this.manager.messageRenderer.renderResponseContent(fullResponse, finalizedMessage, true);
 				this.manager.messageRenderer.addCodeBlockButtons(responseBlock, finalizedMessage);
 				const deleteButton = this._createSingleDeleteButton(messageId);
@@ -343,7 +423,9 @@ class AIManagerHistory {
 				const tokenCount = typeof finalizedMessage.tokenCount === 'number' ? finalizedMessage.tokenCount : this.ai.estimateTokens([finalizedMessage]);
 				responseBlock.setAttribute("title", `Tokens: ${tokenCount}`);
 			};
-			this.activeStreamingBlock = responseBlock;
+			const running = this.manager.runningSessions.get(targetSessionId);
+			if (running) running.responseBlock = responseBlock;
+			this._localActiveStreamingBlock = responseBlock;
 			return responseBlock;
 		}
 	}
@@ -372,51 +454,113 @@ class AIManagerHistory {
 			messageBlock.innerHTML = this.md.render(message.content);
 			wrapper.append(messageBlock);
 
-			const controlsDiv = document.createElement("div");
+			const controlsDiv = new Block();
 			controlsDiv.className = "prompt-controls";
-			controlsDiv.style.display = "flex";
-			controlsDiv.style.gap = "8px";
-			controlsDiv.style.position = "absolute";
-			controlsDiv.style.right = "8px";
-			controlsDiv.style.bottom = "-16px";
-			controlsDiv.style.fontSize = "10px";
-			controlsDiv.style.background = "var(--bg-primary)";
-			controlsDiv.style.padding = "2px 6px";
-			controlsDiv.style.borderRadius = "4px";
-			controlsDiv.style.border = "1px solid var(--border-primary)";
-			controlsDiv.style.zIndex = "5";
 
-			const editLink = document.createElement("a");
-			editLink.href = "#";
+			const editLink = new Inline();
+			editLink.className = "prompt-controls-link";
 			editLink.textContent = "Edit";
-			editLink.style.color = "var(--theme)";
-			editLink.style.textDecoration = "none";
 			editLink.onclick = (e) => {
 				e.preventDefault();
 				this.manager.editQueuedPrompt(this.manager.activeSessionId, message.id);
 			};
 
-			const divider = document.createElement("span");
+			const divider = new Inline();
+			divider.className = "prompt-controls-divider";
 			divider.textContent = "|";
-			divider.style.color = "var(--border-primary)";
 
-			const deleteLink = document.createElement("a");
-			deleteLink.href = "#";
+			const deleteLink = new Inline();
+			deleteLink.className = "prompt-controls-link delete";
 			deleteLink.textContent = "Delete";
-			deleteLink.style.color = "var(--color-error, #d32f2f)";
-			deleteLink.style.textDecoration = "none";
 			deleteLink.onclick = (e) => {
 				e.preventDefault();
 				this.manager.deleteQueuedPrompt(this.manager.activeSessionId, message.id);
 			};
 
-			controlsDiv.appendChild(editLink);
-			controlsDiv.appendChild(divider);
-			controlsDiv.appendChild(deleteLink);
+			controlsDiv.append(editLink, divider, deleteLink);
 			wrapper.appendChild(controlsDiv);
 
 			element = wrapper;
 
+		} else if (message.type === "user" && message.content && message.content.startsWith("[sub-agent:")) {
+			// Extract sub-agent ID
+			const subAgentId = message.content.substring(11, message.content.length - 1);
+			
+			const wrapper = new Block();
+			wrapper.className = "prompt-pill-wrapper sub-agent-pill-wrapper";
+			wrapper.dataset.messageId = message.id;
+
+			const card = new Block();
+			card.className = "sub-agent-trigger-card";
+
+			const header = new Block();
+			header.className = "sub-agent-card-header";
+
+			const title = new Block();
+			title.className = "sub-agent-card-title";
+			title.innerHTML = `<ui-icon>developer_board</ui-icon> <span>Loading Sub-Agent...</span>`;
+
+			const badge = new Inline();
+			badge.className = "sub-agent-card-badge";
+			badge.textContent = "Checking";
+
+			header.appendChild(title);
+			header.appendChild(badge);
+			card.appendChild(header);
+
+			const desc = new Block();
+			desc.className = "sub-agent-card-desc";
+			desc.textContent = "Fetching sub-agent details...";
+			card.appendChild(desc);
+
+			wrapper.appendChild(card);
+			element = wrapper;
+
+			// Fetch details asynchronously: reuse running sub-agent session if active
+			const runningSub = window.ui?.aiManager?.runningSessions.get(subAgentId);
+			const getSubSessionPromise = (runningSub && runningSub.instance?.session)
+				? Promise.resolve(runningSub.instance.session)
+				: workspaceClient.getSession(subAgentId);
+
+			getSubSessionPromise.then(subSession => {
+				if (subSession) {
+					title.querySelector("span").textContent = subSession.name;
+					desc.textContent = subSession.systemPromptOverride ? 
+						(subSession.systemPromptOverride.match(/"([^"]+)"/)?.[1] || "Sub-agent task") : 
+						"Sub-agent task";
+
+					// Check running status in pool
+					const running = window.ui?.aiManager?.runningSessions.get(subAgentId);
+					if (running && subSession.pendingQueryId) {
+						badge.textContent = "Needs Input";
+						badge.className = "sub-agent-card-badge pending-query";
+						card.classList.add("has-pending-query");
+					} else if (running) {
+						badge.textContent = "Running";
+						badge.className = "sub-agent-card-badge running";
+					} else if (subSession.completedResult) {
+						badge.textContent = "Completed";
+						badge.className = "sub-agent-card-badge completed";
+					} else {
+						badge.textContent = "Halted";
+						badge.className = "sub-agent-card-badge halted";
+					}
+				} else {
+					title.querySelector("span").textContent = "Deleted Sub-Agent";
+					desc.textContent = "This sub-agent session was deleted.";
+					badge.textContent = "N/A";
+					badge.className = "sub-agent-card-badge halted";
+				}
+			}).catch(err => {
+				console.error("Error loading sub-agent details:", err);
+			});
+
+			card.onclick = () => {
+				if (this.manager.activeSession) {
+					this.manager.activeSession.activeSubAgentSessionId = subAgentId;
+					this.render();
+				}
+			};
 		} else if (message.type === "user") {
 			const wrapper = new Block();
 			wrapper.classList.add("prompt-pill-wrapper");
@@ -459,21 +603,14 @@ class AIManagerHistory {
 						if (isDoneResponse) {
 							const hasSummary = allMsgs.some(m => m.type === "cycle_summary" && m.cycleEndMsgId === nextMsg.id);
 							if (!hasSummary) {
-								const summarizeBtn = document.createElement("button");
+								const summarizeBtn = new Button("Summarize Cycle");
 								summarizeBtn.className = "summarize-cycle-trigger-btn theme-button primary";
-								summarizeBtn.style.fontSize = "11px";
-								summarizeBtn.style.padding = "2px 8px";
-								summarizeBtn.style.cursor = "pointer";
-								summarizeBtn.style.borderRadius = "var(--radius, 4px)";
-								summarizeBtn.style.display = "inline-flex";
-								summarizeBtn.style.alignItems = "center";
-								summarizeBtn.style.border = "none";
-								summarizeBtn.innerHTML = "<ui-icon style='font-size: 13px; vertical-align: middle; margin-right: 4px;'>summarize</ui-icon> Summarize Cycle";
+								summarizeBtn.icon = "summarize";
 								
 								summarizeBtn.onclick = async (e) => {
 									e.stopPropagation();
 									summarizeBtn.disabled = true;
-									summarizeBtn.innerHTML = "<span class='button-spinner'></span> Summarizing...";
+									summarizeBtn.text = "Summarizing...";
 									
 									try {
 										let cycleStartIdx = -1;
@@ -513,16 +650,15 @@ class AIManagerHistory {
 									} catch (err) {
 										console.error("Failed to generate summary manually:", err);
 										summarizeBtn.disabled = false;
-										summarizeBtn.innerHTML = "Summarize Cycle";
+										summarizeBtn.text = "Summarize Cycle";
 									}
 								};
-
+ 
 								const doneBlock = Array.from(element.querySelectorAll(".tool-call-block")).find(block => block.querySelector("code")?.textContent === "done");
 								if (doneBlock) {
 									const headerEl = doneBlock.querySelector(".tool-call-header");
 									if (headerEl) {
-										summarizeBtn.style.marginLeft = "auto";
-										summarizeBtn.style.marginRight = "8px";
+										summarizeBtn.classList.add("inside-header");
 										const badge = headerEl.querySelector(".tool-call-status-badge");
 										if (badge) {
 											headerEl.insertBefore(summarizeBtn, badge);
@@ -533,8 +669,7 @@ class AIManagerHistory {
 										doneBlock.append(summarizeBtn);
 									}
 								} else {
-									summarizeBtn.style.marginTop = "10px";
-									summarizeBtn.style.padding = "6px 10px";
+									summarizeBtn.classList.add("outside-header");
 									element.append(summarizeBtn);
 								}
 							}
@@ -577,54 +712,36 @@ class AIManagerHistory {
 			element.dataset.messageId = message.id;
 			element.setAttribute("title", `Tokens: ${tokenCount}`);
 			
-			// Translucent theme card styling matching implementation plan
-			element.style.background = "color-mix(in srgb, var(--theme, #0089cd) 8%, transparent)";
-			element.style.border = "1px solid color-mix(in srgb, var(--theme, #0089cd) 25%, transparent)";
-			element.style.borderRadius = "var(--radius, 8px)";
-			element.style.padding = "12px";
-			element.style.margin = "10px 0";
-			element.style.display = "flex";
-			element.style.flexDirection = "column";
-			element.style.gap = "8px";
-			element.style.transition = "all 0.2s ease";
-			
 			const summaryTitleText = message.title || (message.content ? (message.content.split(/[.\n]/)[0].trim().substring(0, 75) + "...") : "Cycle Completed & Summarized");
 			
-			const header = document.createElement("div");
+			const header = new Block();
 			header.className = "cycle-summary-header";
-			header.style.display = "flex";
-			header.style.alignItems = "center";
-			header.style.gap = "8px";
-			header.style.marginBottom = "4px";
-			header.innerHTML = `
-				<ui-icon style="color: var(--theme, #0089cd); font-size: 20px; flex-shrink: 0;">summarize</ui-icon>
-				<span class="cycle-summary-title" style="font-weight: 600; font-size: 13px; color: var(--theme, #0089cd); line-height: 1.4;">${this._escapeHtml(summaryTitleText)}</span>
-				<ui-button class="toggle-history-btn theme-button secondary" style="margin-left: auto; font-size: 11px; padding: 4px 8px; display: none;">Show Detail</ui-button>
-			`;
 			
-			const contentDiv = document.createElement("div");
-			contentDiv.className = "cycle-summary-content";
+			const icon = new Icon();
+			icon.textContent = "summarize";
+			
+			const titleSpan = new Inline();
+			titleSpan.className = "cycle-summary-title";
+			titleSpan.textContent = summaryTitleText;
+			
+			const toggleBtn = new Button("Show Detail");
+			toggleBtn.className = "toggle-history-btn theme-button secondary hidden";
+			
+			header.append(icon, titleSpan, toggleBtn);
+			
+			const contentDiv = new Block();
+			contentDiv.className = "cycle-summary-content hidden";
 			contentDiv.innerHTML = this.md.render(message.content);
 			
-			// Reduced card to just title in collapsed state
-			contentDiv.style.display = "none";
-			contentDiv.style.marginTop = "8px";
-			contentDiv.style.transition = "all 0.3s ease";
+			const detailContainer = new Block();
+			detailContainer.className = "cycle-summary-detail-container hidden";
 			
-			const detailContainer = document.createElement("div");
-			detailContainer.className = "cycle-summary-detail-container";
-			detailContainer.style.display = "none";
-			detailContainer.style.marginTop = "12px";
-			detailContainer.style.borderTop = "1px dashed var(--border-color, #ccc)";
-			detailContainer.style.paddingTop = "12px";
-			
-			const toggleBtn = header.querySelector(".toggle-history-btn");
 			toggleBtn.onclick = (e) => {
 				e.stopPropagation();
-				const isExpanded = detailContainer.style.display !== "none";
+				const isExpanded = !detailContainer.classList.contains("hidden");
 				if (isExpanded) {
-					detailContainer.style.display = "none";
-					toggleBtn.textContent = "Show Detail";
+					detailContainer.classList.add("hidden");
+					toggleBtn.text = "Show Detail";
 				} else {
 					if (detailContainer.children.length === 0) {
 						const startId = message.cycleStartMsgId;
@@ -646,45 +763,114 @@ class AIManagerHistory {
 								}
 							}
 						} else {
-							detailContainer.innerHTML = `<div style="color: var(--text-secondary); font-style: italic; font-size: 12px; padding: 8px 0;">Detailed history for this cycle is not available (it may have been pruned or deleted from the conversation).</div>`;
+							const emptyDetail = new Block();
+							emptyDetail.className = "cycle-summary-empty-detail";
+							emptyDetail.textContent = "Detailed history for this cycle is not available (it may have been pruned or deleted from the conversation).";
+							detailContainer.append(emptyDetail);
 						}
 					}
-					detailContainer.style.display = "block";
-					toggleBtn.textContent = "Hide Detail";
+					detailContainer.classList.remove("hidden");
+					toggleBtn.text = "Hide Detail";
 				}
 			};
-
-			const showMoreLink = document.createElement("div");
+ 
+			const showMoreLink = new Block();
 			showMoreLink.className = "show-more-link";
-			showMoreLink.style.textAlign = "center";
-			showMoreLink.style.marginTop = "4px";
-			showMoreLink.style.fontSize = "11px";
-			showMoreLink.style.cursor = "pointer";
-			showMoreLink.style.color = "var(--theme, #0089cd)";
-			showMoreLink.style.fontWeight = "600";
-			showMoreLink.innerText = "Show Summary";
+			showMoreLink.textContent = "Show Summary";
 			
 			showMoreLink.onclick = (e) => {
 				e.stopPropagation();
-				const isCollapsed = contentDiv.style.display === "none";
+				const isCollapsed = contentDiv.classList.contains("hidden");
 				if (isCollapsed) {
-					contentDiv.style.display = "block";
-					showMoreLink.innerText = "Hide Summary";
-					toggleBtn.style.display = "block"; // Show "Show Details" button inside the expanded card
+					contentDiv.classList.remove("hidden");
+					showMoreLink.textContent = "Hide Summary";
+					toggleBtn.classList.remove("hidden");
 				} else {
-					contentDiv.style.display = "none";
-					showMoreLink.innerText = "Show Summary";
-					toggleBtn.style.display = "none"; // Hide "Show Details" button when summary is collapsed
-					// Also hide details container if it was open
-					detailContainer.style.display = "none";
-					toggleBtn.textContent = "Show Detail";
+					contentDiv.classList.add("hidden");
+					showMoreLink.textContent = "Show Summary";
+					toggleBtn.classList.add("hidden");
+					detailContainer.classList.add("hidden");
+					toggleBtn.text = "Show Detail";
 				}
 			};
-
+ 
 			element.append(header, contentDiv, showMoreLink, detailContainer);
 			
 			const deleteButton = this._createSingleDeleteButton(message.id);
 			element.append(deleteButton);
+		} else if (message.type === "agent_query") {
+			element = new Block();
+			element.classList.add("agent-query-block");
+			element.dataset.messageId = message.id;
+
+			const queryHeader = new Block();
+			queryHeader.className = "agent-query-header";
+			const queryIcon = new Icon();
+			queryIcon.textContent = "help";
+			const queryTitle = new Inline();
+			queryTitle.className = "agent-query-title";
+			queryTitle.textContent = "Sub-Agent Question";
+			queryHeader.append(queryIcon, queryTitle);
+
+			const queryText = new Block();
+			queryText.className = "agent-query-text";
+			queryText.textContent = message.content;
+
+			element.append(queryHeader, queryText);
+
+			if (message.answered) {
+				const answerBlock = new Block();
+				answerBlock.className = "agent-query-answer answered";
+				const answerLabel = new Inline();
+				answerLabel.className = "agent-query-answer-label";
+				answerLabel.textContent = "Your answer: ";
+				const answerText = new Inline();
+				answerText.className = "agent-query-answer-text";
+				answerText.textContent = message.answer || "";
+				answerBlock.append(answerLabel, answerText);
+				element.append(answerBlock);
+			} else {
+				const inputRow = new Block();
+				inputRow.className = "agent-query-input-row";
+
+				const answerInput = document.createElement("input");
+				answerInput.type = "text";
+				answerInput.className = "agent-query-input";
+				answerInput.placeholder = "Type your answer...";
+
+				const submitBtn = new Button("Answer");
+				submitBtn.className = "agent-query-submit theme-button";
+
+				const submitAnswer = () => {
+					const answer = answerInput.value.trim();
+					if (!answer) return;
+					const resolver = window._agentQueryResolvers?.[message.id];
+					if (resolver) {
+						delete window._agentQueryResolvers[message.id];
+						resolver(answer);
+					}
+					// Optimistically update UI
+					inputRow.remove();
+					const answerBlock = new Block();
+					answerBlock.className = "agent-query-answer answered";
+					const answerLabel = new Inline();
+					answerLabel.className = "agent-query-answer-label";
+					answerLabel.textContent = "Your answer: ";
+					const answerText = new Inline();
+					answerText.className = "agent-query-answer-text";
+					answerText.textContent = answer;
+					answerBlock.append(answerLabel, answerText);
+					element.append(answerBlock);
+				};
+
+				submitBtn.onclick = submitAnswer;
+				answerInput.addEventListener("keydown", (e) => {
+					if (e.key === "Enter") submitAnswer();
+				});
+
+				inputRow.append(answerInput, submitBtn);
+				element.append(inputRow);
+			}
 		}
 
 		return element;
@@ -695,7 +881,7 @@ class AIManagerHistory {
 		expanderBlock.classList.add("chat-turn-expander");
 		expanderBlock.dataset.messageId = message.id;
 
-		const header = document.createElement("div");
+		const header = new Block();
 		header.className = "expander-header";
 
 		// Determine icon and label based on message role/type
@@ -723,6 +909,9 @@ class AIManagerHistory {
 		} else if (message.type === "cycle_summary") {
 			iconName = "summarize";
 			roleLabel = "Cycle Summary";
+		} else if (message.type === "agent_query") {
+			iconName = "help";
+			roleLabel = "Sub-Agent Question";
 		}
 
 		// First 40 characters for preview
@@ -733,17 +922,35 @@ class AIManagerHistory {
 		const sizeInBytes = message.content ? new TextEncoder().encode(message.content).length : 0;
 		const sizeInKB = (sizeInBytes / 1024).toFixed(2);
 
-		header.innerHTML = `
-			<ui-icon>${iconName}</ui-icon>
-			<span class="role-label">${roleLabel} <small class="item-size-badge" style="opacity: 0.6; font-size: 10px; margin-left: 4px;">(${sizeInKB} KB | ${tokenCount} tokens)</small></span>
-			<span class="content-preview">${this._escapeHtml(previewText)}${previewSuffix}</span>
-			<ui-icon class="delete-raw-item" title="Delete this turn permanently" style="font-size: 16px; color: var(--text-secondary); cursor: pointer; margin-left: auto; margin-right: 8px; transition: color 0.2s;" onmouseover="this.style.color='var(--color-error)'" onmouseout="this.style.color='var(--text-secondary)'">delete</ui-icon>
-			<ui-icon class="expand-arrow" style="margin-left: 0;">expand_more</ui-icon>
-		`;
+		const icon = new Icon();
+		icon.textContent = iconName;
 
-		const contentDiv = document.createElement("div");
-		contentDiv.className = "expander-content";
-		contentDiv.style.display = "none";
+		const roleLabelSpan = new Inline();
+		roleLabelSpan.className = "role-label";
+		roleLabelSpan.textContent = roleLabel + " ";
+
+		const badge = new Inline();
+		badge.className = "item-size-badge";
+		badge.textContent = `(${sizeInKB} KB | ${tokenCount} tokens)`;
+		roleLabelSpan.append(badge);
+
+		const previewSpan = new Inline();
+		previewSpan.className = "content-preview";
+		previewSpan.textContent = `${previewText}${previewSuffix}`;
+
+		const deleteIcon = new Icon();
+		deleteIcon.className = "delete-raw-item";
+		deleteIcon.title = "Delete this turn permanently";
+		deleteIcon.textContent = "delete";
+
+		const arrowIcon = new Icon();
+		arrowIcon.className = "expand-arrow";
+		arrowIcon.textContent = "expand_more";
+
+		header.append(icon, roleLabelSpan, previewSpan, deleteIcon, arrowIcon);
+
+		const contentDiv = new Block();
+		contentDiv.className = "expander-content hidden";
 
 		const pre = document.createElement("pre");
 		pre.className = "raw-content-block";
@@ -751,17 +958,23 @@ class AIManagerHistory {
 		contentDiv.append(pre);
 
 		header.onclick = () => {
-			const isExpanded = contentDiv.style.display !== "none";
-			contentDiv.style.display = isExpanded ? "none" : "block";
-			header.querySelector(".expand-arrow").textContent = isExpanded ? "expand_more" : "expand_less";
-			expanderBlock.classList.toggle("expanded", !isExpanded);
+			const isExpanded = !contentDiv.classList.contains("hidden");
+			if (isExpanded) {
+				contentDiv.classList.add("hidden");
+				arrowIcon.textContent = "expand_more";
+				expanderBlock.classList.remove("expanded");
+			} else {
+				contentDiv.classList.remove("hidden");
+				arrowIcon.textContent = "expand_less";
+				expanderBlock.classList.add("expanded");
+			}
 		};
 
-		const deleteIcon = header.querySelector(".delete-raw-item");
-		if (message.type === "system_prompt_raw" && deleteIcon) {
-			deleteIcon.remove();
-		} else if (deleteIcon) {
-			deleteIcon.onclick = (e) => {
+		const deleteIconHeader = deleteIcon;
+		if (message.type === "system_prompt_raw" && deleteIconHeader) {
+			deleteIconHeader.remove();
+		} else if (deleteIconHeader) {
+			deleteIconHeader.onclick = (e) => {
 				e.stopPropagation();
 				this._handleDeleteSingleMessage(message.id);
 			};
@@ -859,47 +1072,32 @@ class AIManagerHistory {
 			if (existingToast.dataset.timeoutId) {
 				clearTimeout(parseInt(existingToast.dataset.timeoutId));
 			}
+			if (existingToast.dataset.deletedMessageJson) {
+				try {
+					const prevMsg = JSON.parse(existingToast.dataset.deletedMessageJson);
+					this.manager.deleteSubAgentsInMessages([prevMsg]);
+				} catch (e) {
+					console.error("Failed to clean up sub-agents for early dismissed message:", e);
+				}
+			}
 			existingToast.remove();
 		}
 
-		const toastEl = document.createElement('div');
+		const toastEl = new Block();
 		toastEl.className = "undo-delete-toast";
-		toastEl.style.position = 'fixed';
-		toastEl.style.bottom = '20px';
-		toastEl.style.left = '50%';
-		toastEl.style.transform = 'translateX(-50%) translateY(10px)';
-		toastEl.style.backgroundColor = 'var(--theme-dark, #333)';
-		toastEl.style.color = '#fff';
-		toastEl.style.padding = '12px 24px';
-		toastEl.style.borderRadius = 'var(--radius, 8px)';
-		toastEl.style.boxShadow = '0 4px 12px rgba(0,0,0,0.15)';
-		toastEl.style.zIndex = '99999';
-		toastEl.style.opacity = '0';
-		toastEl.style.transition = 'opacity 0.3s ease, transform 0.3s ease';
-		toastEl.style.display = 'flex';
-		toastEl.style.alignItems = 'center';
-		toastEl.style.gap = '16px';
-		toastEl.style.fontSize = '14px';
+		toastEl.dataset.deletedMessageJson = JSON.stringify(deletedMessage);
 
-		const textSpan = document.createElement('span');
+		const textSpan = new Inline();
 		textSpan.textContent = "Message deleted from history.";
 		toastEl.appendChild(textSpan);
 
-		const undoBtn = document.createElement('button');
-		undoBtn.textContent = "Undo";
-		undoBtn.style.background = 'var(--theme, #0089cd)';
-		undoBtn.style.color = '#fff';
-		undoBtn.style.border = 'none';
-		undoBtn.style.padding = '6px 12px';
-		undoBtn.style.borderRadius = '4px';
-		undoBtn.style.cursor = 'pointer';
-		undoBtn.style.fontWeight = 'bold';
-		undoBtn.style.fontSize = '12px';
-		undoBtn.style.transition = 'filter 0.2s';
-		undoBtn.onmouseover = () => { undoBtn.style.filter = 'brightness(1.2)'; };
-		undoBtn.onmouseout = () => { undoBtn.style.filter = 'none'; };
+		const undoBtn = new Button("Undo");
+		undoBtn.className = "undo-delete-toast-btn";
 
 		undoBtn.onclick = async () => {
+			if (toastEl.dataset.timeoutId) {
+				clearTimeout(parseInt(toastEl.dataset.timeoutId));
+			}
 			if (this.manager.activeSession) {
 				this.manager.activeSession.messages.splice(originalIndex, 0, deletedMessage);
 				this.manager.activeSession.lastModified = Date.now();
@@ -907,8 +1105,7 @@ class AIManagerHistory {
 				this.render();
 				this.manager._dispatchContextUpdate("undo_delete");
 			}
-			toastEl.style.opacity = '0';
-			toastEl.style.transform = 'translateX(-50%) translateY(10px)';
+			toastEl.classList.remove("visible");
 			setTimeout(() => toastEl.remove(), 300);
 		};
 
@@ -918,19 +1115,18 @@ class AIManagerHistory {
 		// Fade in
 		requestAnimationFrame(() => {
 			requestAnimationFrame(() => {
-				toastEl.style.opacity = '1';
-				toastEl.style.transform = 'translateX(-50%) translateY(0)';
+				toastEl.classList.add("visible");
 			});
 		});
 
 		// Automatically fade out and remove after 6 seconds
 		const timeoutId = setTimeout(() => {
-			toastEl.style.opacity = '0';
-			toastEl.style.transform = 'translateX(-50%) translateY(10px)';
+			toastEl.classList.remove("visible");
 			setTimeout(() => {
 				if (toastEl.parentNode) {
 					toastEl.remove();
 				}
+				this.manager.deleteSubAgentsInMessages([deletedMessage]);
 			}, 300);
 		}, 6000);
 
@@ -1230,7 +1426,7 @@ class AIManagerHistory {
 		// 2. Separate chat/system/file messages from the protected task state
 		// We filter out task_state from the main pool so it doesn't get pruned.
 		let chatHistory = messages.filter(
-			(msg) => msg.type !== "task_state" && msg.type !== "system_message" && msg.role !== "temp_ai_response"
+			(msg) => msg.type !== "task_state" && msg.type !== "system_message" && msg.type !== "agent_query" && msg.role !== "temp_ai_response"
 		);
 
 		// Pruning gate: Substitute older completed cycles with their summaries, keeping only the most recent completed cycle in full.

@@ -164,6 +164,7 @@ export class SessionArtifactsPanel extends Block {
         this.agentModeCheckbox = createToggleRow("accordion-agent-mode", "Agent Mode", "Allow Cadence to automatically read, write, and manage workspace files.", "agent-toggle-wrapper");
         this.planningModeCheckbox = createToggleRow("accordion-planning-mode", "Planning Mode", "Focus Cadence on generating structured implementation plans before applying edits.", "planning-toggle-wrapper");
         this.forgivenessModeCheckbox = createToggleRow("accordion-forgiveness-mode", "Forgiveness Mode", "Commit edits immediately to disk with robust single-click rollback safety.", "agent-toggle-wrapper");
+        this.allowSubAgentsCheckbox = createToggleRow("accordion-allow-sub-agents", "Allow Sub-Agents", "Allow Cadence to spawn sub-agents to solve smaller tasks.", "sub-agents-toggle-wrapper");
 
         this.container.appendChild(this.settingsAccordion);
 
@@ -211,6 +212,14 @@ export class SessionArtifactsPanel extends Block {
                 if (rightActive && window.ui.rightHolder?.updateNoticeBar) {
                     window.ui.rightHolder.updateNoticeBar(rightActive);
                 }
+            }
+        });
+
+        this.allowSubAgentsCheckbox.addEventListener("change", async (e) => {
+            const checked = e.target.checked;
+            if (ui.aiManager.activeSession) {
+                ui.aiManager.activeSession.allowSubAgents = checked;
+                await workspaceClient.setSession(ui.aiManager.activeSession.id, ui.aiManager.activeSession);
             }
         });
     }
@@ -399,6 +408,7 @@ export class SessionArtifactsPanel extends Block {
         this.agentModeCheckbox.checked = ui.aiManager.agentMode || false;
         this.planningModeCheckbox.checked = ui.aiManager.planningMode || false;
         this.forgivenessModeCheckbox.checked = ui.aiManager.forgivenessMode || false;
+        this.allowSubAgentsCheckbox.checked = session.allowSubAgents !== false;
 
         // Render implementation plan content if not editing
         if (!this.planEditorInstance) {

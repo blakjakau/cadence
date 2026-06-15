@@ -74,6 +74,7 @@ class AIManagerSettings {
             summarizeTargetPercentage: aiManager.config.summarizeTargetPercentage,
             defaultAgentMode: aiManager.config.defaultAgentMode,
             defaultPlanningMode: aiManager.config.defaultPlanningMode,
+            defaultAllowSubAgents: aiManager.config.defaultAllowSubAgents ?? true,
             systemPromptSpecialization: systemPromptConfig.specialization,
             systemPromptTechnologies: (systemPromptConfig.technologies || []).join(", "),
             systemPromptAvoidedTechnologies: (systemPromptConfig.avoidedTechnologies || []).join(", "),
@@ -91,6 +92,7 @@ class AIManagerSettings {
             { type: "checkbox", id: "forgivenessMode", label: "Forgiveness Mode (Apply edits immediately, rollback anytime)" },
             { type: "checkbox", id: "defaultAgentMode", label: "Default Agent Mode for New Chats" },
             { type: "checkbox", id: "defaultPlanningMode", label: "Default Planning Mode for New Chats" },
+            { type: "checkbox", id: "defaultAllowSubAgents", label: "Default Allow Sub-Agents for New Chats" },
             { type: "number", id: "summarizeThreshold", label: "Summarize History When Context Reaches (%)" },
             { type: "number", id: "summarizeTargetPercentage", label: "Percentage of Old History to Summarize" },
             { type: "heading", label: "Prompt Customisation" },
@@ -193,10 +195,12 @@ class AIManagerSettings {
         aiManager.config.summarizeTargetPercentage = parseInt(values.summarizeTargetPercentage);
         aiManager.config.defaultAgentMode = !!values.defaultAgentMode;
         aiManager.config.defaultPlanningMode = !!values.defaultPlanningMode;
+        aiManager.config.defaultAllowSubAgents = !!values.defaultAllowSubAgents;
         localStorage.setItem("summarizeThreshold", aiManager.config.summarizeThreshold);
         localStorage.setItem("summarizeTargetPercentage", aiManager.config.summarizeTargetPercentage);
         localStorage.setItem("defaultAgentMode", aiManager.config.defaultAgentMode);
         localStorage.setItem("defaultPlanningMode", aiManager.config.defaultPlanningMode);
+        localStorage.setItem("defaultAllowSubAgents", aiManager.config.defaultAllowSubAgents);
 
         // --- Save Forgiveness Mode ---
         aiManager.forgivenessMode = !!values.forgivenessMode;

@@ -2,6 +2,8 @@ import conduit from '../conduit-client.mjs';
 import AgentBackup from './agent-backup.mjs';
 import { tools } from "../ai-manager-tools-schema.mjs";
 import workspaceClient from '../workspace-client.mjs';
+import { Agent } from './agent.mjs';
+import AIConnections from '../ai-connections.mjs';
 
 /**
  * Implements the core tools for Cadence.
@@ -1808,6 +1810,12 @@ class AgentTools {
                 return "Task list updated.";
             case 'complete_task':
                 return `Task marked complete: ${args.taskName}`;
+            case 'query':
+                return await this.queryUser(args, sourceId);
+            case 'create_sub_agent':
+                return await this.createSubAgent(args, sourceId);
+            case 'sub_agent_complete':
+                return await this.subAgentComplete(args, sourceId);
             case 'done':
                 return "Agent successfully completed the execution loop.";
             default:
@@ -1995,6 +2003,259 @@ class AgentTools {
         } catch (error) {
             return `Error finding file: ${error.message}`;
         }
+    }
+
+    async queryUser(args, subSessionId) {
+        if (!args.question) {
+            throw new Error("query: 'question' parameter is required");
+        }
+
+        const aiManager = window.ui?.aiManager;
+
+        // Use the running sub-agent's in-memory session (same object render() reads from)
+        const runningSub = aiManager?.runningSessions.get(subSessionId);
+        const subSession = (runningSub && runningSub.instance?.session)
+            ? runningSub.instance.session
+            : await workspaceClient.getSession(subSessionId);
+        if (!subSession) {
+            throw new Error(`query: sub-agent session not found: ${subSessionId}`);
+        }
+
+        // Add a pending-query marker to the sub-session (in-memory + IndexedDB)
+        const queryId = crypto.randomUUID();
+        const queryMsg = {
+            id: queryId,
+            role: "system",
+            type: "agent_query",
+            content: args.question,
+            answered: false,
+            subSessionId: subSessionId,
+            timestamp: Date.now()
+        };
+        subSession.messages.push(queryMsg);
+        subSession.pendingQueryId = queryId;
+        subSession.lastModified = Date.now();
+        await workspaceClient.setSession(subSessionId, subSession);
+
+        // Re-render the sub-agent thread if it's currently viewed
+        if (aiManager?.isSessionViewed(subSessionId)) {
+            aiManager.historyManager.render();
+        }
+
+        // Highlight the parent session's tab and re-render parent thread for card badge
+        const parentId = subSession.parentId;
+        if (parentId && aiManager) {
+            aiManager._updateTabStatus(parentId, "pending-query");
+            // Re-render parent thread so the sub-agent card updates its badge
+            if (aiManager.isSessionViewed(parentId)) {
+                aiManager.historyManager.render();
+            }
+        }
+
+        // Block the sub-agent loop until the user answers
+        const answer = await new Promise((resolve) => {
+            if (!window._agentQueryResolvers) {
+                window._agentQueryResolvers = {};
+            }
+            window._agentQueryResolvers[queryId] = resolve;
+        });
+
+        // Mark the query as answered in-memory
+        queryMsg.answered = true;
+        queryMsg.answer = answer;
+        delete subSession.pendingQueryId;
+        subSession.lastModified = Date.now();
+        await workspaceClient.setSession(subSessionId, subSession);
+
+        // Restore parent tab to running status
+        if (parentId && aiManager) {
+            aiManager._updateTabStatus(parentId, "running");
+            if (aiManager.isSessionViewed(parentId)) {
+                aiManager.historyManager.render();
+            }
+        }
+
+        // Re-render sub-agent thread to show answered state
+        if (aiManager?.isSessionViewed(subSessionId)) {
+            aiManager.historyManager.render();
+        }
+
+        return `User answered: ${answer}`;
+    }
+
+    async createSubAgent(args, parentSessionId) {
+        if (!parentSessionId) {
+            throw new Error("create_sub_agent: parentSessionId is required");
+        }
+
+        const runningParent = window.ui?.aiManager?.runningSessions.get(parentSessionId);
+        const managerActiveSession = window.ui?.aiManager?.activeSession;
+        const parentSession = (managerActiveSession && managerActiveSession.id === parentSessionId)
+            ? managerActiveSession
+            : (runningParent && runningParent.instance?.session ? runningParent.instance.session : await workspaceClient.getSession(parentSessionId));
+        if (!parentSession) {
+            throw new Error(`Parent session not found: ${parentSessionId}`);
+        }
+
+        // Check if sub-agents are allowed for the parent session
+        if (parentSession.allowSubAgents === false) {
+            return "Tool Error: Sub-agents are disabled for this session.";
+        }
+
+        // 1. Determine connection via pool selector
+        const parentConnectionId = parentSession.connectionId || window.ui?.aiManager?.activeSession?.connectionId || "default-gemini";
+        const selectedConnectionId = await window.ui.aiManager.selectConnectionForSubAgent(args.size || "medium", parentConnectionId);
+        
+        // 2. Check the maximum sub-agents limit
+        const max = window.ui.aiManager.config.maxSubAgents || 3;
+        let activeCount = 0;
+        for (const [id, run] of window.ui.aiManager.runningSessions) {
+            if (run.type === 'agent' && run.instance?.session?.parentId === parentSessionId) {
+                activeCount++;
+            }
+        }
+        if (activeCount >= max) {
+            return `Tool Error: Cannot spawn sub-agent. Reached maximum parallel sub-agents limit of ${max}.`;
+        }
+
+        const connection = AIConnections.getInstance(selectedConnectionId);
+        if (!connection || !connection.isConfigured()) {
+            return `Tool Error: Connection '${selectedConnectionId}' is not configured.`;
+        }
+
+        // 3. Create a clean session structure
+        const subId = `ai-session-${crypto.randomUUID()}`;
+        const subName = `Sub-Agent: ${args.objective.slice(0, 30)}${args.objective.length > 30 ? '...' : ''}`;
+        
+        const subSystemPrompt = `You are a specialized child sub-agent spawned to perform the following objective:
+"${args.objective}"
+
+You operate with a limited toolset. Do not try to perform tasks outside this scope.
+
+# STRICT RULES
+- You MUST end EVERY turn with a tool call. No exceptions.
+- If you have completed your objective, call \`sub_agent_complete\` with your results.
+- If you are blocked or need clarification from the user, call \`query\` to ask your question.
+- If you encounter an unrecoverable error, call \`sub_agent_complete\` with the error details.
+- NEVER end a turn with only conversational text and no tool call. If you are unsure what to do next, call \`query\`.`;
+
+        const subSessionData = {
+            id: subId,
+            name: subName,
+            parentId: parentSessionId,
+            createdAt: Date.now(),
+            lastModified: Date.now(),
+            messages: [],
+            promptInput: "",
+            promptHistory: [],
+            scrollTop: 0,
+            evergreenFiles: [],
+            modifiedFiles: {},
+            pendingEdits: {},
+            agentMode: true,
+            planningMode: false,
+            forgivenessMode: parentSession.forgivenessMode ?? false,
+            connectionId: selectedConnectionId,
+            systemPromptOverride: subSystemPrompt
+        };
+
+        // Save session files to IndexedDB
+        await workspaceClient.setSession(subId, subSessionData);
+
+        // 4. Generate the user message [sub-agent:session_id] in the parent thread
+        const triggerMessage = {
+            role: "user",
+            type: "user",
+            content: `[sub-agent:${subId}]`,
+            timestamp: Date.now(),
+            id: crypto.randomUUID()
+        };
+        parentSession.messages.push(triggerMessage);
+        parentSession.lastModified = Date.now();
+        await workspaceClient.setSession(parentSessionId, parentSession);
+
+        // Crucial: Synchronize with the parent agent's in-memory session messages if running in the background
+        if (runningParent && runningParent.instance && runningParent.instance.session) {
+            const parentAgentSession = runningParent.instance.session;
+            if (!parentAgentSession.messages.some(m => m.id === triggerMessage.id)) {
+                parentAgentSession.messages.push(triggerMessage);
+            }
+        }
+
+        // Notify parent session history to render the new trigger card
+        if (window.ui?.aiManager?.activeSessionId === parentSessionId) {
+            window.ui.aiManager.historyManager.render();
+        }
+
+        // 5. Trigger background execution of the sub-agent
+        const agent = new Agent(window.ui.aiManager, subSessionData, connection);
+        window.ui.aiManager.runningSessions.set(subId, { type: 'agent', instance: agent });
+        
+        // Start asynchronously
+        (async () => {
+            try {
+                const initUserMessage = {
+                    role: "user",
+                    type: "user",
+                    content: `${args.objective}`,
+                    timestamp: Date.now(),
+                    id: crypto.randomUUID()
+                };
+                subSessionData.messages.push(initUserMessage);
+                await workspaceClient.setSession(subId, subSessionData);
+
+                // Run the agent loop
+                await agent.run(initUserMessage, null);
+            } catch (e) {
+                console.error(`Sub-Agent ${subId} background run failed:`, e);
+                try {
+                    const subSession = await workspaceClient.getSession(subId);
+                    if (subSession) {
+                        subSession.messages.push({
+                            role: "system",
+                            type: "system_message",
+                            content: `Error: Sub-agent execution crashed. Details: ${e.message}`,
+                            timestamp: Date.now()
+                        });
+                        await workspaceClient.setSession(subId, subSession);
+                    }
+                } catch (err) {
+                    console.error("Failed to append crash message to sub-agent:", err);
+                }
+            } finally {
+                window.ui.aiManager.runningSessions.delete(subId);
+                // Trigger parent history update to reflect completion status badge
+                if (window.ui?.aiManager?.activeSessionId === parentSessionId) {
+                    window.ui.aiManager.historyManager.render();
+                }
+            }
+        })();
+
+        return `[Sub-Agent ${subId} spawned to perform: "${args.objective}"]`;
+    }
+
+    async subAgentComplete(args, subSessionId) {
+        if (!subSessionId) {
+            throw new Error("sub_agent_complete: session ID is required");
+        }
+        
+        const running = window.ui?.aiManager?.runningSessions.get(subSessionId);
+        if (running && running.type === 'agent' && running.instance) {
+            running.instance.session.completedResult = args.result;
+            running.instance.session.lastModified = Date.now();
+            await workspaceClient.setSession(subSessionId, running.instance.session);
+            running.instance.stop("Sub-agent completed task");
+        } else {
+            const subSession = await workspaceClient.getSession(subSessionId);
+            if (!subSession) {
+                throw new Error(`Sub-agent session not found: ${subSessionId}`);
+            }
+            subSession.completedResult = args.result;
+            subSession.lastModified = Date.now();
+            await workspaceClient.setSession(subSessionId, subSession);
+        }
+
+        return "Sub-agent task successfully completed and reported back.";
     }
 }
 

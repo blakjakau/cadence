@@ -555,7 +555,7 @@ export default class AI {
 		throw new Error("Not implemented");
 	}
 
-	chat(messages, callbacks) {
+	chat(messages, callbacks, systemPrompt = null, session = null) {
 		throw new Error("Not implemented");
 	}
 }
