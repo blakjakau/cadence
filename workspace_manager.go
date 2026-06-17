@@ -308,17 +308,21 @@ func sessionsHandler(w http.ResponseWriter, r *http.Request) {
 			data, err := ioutil.ReadFile(path)
 			if err == nil {
 				var sessionData struct {
-					ID           string `json:"id"`
-					Name         string `json:"name"`
-					CreatedAt    int64  `json:"createdAt"`
-					LastModified int64  `json:"lastModified"`
+					ID              string `json:"id"`
+					Name            string `json:"name"`
+					ParentID        string `json:"parentId"`
+					CreatedAt       int64  `json:"createdAt"`
+					LastModified    int64  `json:"lastModified"`
+					CompletedResult string `json:"completedResult"`
 				}
 				if err := json.Unmarshal(data, &sessionData); err == nil && sessionData.ID != "" {
 					sessions = append(sessions, map[string]interface{}{
-						"id":           sessionData.ID,
-						"name":         sessionData.Name,
-						"createdAt":    sessionData.CreatedAt,
-						"lastModified": sessionData.LastModified,
+						"id":              sessionData.ID,
+						"name":            sessionData.Name,
+						"parentId":        sessionData.ParentID,
+						"createdAt":       sessionData.CreatedAt,
+						"lastModified":    sessionData.LastModified,
+						"completedResult": sessionData.CompletedResult,
 					})
 				}
 			}

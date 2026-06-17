@@ -62,7 +62,8 @@ export const workspaceClient = {
     },
 
     async getSessions() {
-        const res = await fetch(`${API_BASE}/sessions`);
+        // Add cache-busting timestamp
+        const res = await fetch(`${API_BASE}/sessions?t=${Date.now()}`);
         if (!res.ok) {
             throw new Error(`Failed to fetch sessions: ${res.statusText}`);
         }

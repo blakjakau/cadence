@@ -443,19 +443,19 @@ export class SessionArtifactsPanel extends Block {
         const validatedModifiedFiles = {};
         let sessionNeedsSave = false;
 
-        console.log("[SessionArtifactsPanel] Starting validation of modified files:", filePaths);
+        console.debug("[SessionArtifactsPanel] Starting validation of modified files:", filePaths);
 
         for (const path of filePaths) {
             const list = modifiedFiles[path] || [];
             const validList = [];
-            console.log(`[SessionArtifactsPanel] Validating backups for ${path}. Total items: ${list.length}`);
+            console.debug(`[SessionArtifactsPanel] Validating backups for ${path}. Total items: ${list.length}`);
             for (const backup of list) {
                 if (backup.isNewFile) {
-                    console.log(`[SessionArtifactsPanel] Backup is new file: ${backup.backupId || 'no-id'}`);
+                    console.debug(`[SessionArtifactsPanel] Backup is new file: ${backup.backupId || 'no-id'}`);
                     validList.push(backup);
                 } else {
                     const exists = await AgentBackup.getBackup(backup.backupId);
-                    console.log(`[SessionArtifactsPanel] Checked backup ${backup.backupId}. Exists in IndexedDB:`, !!exists);
+                    console.debug(`[SessionArtifactsPanel] Checked backup ${backup.backupId}. Exists in IndexedDB:`, !!exists);
                     if (exists) {
                         validList.push(backup);
                     }
@@ -466,7 +466,7 @@ export class SessionArtifactsPanel extends Block {
             }
             if (list.length !== validList.length) {
                 sessionNeedsSave = true;
-                console.log(`[SessionArtifactsPanel] Backup list size mismatch for ${path}. Old: ${list.length}, New valid: ${validList.length}`);
+                console.debug(`[SessionArtifactsPanel] Backup list size mismatch for ${path}. Old: ${list.length}, New valid: ${validList.length}`);
                 if (validList.length === 0) {
                     delete session.modifiedFiles[path];
                 } else {
@@ -476,12 +476,12 @@ export class SessionArtifactsPanel extends Block {
         }
 
         if (sessionNeedsSave) {
-            console.log("[SessionArtifactsPanel] Saving updated session state due to invalid/expired backups");
+            console.debug("[SessionArtifactsPanel] Saving updated session state due to invalid/expired backups");
             await workspaceClient.setSession(session.id, session);
         }
 
         const validFilePaths = Object.keys(validatedModifiedFiles);
-        console.log("[SessionArtifactsPanel] Completed validation. Valid file paths:", validFilePaths);
+        console.debug("[SessionArtifactsPanel] Completed validation. Valid file paths:", validFilePaths);
 
         if (validFilePaths.length === 0) {
             const emptyNotice = document.createElement("div");
@@ -668,10 +668,10 @@ export class SessionArtifactsPanel extends Block {
                 reviewBtn.className = "secondary";
 
                 reviewBtn.onclick = async () => {
-                    console.log("[SessionArtifactsPanel] Review clicked for path:", path);
-                    console.log("[SessionArtifactsPanel] Latest backup details:", latestBackup);
+                    console.debug("[SessionArtifactsPanel] Review clicked for path:", path);
+                    console.debug("[SessionArtifactsPanel] Latest backup details:", latestBackup);
                     if (window.ui && window.ui.fileList && window.ui.fileList.open) {
-                        console.log("[SessionArtifactsPanel] Opening file tab via fileList.open");
+                        console.debug("[SessionArtifactsPanel] Opening file tab via fileList.open");
                         await window.ui.fileList.open(path, path);
                         const normalize = (p) => p ? p.replace(/\\/g, '/').replace(/\/+/g, '/').replace(/^\//, '').replace(/\/$/, '') : '';
                         const pathsMatch = (p1, p2) => {
@@ -681,10 +681,10 @@ export class SessionArtifactsPanel extends Block {
                             return n1 === n2 || n1.endsWith('/' + n2) || n2.endsWith('/' + n1);
                         };
                         const allOpenTabs = [...(window.ui.leftTabs?.tabs || []), ...(window.ui.rightTabs?.tabs || [])];
-                        console.log("[SessionArtifactsPanel] All open tabs config paths:", allOpenTabs.map(t => t.config?.path));
+                        console.debug("[SessionArtifactsPanel] All open tabs config paths:", allOpenTabs.map(t => t.config?.path));
                         const tab = allOpenTabs.find(t => pathsMatch(t.config?.path, path));
                         if (tab) {
-                            console.log("[SessionArtifactsPanel] Found matching tab, setting viewMode to diff and backupId:", latestBackup.backupId);
+                            console.debug("[SessionArtifactsPanel] Found matching tab, setting viewMode to diff and backupId:", latestBackup.backupId);
                             tab.config.viewMode = "diff";
                             tab.config.backupId = latestBackup.backupId;
                             tab.click();

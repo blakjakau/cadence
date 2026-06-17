@@ -28,8 +28,9 @@ export function getAgentDirectives(features = {}) {
 
     const directives = [];
     if (!hasPlan) {
-        directives.push("- Use `list_files`, `find_file`, `search_files`, or `read_file_outline` to analyze the project codebase.");
-        directives.push("- Use `create_implementation_plan` to outline your strategy and architectural changes (do NOT include a task list here).");
+        // directives.push("- Use `list_files`, `find_file`, `search_files`, or `read_file_outline` to analyze the project codebase.");
+        // directives.push("- Use `create_implementation_plan` to outline your strategy and architectural changes (do NOT include a task list here).");
+        directives.push("- Work toward the user's objectives, ask questions, use sub-agents to explore the codebase if needed");
     } else {
         if (!hasAcceptedPlan) {
             directives.push("- Address the user's feedback to update the implementation plan.");
@@ -129,7 +130,7 @@ ${generateXmlToolDocs(planningMode)}
     let coreRules = "";
     if (!supportsNativeTools) {
         coreRules = `
-- Tools: Use AT MOST ONE tool call block per turn. Wait for the host to provide the result.
+- Tools: Use ONE tool call block per turn. Wait for the host to provide the result.
 - ALWAYS choose the least impactful tool (don't read the whole file if you only need the lines of function)
 - ALWAYS make the smallest atomic edits when using \`edit_file\`
 - Context Limits: ALWAYS explore files by reading their outlines first using read_file_outline. Outlines provide symbol line numbers and lengths. NEVER read a full file if you can extract just the function you need using the <startLine> and <lineCount> parameters of read_file. If you need to find exact text inside a file, use search_in_file to locate the exact line numbers and surrounding context. This saves context tokens.
@@ -139,17 +140,12 @@ ${generateXmlToolDocs(planningMode)}
 - NEVER use control or tool tags to discuss or think about your actions, only to perform them.`;
     } else {
         coreRules = `
-- An implementation plan and task list must be created BEFORE 'edit' and 'create' tools will be available
-- AWALYS consider the most appropriate tool choices for the implmementation. eg \`create_file\` vs \`refactor_copy_lines\`.
-    Record these in the implementation plan.
+- AWALYS consider the most appropriate / efficient tool choices for the task
 - Context Limits **STRICT REQUIREMENT**: 
-	ALWAYS Explore files by reading their outlines with read_file_outline and search_in_file
-	ALWAYS use Outline symbols with their line numbers and lengths to read target file sections
-	You can find text in a file using 'search_in_file' to locate the exact line number
-	Use \`edit_file\` liberally for small code changes, the system accumulates them for user review and rollback (if needed)
-    NEVER output code blocks just to explore what's already in your context
+	ALWAYS Explore files by reading their outlines with \`read_file_outline\` and \`search_in_file\`
+	ALWAYS use outline symbols and searched line numbers  to read targetted file sections
+	ALWAYS Use \`edit_file\` for code changes in small blocks, the system accumulates them for user review and rollback (if needed)
 	NEVER read a whole file if you can just read part of it
-- Line Numbers & Counts: When specifying line numbers (e.g. in \`read_file\`, \`edit_remove_lines\`, or \`refactor_copy_lines\`), remember that files are strictly 1-indexed. The first line of a file is line 1. Be extremely careful to calculate line offsets accurately to avoid off-by-one errors.
 `;
     }
 
@@ -158,9 +154,10 @@ ${generateXmlToolDocs(planningMode)}
 The host maintains your plan and task list. To save tokens ONLY use these tools to CREATE or ALTER them:
 - Call \`create_implementation_plan\` to define your overarching approach. You may optionally supply the \`tasks\` parameter at the same time to establish the initial task list.
 - Call \`update_task_list\` to provide a markdown checkbox list (e.g., \`- [ ] Step 1\`).
-- **STRICT REQUIREMENT**: Never mix the task list into the \`plan\` parameter text. The \`plan\` parameter must ONLY contain design, architecture, and modifications. Keep task items inside the separate \`tasks\` parameter or use the separate \`update_task_list\` tool call.
 - When you finish a task, call \`complete_task\` with the task name. The host will mark it [x] automatically. DO NOT rewrite the full task list just to check a box. 
-- When you have completed all tasks in your list and have no further actions to perform, call the \`done\` tool.`;
+- When you have completed all tasks in your list and have no further actions to perform, call the \`done\` tool.
+- If you're not sure, ask the user questions, use sub-agents to explore the codebase if needed
+- Avoid rambling or repetitive content outputs`;
 
     return `You are Cadence, an AI software engineer, pair programming with a human software engineer.
 The human user is the expert on the intent of your tasks, defer to them if unsure.

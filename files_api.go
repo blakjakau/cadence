@@ -704,8 +704,8 @@ func walkAndSearchContent(rootPath, query string) ([]searchMatch, error) {
 		if err != nil {
 			return nil // Skip files whose info we can't read
 		}
-		// Limit file size to 5 MB
-		if info.Size() > 5 * 1024 * 1024 {
+		// Limit file size to 0.5 MB
+		if info.Size() > 512 * 1024 {
 			return nil // Skip large files
 		}
 
@@ -721,19 +721,9 @@ func walkAndSearchContent(rootPath, query string) ([]searchMatch, error) {
 			}
 		}
 
-		// Quick check for binary: read a small prefix (up to 1024 bytes)
-		file, err := os.Open(path)
-		if err != nil {
+		// Quick check for binary
+		if isBinaryFile(path) {
 			return nil
-		}
-		prefix := make([]byte, 1024)
-		n, _ := file.Read(prefix)
-		file.Close()
-
-		for i := 0; i < n; i++ {
-			if prefix[i] == 0 {
-				return nil // Binary file check: found null byte
-			}
 		}
 
 		// Read file content safely
@@ -771,7 +761,23 @@ func walkAndSearchContent(rootPath, query string) ([]searchMatch, error) {
 	return matches, err
 }
 
-// --- Thread-Safe WebSocket Write Mutex Manager ---
+func isBinaryFile(path string) bool {
+	file, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer file.Close()
+
+	buf := make([]byte, 1024)
+	n, _ := file.Read(buf)
+	for i := 0; i < n; i++ {
+		if buf[i] == 0 {
+			return true
+		}
+	}
+	return false
+}
+
 
 var (
 	wsWriteMutexes   = make(map[*websocket.Conn]*sync.Mutex)

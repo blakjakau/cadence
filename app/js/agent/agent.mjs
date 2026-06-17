@@ -76,7 +76,7 @@ export class Agent {
 			if (compiledResults) {
 				const toolResponseMessage = {
 					id: crypto.randomUUID(),
-					role: "user",
+					role: "system", // Should this be "system" or "tool_response"?
 					type: "tool_response",
 					content: compiledResults,
 					timestamp: Date.now()
@@ -89,7 +89,13 @@ export class Agent {
 				if (aiManager.isSessionViewed(session.id)) {
 					aiManager.historyManager.render();
 				}
+
+				// If we added results, we want the agent to see them and re-evaluate its next step
+				// without necessarily sending a new prompt request immediately.
+				// This loop will continue and proceed to model inference with the updated history.
+				continue; 
 			}
+
 
 			const modelMessageId = crypto.randomUUID();
 			const responseBlock = aiManager.historyManager.createStreamingBlock(modelMessageId, "model", session.id);
@@ -766,11 +772,16 @@ export class Agent {
 			let compiledResults = "\n=== SUB-AGENT RESULTS ===\n";
 			let hasNewResults = false;
 
-			for (const subSession of subSessions) {
+			for (const subSessionData of subSessions) {
+				// Use the in-memory running sub-agent session if it is currently/was recently active
+				const running = this.aiManager.runningSessions.get(subSessionData.id);
+				const subSession = (running && running.instance?.session) ? running.instance.session : subSessionData;
+
 				const isRunning = this.aiManager.runningSessions.has(subSession.id);
 				const isCompleted = !!subSession.completedResult;
 
-				if (!isRunning && !session.reportedSubAgents.includes(subSession.id)) {
+				// Only consider if not running and has a result
+				if (!isRunning && isCompleted && !session.reportedSubAgents.includes(subSession.id)) {
 					session.reportedSubAgents.push(subSession.id);
 					hasNewResults = true;
 

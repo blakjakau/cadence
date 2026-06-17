@@ -222,7 +222,7 @@ class AgentTools {
 
             let content = "";
             if (openTab && openTab.config.session) {
-                console.log(`[AgentTools] Reading ${path} from open editor buffer.`);
+                console.debug(`[AgentTools] Reading ${path} from open editor buffer.`);
                 const session = openTab.config.session;
                 const edits = this.editBuffer[resolvedPath]?.edits || [];
                 content = this._getCleanContentOfSession(session, edits);
@@ -464,7 +464,7 @@ class AgentTools {
 
             // 2. Search remaining files using backend Go server if connected
             if (this.conduit.isConnected) {
-                console.log(`[AgentTools] Running backend Go search for query: "${query}"`);
+                console.debug(`[AgentTools] Running backend Go search for query: "${query}"`);
                 try {
                     const res = await this.conduit.wsSearch(".", "content", query);
                     if (res && !res.error && Array.isArray(res.data)) {
@@ -489,7 +489,7 @@ class AgentTools {
 
             // 3. Fallback to client-side indexing if backend search is offline/unavailable
             if (matches.length === 0 && window.ui?.fileList?.index?.files) {
-                console.log("[AgentTools] Falling back to client-side files index search");
+                console.debug("[AgentTools] Falling back to client-side files index search");
                 const files = window.ui.fileList.index.files;
                 let searchedCount = 0;
                 for (const file of files) {

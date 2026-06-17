@@ -1,3 +1,18 @@
+export const subAgentToolsList = [
+    "list_files",
+    "read_file",
+    "read_file_outline",
+    "read_symbol",
+    "search_files",
+    "search_in_file",
+    "edit_file",
+    // "edit_remove_lines",
+    // "refactor_copy_lines",
+    "create_file",
+    "query",
+    "sub_agent_complete"
+];
+
 export const tools = [
     {
         name: "list_files",
@@ -193,7 +208,7 @@ export const tools = [
     },
     {
         name: "create_sub_agent",
-        description: "Spawns a linked sub-agent session with a specific objective and size constraints. The sub-agent has a clean context and limited toolset.",
+        description: "Spawns a linked sub-agent session with a specific objective and size constraints. The sub-agent has a clean context and limited toolset ("+subAgentToolsList.join(",")+").",
         parameters: {
             type: "object",
             properties: {
@@ -228,17 +243,3 @@ export const tools = [
     }
 ];
 
-export const subAgentToolsList = [
-    "list_files",
-    "read_file",
-    "read_file_outline",
-    "read_symbol",
-    "search_files",
-    "search_in_file",
-    "edit_file",
-    // "edit_remove_lines",
-    // "refactor_copy_lines",
-    "create_file",
-    "query",
-    "sub_agent_complete"
-];
