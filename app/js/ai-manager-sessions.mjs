@@ -257,24 +257,8 @@ class AIManagerSessions {
 		this.manager.forgivenessMode = newSessionData.forgivenessMode ?? false;
 		this._unsentPromptBuffer = null; // Clear any pending unsent prompt from the previous session
 
-		// disappear the panel first
-		this.manager.conversationArea.style.scrollBehavior = 'auto'; // Make scroll instant
-		this.manager.conversationArea.style.transition = "opacity 100ms linear"
-		this.manager.conversationArea.style.opacity = 0
-
-		setTimeout(() => {
-			void this.manager.conversationArea.scrollTop
-			// Update the rest of the UI based on the new data
-			this.manager.historyManager.loadSessionMessages(this.activeSession.messages, false);
-
-			// Restore scroll position after content has been rendered
-			setTimeout(() => {
-				void this.manager.conversationArea.scrollTop
-				this.manager.conversationArea.scrollTop = this.activeSession.scrollTop || 0;
-				this.manager.conversationArea.style.scrollBehavior = ''; // Restore smooth scrolling
-				this.manager.conversationArea.style.opacity = 1
-			}, 100)
-		}, 100)
+		// Update the rest of the UI based on the new data
+		this.manager.historyManager.loadSessionMessages(this.activeSession.messages, false);
 
 		this.manager.promptEditor.setValue(this.activeSession.promptInput || "", -1);
 		this.promptIndex = (this.activeSession.promptHistory?.length || 0);

@@ -1232,13 +1232,44 @@ const execCommandNewFile = async () => {
 			return window.terminalManager.createNewTerminalSession()
 		case "editor":
 		default:
-			const srcTab = ui.currentTabs.activeTab
-			const mode = srcTab?.config?.mode?.mode || ""
-			const folder = srcTab?.config?.folder || undefined
+			const targetTabs = ui.currentTabs
+			let mode = "ace/mode/text"
+			let folder = undefined
+
+			const isEditorTab = (t) => {
+				if (!t || !t.config) return false
+				const path = t.config.path || ""
+				if (path === "agent_config" || path === "plan_tasks" || path.startsWith("diff_")) return false
+				if (t.config.mode?.mode === "agent_config" || t.config.mode?.mode === "plan_tasks") return false
+				if (!t.config.session) return false
+				return true
+			}
+
+			const srcTab = targetTabs?.activeTab
+			if (srcTab && isEditorTab(srcTab)) {
+				mode = srcTab.config.mode?.mode || "ace/mode/text"
+				folder = srcTab.config.folder || undefined
+			} else {
+				let found = false
+				if (targetTabs && targetTabs.tabs) {
+					for (let i = targetTabs.tabs.length - 1; i >= 0; i--) {
+						const t = targetTabs.tabs[i]
+						if (isEditorTab(t)) {
+							mode = t.config.mode?.mode || "ace/mode/text"
+							folder = t.config.folder || undefined
+							found = true
+							break
+						}
+					}
+				}
+				if (!found) {
+					mode = "ace/mode/text"
+				}
+			}
+
 			const newSession = ace.createEditSession("", mode)
 			if (app.sessionOptions) newSession.setOptions(app.sessionOptions)
 			newSession.baseValue = ""
-			const targetTabs = ui.currentTabs
 			const tab = targetTabs.add({
 				name: "untitled",
 				mode: { mode: mode },

@@ -127,6 +127,59 @@ class AIManagerHistory {
 	async render({ isNewMessage = false } = {}) {
 		if (!this.conversationArea) return;
 
+		const shouldScroll = this.manager._shouldAutoScroll();
+		const viewedSessionId = this.manager.activeSession?.activeSubAgentSessionId || this.manager.activeSessionId;
+		const isSwitchingSession = this._lastViewedSessionId !== viewedSessionId;
+		console.debug("[Scroll Debug] render() called. viewedSessionId:", viewedSessionId, "previous:", this._lastViewedSessionId, "isSwitchingSession:", isSwitchingSession);
+		this._lastViewedSessionId = viewedSessionId;
+
+		const activeSubAgentSessionId = this.manager.activeSession?.activeSubAgentSessionId;
+
+		if (isSwitchingSession) {
+			this.conversationArea.style.scrollBehavior = 'auto'; // Make scroll instant
+			this.conversationArea.style.transition = "opacity 100ms linear"
+			this.conversationArea.style.opacity = 0
+
+			setTimeout(async () => {
+				await this._actualRender({ shouldScroll, isSwitchingSession });
+
+				// Restore the scroll position instantly while scrollBehavior is 'auto'
+				void this.conversationArea.scrollTop;
+				const pendingQueryCard = this.conversationArea.querySelector(".agent-query-block:not(.answered)");
+				if (activeSubAgentSessionId) {
+					const runningSubAgent = this.manager.runningSessions.get(activeSubAgentSessionId);
+					const subSession = (runningSubAgent && runningSubAgent.instance?.session)
+						? runningSubAgent.instance.session
+						: await workspaceClient.getSession(activeSubAgentSessionId);
+					
+					console.debug("[Scroll Debug] Switching to Sub-Agent. savedScrollTop:", subSession?.scrollTop, "pendingQueryCard:", !!pendingQueryCard);
+					if (pendingQueryCard && !subSession?.scrollTop) {
+						console.debug("[Scroll Debug] Scrolling sub-agent query card into view.");
+						pendingQueryCard.scrollIntoView({ behavior: "auto", block: "nearest" });
+					} else if (subSession) {
+						this.conversationArea.scrollTop = subSession.scrollTop || 0;
+					}
+				} else {
+					console.debug("[Scroll Debug] Switching to Parent. savedScrollTop:", this.manager.activeSession?.scrollTop, "pendingQueryCard:", !!pendingQueryCard);
+					if (pendingQueryCard && !this.manager.activeSession?.scrollTop) {
+						console.debug("[Scroll Debug] Scrolling parent query card into view.");
+						pendingQueryCard.scrollIntoView({ behavior: "auto", block: "nearest" });
+					} else if (this.manager.activeSession) {
+						this.conversationArea.scrollTop = this.manager.activeSession.scrollTop || 0;
+					}
+				}
+
+				setTimeout(() => {
+					this.conversationArea.style.scrollBehavior = ''; // Restore smooth scrolling
+					this.conversationArea.style.opacity = 1
+				}, 50);
+			}, 100);
+		} else {
+			await this._actualRender({ shouldScroll, isSwitchingSession });
+		}
+	}
+
+	async _actualRender({ shouldScroll, isSwitchingSession }) {
 		this.manager._updateGlowForViewedSession();
 
 		const activeSubAgentSessionId = this.manager.activeSession?.activeSubAgentSessionId;
@@ -140,6 +193,20 @@ class AIManagerHistory {
 			header.innerHTML = `<ui-icon>arrow_back</ui-icon> <span>Back to parent thread</span>`;
 			header.onclick = () => {
 				if (this.manager.activeSession) {
+					console.debug("[Scroll Debug] Exiting sub-agent. Saving sub-agent scroll position:", this.conversationArea.scrollTop);
+					const subSession = this.manager.activeSubAgentSession;
+					if (subSession) {
+						subSession.scrollTop = this.conversationArea.scrollTop;
+						workspaceClient.setSession(activeSubAgentSessionId, subSession);
+					} else {
+						workspaceClient.getSession(activeSubAgentSessionId).then(s => {
+							if (s) {
+								s.scrollTop = this.conversationArea.scrollTop;
+								workspaceClient.setSession(activeSubAgentSessionId, s);
+							}
+						});
+					}
+
 					delete this.manager.activeSession.activeSubAgentSessionId;
 					this.render();
 				}
@@ -158,6 +225,8 @@ class AIManagerHistory {
 				this.conversationArea.appendChild(errorMsg);
 				return;
 			}
+
+			this.manager.activeSubAgentSession = subSession;
 
 			// Render messages
 			const subMessages = subSession.messages || [];
@@ -190,9 +259,23 @@ class AIManagerHistory {
 				this.conversationArea.append(runningSubAgent.responseBlock);
 			}
 
+			if (!isSwitchingSession) {
+				setTimeout(() => {
+					const pendingQueryCard = this.conversationArea.querySelector(".agent-query-block:not(.answered)");
+					console.debug("[Scroll Debug] Sub-Agent Update. shouldScroll:", shouldScroll, "pendingQueryCard:", !!pendingQueryCard);
+					if (pendingQueryCard && shouldScroll) {
+						console.debug("[Scroll Debug] Scrolling sub-agent query card into view (update).");
+						pendingQueryCard.scrollIntoView({ behavior: "smooth", block: "nearest" });
+					} else if (shouldScroll) {
+						this.conversationArea.scrollTop = this.conversationArea.scrollHeight;
+					}
+				}, 100);
+			}
+
 			return;
 		}
 
+		this.manager.activeSubAgentSession = null;
 		this.conversationArea.innerHTML = ""; // Clear existing messages
 		this.populateFileBar(); // Always populate file bar
 
@@ -281,6 +364,20 @@ class AIManagerHistory {
 					this.conversationArea.append(pendingElement);
 				}
 			}
+		}
+
+		// Scroll active unanswered query card into view if auto-scroll is allowed, or restore parent session scroll position
+		if (!isSwitchingSession) {
+			setTimeout(() => {
+				const pendingQueryCard = this.conversationArea.querySelector(".agent-query-block:not(.answered)");
+				console.debug("[Scroll Debug] Parent Update. shouldScroll:", shouldScroll, "pendingQueryCard:", !!pendingQueryCard);
+				if (pendingQueryCard && shouldScroll) {
+					console.debug("[Scroll Debug] Scrolling parent query card into view (update).");
+					pendingQueryCard.scrollIntoView({ behavior: "smooth", block: "nearest" });
+				} else if (shouldScroll) {
+					this.conversationArea.scrollTop = this.conversationArea.scrollHeight;
+				}
+			}, 100);
 		}
 	}
 
@@ -557,6 +654,8 @@ class AIManagerHistory {
 
 			card.onclick = () => {
 				if (this.manager.activeSession) {
+					console.debug("[Scroll Debug] Saving parent session scroll position:", this.conversationArea.scrollTop);
+					this.manager.activeSession.scrollTop = this.conversationArea.scrollTop;
 					this.manager.activeSession.activeSubAgentSessionId = subAgentId;
 					this.render();
 				}
@@ -802,6 +901,9 @@ class AIManagerHistory {
 			element = new Block();
 			element.classList.add("agent-query-block");
 			element.dataset.messageId = message.id;
+			if (message.subSessionId) {
+				element.dataset.subSessionId = message.subSessionId;
+			}
 
 			const queryHeader = new Block();
 			queryHeader.className = "agent-query-header";
@@ -833,10 +935,18 @@ class AIManagerHistory {
 				const inputRow = new Block();
 				inputRow.className = "agent-query-input-row";
 
-				const answerInput = document.createElement("input");
-				answerInput.type = "text";
-				answerInput.className = "agent-query-input";
+				const answerInput = document.createElement("textarea");
+				answerInput.className = "agent-query-input agent-query-textarea";
 				answerInput.placeholder = "Type your answer...";
+				answerInput.rows = 1;
+				answerInput.style.resize = "none";
+				answerInput.style.overflowY = "hidden";
+
+				const adjustHeight = () => {
+					answerInput.style.height = "auto";
+					answerInput.style.height = answerInput.scrollHeight + "px";
+				};
+				answerInput.addEventListener("input", adjustHeight);
 
 				const submitBtn = new Button("Answer");
 				submitBtn.className = "agent-query-submit theme-button";
@@ -865,11 +975,23 @@ class AIManagerHistory {
 
 				submitBtn.onclick = submitAnswer;
 				answerInput.addEventListener("keydown", (e) => {
-					if (e.key === "Enter") submitAnswer();
+					if (e.key === "Enter") {
+						if (e.ctrlKey || e.metaKey) {
+							e.preventDefault();
+							submitAnswer();
+						}
+					}
 				});
 
 				inputRow.append(answerInput, submitBtn);
 				element.append(inputRow);
+
+				if (message.subSessionId && this.manager.isSessionViewed(message.subSessionId)) {
+					setTimeout(() => {
+						answerInput.focus();
+						adjustHeight();
+					}, 100);
+				}
 			}
 		}
 

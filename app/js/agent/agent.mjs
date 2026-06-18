@@ -496,6 +496,13 @@ export class Agent {
 
 						try {
 							toolResult = await agentTools.execute(toolCall.name, toolCall.arguments, session.id);
+							if (toolCall.name === "query") {
+								loopCount = 0;
+								if (this.throttleBar) {
+									this.throttleBar.remove();
+									this.throttleBar = null;
+								}
+							}
 						} catch (e) {
 							toolResult = `Error executing tool: ${e.message}`;
 						}

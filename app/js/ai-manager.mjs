@@ -394,6 +394,14 @@ class AIManager {
 
 		// --- Other UI Elements ---
 		this.conversationArea = this._createConversationArea();
+		this.conversationArea.addEventListener("scroll", () => {
+			const activeSubAgentSessionId = this.activeSession?.activeSubAgentSessionId;
+			if (activeSubAgentSessionId && this.activeSubAgentSession) {
+				this.activeSubAgentSession.scrollTop = this.conversationArea.scrollTop;
+			} else if (this.activeSession) {
+				this.activeSession.scrollTop = this.conversationArea.scrollTop;
+			}
+		});
 		this.submitButton = this._createSubmitButton();
 		const promptContainer = this._createPromptContainer();
 
