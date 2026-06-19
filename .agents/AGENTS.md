@@ -15,3 +15,10 @@ When building or modifying UI elements, use the custom web components defined in
   - `await window.modal.confirm("Question?", "Title")` (returns boolean)
   - `await window.modal.prompt("Prompt text", "Title", "defaultVal")` (returns string or null)
   - `window.modal.toast("Notification message")`
+
+## actions ##
+`./build.sh` - builds the backend server
+`curl -X POST http://localhost:3022/api/restart` - restarts the backend server (use port 3023 in dev mode)
+
+Don't build the project unless explicitly requested by the user, or essential to testing
+Don't or `git add` or `git commit` unless explicitly requested by the user
