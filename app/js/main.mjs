@@ -1485,9 +1485,15 @@ const renderPlanTasksView = (container) => {
 const openPlanAndTaskList = (targetEditor = leftEdit) => {
 	{
 		let tab = leftTabs.tabs.find(t => t.config?.path === "plan_tasks")
-		if (tab) return tab.click()
+		if (tab) {
+			if (!restoreInProgress) tab.click()
+			return
+		}
 		tab = rightTabs.tabs.find(t => t.config?.path === "plan_tasks")
-		if (tab) return tab.click()
+		if (tab) {
+			if (!restoreInProgress) tab.click()
+			return
+		}
 	}
 
 	const removeEmptyUntitledTab = (tabGroup) => {
@@ -1514,15 +1520,21 @@ const openPlanAndTaskList = (targetEditor = leftEdit) => {
 	})
 	
 	tab.classList.add("plan-tasks-tab")
-	tab.click()
+	if (!restoreInProgress) tab.click()
 }
 
 const openAgentConfig = (targetEditor = leftEdit) => {
 	{
 		let tab = leftTabs.tabs.find(t => t.config?.path === "agent_config")
-		if (tab) return tab.click()
+		if (tab) {
+			if (!restoreInProgress) tab.click()
+			return
+		}
 		tab = rightTabs.tabs.find(t => t.config?.path === "agent_config")
-		if (tab) return tab.click()
+		if (tab) {
+			if (!restoreInProgress) tab.click()
+			return
+		}
 	}
 
 	const removeEmptyUntitledTab = (tabGroup) => {
@@ -1549,7 +1561,7 @@ const openAgentConfig = (targetEditor = leftEdit) => {
 	})
 	
 	tab.classList.add("agent-config-tab")
-	tab.click()
+	if (!restoreInProgress) tab.click()
 }
 
 const openDiffTab = (filePath, backupId, targetEditor = leftEdit) => {
@@ -1922,7 +1934,10 @@ const updateEditorUI = async (targetEditor, targetMediaView, tab) => {
 		}
 	}
 
-	if (holder.diffView) holder.diffView.style.display = "none"
+	if (holder.diffView) {
+		holder.diffView.cleanup()
+		holder.diffView.style.display = "none"
+	}
 
 	if (tab.config.viewMode === "diff") {
 		targetEditor.container.style.display = "none"
@@ -2007,6 +2022,7 @@ leftTabs.click = async (event) => {
 	if (ui.leftHolder && ui.leftHolder.updateNoticeBar) {
 		await ui.leftHolder.updateNoticeBar(tab)
 	}
+	saveWorkspace()
 }
 
 rightTabs.click = async (event) => {
@@ -2024,6 +2040,7 @@ rightTabs.click = async (event) => {
 	if (ui.rightHolder && ui.rightHolder.updateNoticeBar) {
 		await ui.rightHolder.updateNoticeBar(tab)
 	}
+	saveWorkspace()
 }
 
 const closeTab = async (targetTabs, event, force = false) => {
@@ -2176,31 +2193,6 @@ const restoreWorkspaceContent = async () => {
 
 			// Remove missing files from workspace.files
 			workspace.files = workspace.files.filter((file) => !missingFiles.includes(file.path))
-			
-			// --- Tab Restoration Logic ---
-			if (workspace.activeEditorTabHandle) {
-				const activeSide = workspace.activeEditorSide
-				const clean = (p) => p ? p.replace(/\\/g, '/').replace(/^\//, '') : '';
-				const targetHandle = clean(workspace.activeEditorTabHandle);
-				
-				const activeTab = activeSide === "left" ? 
-					leftTabs.tabs.find(t => clean(t.config.handle) === targetHandle) : 
-					rightTabs.tabs.find(t => clean(t.config.handle) === targetHandle);
-	
-				if (activeTab) {
-					console.warn(`restoring active tab: ${workspace.activeEditorTabHandle} on ${activeSide}`);
-					activeTab.click();
-				} else {
-					console.log(`Active tab ${workspace.activeEditorTabHandle} not found in open tabs.`);
-				}
-			} else {
-				// If no specific active tab is saved, ensure at least one default tab exists in the editor
-				const defaultEditor = leftTabs.tabs.length > 0 ? leftTabs : rightTabs;
-				if (defaultEditor.tabs.length === 0) {
-					defaultTab(defaultEditor);
-				}
-			}
-			// -----------------------------
 		}
 
 		if (workspace.agentConfigSide) {
@@ -2212,6 +2204,29 @@ const restoreWorkspaceContent = async () => {
 			const targetEditor = workspace.planTasksSide === "right" ? rightEdit : leftEdit
 			openPlanAndTaskList(targetEditor)
 		}
+
+		// --- Tab Restoration Logic ---
+		if (workspace.activeEditorTabHandle) {
+			const clean = (p) => p ? p.replace(/\\/g, '/').replace(/^\//, '') : '';
+			const targetHandle = clean(workspace.activeEditorTabHandle);
+			
+			const activeTab = leftTabs.tabs.find(t => clean(t.config.handle) === targetHandle) ||
+				rightTabs.tabs.find(t => clean(t.config.handle) === targetHandle);
+
+			if (activeTab) {
+				console.warn(`restoring active tab: ${workspace.activeEditorTabHandle}`);
+				activeTab.click();
+			} else {
+				console.log(`Active tab ${workspace.activeEditorTabHandle} not found in open tabs.`);
+			}
+		} else {
+			// If no specific active tab is saved, ensure at least one default tab exists in the editor
+			const defaultEditor = leftTabs.tabs.length > 0 ? leftTabs : rightTabs;
+			if (defaultEditor.tabs.length === 0) {
+				defaultTab(defaultEditor);
+			}
+		}
+		// -----------------------------
 
 		ui.showSidebar(1)
 		restoreInProgress = false

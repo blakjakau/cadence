@@ -966,7 +966,7 @@ export class DiffViewPanel extends Block {
         }
     }
 
-    disconnectedCallback() {
+    cleanup() {
         if (this._rightEditorChangeListener && this._attachedSession) {
             this._attachedSession.off("change", this._rightEditorChangeListener);
             this._rightEditorChangeListener = null;
@@ -994,7 +994,15 @@ export class DiffViewPanel extends Block {
         }
 
         const cleanWidgets = (editor) => {
-            if (editor) {
+            if (editor && editor.session) {
+                const session = editor.getSession();
+                const widgets = session.lineWidgets;
+                if (widgets && editor.session.widgetManager) {
+                    const toRemove = [...widgets];
+                    toRemove.forEach(w => {
+                        if (w) editor.session.widgetManager.removeLineWidget(w);
+                    });
+                }
                 if (editor.session.widgetManager) {
                     editor.session.widgetManager.detach();
                     editor.session.widgetManager = null;
@@ -1004,6 +1012,32 @@ export class DiffViewPanel extends Block {
         };
         cleanWidgets(this.leftEditor);
         cleanWidgets(this.rightEditor);
+
+        if (this.leftEditor) {
+            this.leftEditor.renderer.scrollMargin.top = 0;
+            if (this.leftMarkers) {
+                this.leftMarkers.forEach(id => this.leftEditor.getSession().removeMarker(id));
+            }
+            try {
+                clearGutterDecorations(this.leftEditor.getSession());
+            } catch (e) {}
+        }
+        this.leftMarkers = [];
+
+        if (this.rightEditor) {
+            this.rightEditor.renderer.scrollMargin.top = 0;
+            if (this.rightMarkers) {
+                this.rightMarkers.forEach(id => this.rightEditor.getSession().removeMarker(id));
+            }
+            try {
+                clearGutterDecorations(this.rightEditor.getSession());
+            } catch (e) {}
+        }
+        this.rightMarkers = [];
+    }
+
+    disconnectedCallback() {
+        this.cleanup();
     }
 
     refreshDiff() {

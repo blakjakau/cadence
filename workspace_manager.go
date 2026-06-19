@@ -42,6 +42,8 @@ type Workspace struct {
 	// New fields for editor tab persistence
 	ActiveEditorTabHandle string               `json:"activeEditorTabHandle,omitempty"`
 	ActiveEditorSide      string               `json:"activeEditorSide,omitempty"`
+	AgentConfigSide       string               `json:"agentConfigSide,omitempty"`
+	PlanTasksSide         string               `json:"planTasksSide,omitempty"`
 }
 
 var (
