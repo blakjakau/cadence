@@ -34,6 +34,12 @@ func (a *App) startup(ctx context.Context) {
 }
 
 func handleStartup() {
+	if headlessFlag {
+		RendererMode = "headless"
+		runCadenceServer(true)
+		return
+	}
+
 	appUrl := "http://localhost:" + port + "/"
 
 	// If we are being run by Wails for metadata/bindings generation, 

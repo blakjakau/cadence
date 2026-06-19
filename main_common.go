@@ -66,7 +66,7 @@ func runCadenceServer(block bool) {
 	log.Printf("Cadence v%s - listening for WS connections (localhost:%s)", version, port)
 	log.Println("------------------------------------------------------------")
 
-	if browserFlag {
+	if browserFlag && !headlessFlag {
 		go func() {
 			time.Sleep(500 * time.Millisecond)
 			openBrowser("http://localhost:" + port + "/")
@@ -165,6 +165,7 @@ func parseFlags() {
 	flag.BoolVar(&browserFlag, "browser", false, "Open in the default browser instead of a native window.")
 	flag.BoolVar(&webviewFlag, "webview", false, "Open using the lightweight webview_go renderer instead of Wails.")
 	flag.BoolVar(&wailsFlag, "wails", false, "Force opening using the Wails rendering engine (if compiled).")
+	flag.BoolVar(&headlessFlag, "headless", false, "Run in headless mode (no UI or browser launch).")
 	flag.Parse()
 
 	if serveFlag != "" {
@@ -220,6 +221,7 @@ var serveFlag string
 var browserFlag bool
 var webviewFlag bool
 var wailsFlag bool
+var headlessFlag bool
 var RendererMode string = "unknown"
 var keyFlag bool
 var installUserFlag bool
@@ -375,7 +377,20 @@ func restartProcess() {
 		os.Exit(1)
 	}
 
-	cmd := exec.Command(argv0, os.Args[1:]...)
+	// Filter out browser/webview/wails flags and force --headless flag
+	var args []string
+	for _, arg := range os.Args[1:] {
+		if arg == "--browser" || arg == "-browser" ||
+			arg == "--webview" || arg == "-webview" ||
+			arg == "--wails" || arg == "-wails" ||
+			arg == "--headless" || arg == "-headless" {
+			continue
+		}
+		args = append(args, arg)
+	}
+	args = append(args, "--headless")
+
+	cmd := exec.Command(argv0, args...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	cmd.Env = os.Environ()
