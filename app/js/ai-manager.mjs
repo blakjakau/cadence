@@ -275,11 +275,13 @@ class AIManager {
 	}
 
 	set editor(editor) {
-		this.ai.editor = editor
+		if (this.ai) {
+			this.ai.editor = editor
+		}
 	}
 
 	get editor() {
-		return this.ai.editor
+		return this.ai?.editor
 	}
 
 	focus() {
