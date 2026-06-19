@@ -201,12 +201,12 @@ class AIManager {
 			basePrompt = systemPromptBuilder(this.getSystemPromptConfig());
 		}
 
-		// Persistent memory scratch-pad: read .cadence.md from active workspace roots
+		// Persistent memory scratch-pad: read .agents/AGENTS.md from active workspace roots
 		const folders = window.workspace?.folders || [];
 		const hints = [];
 		for (const folder of folders) {
 			try {
-				const filePath = `${folder}/.cadence.md`;
+				const filePath = `${folder}/.agents/AGENTS.md`;
 				const fileData = await window.conduit.wsRead(filePath);
 				if (fileData && !fileData.error) {
 					let content = "";
