@@ -4,6 +4,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"log"
@@ -73,21 +74,21 @@ func runCadenceServer(block bool) {
 	}
 
 	if block {
-		err := http.ListenAndServe(":"+port, activityMiddleware(corsMiddleware(mux)))
+		err := startServer(":"+port, activityMiddleware(corsMiddleware(mux)))
 		if err != nil {
 			if browserFlag {
 				log.Printf("Server likely already running (%v). Opening browser and exiting.", err)
 				openBrowser("http://localhost:" + port + "/")
 				os.Exit(0)
 			}
-			log.Fatal("ListenAndServe: ", err)
+			log.Fatal("startServer: ", err)
 		}
 	} else {
 		// Start background server (needed for WebSockets in Native mode)
 		go func() {
-			err := http.ListenAndServe(":"+port, activityMiddleware(corsMiddleware(mux)))
+			err := startServer(":"+port, activityMiddleware(corsMiddleware(mux)))
 			if err != nil {
-				log.Println("ListenAndServe (async) Error: ", err)
+				log.Println("startServer (async) Error: ", err)
 			}
 		}()
 	}
@@ -102,6 +103,7 @@ func createServerMux() *http.ServeMux {
 	mux.HandleFunc("/api/workspace", workspaceHandler)
 	mux.HandleFunc("/api/session", sessionHandler)
 	mux.HandleFunc("/api/sessions", sessionsHandler)
+	mux.HandleFunc("/api/restart", restartHandler)
 	mux.HandleFunc("/kill", installationHandler(killHandler))
 	mux.HandleFunc("/install-service", installationHandler(InstallService))
 	mux.HandleFunc("/uninstall", installationHandler(Uninstall))
@@ -309,6 +311,83 @@ func killHandler() (string, error) {
 	log.Println("Received /kill request. Shutting down application.")
 	go func() { time.Sleep(100 * time.Millisecond); os.Exit(0) }()
 	return "Cadence server is shutting down.", nil
+}
+
+var mainServer *http.Server
+
+func startServer(addr string, handler http.Handler) error {
+	var listener net.Listener
+	var err error
+
+	for i := 0; i < 30; i++ { // Try for up to 3 seconds
+		listener, err = net.Listen("tcp", addr)
+		if err == nil {
+			break
+		}
+		log.Printf("Port %s is busy, retrying in 100ms... (%d/30)", addr, i+1)
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	if err != nil {
+		return err
+	}
+
+	mainServer = &http.Server{
+		Addr:    addr,
+		Handler: handler,
+	}
+
+	return mainServer.Serve(listener)
+}
+
+func restartHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	log.Println("Received /api/restart request. Preparing to restart server...")
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte(`{"status":"restarting"}`))
+
+	go func() {
+		time.Sleep(200 * time.Millisecond)
+
+		if mainServer != nil {
+			log.Println("Shutting down HTTP server...")
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			mainServer.Shutdown(ctx)
+		}
+
+		restartProcess()
+	}()
+}
+
+func restartProcess() {
+	log.Println("Relaunching process...")
+
+	argv0, err := exec.LookPath(os.Args[0])
+	if err != nil {
+		log.Printf("Failed to find path of executable: %v", err)
+		os.Exit(1)
+	}
+
+	cmd := exec.Command(argv0, os.Args[1:]...)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	cmd.Env = os.Environ()
+
+	err = cmd.Start()
+	if err != nil {
+		log.Printf("Failed to start child process: %v", err)
+		os.Exit(1)
+	}
+
+	log.Printf("Child process started with PID %d, exiting current process.", cmd.Process.Pid)
+	os.Exit(0)
 }
 
 func openBrowser(url string) {
