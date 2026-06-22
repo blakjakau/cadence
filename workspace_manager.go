@@ -44,6 +44,8 @@ type Workspace struct {
 	ActiveEditorSide      string               `json:"activeEditorSide,omitempty"`
 	AgentConfigSide       string               `json:"agentConfigSide,omitempty"`
 	PlanTasksSide         string               `json:"planTasksSide,omitempty"`
+	WorkspaceSettingsSide string               `json:"workspaceSettingsSide,omitempty"`
+	TerminalSettingsSide  string               `json:"terminalSettingsSide,omitempty"`
 }
 
 var (

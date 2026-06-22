@@ -137,6 +137,7 @@ const app = {
 	sessionOptions: null,
 	rendererOptions: null,
 	enableLiveAutocompletion: null,
+	keyboardHandler: null,
 	darkmode: "system",
 	aiConfig: {},
 	systemPromptConfig: {}, // NEW: For generic system prompt settings
@@ -409,6 +410,7 @@ const saveAppConfig = async () => {
 	app.sessionOptions = ui.leftEdit.session.getOptions()
 	app.rendererOptions = ui.leftEdit.renderer.getOptions()
 	app.enableLiveAutocompletion = ui.leftEdit.$enableLiveAutocompletion
+	app.keyboardHandler = ui.leftEdit.getOption("keyboardHandler") || "ace/keyboard/sublime"
 	delete app.sessionOptions.mode // don't persist the mode, that's dumb
 	delete app.folders //app.folders = workspace.folders
 
@@ -475,6 +477,9 @@ const _saveWorkspace = async () => {
 
 	const orderedFiles = []
 	let planTasksSide = null
+	let workspaceSettingsSide = null
+	let terminalSettingsSide = null
+	let editorSettingsSide = null
 
 	const addTabsFrom = (tabBar) => {
 		if (tabBar && tabBar.tabs) {
@@ -484,6 +489,12 @@ const _saveWorkspace = async () => {
 						planTasksSide = tab.config.side
 					} else if (tab.config.path === "agent_config") {
 						workspace.agentConfigSide = tab.config.side
+					} else if (tab.config.path === "workspace_settings") {
+						workspaceSettingsSide = tab.config.side
+					} else if (tab.config.path === "terminal_settings") {
+						terminalSettingsSide = tab.config.side
+					} else if (tab.config.path === "editor_settings") {
+						editorSettingsSide = tab.config.side
 					} else {
 						orderedFiles.push({
 							name: tab.config.name,
@@ -497,10 +508,16 @@ const _saveWorkspace = async () => {
 		}
 	}
 	workspace.agentConfigSide = null
+	workspace.workspaceSettingsSide = null
+	workspace.terminalSettingsSide = null
+	workspace.editorSettingsSide = null
 	addTabsFrom(leftTabs)
 	addTabsFrom(rightTabs)
 	workspace.files = orderedFiles
 	workspace.planTasksSide = planTasksSide
+	workspace.workspaceSettingsSide = workspaceSettingsSide
+	workspace.terminalSettingsSide = terminalSettingsSide
+	workspace.editorSettingsSide = editorSettingsSide
 
 	workspace.openFolders = fileList.openFolders
 	workspace.activeSidebarTab = ui.iconTabBar?.activeTab?.iconId
@@ -681,6 +698,9 @@ const openWorkspace = (() => {
 
 			workspace.agentConfigSide = load.agentConfigSide || null
 			workspace.planTasksSide = load.planTasksSide || null
+			workspace.workspaceSettingsSide = load.workspaceSettingsSide || null
+			workspace.terminalSettingsSide = load.terminalSettingsSide || null
+			workspace.editorSettingsSide = load.editorSettingsSide || null
 
 			// NEW: Load AI session metadata and active session ID
 			workspace.aiSessionsMetadata = load.aiSessionsMetadata || []
@@ -882,6 +902,9 @@ const execCommandEditorOptions = () => {
 		}
 		if (app.enableLiveAutocompletion) {
 			editor.$enableLiveAutocompletion = app.enableLiveAutocompletion
+		}
+		if (app.keyboardHandler && !["scratch-editor", "ai-prompt-editor"].includes(editor.id)) {
+			editor.setKeyboardHandler(app.keyboardHandler)
 		}
 
         // disable workers always because their too old to be very usefull
@@ -1476,6 +1499,306 @@ const setCurrentEditor = (editor) => {
 	}
 }
 
+const renderWorkspaceSettingsView = (panelContent) => {
+	const schema = [
+		{ type: 'textarea', id: 'filelist-ignore-paths', label: 'Ignored Paths (comma-separated)', rows: 5 }
+	];
+	const values = {
+		'filelist-ignore-paths': (fileList.ignorePaths || []).join(', ')
+	};
+	panelContent.render(schema, values, "Workspace Settings", "folder", "var(--theme)");
+	
+	panelContent.off('settings-saved');
+	panelContent.on('settings-saved', (e) => {
+		const newPaths = e.detail['filelist-ignore-paths'].split(',').map(p => p.trim()).filter(p => p);
+		fileList.ignorePaths = newPaths;
+		fileList.dispatch('settings-changed', { ignorePaths: newPaths });
+		saveWorkspace();
+		window.modal.toast("Workspace settings saved.");
+	});
+}
+
+const renderTerminalSettingsView = async (panelContent) => {
+	const tm = window.terminalManager;
+	if (!tm) return;
+	await tm._checkConduitStatus();
+
+	const schema = [
+		{ type: "text", id: "terminal-prompt", label: "Custom Prompt", text: "Custom PS1 prompt to forward to the server" },
+		{ type: "text", id: "terminal-bg-color", label: "Background Color", text: "CSS color for the terminal background" },
+		{ type: "number", id: "terminal-font-size", label: "Font Size", text: "Font size in pixels" },
+		{
+			type: "select",
+			id: "terminal-default-dir",
+			label: "Default Directory",
+			options: [
+				{ value: "home", text: "User Home" },
+				{ value: "current", text: "Current File Directory" },
+				{ value: "restore", text: "Last Used Directory" }
+			]
+		}
+	];
+
+	if (tm.conduitStatus.isInstalled) {
+		schema.push({
+			type: "button",
+			id: "uninstall-btn",
+			label: "Uninstall",
+			text: "Uninstall Conduit",
+			className: "themed cancel",
+			onClickEvent: "uninstall-conduit",
+			help: "Remove the app and disable the protocol handler."
+		});
+	} else if (tm.conduitStatus.isRunning) {
+		schema.push({ type: "button", id: "install-btn", label: "Install Conduit", className: "themed", onClickEvent: "install-conduit" });
+	}
+
+	const values = {
+		"terminal-prompt": tm.config.prompt,
+		"terminal-bg-color": tm.config.backgroundColor,
+		"terminal-font-size": tm.config.fontSize,
+		"terminal-default-dir": tm.config.defaultDir
+	};
+
+	panelContent.render(schema, values, "Terminal Settings", "terminal", "#2da44e");
+
+	panelContent.off("settings-saved");
+	panelContent.off("install-conduit");
+	panelContent.off("uninstall-conduit");
+
+	panelContent.on("settings-saved", (e) => {
+		tm.config.prompt = e.detail["terminal-prompt"];
+		tm.config.backgroundColor = e.detail["terminal-bg-color"];
+		tm.config.fontSize = parseInt(e.detail["terminal-font-size"]);
+		tm.config.defaultDir = e.detail["terminal-default-dir"];
+		tm._saveSettings();
+		window.modal.toast("Terminal settings saved.");
+	});
+
+	panelContent.on("install-conduit", (e) => tm._installConduit(e.detail.element));
+	panelContent.on("uninstall-conduit", async (e) => {
+		const confirmed = await window.modal.confirm(
+			"Are you sure you want to uninstall the Conduit helper? This will close all active terminal sessions and stop the helper process.",
+			"Confirm Uninstall"
+		);
+		if (confirmed) {
+			tm._uninstallConduit(e.detail.element);
+		}
+	});
+}
+
+const renderEditorSettingsView = (panelContent) => {
+	const schema = [
+		{
+			type: "select",
+			id: "editor-keyboard-handler",
+			label: "Keyboard Handler",
+			options: [
+				{ value: "default", text: "Default" },
+				{ value: "ace/keyboard/vim", text: "Vim" },
+				{ value: "ace/keyboard/emacs", text: "Emacs" },
+				{ value: "ace/keyboard/sublime", text: "Sublime" }
+			]
+		},
+		{ type: "number", id: "editor-font-size", label: "Font Size" },
+		{ type: "text", id: "editor-font-family", label: "Font Family" },
+		{ type: "number", id: "editor-tab-size", label: "Tab Size" },
+		{ type: "checkbox", id: "editor-use-soft-tabs", label: "Use Soft Tabs", text: "Insert spaces instead of tabs" },
+		{ type: "checkbox", id: "editor-live-autocompletion", label: "Live Autocompletion", text: "Enable autocompletion as you type" },
+		{ type: "checkbox", id: "editor-basic-autocompletion", label: "Basic Autocompletion", text: "Enable Ctrl+Space autocompletion" },
+		{
+			type: "select",
+			id: "editor-wrap",
+			label: "Wrap Mode",
+			options: [
+				{ value: "off", text: "Off" },
+				{ value: "free", text: "Soft Wrap" },
+				{ value: "80", text: "80 Columns" },
+				{ value: "40", text: "40 Columns" }
+			]
+		},
+		{ type: "checkbox", id: "editor-show-gutter", label: "Show Gutter", text: "Show line numbers gutter" },
+		{ type: "checkbox", id: "editor-highlight-line", label: "Highlight Active Line", text: "Highlight the currently active line" },
+		{ type: "checkbox", id: "editor-show-invisibles", label: "Show Invisibles", text: "Show hidden whitespace characters" },
+		{ type: "checkbox", id: "editor-indent-guides", label: "Show Indent Guides", text: "Display vertical lines indicating indent level" },
+		{ type: "checkbox", id: "editor-print-margin", label: "Show Print Margin", text: "Show a vertical line at print margin" }
+	];
+
+	const getOpt = (name, type) => {
+		if (type === "session" && app.sessionOptions && app.sessionOptions[name] !== undefined) {
+			return app.sessionOptions[name];
+		}
+		if (type === "renderer" && app.rendererOptions && app.rendererOptions[name] !== undefined) {
+			return app.rendererOptions[name];
+		}
+		return ui.leftEdit.getOption(name);
+	};
+
+	const values = {
+		"editor-keyboard-handler": app.keyboardHandler || "ace/keyboard/sublime",
+		"editor-font-size": getOpt("fontSize", "renderer") || 12,
+		"editor-font-family": getOpt("fontFamily", "renderer") || "roboto mono",
+		"editor-tab-size": getOpt("tabSize", "session") || 4,
+		"editor-use-soft-tabs": getOpt("useSoftTabs", "session") !== false,
+		"editor-live-autocompletion": app.enableLiveAutocompletion !== false,
+		"editor-basic-autocompletion": getOpt("enableBasicAutocompletion", "session") !== false,
+		"editor-wrap": getOpt("wrap", "session") || "off",
+		"editor-show-gutter": getOpt("showGutter", "renderer") !== false,
+		"editor-highlight-line": getOpt("highlightActiveLine", "renderer") !== false,
+		"editor-show-invisibles": getOpt("showInvisibles", "renderer") === true,
+		"editor-indent-guides": getOpt("displayIndentGuides", "renderer") !== false,
+		"editor-print-margin": getOpt("showPrintMargin", "renderer") === true
+	};
+
+	panelContent.render(schema, values, "Editor Settings", "settings", "#0969da", true);
+
+	panelContent.off("settings-saved");
+	panelContent.on("settings-saved", async (e) => {
+		if (!app.sessionOptions) app.sessionOptions = {};
+		if (!app.rendererOptions) app.rendererOptions = {};
+
+		app.keyboardHandler = e.detail["editor-keyboard-handler"];
+		app.rendererOptions.fontSize = parseInt(e.detail["editor-font-size"]) || 12;
+		app.rendererOptions.fontFamily = e.detail["editor-font-family"] || "roboto mono";
+		app.sessionOptions.tabSize = parseInt(e.detail["editor-tab-size"]) || 4;
+		app.sessionOptions.useSoftTabs = !!e.detail["editor-use-soft-tabs"];
+		app.enableLiveAutocompletion = !!e.detail["editor-live-autocompletion"];
+		app.sessionOptions.enableBasicAutocompletion = !!e.detail["editor-basic-autocompletion"];
+		app.sessionOptions.wrap = e.detail["editor-wrap"];
+		app.rendererOptions.showGutter = !!e.detail["editor-show-gutter"];
+		app.rendererOptions.highlightActiveLine = !!e.detail["editor-highlight-line"];
+		app.rendererOptions.showInvisibles = !!e.detail["editor-show-invisibles"];
+		app.rendererOptions.displayIndentGuides = !!e.detail["editor-indent-guides"];
+		app.rendererOptions.showPrintMargin = !!e.detail["editor-print-margin"];
+
+		execCommandEditorOptions();
+		await saveAppConfig();
+	});
+}
+
+const openWorkspaceSettings = (targetEditor = leftEdit) => {
+	{
+		let tab = leftTabs.tabs.find(t => t.config?.path === "workspace_settings")
+		if (tab) {
+			if (!restoreInProgress) tab.click()
+			return
+		}
+		tab = rightTabs.tabs.find(t => t.config?.path === "workspace_settings")
+		if (tab) {
+			if (!restoreInProgress) tab.click()
+			return
+		}
+	}
+
+	const removeEmptyUntitledTab = (tabGroup) => {
+		if (tabGroup.tabs.length === 1) {
+			const tab = tabGroup.tabs[0]
+			if (tab.config.name === "untitled" && tab.config.session.getValue() === "") {
+				tabGroup.remove(tab, true)
+			}
+		}
+	}
+	removeEmptyUntitledTab(leftTabs)
+	removeEmptyUntitledTab(rightTabs)
+
+	const tab = targetEditor.tabs.add({
+		name: "Workspace Settings",
+		path: "workspace_settings",
+		mode: { mode: "workspace_settings" },
+		session: null,
+		side: targetEditor === leftEdit ? "left" : "right",
+		handle: "workspace_settings",
+		folder: "",
+		fileModified: false,
+		defaultStatusIcon: "folder",
+	})
+	
+	tab.classList.add("workspace-settings-tab")
+	if (!restoreInProgress) tab.click()
+}
+
+const openTerminalSettings = (targetEditor = leftEdit) => {
+	{
+		let tab = leftTabs.tabs.find(t => t.config?.path === "terminal_settings")
+		if (tab) {
+			if (!restoreInProgress) tab.click()
+			return
+		}
+		tab = rightTabs.tabs.find(t => t.config?.path === "terminal_settings")
+		if (tab) {
+			if (!restoreInProgress) tab.click()
+			return
+		}
+	}
+
+	const removeEmptyUntitledTab = (tabGroup) => {
+		if (tabGroup.tabs.length === 1) {
+			const tab = tabGroup.tabs[0]
+			if (tab.config.name === "untitled" && tab.config.session.getValue() === "") {
+				tabGroup.remove(tab, true)
+			}
+		}
+	}
+	removeEmptyUntitledTab(leftTabs)
+	removeEmptyUntitledTab(rightTabs)
+
+	const tab = targetEditor.tabs.add({
+		name: "Terminal Settings",
+		path: "terminal_settings",
+		mode: { mode: "terminal_settings" },
+		session: null,
+		side: targetEditor === leftEdit ? "left" : "right",
+		handle: "terminal_settings",
+		folder: "",
+		fileModified: false,
+		defaultStatusIcon: "terminal",
+	})
+	
+	tab.classList.add("terminal-settings-tab")
+	if (!restoreInProgress) tab.click()
+}
+
+const openEditorSettings = (targetEditor = leftEdit) => {
+	{
+		let tab = leftTabs.tabs.find(t => t.config?.path === "editor_settings")
+		if (tab) {
+			if (!restoreInProgress) tab.click()
+			return
+		}
+		tab = rightTabs.tabs.find(t => t.config?.path === "editor_settings")
+		if (tab) {
+			if (!restoreInProgress) tab.click()
+			return
+		}
+	}
+
+	const removeEmptyUntitledTab = (tabGroup) => {
+		if (tabGroup.tabs.length === 1) {
+			const tab = tabGroup.tabs[0]
+			if (tab.config.name === "untitled" && tab.config.session.getValue() === "") {
+				tabGroup.remove(tab, true)
+			}
+		}
+	}
+	removeEmptyUntitledTab(leftTabs)
+	removeEmptyUntitledTab(rightTabs)
+
+	const tab = targetEditor.tabs.add({
+		name: "Editor Settings",
+		path: "editor_settings",
+		mode: { mode: "editor_settings" },
+		session: null,
+		side: targetEditor === leftEdit ? "left" : "right",
+		handle: "editor_settings",
+		folder: "",
+		fileModified: false,
+		defaultStatusIcon: "settings",
+	})
+	
+	tab.classList.add("editor-settings-tab")
+	if (!restoreInProgress) tab.click()
+}
+
 const renderPlanTasksView = (container) => {
 	if (container && typeof container.update === "function") {
 		container.update();
@@ -1557,7 +1880,7 @@ const openAgentConfig = (targetEditor = leftEdit) => {
 		handle: "agent_config",
 		folder: "",
 		fileModified: false,
-		defaultStatusIcon: "settings",
+		defaultStatusIcon: "developer_board",
 	})
 	
 	tab.classList.add("agent-config-tab")
@@ -1610,6 +1933,9 @@ const openDiffTab = (filePath, backupId, targetEditor = leftEdit) => {
 ui.renderPlanTasksView = renderPlanTasksView
 ui.openPlanAndTaskList = openPlanAndTaskList
 ui.openAgentConfig = openAgentConfig
+ui.openWorkspaceSettings = openWorkspaceSettings
+ui.openTerminalSettings = openTerminalSettings
+ui.openEditorSettings = openEditorSettings
 ui.openDiffTab = openDiffTab
 
 const openFileHandle = async (handle, knownPath = null, targetEditor = currentEditor) => {
@@ -1934,16 +2260,19 @@ const updateEditorUI = async (targetEditor, targetMediaView, tab) => {
 		}
 	}
 
-	if (holder.diffView) {
-		holder.diffView.cleanup()
-		holder.diffView.style.display = "none"
-	}
-
-	if (tab.config.viewMode === "diff") {
-		targetEditor.container.style.display = "none"
-		targetMediaView.style.display = "none"
+	const hideAllViews = () => {
 		if (holder.planTasksView) holder.planTasksView.style.display = "none"
 		if (holder.agentConfigView) holder.agentConfigView.style.display = "none"
+		if (holder.workspaceSettingsView) holder.workspaceSettingsView.style.display = "none"
+		if (holder.terminalSettingsView) holder.terminalSettingsView.style.display = "none"
+		if (holder.editorSettingsView) holder.editorSettingsView.style.display = "none"
+		if (holder.diffView) holder.diffView.style.display = "none"
+		targetEditor.container.style.display = "none"
+		targetMediaView.style.display = "none"
+	}
+	hideAllViews()
+
+	if (tab.config.viewMode === "diff") {
 		if (holder.diffView) {
 			holder.diffView.style.display = "block"
 			await holder.diffView.update(tab.config.path, tab.config.backupId, tab)
@@ -1952,35 +2281,37 @@ const updateEditorUI = async (targetEditor, targetMediaView, tab) => {
 	}
 
 	if (tab.config.mode.mode === "plan_tasks") {
-		targetEditor.container.style.display = "none"
-		targetMediaView.style.display = "none"
-		if (holder.agentConfigView) holder.agentConfigView.style.display = "none"
 		if (holder.planTasksView) {
 			holder.planTasksView.style.display = "block"
 			renderPlanTasksView(holder.planTasksView)
 		}
 	} else if (tab.config.mode.mode === "agent_config") {
-		targetEditor.container.style.display = "none"
-		targetMediaView.style.display = "none"
-		if (holder.planTasksView) holder.planTasksView.style.display = "none"
 		if (holder.agentConfigView) {
 			holder.agentConfigView.style.display = "block"
 			holder.agentConfigView.update()
 		}
+	} else if (tab.config.mode.mode === "workspace_settings") {
+		if (holder.workspaceSettingsView) {
+			holder.workspaceSettingsView.style.display = "block"
+			renderWorkspaceSettingsView(holder.workspaceSettingsView)
+		}
+	} else if (tab.config.mode.mode === "terminal_settings") {
+		if (holder.terminalSettingsView) {
+			holder.terminalSettingsView.style.display = "block"
+			await renderTerminalSettingsView(holder.terminalSettingsView)
+		}
+	} else if (tab.config.mode.mode === "editor_settings") {
+		if (holder.editorSettingsView) {
+			holder.editorSettingsView.style.display = "block"
+			renderEditorSettingsView(holder.editorSettingsView)
+		}
 	} else if (tab.config.mode.mode === "diff") {
-		targetEditor.container.style.display = "none"
-		targetMediaView.style.display = "none"
-		if (holder.planTasksView) holder.planTasksView.style.display = "none"
-		if (holder.agentConfigView) holder.agentConfigView.style.display = "none"
 		if (holder.diffView) {
 			holder.diffView.style.display = "block"
 			await holder.diffView.update(tab.config.mode.filePath, tab.config.mode.backupId, tab)
 		}
 	} else if (tab.config.mode.mode === "media") {
-		targetEditor.container.style.display = "none"
 		targetMediaView.style.display = "block"
-		if (holder.planTasksView) holder.planTasksView.style.display = "none"
-		if (holder.agentConfigView) holder.agentConfigView.style.display = "none"
 
 		let data = tab.config.rawData
 		if (!data) {
@@ -1991,12 +2322,8 @@ const updateEditorUI = async (targetEditor, targetMediaView, tab) => {
 		targetMediaView.setImage(imageUrl)
 	} else {
 		targetEditor.container.style.display = "block"
-		targetMediaView.style.display = "none"
-		if (holder.planTasksView) holder.planTasksView.style.display = "none"
-		if (holder.agentConfigView) holder.agentConfigView.style.display = "none"
 		targetEditor.setSession(tab.config.session)
 		targetEditor.focus()
-
 	}
 	// setCurrentEditor(targetEditor);
 	fileList.active = tab.config.handle
@@ -2203,6 +2530,21 @@ const restoreWorkspaceContent = async () => {
 		if (workspace.planTasksSide) {
 			const targetEditor = workspace.planTasksSide === "right" ? rightEdit : leftEdit
 			openPlanAndTaskList(targetEditor)
+		}
+
+		if (workspace.workspaceSettingsSide) {
+			const targetEditor = workspace.workspaceSettingsSide === "right" ? rightEdit : leftEdit
+			openWorkspaceSettings(targetEditor)
+		}
+
+		if (workspace.terminalSettingsSide) {
+			const targetEditor = workspace.terminalSettingsSide === "right" ? rightEdit : leftEdit
+			openTerminalSettings(targetEditor)
+		}
+
+		if (workspace.editorSettingsSide) {
+			const targetEditor = workspace.editorSettingsSide === "right" ? rightEdit : leftEdit
+			openEditorSettings(targetEditor)
 		}
 
 		// --- Tab Restoration Logic ---
@@ -2429,9 +2771,7 @@ const keyBinds = [
 		target: "app",
 		name: "showEditorSettings",
 		exec: () => {
-			currentEditor.execCommand("showSettingsMenu", () => {
-				updateThemeAndMode(true)
-			})
+			openEditorSettings(currentEditor)
 		},
 	},
 	{
@@ -3309,6 +3649,7 @@ setTimeout(async () => {
 		app.sessionOptions = stored?.sessionOptions || null
 		app.rendererOptions = stored?.rendererOptions || null
 		app.enableLiveAutocompletion = stored?.enableLiveAutocompletion || null
+		app.keyboardHandler = stored?.keyboardHandler || "ace/keyboard/sublime"
 
 		app.systemPromptConfig = stored?.systemPromptConfig || {} // NEW
 		// Apply any stored editor settings immediately after loading them.

@@ -348,16 +348,16 @@ export class TabBar extends Block {
 	}
 
 	enforceTabOrder() {
-		const agentConfigTab = this._tabs.find(t => t.config?.path === "agent_config");
-		const planTab = this._tabs.find(t => t.config?.path === "plan_tasks");
+		const settingsPaths = ["agent_config", "plan_tasks", "workspace_settings", "terminal_settings", "editor_settings"];
+		const settingsTabs = this._tabs.filter(t => t.config?.path && settingsPaths.includes(t.config.path));
 		const diffTabs = this._tabs.filter(t => t.config?.path && t.config.path.startsWith("diff_"));
-		const otherTabs = this._tabs.filter(t => t !== agentConfigTab && t !== planTab && !diffTabs.includes(t));
+		const otherTabs = this._tabs.filter(t => !settingsTabs.includes(t) && !diffTabs.includes(t));
 
-		const orderedTabs = [];
-		if (agentConfigTab) orderedTabs.push(agentConfigTab);
-		if (planTab) orderedTabs.push(planTab);
-		orderedTabs.push(...diffTabs);
-		orderedTabs.push(...otherTabs);
+		const orderedTabs = [
+			...settingsTabs,
+			...diffTabs,
+			...otherTabs
+		];
 
 		// Find the last ui-button element to ensure tabs are inserted after it
 		const buttons = Array.from(this.querySelectorAll('ui-button'));

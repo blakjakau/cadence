@@ -6,18 +6,68 @@ export class SettingsPanel extends ContentFill {
         super();
         this.classList.add('settings-panel-content'); // Add a class for styling
         this._schema = null;
-        this._form = document.createElement('form');
-        this._form.addEventListener('submit', (e) => e.preventDefault());
-        this.append(this._form);
     }
 
-    render(schema, values = {}) {
+    render(schema, values = {}, accordionTitle = "Settings", accordionIcon = "settings", accordionColor = "var(--theme)", liveUpdates = false) {
         this._schema = schema;
-        this._form.innerHTML = ''; // Clear previous content
+        this.innerHTML = '';
+
+        const container = document.createElement("div");
+        container.className = "artifacts-accordion-container";
+        this.append(container);
+
+        const accordionItem = document.createElement("div");
+        accordionItem.className = "accordion-item expanded";
+
+        const header = document.createElement("div");
+        header.className = "accordion-header";
+
+        const headerLeft = document.createElement("div");
+        headerLeft.className = "header-left";
+
+        const icon = document.createElement("ui-icon");
+        icon.textContent = accordionIcon;
+        if (accordionColor) icon.style.color = accordionColor;
+
+        const titleSpan = document.createElement("span");
+        titleSpan.textContent = accordionTitle;
+
+        headerLeft.append(icon, titleSpan);
+        header.append(headerLeft);
+
+        const arrow = document.createElement("ui-icon");
+        arrow.className = "expand-arrow";
+        arrow.textContent = "expand_less";
+        header.append(arrow);
+
+        const content = document.createElement("div");
+        content.className = "accordion-content";
+        content.style.padding = "20px";
+
+        accordionItem.append(header, content);
+        container.append(accordionItem);
+
+        header.onclick = () => {
+            const isExpanded = accordionItem.classList.toggle("expanded");
+            if (isExpanded) {
+                content.style.display = "";
+                arrow.style.transform = "rotate(0deg)";
+                arrow.textContent = "expand_less";
+            } else {
+                content.style.display = "none";
+                arrow.style.transform = "rotate(180deg)";
+                arrow.textContent = "expand_more";
+            }
+        };
+
+        this._form = document.createElement('form');
+        this._form.className = "settings-grid";
+        this._form.addEventListener('submit', (e) => e.preventDefault());
+        content.append(this._form);
 
         for (const item of schema) {
-            const container = new Block();
-            container.classList.add('setting-item', `setting-type-${item.type}`);
+            const itemContainer = new Block();
+            itemContainer.classList.add('setting-item', `setting-type-${item.type}`);
             
             let label, input;
 
@@ -31,7 +81,7 @@ export class SettingsPanel extends ContentFill {
                 case 'heading':
                     const heading = document.createElement('h3');
                     heading.textContent = item.label;
-                    container.append(heading);
+                    itemContainer.append(heading);
                     break;
                 case 'text':
                 case 'number':
@@ -43,8 +93,8 @@ export class SettingsPanel extends ContentFill {
                     input.value = values[item.id] || '';
                     if (item.placeholder) input.placeholder = item.placeholder;
                     if (item.readonly) input.disabled = true;
-                    if(label) container.append(label);
-                    container.append(input);
+                    if(label) itemContainer.append(label);
+                    itemContainer.append(input);
                     break;
                 case 'textarea':
                     input = document.createElement('textarea');
@@ -53,23 +103,23 @@ export class SettingsPanel extends ContentFill {
                     input.value = values[item.id] || '';
                     if (item.rows) input.rows = item.rows;
                     if (item.readonly) input.disabled = true;
-                    if(label) container.append(label);
-                    container.append(input);
+                    if(label) itemContainer.append(label);
+                    itemContainer.append(input);
                     break;
                 case 'boolean':
-				case 'checkbox':
-					if (label) container.append(label); // Create the top label if item.label is provided
-					const checkboxDedicatedWrapper = new Block();
-					const checkboxDedicatedInnerLabel = document.createElement('label');
-					input = document.createElement('input');
-					input.type = 'checkbox';
-					input.id = item.id;
-					input.name = item.id;
-					input.checked = !!values[item.id];
-					checkboxDedicatedInnerLabel.append(input, ` ${item.text || ''}`); // Uses item.text for inline label for checkboxes
-					checkboxDedicatedWrapper.append(checkboxDedicatedInnerLabel);
-					container.append(checkboxDedicatedWrapper);
-					break;
+                case 'checkbox':
+                    if (label) itemContainer.append(label);
+                    const checkboxDedicatedWrapper = new Block();
+                    const checkboxDedicatedInnerLabel = document.createElement('label');
+                    input = document.createElement('input');
+                    input.type = 'checkbox';
+                    input.id = item.id;
+                    input.name = item.id;
+                    input.checked = !!values[item.id];
+                    checkboxDedicatedInnerLabel.append(input, ` ${item.text || ''}`);
+                    checkboxDedicatedWrapper.append(checkboxDedicatedInnerLabel);
+                    itemContainer.append(checkboxDedicatedWrapper);
+                    break;
                 case 'select':
                     input = document.createElement('select');
                     input.id = item.id;
@@ -88,37 +138,44 @@ export class SettingsPanel extends ContentFill {
                     if (item.onChangeEvent) {
                         input.addEventListener('change', (e) => this.dispatch(item.onChangeEvent, { id: item.id, value: e.target.value }));
                     }
-                    if(label) container.append(label);
-                    container.append(input);
+                    if(label) itemContainer.append(label);
+                    itemContainer.append(input);
                     break;
                 case 'button':
-                    if (label) container.append(label);
+                    if (label) itemContainer.append(label);
                     const button = new Button(item.text || item.label);
                     if (item.icon) button.icon = item.icon;
                     if (item.className) button.classList.add(...item.className.split(' '));
                     if (item.onClickEvent) {
                         button.on('click', () => this.dispatch(item.onClickEvent, { id: item.id, element: button }));
                     }
-                    container.append(button);
+                    itemContainer.append(button);
                     break;
                 case 'info':
                     const info = new Block();
-                    info.innerHTML = item.content; // Allow HTML content
-                    container.append(info);
+                    info.innerHTML = item.content;
+                    itemContainer.append(info);
                     break;
             }
+
+            if (input) {
+                const eventName = (item.type === 'checkbox' || item.type === 'boolean' || item.type === 'select') ? 'change' : 'input';
+                input.addEventListener(eventName, () => {
+                    if (liveUpdates) this._save();
+                });
+            }
+
             if (item.help) {
                 const helpText = document.createElement('p');
                 helpText.className = 'help-text';
                 helpText.textContent = item.help;
-                container.append(helpText);
+                itemContainer.append(helpText);
             }
-            this._form.append(container);
+            this._form.append(itemContainer);
         }
 
-        // Add a general Save button if there are any savable fields
         const hasInputs = schema.some(item => ['textarea', 'checkbox', 'select', 'text', 'number', 'password'].includes(item.type));
-        if (hasInputs) {
+        if (hasInputs && !liveUpdates) {
             const saveButton = new Button("Save Settings");
             saveButton.icon = "save";
             saveButton.classList.add("theme-button");

@@ -5,6 +5,7 @@ import { TabBar } from './tabbar.mjs';
 import { SessionArtifactsPanel } from './session-artifacts-panel.mjs';
 import { AgentConfigPanel } from './agent-config-panel.mjs';
 import { DiffViewPanel } from './diff-view-panel.mjs';
+import { SettingsPanel } from './settings-panel.mjs';
 
 export class EditorHolder extends Panel {
     constructor() {
@@ -20,11 +21,27 @@ export class EditorHolder extends Panel {
         this.agentConfigView.style.display = "none";
         this.diffView = new DiffViewPanel();
         this.diffView.style.display = "none";
+        
+        this.workspaceSettingsView = new SettingsPanel();
+        this.workspaceSettingsView.style.display = "none";
+        this.workspaceSettingsView.classList.add("workspace-settings-panel");
+        
+        this.terminalSettingsView = new SettingsPanel();
+        this.terminalSettingsView.style.display = "none";
+        this.terminalSettingsView.classList.add("terminal-settings-panel");
+
+        this.editorSettingsView = new SettingsPanel();
+        this.editorSettingsView.style.display = "none";
+        this.editorSettingsView.classList.add("editor-settings-panel");
+
         this.appendChild(this.editorElement);
         this.appendChild(this.mediaView);
         this.appendChild(this.planTasksView);
         this.appendChild(this.agentConfigView);
         this.appendChild(this.diffView);
+        this.appendChild(this.workspaceSettingsView);
+        this.appendChild(this.terminalSettingsView);
+        this.appendChild(this.editorSettingsView);
 
         this.dragCounter = 0;
         this.dragLogging = (event)=>{
@@ -250,7 +267,9 @@ export class EditorHolder extends Panel {
     }
 
     async updateNoticeBar(tab) {
-        if (!tab || !tab.config || tab.config.viewMode === "diff" || tab.config.path === "plan_tasks" || tab.config.path === "agent_config") {
+        if (!tab || !tab.config || tab.config.viewMode === "diff" || 
+            tab.config.path === "plan_tasks" || tab.config.path === "agent_config" || 
+            tab.config.path === "workspace_settings" || tab.config.path === "terminal_settings" || tab.config.path === "editor_settings") {
             this.editorHeaderBar.style.display = "none";
             this.editorElement.style.top = "";
             this.editorElement.style.height = "";

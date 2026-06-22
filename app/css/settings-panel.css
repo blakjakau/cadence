@@ -1,6 +1,17 @@
 /* /code-pwa/css/settings-panel.css */
 
 /* Base container for settings panels */
+ui-settings-panel {
+    position: absolute;
+    top: var(--tabHeight);
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: var(--bg-primary);
+    z-index: 2;
+    box-sizing: border-box;
+}
+
 .settings-panel,
 .settings-panel-container {
     display: none; /* Hidden by default */

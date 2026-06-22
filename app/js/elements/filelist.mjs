@@ -15,7 +15,7 @@ export class FileList extends ContentFill {
 		const indexing = (this._indexing = new Icon("find_in_page"));
 		this._listContainer = new Block();
 		this._listContainer.classList.add('file-list-container');
-		this._settingsContainer = null;
+
 		indexing.setAttribute("title", "indexing files")
 		
 		indexing.classList.add("indexing")
@@ -48,8 +48,7 @@ export class FileList extends ContentFill {
 		this.append(this._indexing)
 		this.append(this._listContainer);
 		this._listContainer.append(this._inner, this._indexing);
-		this._settingsContainer = this._createSettingsPanel();
-		this.append(this._settingsContainer);
+
 		// this.append(this._progress);
 		this._inner.setAttribute("slim", "true")
 	}
@@ -126,44 +125,9 @@ export class FileList extends ContentFill {
 		const active = this.querySelector("ui-file-item[active]")
 		return active
 	}
-	_createSettingsPanel() {
-		const settingsContainer = new ContentFill();
-		settingsContainer.classList.add("settings-panel-container"); // Wrapper
-		settingsContainer.style.display = 'none'; // Initially hidden
-
-		const settingsPanel = new SettingsPanel();
-		settingsContainer.append(settingsPanel);
-
-		settingsPanel.on('settings-saved', (e) => {
-			const newPaths = e.detail['filelist-ignore-paths'].split(',').map(p => p.trim()).filter(p => p);
-			this.ignorePaths = newPaths; // This will trigger the setter which re-renders
-			this.dispatch('settings-changed', { ignorePaths: newPaths });
-			this.toggleSettingsPanel();
-		});
-
-		return settingsContainer;
-	}
-
 	toggleSettingsPanel() {
-		const isHidden = this._settingsContainer.style.display === 'none';
-		if (isHidden) {
-			// Show settings
-			this._listContainer.style.display = 'none';
-
-			const schema = [
-				{ type: 'textarea', id: 'filelist-ignore-paths', label: 'Ignored Paths (comma-separated)', rows: 5 }
-			];
-			const values = {
-				'filelist-ignore-paths': this.ignorePaths.join(', ')
-			};
-
-			const panelContent = this._settingsContainer.querySelector('ui-settings-panel');
-			panelContent.render(schema, values);
-			this._settingsContainer.style.display = 'flex';
-		} else {
-			// Hide settings
-			this._listContainer.style.display = 'block';
-			this._settingsContainer.style.display = 'none';
+		if (window.ui && window.ui.openWorkspaceSettings) {
+			window.ui.openWorkspaceSettings();
 		}
 	}
 	byTitle(title) {

@@ -164,6 +164,41 @@ ui-tab-item:hover::after {
     opacity: 0;
 }
 
+/* Custom Settings Tabs distinguishing styles */
+ui-tabbar[slim] > ui-tab-item.workspace-settings-tab,
+ui-tabbar[slim] > ui-tab-item.terminal-settings-tab,
+ui-tabbar[slim] > ui-tab-item.plan-tasks-tab,
+ui-tabbar[slim] > ui-tab-item.agent-config-tab,
+ui-tabbar[slim] > ui-tab-item.editor-settings-tab {
+    color: var(--theme) !important;
+}
+
+ui-tabbar[slim] > ui-tab-item.workspace-settings-tab .status-icon,
+ui-tabbar[slim] > ui-tab-item.terminal-settings-tab .status-icon,
+ui-tabbar[slim] > ui-tab-item.plan-tasks-tab .status-icon,
+ui-tabbar[slim] > ui-tab-item.agent-config-tab .status-icon,
+ui-tabbar[slim] > ui-tab-item.editor-settings-tab .status-icon {
+    color: var(--theme) !important;
+}
+
+.current ui-tabbar[slim] > ui-tab-item.workspace-settings-tab[active],
+.current ui-tabbar[slim] > ui-tab-item.terminal-settings-tab[active],
+.current ui-tabbar[slim] > ui-tab-item.plan-tasks-tab[active],
+.current ui-tabbar[slim] > ui-tab-item.agent-config-tab[active],
+.current ui-tabbar[slim] > ui-tab-item.editor-settings-tab[active] {
+    background-color: var(--theme) !important;
+    border-color: var(--theme) !important;
+    color: var(--text-inverted) !important;
+}
+
+.current ui-tabbar[slim] > ui-tab-item.workspace-settings-tab[active] .status-icon,
+.current ui-tabbar[slim] > ui-tab-item.terminal-settings-tab[active] .status-icon,
+.current ui-tabbar[slim] > ui-tab-item.plan-tasks-tab[active] .status-icon,
+.current ui-tabbar[slim] > ui-tab-item.agent-config-tab[active] .status-icon,
+.current ui-tabbar[slim] > ui-tab-item.editor-settings-tab[active] .status-icon {
+    color: var(--text-inverted) !important;
+}
+
 ui-tab-item.drop-highlight {
     /* Removed box-shadow to eliminate outline border */
 }

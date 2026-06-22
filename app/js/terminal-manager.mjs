@@ -111,10 +111,8 @@ class TerminalManager {
 		this._emptyStateElement = this._createEmptyStateElement();
 		this.terminalContainersWrapper.append(this._loadingStateElement, this._emptyStateElement);
 
-		this.settingsPanel = this._createSettingsPanel();
-
 		// Append UI elements. The containing panel should use flexbox to manage layout.
-		this.panel.append(this.terminalContainersWrapper, this.settingsPanel, this.sessionTabBar);
+		this.panel.append(this.terminalContainersWrapper, this.sessionTabBar);
 
 		// ResizeObserver to fit the *active* terminal when its container (this panel) resizes
 		const resizeObserver = new ResizeObserver(() => this.fit());
@@ -488,7 +486,6 @@ class TerminalManager {
 	 * This method is intended to be called when the terminal sidebar panel becomes active.
 	 */
 	async connect() {
-		this.settingsPanel.style.display = 'none';
 		this.terminalContainersWrapper.style.display = 'block'; // Show parent wrapper
 		this._sessions.forEach(session => session.containerElement.style.display = 'none'); // Hide instances
 		this.sessionTabBar.style.display = 'flex';
@@ -800,19 +797,8 @@ class TerminalManager {
 		return el;
 	}
 	toggleSettingsPanel(forceState=undefined) {
-		const isHidden = this.settingsPanel.style.display === 'none';
-		if (isHidden && (forceState===true || forceState!==false)) {
-			// Show settings
-			this.terminalContainersWrapper.style.display = 'none';
-			this._renderSettingsPanel(); // Populate with fresh data
-			this.settingsPanel.style.display = 'flex';
-		} else {
-			// Hide settings
-			this.settingsPanel.style.display = 'none';
-			this.connect();
-			if (this._sessions.size > 0) {
-				this.fit();
-			}
+		if (window.ui && window.ui.openTerminalSettings) {
+			window.ui.openTerminalSettings();
 		}
 	}
 }

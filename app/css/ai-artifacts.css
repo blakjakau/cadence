@@ -653,8 +653,6 @@
 
 /* Colored & Icon'd Premium Tab for Implementation Plan & Task List */
 ui-tab-item.plan-tasks-tab {
-    background-color: rgba(45, 164, 78, 0.08) !important;
-    border-bottom: 2px solid rgba(45, 164, 78, 0.4) !important;
     color: #2da44e !important;
 }
 

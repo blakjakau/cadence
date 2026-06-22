@@ -4,7 +4,6 @@ REST and Websocket APIs are used for communications between the frontend and bac
 All frontend code is found in `app/js`
 
 ## UI Component Patterns
-
 When building or modifying UI elements, use the custom web components defined in `app/js/elements.mjs` instead of standard HTML elements:
 
 - **Containers:** Use `new Block()` (`<ui-block>`) instead of `document.createElement("div")` and `new Inline()` (`<ui-inline>`) instead of `document.createElement("span")`.
@@ -20,5 +19,5 @@ When building or modifying UI elements, use the custom web components defined in
 `./build.sh` - builds the backend server
 `curl -X POST http://localhost:3022/api/restart` - restarts the backend server (use port 3023 in dev mode)
 
-Don't build the project unless explicitly requested by the user, or essential to testing
+Don't build the project unless explicitly requested by the user, or essential for testing
 Don't or `git add` or `git commit` unless explicitly requested by the user
