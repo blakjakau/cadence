@@ -30,7 +30,7 @@ export function getAgentDirectives(features = {}) {
     if (!hasPlan) {
         // directives.push("- Use `list_files`, `find_file`, `search_files`, or `read_file_outline` to analyze the project codebase.");
         // directives.push("- Use `create_implementation_plan` to outline your strategy and architectural changes (do NOT include a task list here).");
-        directives.push("- Work toward the user's objectives, ask questions, use sub-agents to explore the codebase if needed");
+        directives.push("- Work toward the user's objectives. Use sub-agents (`create_sub_agent`) to explore, analyze, and locate code implementations to keep your own context clear and allow asynchronous tasks.");
     } else {
         if (!hasAcceptedPlan) {
             directives.push("- Address the user's feedback to update the implementation plan.");
@@ -156,7 +156,8 @@ The host maintains your plan and task list. To save tokens ONLY use these tools 
 - Call \`update_task_list\` to provide a markdown checkbox list (e.g., \`- [ ] Step 1\`).
 - When you finish a task, call \`complete_task\` with the task name. The host will mark it [x] automatically. DO NOT rewrite the full task list just to check a box. 
 - When you have completed all tasks in your list and have no further actions to perform, call the \`done\` tool.
-- If you're not sure, ask the user questions, use sub-agents to explore the codebase if needed
+- Call \`create_sub_agent\` to delegate discrete tasks—such as exploring, analyzing, or locating specific code implementations—to specialized sub-agents. This keeps your main context window clean, saves tokens, and allows independent tasks to run concurrently.
+- If you're not sure, ask the user questions, or delegate exploratory tasks to sub-agents.
 - Avoid rambling or repetitive content outputs`;
 
     return `You are Cadence, an AI software engineer, pair programming with a human software engineer.

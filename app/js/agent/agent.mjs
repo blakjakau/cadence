@@ -438,6 +438,9 @@ export class Agent {
 					const activeIds = [];
 					for (const [id, run] of aiManager.runningSessions) {
 						if (run.type === 'agent' && run.instance?.session?.parentId === session.id) {
+							if (run.instance?.session?.isWaitingForParent) {
+								continue;
+							}
 							activeIds.push(id);
 						}
 					}
@@ -786,9 +789,14 @@ export class Agent {
 
 				const isRunning = this.aiManager.runningSessions.has(subSession.id);
 				const isCompleted = !!subSession.completedResult;
+				const isWaiting = !!subSession.isWaitingForParent;
 
-				// Only consider if not running and has a result
-				if (!isRunning && isCompleted && !session.reportedSubAgents.includes(subSession.id)) {
+				// If subagent is waiting for parent feedback, report the query
+				if (isWaiting && subSession.pendingParentQuery && !session.reportedSubAgents.includes(subSession.id + "-waiting-" + subSession.lastModified)) {
+					session.reportedSubAgents.push(subSession.id + "-waiting-" + subSession.lastModified);
+					hasNewResults = true;
+					compiledResults += `\nSub-Agent ID: ${subSession.id}\nObjective: ${subSession.name}\nStatus: Waiting for Parent Feedback\nQuery from Sub-Agent:\n"${subSession.pendingParentQuery}"\n-----------------------\n`;
+				} else if (!isRunning && isCompleted && !session.reportedSubAgents.includes(subSession.id)) {
 					session.reportedSubAgents.push(subSession.id);
 					hasNewResults = true;
 

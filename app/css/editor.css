@@ -12,7 +12,7 @@
     position: absolute;
     top: var(--tabHeight);
     left: 0;
-    right: 0;
+    right: 4px;
     z-index: 10;
 }
 

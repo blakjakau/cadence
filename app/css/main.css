@@ -1062,6 +1062,7 @@ ui-sidebar-panel pre {
     color: var(--hljs-text, var(--text-primary));
     border-radius: 8px;
     padding: 8px;
+    white-space: pre-line;
 }
 
 ui-sidebar-panel ui-file-list::-webkit-scrollbar,

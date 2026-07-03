@@ -5,7 +5,7 @@ ui-diff-view-panel {
     position: absolute;
     top: var(--tabHeight);
     left: 0;
-    right: 0;
+    right: 4px;
     bottom: 0;
     overflow: hidden;
     background: var(--bg-primary);
@@ -280,7 +280,7 @@ ui-diff-view-panel .diff-scrollbar-marker-overlay {
 ui-diff-view-panel .diff-scrollbar-marker {
     position: absolute;
     left: 0;
-    right: 0;
+    right: 4px;
     height: 3px;
     border-radius: 1px;
     z-index: 101;

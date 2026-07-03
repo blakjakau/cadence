@@ -85,9 +85,11 @@ export class SessionArtifactsPanel extends Block {
     constructor() {
         super();
         this.classList.add("plan-tasks-view");
+        this.isUpdating = false;
 
         // Active Ace Editor instances
         this.planEditorInstance = null;
+
         this.tasksEditorInstance = null;
 
         // Build the outer scroll container programmatically
@@ -381,11 +383,16 @@ export class SessionArtifactsPanel extends Block {
     }
 
     async update() {
-        const session = ui.aiManager.activeSession;
-        if (!session) {
-            this.container.innerHTML = `<div class="plan-tasks-empty">No active session found. Open the Agent panel to begin.</div>`;
-            return;
-        }
+        if (this.isUpdating) return;
+        this.isUpdating = true;
+
+        try {
+            const session = ui.aiManager.activeSession;
+            if (!session) {
+                this.container.innerHTML = `<div class="plan-tasks-empty">No active session found. Open the Agent panel to begin.</div>`;
+                return;
+            }
+
 
         // Restore container if empty state was rendered previously
         if (this.container.querySelector(".plan-tasks-empty")) {
@@ -838,9 +845,9 @@ export class SessionArtifactsPanel extends Block {
                                 await workspaceClient.setSession(session.id, session);
                             }
 
-                            window.modal.toast(`Successfully rolled back ${filename} to original state.`);
-                            this.update();
-                        } catch (err) {
+                             window.modal.toast(`Successfully rolled back ${filename} to original state.`);
+                             this.update();
+                         } catch (err) {
                             console.error("Rollback failed:", err);
                             window.modal.notice(`Rollback failed:<br><small>${err.message}</small>`, "Rollback Error");
                             btn.disabled = false;
@@ -864,7 +871,12 @@ export class SessionArtifactsPanel extends Block {
                 this.backupsList.appendChild(row);
             });
         }
+    } catch (err) {
+        console.error("Failed to update SessionArtifactsPanel:", err);
+    } finally {
+        this.isUpdating = false;
     }
+}
 }
 
 customElements.define("ui-session-artifacts-panel", SessionArtifactsPanel);

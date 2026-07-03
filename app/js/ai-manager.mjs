@@ -237,7 +237,128 @@ class AIManager {
 			basePrompt += `\n\n=== PROJECT SPECIFIC HINTS FROM THE USER ===\n\n${compiledHints}\n=================================================`;
 		}
 
+		// Skills interpreter: load and match active skills based on user's query
+		try {
+			const lastUserMsg = targetSession?.messages?.filter(m => m.role === "user" || m.type === "user")?.pop();
+			const userPromptText = lastUserMsg ? lastUserMsg.content : "";
+			const matchedSkills = await this._loadAndMatchSkills(userPromptText);
+			for (const skill of matchedSkills) {
+				basePrompt += `\n\n=== ACTIVE SKILL: ${skill.name} ===\n\n${skill.body}\n===================================`;
+			}
+		} catch (err) {
+			console.warn("[AIManager] Failed to load/match skills:", err);
+		}
+
 		return basePrompt;
+	}
+
+	async _loadAndMatchSkills(userPrompt) {
+		if (!userPrompt) return [];
+		const folders = window.workspace?.folders || [];
+		const roots = [...folders.map(f => `${f}/.agents/skills`), "/home/jason/.gemini/config/skills"];
+		const parsedSkills = [];
+		const addedSkills = new Set();
+
+		for (const root of roots) {
+			try {
+				const listResp = await window.conduit.wsList(root);
+				if (listResp && listResp.data) {
+					const dirs = listResp.data.filter(item => item.isDir);
+					for (const dir of dirs) {
+						const skillPath = `${root}/${dir.name}/SKILL.md`;
+						try {
+							const fileResp = await window.conduit.wsRead(skillPath);
+							let content = "";
+							if (fileResp && !fileResp.error) {
+								if (fileResp.data) {
+									try {
+										content = decodeURIComponent(escape(atob(fileResp.data)));
+									} catch (e) {
+										content = atob(fileResp.data);
+									}
+								} else if (fileResp.content) {
+									content = fileResp.content;
+								}
+							}
+							if (content) {
+								parsedSkills.push({
+									name: dir.name,
+									path: skillPath,
+									content
+								});
+							}
+						} catch (e) {
+							// SKILL.md not found or error reading it
+						}
+					}
+				}
+			} catch (e) {
+				// Root directory doesn't exist or is unreachable
+			}
+		}
+
+		// Helper to clean/parse frontmatter
+		const parseFrontmatter = (text) => {
+			const match = text.match(/^---\r?\n([\s\S]+?)\r?\n---/);
+			if (!match) return { metadata: {}, body: text };
+			const yamlText = match[1];
+			const body = text.substring(match[0].length).trim();
+			
+			const metadata = {};
+			const lines = yamlText.split("\n");
+			for (const line of lines) {
+				const colonIdx = line.indexOf(":");
+				if (colonIdx !== -1) {
+					const key = line.substring(0, colonIdx).trim().toLowerCase();
+					const val = line.substring(colonIdx + 1).trim();
+					metadata[key] = val;
+				}
+			}
+			return { metadata, body };
+		};
+
+		// Relevance matcher
+		const isSkillRelevant = (prompt, name, description) => {
+			if (!prompt) return false;
+			const cleanPrompt = prompt.toLowerCase();
+			const cleanName = name.toLowerCase();
+			const cleanDesc = (description || "").toLowerCase();
+			
+			if (cleanPrompt.includes(cleanName)) return true;
+			
+			const stopwords = new Set(["about", "these", "those", "their", "there", "would", "could", "should", "using", "under", "after", "before"]);
+			const keywords = cleanDesc
+				.split(/[^a-z0-9]+/)
+				.filter(w => w.length > 4 && !stopwords.has(w));
+				
+			let matchCount = 0;
+			for (const keyword of keywords) {
+				if (cleanPrompt.includes(keyword)) {
+					matchCount++;
+					if (keyword.length > 7) return true;
+				}
+			}
+			return matchCount >= 2;
+		};
+
+		const matchedSkills = [];
+		for (const skill of parsedSkills) {
+			const { metadata, body } = parseFrontmatter(skill.content);
+			const skillName = metadata.name || skill.name;
+			const skillDesc = metadata.description || "";
+			
+			if (addedSkills.has(skillName)) continue;
+			
+			if (isSkillRelevant(userPrompt, skillName, skillDesc)) {
+				addedSkills.add(skillName);
+				matchedSkills.push({
+					name: skillName,
+					body
+				});
+			}
+		}
+		
+		return matchedSkills;
 	}
 
 	/**
@@ -395,14 +516,85 @@ class AIManager {
 		fileBarContainer.append(this.fileBar, this.progressBar);
 
 		// --- Other UI Elements ---
+		this._autoscrollEnabled = true;
+		this._isProgrammaticScroll = false;
+		this._lastScrollTop = 0;
+		this._lastScrollHeight = 0;
+		this._lastClientHeight = 0;
+
 		this.conversationArea = this._createConversationArea();
+		
+		const self = this;
+		let desc = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollTop');
+		if (!desc) {
+			desc = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollTop');
+		}
+		if (desc) {
+			Object.defineProperty(this.conversationArea, 'scrollTop', {
+				get() {
+					return desc.get.call(this);
+				},
+				set(val) {
+					if (val === this.scrollHeight) {
+						self.scrollToBottom(true);
+					} else {
+						desc.set.call(this, val);
+					}
+				},
+				configurable: true
+			});
+		}
+
 		this.conversationArea.addEventListener("scroll", () => {
 			const activeSubAgentSessionId = this.activeSession?.activeSubAgentSessionId;
+			const currentScrollTop = this.conversationArea.scrollTop;
+			const currentScrollHeight = this.conversationArea.scrollHeight;
+			const currentClientHeight = this.conversationArea.clientHeight;
+
 			if (activeSubAgentSessionId && this.activeSubAgentSession) {
-				this.activeSubAgentSession.scrollTop = this.conversationArea.scrollTop;
+				this.activeSubAgentSession.scrollTop = currentScrollTop;
+				this.activeSubAgentSession.autoscrollEnabled = this._autoscrollEnabled;
 			} else if (this.activeSession) {
-				this.activeSession.scrollTop = this.conversationArea.scrollTop;
+				this.activeSession.scrollTop = currentScrollTop;
+				this.activeSession.autoscrollEnabled = this._autoscrollEnabled;
 			}
+
+			// If the scrollHeight or clientHeight changed, the scroll event is likely triggered by
+			// a height change/layout shift rather than manual user interaction.
+			if (currentScrollHeight !== this._lastScrollHeight || currentClientHeight !== this._lastClientHeight) {
+				this._lastScrollTop = currentScrollTop;
+				this._lastScrollHeight = currentScrollHeight;
+				this._lastClientHeight = currentClientHeight;
+				return;
+			}
+
+			if (this._isProgrammaticScroll) {
+				this._lastScrollTop = currentScrollTop;
+				return;
+			}
+
+			if (currentScrollTop < this._lastScrollTop) {
+				// User scrolled upwards!
+				this._autoscrollEnabled = false;
+				this._showAutoscrollChip();
+			} else {
+				// User scrolled downwards (or stayed same)
+				const distanceToBottom = Math.max(0, currentScrollHeight - currentClientHeight) - Math.ceil(currentScrollTop);
+				if (distanceToBottom <= 10) {
+					this._autoscrollEnabled = true;
+					this._hideAutoscrollChip();
+				}
+			}
+
+			if (activeSubAgentSessionId && this.activeSubAgentSession) {
+				this.activeSubAgentSession.autoscrollEnabled = this._autoscrollEnabled;
+			} else if (this.activeSession) {
+				this.activeSession.autoscrollEnabled = this._autoscrollEnabled;
+			}
+
+			this._lastScrollTop = currentScrollTop;
+			this._lastScrollHeight = currentScrollHeight;
+			this._lastClientHeight = currentClientHeight;
 		});
 		this.submitButton = this._createSubmitButton();
 		const promptContainer = this._createPromptContainer();
@@ -503,10 +695,51 @@ class AIManager {
 
 	_shouldAutoScroll() {
 		if (!this.conversationArea) return false;
+		if (!this._autoscrollEnabled) return false;
 		// Use Math.ceil to handle fractional scroll positions from high-DPI screens or browser zoom
 		// We use Math.max to avoid negative distances if scrollHeight < clientHeight
 		const distanceToBottom = Math.max(0, this.conversationArea.scrollHeight - this.conversationArea.clientHeight) - Math.ceil(this.conversationArea.scrollTop);
 		return distanceToBottom <= 50;
+	}
+
+	scrollToBottom(force = false) {
+		if (!this.conversationArea) return;
+		if (!force && !this._shouldAutoScroll()) return;
+
+		this._isProgrammaticScroll = true;
+		const desc = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollTop') || Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollTop');
+		if (desc && desc.set) {
+			desc.set.call(this.conversationArea, this.conversationArea.scrollHeight);
+		} else {
+			this.conversationArea.scrollTop = this.conversationArea.scrollHeight;
+		}
+		this._lastScrollTop = this.conversationArea.scrollTop;
+		this._lastScrollHeight = this.conversationArea.scrollHeight;
+		this._lastClientHeight = this.conversationArea.clientHeight;
+		setTimeout(() => {
+			this._isProgrammaticScroll = false;
+		}, 0);
+	}
+
+	_showAutoscrollChip() {
+		if (!this._autoscrollChip) {
+			this._autoscrollChip = new Button("autoscroll");
+			this._autoscrollChip.setIcon("arrow_downward");
+			this._autoscrollChip.classList.add("autoscroll-chip");
+			this._autoscrollChip.onclick = () => {
+				this._autoscrollEnabled = true;
+				this.scrollToBottom(true);
+				this._hideAutoscrollChip();
+			};
+			this.chatContainer.appendChild(this._autoscrollChip);
+		}
+		this._autoscrollChip.classList.add("visible");
+	}
+
+	_hideAutoscrollChip() {
+		if (this._autoscrollChip) {
+			this._autoscrollChip.classList.remove("visible");
+		}
 	}
 
 	_createProgressBar() {
@@ -563,9 +796,9 @@ class AIManager {
 			}
 		}
 
-		// Ensure we auto-scroll if we were already at the bottom
-		if (this._shouldAutoScroll() && this.conversationArea) {
-			this.conversationArea.scrollTop = this.conversationArea.scrollHeight;
+		// Ensure we auto-scroll if autoscroll is enabled
+		if (this._autoscrollEnabled && this.conversationArea) {
+			this.scrollToBottom(true);
 		}
 	}
 
@@ -601,7 +834,7 @@ class AIManager {
 				const shouldScroll = this._shouldAutoScroll();
 				this.conversationArea.classList.add('glow-active');
 				if (shouldScroll) {
-					this.conversationArea.scrollTop = this.conversationArea.scrollHeight;
+					this.scrollToBottom(true);
 				}
 			}
 		}
@@ -1750,6 +1983,14 @@ class AIManager {
 			return;
 		}
 
+		// Force re-enable autoscroll upon user prompt submission
+		this._autoscrollEnabled = true;
+		this._hideAutoscrollChip();
+		if (this.activeSession) {
+			this.activeSession.autoscrollEnabled = true;
+		}
+		this.scrollToBottom(true);
+
 		// Check for automatic summarization before processing the new prompt
 		const estimatedTokensBeforeNewPrompt = targetAI.estimateTokens(targetSession.messages);
 		const maxContextTokens = targetAI.MAX_CONTEXT_TOKENS;
@@ -1934,7 +2175,7 @@ class AIManager {
 				const shouldScroll = this._shouldAutoScroll();
 				responseBlock.updateContent(fullResponse);
 				if (this.isSessionViewed(targetSessionId) && shouldScroll && this.conversationArea) {
-					this.conversationArea.scrollTop = this.conversationArea.scrollHeight;
+					this.scrollToBottom(true);
 				}
 			},
 			onDone: async (fullResponse, contextRatioPercent) => { // Mark async to await set
@@ -2325,7 +2566,7 @@ class AIManager {
 			const shouldScroll = this._shouldAutoScroll();
 			this.conversationArea.append(card);
 			if (shouldScroll && this.conversationArea) {
-				this.conversationArea.scrollTop = this.conversationArea.scrollHeight;
+				this.scrollToBottom(true);
 			}
 		});
 	}
@@ -2859,7 +3100,7 @@ ${summarizationPromptContent}`;
 				const shouldScroll = this._shouldAutoScroll();
 				responseBlock.updateContent(fullResponse);
 				if (shouldScroll && this.conversationArea) {
-					this.conversationArea.scrollTop = this.conversationArea.scrollHeight;
+					this.scrollToBottom(true);
 				}
 			},
 			onDone: async (fullResponse) => {

@@ -752,17 +752,67 @@ class AgentTools {
                 throw new Error(`Failed to open file ${resolvedPath} in the editor.`);
             }
 
-            // 2. Perform the edit ON THE ACE SESSION
             const session = targetTab.config.session;
+            const originalContent = session.getValue();
+            const sourceLines = originalContent.split(/\r?\n/);
+
+            // Helper to clean a line: strip leading spaces and comments
+            const cleanLine = (line) => {
+                let cleaned = line.replace(/^\s+/, "");
+                cleaned = cleaned.replace(/("[^"\\]*(?:\\.[^"\\]*)*"|'[^'\\]*(?:\\.[^'\\]*)*'|`[^`\\]*(?:\\.[^`\\]*)*`)|(\/\/.*|#.*|\/\*.*?\*\/)/g, (match, g1, g2) => {
+                    if (g2 !== undefined) return "";
+                    return g1;
+                });
+                return cleaned.trim();
+            };
+
+            const mappedSource = [];
+            for (let i = 0; i < sourceLines.length; i++) {
+                const cleaned = cleanLine(sourceLines[i]);
+                if (cleaned !== "") {
+                    mappedSource.push({ cleaned, index: i });
+                }
+            }
+
+            const searchLines = (searchString || "").split(/\r?\n/);
+            const mappedSearch = [];
+            for (let i = 0; i < searchLines.length; i++) {
+                const cleaned = cleanLine(searchLines[i]);
+                if (cleaned !== "") {
+                    mappedSearch.push({ cleaned, index: i });
+                }
+            }
+
+            let matchIndices = [];
+
+            if (mappedSearch.length > 0) {
+                for (let i = 0; i <= mappedSource.length - mappedSearch.length; i++) {
+                    let isMatch = true;
+                    for (let j = 0; j < mappedSearch.length; j++) {
+                        if (mappedSource[i + j].cleaned !== mappedSearch[j].cleaned) {
+                            isMatch = false;
+                            break;
+                        }
+                    }
+                    if (isMatch) {
+                        matchIndices.push(i);
+                    }
+                }
+            }
+
+            if (matchIndices.length === 0) {
+                throw new Error(`Target string not found in ${path}. Ensure the search string matches the code content (comments, blank lines, and leading spaces are ignored during search).`);
+            }
+            if (matchIndices.length > 1) {
+                throw new Error(`A unique match could not be found in ${path} (found ${matchIndices.length} matches). Please make your search block more specific.`);
+            }
+
+            const matchIndex = matchIndices[0];
+            const startLineIndex = mappedSource[matchIndex].index;
+            const endLineIndex = mappedSource[matchIndex + mappedSearch.length - 1].index;
 
             const isForgivenessMode = window.ui?.aiManager?.forgivenessMode === true;
             if (isForgivenessMode) {
-                const originalContent = session.getValue();
-                const cleanStartIndex = originalContent.indexOf(searchString);
-                if (cleanStartIndex === -1) {
-                    throw new Error(`Target string not found in ${path}. Ensure the search string matches exactly, including whitespace.`);
-                }
-                
                 // 1. Create backup if not already present in the active session
                 let backupId = "";
                 const activeSession = window.ui?.aiManager?.activeSession;
@@ -792,12 +842,9 @@ class AgentTools {
                     }
                 }
 
-                // 2. Perform the clean edit on Ace session
-                const doc = session.getDocument();
-                const startPos = doc.indexToPosition(cleanStartIndex);
-                const endPos = doc.indexToPosition(cleanStartIndex + searchString.length);
+                // 2. Perform the edit on Ace session using the aligned lines range
                 const Range = window.ace.require("ace/range").Range;
-                const rangeToReplace = new Range(startPos.row, startPos.column, endPos.row, endPos.column);
+                const rangeToReplace = new Range(startLineIndex, 0, endLineIndex, sourceLines[endLineIndex].length);
                 session.replace(rangeToReplace, replacementString ?? "");
 
                 // 3. Save to disk immediately
@@ -823,19 +870,9 @@ class AgentTools {
                 return `Successfully edited ${path} in Forgiveness Mode. The change has been committed directly to the file and ${backupMsg}. The tab has switched to the side-by-side Diff view for your review.`;
             }
 
-            // Permission Mode: clean replacement in memory
-            const originalContent = session.getValue();
-            const cleanStartIndex = originalContent.indexOf(searchString);
-            if (cleanStartIndex === -1) {
-                throw new Error(`Target string not found in ${path}. Ensure the search string matches exactly, including whitespace.`);
-            }
-
-            // Perform clean, in-memory replacement on Ace session
-            const doc = session.getDocument();
-            const startPos = doc.indexToPosition(cleanStartIndex);
-            const endPos = doc.indexToPosition(cleanStartIndex + searchString.length);
+            // Permission Mode: clean replacement in memory using the aligned lines range
             const Range = window.ace.require("ace/range").Range;
-            const rangeToReplace = new Range(startPos.row, startPos.column, endPos.row, endPos.column);
+            const rangeToReplace = new Range(startLineIndex, 0, endLineIndex, sourceLines[endLineIndex].length);
             session.replace(rangeToReplace, replacementString ?? "");
             // Set tab to diff view mode automatically for implicit review
             targetTab.config.viewMode = "diff";
@@ -1112,9 +1149,6 @@ class AgentTools {
             }
             const sourceLines = sourceContent.split(/\r?\n/);
 
-            if (!startAnchor || !endAnchor) {
-                throw new Error("You must provide both 'startAnchor' and 'endAnchor'.");
-            }
             const aligned = this._alignAnchors(sourceLines, startLine, lineCount, startAnchor, endAnchor);
             startLine = aligned.startLine;
             lineCount = aligned.lineCount;
@@ -1816,6 +1850,10 @@ class AgentTools {
                 return await this.createSubAgent(args, sourceId);
             case 'sub_agent_complete':
                 return await this.subAgentComplete(args, sourceId);
+            case 'query_sub_agent':
+                return await this.querySubAgent(args, sourceId);
+            case 'query_parent':
+                return await this.queryParent(args, sourceId);
             case 'done':
                 return "Agent successfully completed the execution loop.";
             default:
@@ -2256,6 +2294,141 @@ You operate with a limited toolset. Do not try to perform tasks outside this sco
         }
 
         return "Sub-agent task successfully completed and reported back.";
+    }
+
+    async querySubAgent(args, parentSessionId) {
+        const { subSessionId, prompt } = args;
+        if (!subSessionId || !prompt) {
+            throw new Error("query_sub_agent: subSessionId and prompt are required");
+        }
+
+        const aiManager = window.ui?.aiManager;
+        const subSessionData = await workspaceClient.getSession(subSessionId);
+        if (!subSessionData) {
+            return `Tool Error: Sub-agent session not found: ${subSessionId}`;
+        }
+
+        // 1. Append prompt as a user message to the sub-agent thread
+        const subMsg = {
+            role: "user",
+            type: "user",
+            content: prompt,
+            timestamp: Date.now(),
+            id: crypto.randomUUID()
+        };
+        subSessionData.messages.push(subMsg);
+        subSessionData.isWaitingForParent = false;
+        delete subSessionData.pendingParentQuery;
+        await workspaceClient.setSession(subSessionId, subSessionData);
+
+        // 2. Clear any parent pending query state since parent answered
+        if (subSessionData.pendingQueryId) {
+            delete subSessionData.pendingQueryId;
+            await workspaceClient.setSession(subSessionId, subSessionData);
+        }
+
+        // 3. Resolve user query resolvers if any parent-user resolver exists (just in case)
+        const resolver = window._agentQueryResolvers?.[subSessionId];
+        if (resolver) {
+            delete window._agentQueryResolvers[subSessionId];
+            resolver(prompt);
+        }
+
+        // 4. Trigger subagent execution (create new agent instance if not active in background)
+        const parentConnectionId = subSessionData.connectionId || "default-gemini";
+        const connection = AIConnections.getInstance(parentConnectionId);
+        
+        let runningSub = aiManager?.runningSessions.get(subSessionId);
+        if (!runningSub) {
+            const agent = new Agent(aiManager, subSessionData, connection);
+            aiManager.runningSessions.set(subSessionId, { type: 'agent', instance: agent });
+            (async () => {
+                try {
+                    await agent.run(subMsg, null);
+                } catch (e) {
+                    console.error(`Sub-Agent ${subSessionId} resume run failed:`, e);
+                } finally {
+                    aiManager.runningSessions.delete(subSessionId);
+                    if (aiManager.activeSessionId === parentSessionId) {
+                        aiManager.historyManager.render();
+                    }
+                }
+            })();
+        } else {
+            // If subagent runner is already active, resume it or feed the message
+            runningSub.instance.session.isWaitingForParent = false;
+            delete runningSub.instance.session.pendingParentQuery;
+            runningSub.instance.session.messages.push(subMsg);
+            await workspaceClient.setSession(subSessionId, runningSub.instance.session);
+            // Re-run loop step
+            runningSub.instance.run(subMsg, null).catch(err => {
+                console.error(`Failed to resume running subagent:`, err);
+            });
+        }
+
+        // 5. Update UI
+        if (aiManager?.activeSessionId === parentSessionId) {
+            aiManager.historyManager.render();
+        }
+
+        return `Prompt sent to Sub-Agent ${subSessionId}. The sub-agent has resumed execution in the background.`;
+    }
+
+    async queryParent(args, subSessionId) {
+        const { prompt } = args;
+        if (!prompt) {
+            throw new Error("query_parent: prompt is required");
+        }
+
+        const aiManager = window.ui?.aiManager;
+        const subSession = await workspaceClient.getSession(subSessionId);
+        if (!subSession) {
+            throw new Error(`query_parent: sub-agent session not found: ${subSessionId}`);
+        }
+
+        const parentSessionId = subSession.parentId;
+        if (!parentSessionId) {
+            return "Tool Error: No parent session associated with this sub-agent.";
+        }
+
+        const runningParent = aiManager?.runningSessions.get(parentSessionId);
+        const parentSession = (aiManager?.activeSession && aiManager.activeSession.id === parentSessionId)
+            ? aiManager.activeSession
+            : (runningParent && runningParent.instance?.session ? runningParent.instance.session : await workspaceClient.getSession(parentSessionId));
+
+        if (!parentSession) {
+            return `Tool Error: Parent session not found: ${parentSessionId}`;
+        }
+
+        // 1. Alert/Notify Tab status for parent session
+        if (aiManager) {
+            aiManager._updateTabStatus(parentSessionId, "pending-query");
+            if (aiManager.activeSessionId === parentSessionId) {
+                aiManager.historyManager.render();
+            }
+        }
+
+        // 2. Mark the sub-session as waiting for parent and store the query string
+        const running = aiManager?.runningSessions.get(subSessionId);
+        if (running && running.instance && running.instance.session) {
+            running.instance.session.isWaitingForParent = true;
+            running.instance.session.pendingParentQuery = prompt;
+            running.instance.session.lastModified = Date.now();
+        }
+        subSession.isWaitingForParent = true;
+        subSession.pendingParentQuery = prompt;
+        subSession.lastModified = Date.now();
+        await workspaceClient.setSession(subSessionId, subSession);
+
+        // 3. Block subagent loop until parent agent calls query_sub_agent
+        const answer = await new Promise((resolve) => {
+            if (!window._agentQueryResolvers) {
+                window._agentQueryResolvers = {};
+            }
+            window._agentQueryResolvers[subSessionId] = resolve;
+        });
+
+        return `Parent agent answered: ${answer}`;
     }
 }
 

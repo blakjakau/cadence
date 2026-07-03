@@ -153,6 +153,14 @@ class AIManagerHistory {
 						: await workspaceClient.getSession(activeSubAgentSessionId);
 					
 					console.debug("[Scroll Debug] Switching to Sub-Agent. savedScrollTop:", subSession?.scrollTop, "pendingQueryCard:", !!pendingQueryCard);
+					
+					this.manager._autoscrollEnabled = subSession ? (subSession.autoscrollEnabled !== false) : true;
+					if (this.manager._autoscrollEnabled) {
+						this.manager._hideAutoscrollChip();
+					} else {
+						this.manager._showAutoscrollChip();
+					}
+
 					if (pendingQueryCard && !subSession?.scrollTop) {
 						console.debug("[Scroll Debug] Scrolling sub-agent query card into view.");
 						pendingQueryCard.scrollIntoView({ behavior: "auto", block: "nearest" });
@@ -161,6 +169,14 @@ class AIManagerHistory {
 					}
 				} else {
 					console.debug("[Scroll Debug] Switching to Parent. savedScrollTop:", this.manager.activeSession?.scrollTop, "pendingQueryCard:", !!pendingQueryCard);
+					
+					this.manager._autoscrollEnabled = this.manager.activeSession ? (this.manager.activeSession.autoscrollEnabled !== false) : true;
+					if (this.manager._autoscrollEnabled) {
+						this.manager._hideAutoscrollChip();
+					} else {
+						this.manager._showAutoscrollChip();
+					}
+
 					if (pendingQueryCard && !this.manager.activeSession?.scrollTop) {
 						console.debug("[Scroll Debug] Scrolling parent query card into view.");
 						pendingQueryCard.scrollIntoView({ behavior: "auto", block: "nearest" });
@@ -263,11 +279,8 @@ class AIManagerHistory {
 				setTimeout(() => {
 					const pendingQueryCard = this.conversationArea.querySelector(".agent-query-block:not(.answered)");
 					console.debug("[Scroll Debug] Sub-Agent Update. shouldScroll:", shouldScroll, "pendingQueryCard:", !!pendingQueryCard);
-					if (pendingQueryCard && shouldScroll) {
-						console.debug("[Scroll Debug] Scrolling sub-agent query card into view (update).");
-						pendingQueryCard.scrollIntoView({ behavior: "smooth", block: "nearest" });
-					} else if (shouldScroll) {
-						this.conversationArea.scrollTop = this.conversationArea.scrollHeight;
+					if (shouldScroll) {
+						this.manager.scrollToBottom(true);
 					}
 				}, 100);
 			}
@@ -371,11 +384,8 @@ class AIManagerHistory {
 			setTimeout(() => {
 				const pendingQueryCard = this.conversationArea.querySelector(".agent-query-block:not(.answered)");
 				console.debug("[Scroll Debug] Parent Update. shouldScroll:", shouldScroll, "pendingQueryCard:", !!pendingQueryCard);
-				if (pendingQueryCard && shouldScroll) {
-					console.debug("[Scroll Debug] Scrolling parent query card into view (update).");
-					pendingQueryCard.scrollIntoView({ behavior: "smooth", block: "nearest" });
-				} else if (shouldScroll) {
-					this.conversationArea.scrollTop = this.conversationArea.scrollHeight;
+				if (shouldScroll) {
+					this.manager.scrollToBottom(true);
 				}
 			}, 100);
 		}
@@ -954,6 +964,17 @@ class AIManagerHistory {
 				const submitAnswer = () => {
 					const answer = answerInput.value.trim();
 					if (!answer) return;
+
+					// Force re-enable autoscroll when submitting query response
+					this.manager._autoscrollEnabled = true;
+					this.manager._hideAutoscrollChip();
+					if (this.manager.activeSession) {
+						this.manager.activeSession.autoscrollEnabled = true;
+					}
+					if (this.manager.activeSubAgentSession) {
+						this.manager.activeSubAgentSession.autoscrollEnabled = true;
+					}
+
 					const resolver = window._agentQueryResolvers?.[message.id];
 					if (resolver) {
 						delete window._agentQueryResolvers[message.id];

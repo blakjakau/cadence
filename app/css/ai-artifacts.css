@@ -678,7 +678,7 @@ ui-tab-item.plan-tasks-tab.active .status-icon {
     position: absolute;
     top: var(--tabHeight);
     left: 0;
-    right: 0;
+    right: 4;
     bottom: 0;
     overflow-y: auto;
     background: var(--bg-primary);

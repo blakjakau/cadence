@@ -76,7 +76,7 @@ class Gemini extends AI {
 
     get supportsReasoning() {
         const model = (this.config.model || "").toLowerCase();
-        return model.included("Gemini")
+        return model.includes("gemini") || model.includes("gemma-4")
         // return model.includes('thinking') || model.includes('pro') || model.includes('2.0') || model.includes('2.5') || model.includes('3.1') || model.includes('3.5');
     }
 
