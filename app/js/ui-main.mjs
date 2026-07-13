@@ -848,13 +848,20 @@ const uiManager = {
 				})
 				counter++
 
-				const fileName = filePath.split("/").pop()
-				const cleanQuery = query.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&')
-				const regex = new RegExp(`(${cleanQuery})`, "gi")
-				const highlightedName = fileName.replace(regex, "<b>$1</b>")
-				const highlightedSnippet = snippet.replace(regex, "<b>$1</b>")
+				const escapeHtml = (str) => {
+					if (!str) return ""
+					return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+				}
 
-				result.innerHTML = `<big>${highlightedName}</big> <small style="opacity: 0.6;">(line ${lineNum})</small><br/><small>${filePath}</small><br/><code style="font-family: monospace; font-size: 11px; white-space: pre-wrap; color: var(--text-secondary, #888);">${highlightedSnippet}</code>`
+				const fileName = filePath.split("/").pop()
+				const escapedQuery = escapeHtml(query)
+				const cleanQuery = escapedQuery.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&')
+				const regex = new RegExp(`(${cleanQuery})`, "gi")
+				const highlightedName = escapeHtml(fileName).replace(regex, "<b>$1</b>")
+				const highlightedSnippet = escapeHtml(snippet).replace(regex, "<b>$1</b>")
+				const escapedPath = escapeHtml(filePath)
+
+				result.innerHTML = `<big>${highlightedName}</big> <small style="opacity: 0.6;">(line ${lineNum})</small><br/><small>${escapedPath}</small><br/><code style="font-family: monospace; font-size: 11px; white-space: pre-wrap; color: var(--text-secondary, #888);">${highlightedSnippet}</code>`
 				omni.results.append(result)
 			}
 		}
@@ -932,21 +939,7 @@ const uiManager = {
 		}
 
 		const runGrep = async (query) => {
-			if (grepPending) {
-				grepNextQuery = query
-				return
-			}
-			grepPending = true
-			try {
-				await executeGrepSearch(query)
-			} finally {
-				grepPending = false
-				if (grepNextQuery !== null) {
-					const next = grepNextQuery
-					grepNextQuery = null
-					runGrep(next)
-				}
-			}
+			executeGrepSearch(query)
 		}
 
 		const renderSidebarResults = (forceFull = false) => {
@@ -1072,8 +1065,14 @@ const uiManager = {
 					}
 				})
 
+				const escapeHtml = (str) => {
+					if (!str) return ""
+					return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+				}
+
 				const fileIcon = getIconForFileName(fileName)
-				const cleanQuery = query.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&')
+				const escapedQuery = escapeHtml(query)
+				const cleanQuery = escapedQuery.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&')
 				const regex = new RegExp(`(${cleanQuery})`, "gi")
 
 				// Create header
@@ -1082,7 +1081,8 @@ const uiManager = {
 				
 				const fileInfo = new Block()
 				fileInfo.addClass("match-file")
-				fileInfo.innerHTML = `<ui-icon>${fileIcon}</ui-icon><strong>${fileName}</strong> <span style="opacity: 0.6; font-size: 0.85em;">(${hits.length})</span>`
+				const escapedFileName = escapeHtml(fileName)
+				fileInfo.innerHTML = `<ui-icon>${fileIcon}</ui-icon><strong>${escapedFileName}</strong> <span style="opacity: 0.6; font-size: 0.85em;">(${hits.length})</span>`
 				
 				const lineNumSpan = new Inline()
 				lineNumSpan.addClass("line-num")
@@ -1095,7 +1095,7 @@ const uiManager = {
 				// Path
 				const pathDiv = new Block()
 				pathDiv.addClass("match-path")
-				pathDiv.innerHTML = filePath
+				pathDiv.innerHTML = escapeHtml(filePath)
 				card.append(pathDiv)
 
 				// Snippets container
@@ -1104,7 +1104,8 @@ const uiManager = {
 
 				// Render snippets
 				hits.forEach((hit, idx) => {
-					const highlightedSnippet = hit.snippet.replace(regex, "<b>$1</b>")
+					const escapedSnippet = escapeHtml(hit.snippet)
+					const highlightedSnippet = escapedSnippet.replace(regex, "<b>$1</b>")
 					const snippetPre = new Block()
 					snippetPre.addClass("match-snippet", "clickable-snippet")
 					snippetPre.setAttribute("tabindex", "0")
@@ -1184,21 +1185,7 @@ const uiManager = {
 		}
 
 		const runSidebarGrep = async (query) => {
-			if (sidebarGrepPending) {
-				sidebarGrepNextQuery = query
-				return
-			}
-			sidebarGrepPending = true
-			try {
-				await executeSidebarGrepSearch(query)
-			} finally {
-				sidebarGrepPending = false
-				if (sidebarGrepNextQuery !== null) {
-					const next = sidebarGrepNextQuery
-					sidebarGrepNextQuery = null
-					runSidebarGrep(next)
-				}
-			}
+			executeSidebarGrepSearch(query)
 		}
 
 		searchInput.on("input", () => {

@@ -4,7 +4,6 @@
 package main
 
 import (
-	"context"
 	"flag"
 	"fmt"
 	"log"
@@ -104,6 +103,7 @@ func createServerMux() *http.ServeMux {
 	mux.HandleFunc("/api/session", sessionHandler)
 	mux.HandleFunc("/api/sessions", sessionsHandler)
 	mux.HandleFunc("/api/restart", restartHandler)
+	mux.HandleFunc("/api/stop", stopHandler)
 	mux.HandleFunc("/kill", installationHandler(killHandler))
 	mux.HandleFunc("/install-service", installationHandler(InstallService))
 	mux.HandleFunc("/uninstall", installationHandler(Uninstall))
@@ -355,16 +355,27 @@ func restartHandler(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte(`{"status":"restarting"}`))
 
 	go func() {
-		time.Sleep(200 * time.Millisecond)
-
-		if mainServer != nil {
-			log.Println("Shutting down HTTP server...")
-			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-			defer cancel()
-			mainServer.Shutdown(ctx)
-		}
-
+		time.Sleep(250 * time.Millisecond)
 		restartProcess()
+	}()
+}
+
+func stopHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	log.Println("Received /api/stop request. Shutting down server...")
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte(`{"status":"stopping"}`))
+
+	go func() {
+		time.Sleep(250 * time.Millisecond)
+		log.Println("Exiting process.")
+		os.Exit(0)
 	}()
 }
 
@@ -390,9 +401,23 @@ func restartProcess() {
 	}
 	args = append(args, "--headless")
 
-	cmd := exec.Command(argv0, args...)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	var cmd *exec.Cmd
+	if strings.Contains(argv0, "go-build") || strings.Contains(argv0, "/tmp/") {
+		goBin, err := exec.LookPath("go")
+		wd, wdErr := os.Getwd()
+		if err == nil && wdErr == nil {
+			log.Println("Detected 'go run' execution. Relaunching via 'go run .'")
+			runArgs := append([]string{"run", "."}, args...)
+			cmd = exec.Command(goBin, runArgs...)
+			cmd.Dir = wd
+		}
+	}
+
+	if cmd == nil {
+		cmd = exec.Command(argv0, args...)
+	}
+
+	configureCmdForRestart(cmd)
 	cmd.Env = os.Environ()
 
 	err = cmd.Start()

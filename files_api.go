@@ -811,8 +811,9 @@ func safeWriteJSON(ws *websocket.Conn, v interface{}) error {
 // --- Active Search Process Manager ---
 
 type activeSearch struct {
-	cmds   []*exec.Cmd
-	cancel context.CancelFunc
+	cmds      []*exec.Cmd
+	cancel    context.CancelFunc
+	requestId int
 }
 
 var (
@@ -831,6 +832,13 @@ func cancelActiveSearch(ws *websocket.Conn) {
 			if cmd != nil && cmd.Process != nil {
 				cmd.Process.Kill()
 			}
+		}
+		if search.requestId != 0 {
+			safeWriteJSON(ws, fileResponse{
+				RequestId: search.requestId,
+				Action:    "search_done",
+				Error:     "Cancelled",
+			})
 		}
 		delete(activeSearches, ws)
 	}
@@ -868,7 +876,8 @@ func startGrepSearch(ws *websocket.Conn, reqId int, query string) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	searchTracker := &activeSearch{
-		cancel: cancel,
+		cancel:    cancel,
+		requestId: reqId,
 	}
 
 	activeSearchesMu.Lock()
@@ -1000,6 +1009,9 @@ func startGrepSearch(ws *websocket.Conn, reqId int, query string) {
 						Data:      match,
 					})
 					count++
+					if count >= limit {
+						cancel() // Stop the grep processes early
+					}
 				}
 			case <-ctx.Done():
 				goto done
@@ -1007,6 +1019,12 @@ func startGrepSearch(ws *websocket.Conn, reqId int, query string) {
 		}
 
 	done:
+		activeSearchesMu.Lock()
+		if search, ok := activeSearches[ws]; ok && search == searchTracker {
+			search.requestId = 0
+		}
+		activeSearchesMu.Unlock()
+
 		safeWriteJSON(ws, fileResponse{
 			RequestId: reqId,
 			Action:    "search_done",
