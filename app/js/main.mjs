@@ -2113,6 +2113,46 @@ fileMenu.click = folderMenu.click = topfolderMenu.click = async (action) => {
 	const filePath = file.path || file.name;
 
 	switch (action) {
+		case "info":
+			try {
+				const info = await conduitClient.wsFileInfo(filePath);
+				if (info.error) {
+					throw new Error(info.error);
+				}
+				const data = info.data;
+				const htmlContent = `
+					<table style="width: 100%; border-collapse: collapse; margin-top: 10px;">
+						<tr>
+							<td style="padding: 8px 4px; font-weight: bold; border-bottom: 1px solid var(--border-color, #eee); width: 100px;">Type</td>
+							<td style="padding: 8px 4px; border-bottom: 1px solid var(--border-color, #eee);">${data.isDir ? 'Folder' : 'File'}</td>
+						</tr>
+						<tr>
+							<td style="padding: 8px 4px; font-weight: bold; border-bottom: 1px solid var(--border-color, #eee);">Size</td>
+							<td style="padding: 8px 4px; border-bottom: 1px solid var(--border-color, #eee);">${data.sizeFormatted} (${data.size.toLocaleString()} bytes)</td>
+						</tr>
+						<tr>
+							<td style="padding: 8px 4px; font-weight: bold; border-bottom: 1px solid var(--border-color, #eee);">Path</td>
+							<td style="padding: 8px 4px; border-bottom: 1px solid var(--border-color, #eee); word-break: break-all; font-family: monospace;">${data.path}</td>
+						</tr>
+						<tr>
+							<td style="padding: 8px 4px; font-weight: bold; border-bottom: 1px solid var(--border-color, #eee);">Full Path</td>
+							<td style="padding: 8px 4px; border-bottom: 1px solid var(--border-color, #eee); word-break: break-all; font-family: monospace;">${data.fullPath}</td>
+						</tr>
+						<tr>
+							<td style="padding: 8px 4px; font-weight: bold; border-bottom: 1px solid var(--border-color, #eee);">Modified</td>
+							<td style="padding: 8px 4px; border-bottom: 1px solid var(--border-color, #eee);">${data.modTimeStr}</td>
+						</tr>
+						<tr>
+							<td style="padding: 8px 4px; font-weight: bold; border-bottom: 1px solid var(--border-color, #eee);">Git Status</td>
+							<td style="padding: 8px 4px; border-bottom: 1px solid var(--border-color, #eee); font-family: monospace;">${data.gitStatus}</td>
+						</tr>
+					</table>
+				`;
+				Modal.notice(htmlContent, `${file.name} Information`);
+			} catch (e) {
+				Modal.notice(`Failed to get file info: ${e.message}`, "Error");
+			}
+			break;
 		case "remove":
 			for (let i = 0; i < workspace.folders.length; i++) {
 				if (workspace.folders[i] === filePath) {

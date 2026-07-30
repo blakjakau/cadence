@@ -1,19 +1,18 @@
 import { FileList } from './filelist.mjs';
 import { Button } from './button.mjs';
+import { Block } from './element.mjs';
+import { Input } from './input.mjs';
 import { readAndOrderDirectory } from './utils.mjs';
 import modal from './modal.mjs';
+import { Menu } from './menu.mjs';
+import { MenuItem } from './menuitem.mjs';
+import conduit from '../conduit-client.mjs';
 
 export const promptAddFolder = async () => {
     return new Promise((resolve) => {
         const pickerList = new FileList();
         pickerList.disableIndexing = true;
-        pickerList.style.height = '400px';
-        pickerList.style.overflow = 'auto';
-        pickerList.style.display = 'block';
-        pickerList.style.border = '1px solid var(--border-color)';
-        pickerList.style.borderRadius = 'var(--radius)';
-        pickerList.style.marginTop = '10px';
-        pickerList.style.padding = '10px';
+        pickerList.classList.add("folder-picker-list");
 
         let selectedPath = null;
         pickerList.addEventListener("click", (e) => {
@@ -28,24 +27,24 @@ export const promptAddFolder = async () => {
 
         pickerList.hideDotFiles = true;
 
-        (async () => {
-            try {
-                const tree = await readAndOrderDirectory('.');
-                pickerList.files = tree;
-            } catch (e) {
-                console.error("Failed to read root directory for picker", e);
-            }
-        })();
-
-        const contentContainer = document.createElement('div');
+        const contentContainer = new Block();
         contentContainer.innerHTML = '<h1>Select Folder</h1><p>Choose a folder from the backend to add to your workspace.</p>';
         
+        // Inline Folder Creation Row
+        const createFolderRow = new Block();
+        createFolderRow.classList.add("create-folder-row");
+
+        const newFolderInput = new Input();
+        newFolderInput.placeholder = 'New folder name...';
+        newFolderInput.classList.add("create-folder-input");
+
+        const createFolderBtn = new Button('Create Folder');
+        createFolderBtn.classList.add('themed', 'create-folder-btn');
+
+        createFolderRow.append(newFolderInput, createFolderBtn);
+
         const checkContainer = document.createElement('label');
-        checkContainer.style.display = 'flex';
-        checkContainer.style.alignItems = 'center';
-        checkContainer.style.gap = '8px';
-        checkContainer.style.marginTop = '10px';
-        checkContainer.style.cursor = 'pointer';
+        checkContainer.classList.add("checkbox-container");
         
         const checkbox = document.createElement('input');
         checkbox.type = 'checkbox';
@@ -66,11 +65,26 @@ export const promptAddFolder = async () => {
             pickerList.removeAttribute("loading");
         });
 
-        contentContainer.append(pickerList, checkContainer);
-        modal.inner.innerHTML = '';
-        modal.inner.append(contentContainer);
+        // Inline Folder Deletion Confirmation Banner
+        const deleteConfirmBanner = new Block();
+        deleteConfirmBanner.classList.add("delete-confirm-banner");
 
-        modal.actionBar.innerHTML = '';
+        const deleteConfirmText = new Block();
+        deleteConfirmText.classList.add("delete-confirm-text");
+
+        const deleteConfirmButtons = new Block();
+        deleteConfirmButtons.classList.add("delete-confirm-buttons");
+
+        const deleteConfirmBtnYes = new Button("Delete");
+        deleteConfirmBtnYes.classList.add("delete-confirm-btn-yes");
+        const deleteConfirmBtnNo = new Button("Cancel");
+        deleteConfirmBtnNo.classList.add("delete-confirm-btn-no");
+
+        deleteConfirmButtons.append(deleteConfirmBtnYes, deleteConfirmBtnNo);
+        deleteConfirmBanner.append(deleteConfirmText, deleteConfirmButtons);
+
+        contentContainer.append(pickerList, createFolderRow, deleteConfirmBanner, checkContainer);
+
         const okButton = new Button('Add Folder');
         okButton.classList.add('themed');
         const cancelButton = new Button('Cancel');
@@ -85,8 +99,140 @@ export const promptAddFolder = async () => {
             resolve(null);
         });
 
-        modal.actionBar.append(cancelButton, okButton);
-        modal.show();
+        const showFolderModal = () => {
+            modal.inner.innerHTML = '';
+            modal.inner.append(contentContainer);
+            modal.actionBar.innerHTML = '';
+            modal.actionBar.append(cancelButton, okButton);
+            modal.show();
+        };
+
+        let pendingDeletePath = null;
+        let pendingDeleteItemEl = null;
+
+        deleteConfirmBtnNo.on('click', () => {
+            deleteConfirmBanner.classList.remove("active");
+            pendingDeletePath = null;
+            pendingDeleteItemEl = null;
+        });
+
+        deleteConfirmBtnYes.on('click', async () => {
+            if (!pendingDeletePath || !pendingDeleteItemEl) return;
+            try {
+                await conduit.wsDelete(pendingDeletePath);
+                window.modal.toast(`Folder "${pendingDeleteItemEl.item.name}" deleted successfully`);
+                
+                const parentFileItem = pendingDeleteItemEl.parentElement.closest('ui-file-item');
+                if (parentFileItem && parentFileItem.refresh) {
+                    parentFileItem.refresh.click();
+                } else {
+                    const tree = await readAndOrderDirectory('.');
+                    pickerList.files = tree;
+                }
+            } catch (err) {
+                window.modal.toast("Failed to delete folder: " + (err.message || err));
+            } finally {
+                deleteConfirmBanner.classList.remove("active");
+                pendingDeletePath = null;
+                pendingDeleteItemEl = null;
+            }
+        });
+
+        createFolderBtn.on('click', async () => {
+            const folderName = newFolderInput.value.trim();
+            if (!folderName) {
+                window.modal.toast("Please enter a folder name");
+                return;
+            }
+
+            const parentPath = selectedPath || '.';
+            const newPath = parentPath === '.' ? folderName : `${parentPath}/${folderName}`;
+
+            try {
+                await conduit.wsMkdir(newPath);
+                newFolderInput.value = '';
+                window.modal.toast(`Folder "${folderName}" created successfully`);
+                
+                const activeItemEl = pickerList.querySelector('ui-file-item[active]');
+                if (activeItemEl && activeItemEl.refresh) {
+                    if (!activeItemEl.item.open) {
+                        activeItemEl.click();
+                    } else {
+                        activeItemEl.refresh.click();
+                    }
+                } else {
+                    const tree = await readAndOrderDirectory('.');
+                    pickerList.files = tree;
+                }
+            } catch (err) {
+                window.modal.toast("Failed to create folder: " + (err.message || err));
+            }
+        });
+
+        pickerList.context = async (ev) => {
+            console.log("FileList context menu triggered", ev);
+            const itemEl = pickerList.contextElement;
+            console.log("Context element (itemEl):", itemEl);
+
+            if (itemEl && itemEl.item) {
+                const allItems = pickerList.querySelectorAll('ui-file-item');
+                allItems.forEach(i => i.removeAttribute('active'));
+                itemEl.setAttribute('active', '');
+                selectedPath = itemEl.item.path || itemEl.item.name;
+            }
+
+            const menu = new Menu();
+            const newItem = new MenuItem("Create New Folder");
+            newItem.setAttribute("icon", "create_new_folder");
+            menu.append(newItem);
+
+            let deleteItem = null;
+            if (itemEl && itemEl.item) {
+                deleteItem = new MenuItem("Delete Folder");
+                deleteItem.setAttribute("icon", "delete");
+                menu.append(deleteItem);
+            }
+
+            menu.click = async (clickedItem) => {
+                if (clickedItem === newItem) {
+                    newFolderInput.focus();
+                    newFolderInput.select();
+                } else if (clickedItem === deleteItem) {
+                    const targetPath = itemEl.item.path || itemEl.item.name;
+                    try {
+                        const countRes = await conduit.wsCountFiles(targetPath);
+                        const fileCount = countRes.data || 0;
+                        
+                        pendingDeletePath = targetPath;
+                        pendingDeleteItemEl = itemEl;
+
+                        if (fileCount > 0) {
+                            deleteConfirmText.textContent = `Folder is not empty (${fileCount} files/folders inside). Are you sure you want to delete "${itemEl.item.name}"?`;
+                        } else {
+                            deleteConfirmText.textContent = `Are you sure you want to delete "${itemEl.item.name}"?`;
+                        }
+                        
+                        deleteConfirmBanner.classList.add("active");
+                    } catch (err) {
+                        window.modal.toast("Failed to check folder content: " + (err.message || err));
+                    }
+                }
+            };
+
+            document.body.append(menu);
+            menu.showAt(ev);
+        };
+
+        (async () => {
+            try {
+                const tree = await readAndOrderDirectory('.');
+                pickerList.files = tree;
+            } catch (e) {
+                console.error("Failed to read root directory for picker", e);
+            }
+        })();
+
+        showFolderModal();
     });
 };
 
@@ -94,55 +240,25 @@ export const promptSaveFile = async (suggestedName = "Untitled", suggestedFolder
     return new Promise((resolve) => {
         const pickerList = new FileList();
         pickerList.disableIndexing = true;
-        pickerList.style.height = '300px';
-        pickerList.style.overflow = 'auto';
-        pickerList.style.display = 'block';
-        pickerList.style.border = '1px solid var(--border-color)';
-        pickerList.style.borderRadius = 'var(--radius)';
-        pickerList.style.marginTop = '10px';
-        pickerList.style.padding = '10px';
+        pickerList.classList.add("save-picker-list");
 
         let selectedFolder = suggestedFolder || '.';
         
-        const inputContainer = document.createElement('div');
-        inputContainer.style.display = 'flex';
-        inputContainer.style.alignItems = 'center';
-        inputContainer.style.gap = '8px';
-        inputContainer.style.marginTop = '10px';
+        const inputContainer = new Block();
+        inputContainer.classList.add("save-input-container");
 
-        const nameInput = document.createElement('input');
-        nameInput.type = 'text';
+        const nameInput = new Input();
         nameInput.value = suggestedName;
-        nameInput.style.flex = '1';
-        nameInput.style.padding = '8px';
-        nameInput.style.borderRadius = 'var(--radius)';
-        nameInput.style.border = '1px solid var(--border-color)';
-        nameInput.style.background = 'var(--bg-primary)';
-        nameInput.style.color = 'var(--text-primary)';
+        nameInput.classList.add("save-name-input");
         
         inputContainer.append(document.createTextNode('Filename: '), nameInput);
 
         // Project folder selector
-        const folderSelectorContainer = document.createElement('div');
-        folderSelectorContainer.style.display = 'flex';
-        folderSelectorContainer.style.alignItems = 'center';
-        folderSelectorContainer.style.gap = '8px';
-        folderSelectorContainer.style.marginBottom = '10px';
+        const folderSelectorContainer = new Block();
+        folderSelectorContainer.classList.add("save-folder-selector-container");
 
         const folderSelect = document.createElement('select');
-        folderSelect.style.flex = '1';
-        folderSelect.style.padding = '8px';
-        folderSelect.style.paddingRight = '32px';
-        folderSelect.style.borderRadius = 'var(--radius)';
-        folderSelect.style.border = '1px solid var(--border-color)';
-        folderSelect.style.background = 'var(--bg-primary)';
-        folderSelect.style.color = 'var(--text-primary)';
-        folderSelect.style.appearance = 'none';
-        folderSelect.style.webkitAppearance = 'none';
-        folderSelect.style.backgroundImage = 'url("data:image/svg+xml;charset=UTF-8,%3Csvg xmlns=\'http://www.w3.org/2000/svg\' viewBox=\'0 0 24 24\' fill=\'none\' stroke=\'%23888\' stroke-width=\'2\' stroke-linecap=\'round\' stroke-linejoin=\'round\'%3E%3Cpolyline points=\'6 9 12 15 18 9\'%3E%3C/polyline%3E%3C/svg%3E")';
-        folderSelect.style.backgroundRepeat = 'no-repeat';
-        folderSelect.style.backgroundPosition = 'right 8px center';
-        folderSelect.style.backgroundSize = '16px';
+        folderSelect.classList.add("save-folder-select");
         
         // Add all available options
         const allOptions = new Set(['.', ...workspaceFolders]);
@@ -150,8 +266,6 @@ export const promptSaveFile = async (suggestedName = "Untitled", suggestedFolder
             const option = document.createElement('option');
             option.value = folder;
             option.textContent = folder === '.' ? 'Root (All Drives)' : folder;
-            option.style.background = 'var(--bg-primary)';
-            option.style.color = 'var(--text-primary)';
             if (folder === selectedFolder) {
                 option.selected = true;
             }
@@ -164,8 +278,6 @@ export const promptSaveFile = async (suggestedName = "Untitled", suggestedFolder
             option.value = selectedFolder;
             option.textContent = selectedFolder;
             option.selected = true;
-            option.style.background = 'var(--bg-primary)';
-            option.style.color = 'var(--text-primary)';
             folderSelect.append(option);
         }
 
@@ -234,7 +346,7 @@ export const promptSaveFile = async (suggestedName = "Untitled", suggestedFolder
             }
         })();
 
-        const contentContainer = document.createElement('div');
+        const contentContainer = new Block();
         contentContainer.innerHTML = '<h1>Save File As</h1><p>Choose a location and enter a file name.</p>';
         contentContainer.append(folderSelectorContainer, pickerList, inputContainer);
 

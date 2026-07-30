@@ -801,10 +801,10 @@ class AgentTools {
             }
 
             if (matchIndices.length === 0) {
-                throw new Error(`Target string not found in ${path}. Ensure the search string matches the code content (comments, blank lines, and leading spaces are ignored during search).`);
+                throw new Error("Search text not found");
             }
             if (matchIndices.length > 1) {
-                throw new Error(`A unique match could not be found in ${path} (found ${matchIndices.length} matches). Please make your search block more specific.`);
+                throw new Error("Search text match multiple places, provide more surrounding context");
             }
 
             const matchIndex = matchIndices[0];

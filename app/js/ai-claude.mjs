@@ -210,7 +210,7 @@ class Claude extends AI {
         return this.chat(messages, callbacks);
     }
     
-    async chat(messages, callbacks = {}, systemPrompt = null) {
+    async chat(messages, callbacks = {}, systemPrompt = null, session = null) {
         const { onStart, onError, onDone, onContextRatioUpdate } = callbacks;
         if (onStart) onStart();
 
@@ -223,6 +223,12 @@ class Claude extends AI {
                 stream: true,
                 max_tokens: 4096 // A required parameter for the Anthropic Messages API
             };
+
+            if (session && session.temperatureOverride !== undefined) {
+                requestBody.temperature = session.temperatureOverride;
+            } else if (this.config.temperature !== undefined) {
+                requestBody.temperature = this.config.temperature;
+            }
 
             if(systemPrompt) {
             	requestBody.system = systemPrompt

@@ -243,6 +243,10 @@ class ConduitClient {
     }
 
     // --- WebSocket Actions (Promise-based) ---
+    wsMkdir(path) {
+        return this._send({ action: 'mkdir', path });
+    }
+
     wsList(path) {
         return this._send({ action: 'list', path });
     }
@@ -266,6 +270,10 @@ class ConduitClient {
         return this._send({ action: 'delete', path });
     }
 
+    wsCountFiles(path) {
+        return this._send({ action: 'count_files', path });
+    }
+
     wsSearch(path, type, query) {
         return this._send({ action: 'search', path, type, query });
     }
@@ -284,6 +292,10 @@ class ConduitClient {
 
     wsGetIndexerStatus() {
         return this._send({ action: 'get_indexer_status' });
+    }
+
+    wsFileInfo(path) {
+        return this._send({ action: 'file_info', path });
     }
 
     wsSetActiveRoots(roots, ignorePaths = null) {

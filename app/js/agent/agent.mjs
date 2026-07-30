@@ -180,9 +180,9 @@ export class Agent {
 				const responseContent = await runPromise;
 
 				if (forcedReason === "repetition_loop") {
-					if (this.repetitionHaltCount < 3) {
+					if (this.repetitionHaltCount < 5) {
 						this.repetitionHaltCount++;
-						console.warn(`⚠️ [Agent Repetition Loop Detected] Trimming and injecting directive (Attempt ${this.repetitionHaltCount} of 3)...`);
+						console.warn(`⚠️ [Agent Repetition Loop Detected] Trimming and injecting directive (Attempt ${this.repetitionHaltCount} of 5)...`);
 
 						// 1. Trim the model response content
 						let trimmedContent = responseContent;
@@ -201,19 +201,34 @@ export class Agent {
 							}
 						}
 
-						// 3. Create and append the system directive message
+						// 3. Scale temperature to force more randomness
+						session.temperatureOverride = Math.min(0.98, 0.75 + (this.repetitionHaltCount * 0.05));
+
+						// 4. Build dynamic warning directive
+						let warningContent = "[SYSTEM WARNING: You have entered a generation loop repeating the same action. You must immediately choose a DIFFERENT action or tool, vary your arguments, and break this loop.]";
+						if (repCheck.detected && repCheck.pattern) {
+							if (repCheck.pattern.includes("<tool_call")) {
+								const toolNameMatch = repCheck.pattern.match(/<tool_call\s+name="([^"]+)"/);
+								if (toolNameMatch) {
+									const toolName = toolNameMatch[1];
+									warningContent = `[SYSTEM WARNING: You have entered a loop repeatedly calling the tool \`${toolName}\` with identical or highly similar parameters. You MUST choose a different tool, check your search/replace parameters, or proceed with a different method to solve the objective.]`;
+								}
+							}
+						}
+
+						// 5. Create and append the system directive message
 						const directiveMsg = {
 							id: crypto.randomUUID(),
 							role: "user",
 							type: "system_directive",
-							content: "[SYSTEM WARNING: You previously entered a generation loop trying to choose a plan. You must immediately choose ONE action and format your response now. Avoid conversational preamble.]",
+							content: warningContent,
 							timestamp: Date.now()
 						};
 						session.messages.push(directiveMsg);
 						session.lastModified = Date.now();
 						await workspaceClient.setSession(session.id, session);
 
-						// 4. Update DOM if active
+						// 6. Update DOM if active
 						if (aiManager.isSessionViewed(session.id)) {
 							if (responseBlock && typeof responseBlock.updateContent === "function") {
 								responseBlock.updateContent(trimmedContent);
@@ -224,10 +239,10 @@ export class Agent {
 							}
 						}
 
-						// 5. Briefly pause, then continue the loop
+						// 7. Briefly pause, then continue the loop
 						const autoMsg = document.createElement("div");
 						autoMsg.className = "agent-tool-progress";
-						autoMsg.innerHTML = `<ui-icon class="spin">cached</ui-icon> <span>Recovering from repetition loop (Attempt ${this.repetitionHaltCount} of 3)...</span>`;
+						autoMsg.innerHTML = `<ui-icon class="spin">cached</ui-icon> <span>Recovering from repetition loop (Attempt ${this.repetitionHaltCount} of 5)...</span>`;
 						if (aiManager.isSessionViewed(session.id)) {
 							aiManager.conversationArea.append(autoMsg);
 							if (aiManager._shouldAutoScroll() && aiManager.conversationArea) {
@@ -240,8 +255,9 @@ export class Agent {
 						loopCount--; // Decrement to retry this turn
 						continue; // Go to next loop iteration
 					} else {
-						// 3 attempts exhausted: close agent loop and notify user
-						console.error("❌ [Agent Repetition Loop] 3 recovery attempts exhausted. Exiting loop.");
+						// 5 recovery attempts exhausted: close agent loop and notify user
+						console.error("❌ [Agent Repetition Loop] 5 recovery attempts exhausted. Exiting loop.");
+						delete session.temperatureOverride;
 						const errorBlock = document.createElement("div");
 						errorBlock.className = "response-block warning-block";
 						errorBlock.style.border = "1px solid var(--color-error, #dc3545)";
@@ -279,10 +295,6 @@ export class Agent {
 						}
 						return;
 					}
-					if (responseContent.replace(regex, "").length > 50) {
-						aiManager.setSessionProcessing(session.id, false);
-						return;
-					}
 
 					// Sub-agents MUST always end with a tool call — re-inject a directive instead of halting
 					if (session.parentId) {
@@ -305,7 +317,7 @@ export class Agent {
 								id: crypto.randomUUID(),
 								role: "user",
 								type: "system_directive",
-								content: "You MUST finish your turn with a tool call. If you have completed your task, call `sub_agent_complete`. If you are blocked or need information from the user, call `query`. Otherwise, continue your work with another tool call.",
+								content: "You MUST finish your turn with a tool call. If you have completed your task, you must return your conclusion via the `sub_agent_complete` tool. If you are blocked or need information from the user, call `query`. Otherwise, continue your work with another tool call.",
 								timestamp: Date.now()
 							};
 							session.messages.push(directiveMsg);
@@ -336,6 +348,11 @@ export class Agent {
 							aiManager._updateTabStatus(session.id, "halted");
 							break;
 						}
+					}
+
+					if (responseContent.replace(regex, "").length > 50) {
+						aiManager.setSessionProcessing(session.id, false);
+						return;
 					}
 
 					// No more tool calls: agent is done!
@@ -426,6 +443,7 @@ export class Agent {
 				// Reset consecutive halt count since the agent generated valid tool calls
 				this.consecutiveHaltCount = 0;
 				this.repetitionHaltCount = 0;
+				delete session.temperatureOverride;
 
 				// Execute all parsed tool calls sequentially
 				let accumulatedResponses = [];

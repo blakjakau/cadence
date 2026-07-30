@@ -38,7 +38,7 @@ class LlamaCpp extends AI {
                     { value: "low", label: "Low" },
                     { value: "medium", label: "Medium" },
                     { value: "high", label: "High" },
-                    { value: "ultra", label: "Ultra" }
+                    { value: "unlimited", label: "Unlimited" }
                 ]
             },
             system: { type: "textarea", label: "System Prompt Override", default: "", multiline: true }
@@ -259,7 +259,7 @@ class LlamaCpp extends AI {
                 messages: formattedMessages,
                 stream: true,
                 max_tokens: this.config.n_predict,
-                temperature: this.config.temperature,
+                temperature: (session && session.temperatureOverride !== undefined) ? session.temperatureOverride : this.config.temperature,
                 top_k: this.config.top_k,
                 top_p: this.config.top_p,
                 stop: stopTokens,
@@ -270,11 +270,11 @@ class LlamaCpp extends AI {
             if (this.supportsReasoning) {
                 requestBody.enable_thinking = true;
                 const level = this.config.thinkingLevel || "medium";
-                if (level !== 'ultra') {
+                if (level !== 'unlimited' && level !== 'ultra') {
                     let budget = 0;
                     if (level === 'low') {
                         budget = Math.min(1024, Math.round(this.MAX_CONTEXT_TOKENS * 0.03125));
-                    } else if (level === 'medium') {
+                    } else if (level === 'medium' || level === 'med') {
                         budget = Math.min(2048, Math.round(this.MAX_CONTEXT_TOKENS * 0.0625));
                     } else if (level === 'high') {
                         budget = Math.min(4096, Math.round(this.MAX_CONTEXT_TOKENS * 0.125));
@@ -448,24 +448,25 @@ class LlamaCpp extends AI {
                             if (chunkUpdate || delta.tool_calls) {
                                 fullResponse += chunkUpdate;
 
-                                // Loose tool call protection in content tokens
-                                const looseToolCallRegex = /<tool_call[\s\S]*?>|<\|tool[\s\S]*?>/gi;
+                                 // Loose tool call protection in content tokens
+                                const looseToolCallRegex = /<tool_call[\s\S]*?>|<\|tool[\s\S]*?>|<\|im_start\|>call:/gi;
                                 let match;
                                 while ((match = looseToolCallRegex.exec(fullResponse)) !== null) {
                                     looseToolCallCount++;
                                     console.warn(`[Llama.cpp] Loose tool call hit #${looseToolCallCount} detected in text: ${match[0]}`);
-
+ 
                                     // Strip the loose tool call tag from fullResponse
                                     fullResponse = fullResponse.substring(0, match.index) + fullResponse.substring(match.index + match[0].length);
                                     looseToolCallRegex.lastIndex = 0; // Reset index since we modified the string
-
+ 
                                     if (looseToolCallCount > 3) {
                                         this.stop("Too many redundant/loose tool calls generated in text stream.");
                                         break;
                                     }
                                 }
-
+ 
                                 let processedResponse = translateGemmaToolCalls(fullResponse);
+                                processedResponse = translateQwenToolCalls(processedResponse);
                                 processedResponse = getResponseWithToolCalls(processedResponse, streamedToolCalls);
                                 if (onUpdate) onUpdate(processedResponse);
                             }
@@ -475,7 +476,7 @@ class LlamaCpp extends AI {
                     }
                 }
             }
-
+ 
             if (isReasoning) {
                 isReasoning = false;
                 totalThinkingMs += Date.now() - thinkingStartTime;
@@ -485,9 +486,10 @@ class LlamaCpp extends AI {
                 }
                 fullResponse += "\n</thought>";
             }
-
+ 
             const requestEndTime = Date.now();
             let finalResponse = translateGemmaToolCalls(fullResponse);
+            finalResponse = translateQwenToolCalls(finalResponse);
             finalResponse = getResponseWithToolCalls(finalResponse, streamedToolCalls);
 
             const finalTokens = this.estimateTokens([...messages, { role: 'model', content: finalResponse }]);
@@ -614,6 +616,22 @@ function translateGemmaToolCalls(text) {
     if (!text) return text;
     const gemmaRegex = /<\|tool>(?:declaration|call):([a-zA-Z0-9_-]+)\s*(\{[\s\S]*?\})(?:<\|?tool_call\|?>)?/g;
     return text.replace(gemmaRegex, (match, toolName, argsStr) => {
+        const args = parseRelaxedJson(argsStr);
+        let xml = `<tool_call name="${toolName}">\n`;
+        for (const [key, value] of Object.entries(args)) {
+            const stringValue = typeof value === 'object' ? JSON.stringify(value) : value;
+            xml += `  <${key}>${stringValue}</${key}>\n`;
+        }
+        xml += `</tool_call>`;
+        return xml;
+    });
+}
+
+function translateQwenToolCalls(text) {
+    if (!text) return text;
+    // Qwen tool call format: <|im_start|>call:tool_name {"arg": "val"}<|im_end|>
+    const qwenRegex = /<\|im_start\|>call:([a-zA-Z0-9_-]+)\s*(\{[\s\S]*?\})(?:<\|im_end\|>)?/g;
+    return text.replace(qwenRegex, (match, toolName, argsStr) => {
         const args = parseRelaxedJson(argsStr);
         let xml = `<tool_call name="${toolName}">\n`;
         for (const [key, value] of Object.entries(args)) {

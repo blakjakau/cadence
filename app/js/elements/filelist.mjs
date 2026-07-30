@@ -33,13 +33,9 @@ export class FileList extends ContentFill {
 
 		this.itemContextMenu = (ev) => {
 			ev.preventDefault()
-			//  ev.stopPropagation();
 			if ("function" == typeof this._context) {
-				this._contextElement = ev.srcElement
+				this._contextElement = ev.target.closest('ui-file-item')
 				this._context(ev)
-				//  e.on("blur", e=>{
-				//      setTimeout(
-				//  })
 			}
 		}
 	}

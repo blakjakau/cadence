@@ -447,9 +447,29 @@ func handleWsRequest(ws *websocket.Conn, req fileRequest) {
 				resp.Error = err.Error()
 			}
 		}
+	case "mkdir":
+		if err := os.MkdirAll(fullPath, 0755); err != nil {
+			resp.Error = err.Error()
+		}
 	case "delete":
 		if err := os.RemoveAll(fullPath); err != nil {
 			resp.Error = err.Error()
+		}
+	case "count_files":
+		count := 0
+		err := filepath.Walk(fullPath, func(path string, info os.FileInfo, err error) error {
+			if err != nil {
+				return err
+			}
+			if path != fullPath {
+				count++
+			}
+			return nil
+		})
+		if err != nil {
+			resp.Error = err.Error()
+		} else {
+			resp.Data = count
 		}
 	case "watch":
 		fileWatcher.addSubscription(ws, req.Path, fullPath)
@@ -519,6 +539,22 @@ func handleWsRequest(ws *websocket.Conn, req fileRequest) {
 		resp.Data = map[string]interface{}{
 			"roots": im.GetRoots(),
 			"size":  im.GetTotalSizeFormatted(),
+		}
+	case "file_info":
+		stat, err := os.Stat(fullPath)
+		if err != nil {
+			resp.Error = err.Error()
+		} else {
+			resp.Data = map[string]interface{}{
+				"path":          req.Path,
+				"fullPath":      filepath.ToSlash(fullPath),
+				"isDir":         stat.IsDir(),
+				"size":          stat.Size(),
+				"sizeFormatted": formatSize(stat.Size()),
+				"modTime":       stat.ModTime().Unix(),
+				"modTimeStr":    stat.ModTime().Format("2006-01-02 15:04:05"),
+				"gitStatus":     getGitStatus(fullPath),
+			}
 		}
 	default:
 		resp.Error = "Unknown action"
@@ -1037,4 +1073,81 @@ func startGrepSearch(ws *websocket.Conn, reqId int, query string) {
 		wg.Wait()
 		close(matchChan)
 	}()
+}
+
+func formatSize(bytes int64) string {
+	const unit = 1024
+	if bytes < unit {
+		return strconv.FormatInt(bytes, 10) + " B"
+	}
+	div, exp := int64(unit), 0
+	for n := bytes / unit; n >= unit; n /= unit {
+		div *= unit
+		exp++
+	}
+	return strconv.FormatFloat(float64(bytes)/float64(div), 'f', 1, 64) + " " + string("KMGTPE"[exp]) + "B"
+}
+
+func getGitStatus(fullPath string) string {
+	dir := filepath.Dir(fullPath)
+	cmd := exec.Command("git", "status", "--porcelain", fullPath)
+	cmd.Dir = dir
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		outStr := string(output)
+		if strings.Contains(outStr, "not a git repository") {
+			return "not a git repository"
+		}
+		return "not available"
+	}
+	statusStr := strings.TrimSpace(string(output))
+	if statusStr == "" {
+		return "clean"
+	}
+	lines := strings.Split(statusStr, "\n")
+	if len(lines) == 0 {
+		return "clean"
+	}
+	hasModified := false
+	hasUntracked := false
+	hasAdded := false
+	hasDeleted := false
+
+	for _, line := range lines {
+		if len(line) < 2 {
+			continue
+		}
+		code := line[:2]
+		if strings.Contains(code, "M") {
+			hasModified = true
+		}
+		if strings.Contains(code, "?") {
+			hasUntracked = true
+		}
+		if strings.Contains(code, "A") {
+			hasAdded = true
+		}
+		if strings.Contains(code, "D") {
+			hasDeleted = true
+		}
+	}
+
+	var states []string
+	if hasModified {
+		states = append(states, "modified")
+	}
+	if hasAdded {
+		states = append(states, "added")
+	}
+	if hasDeleted {
+		states = append(states, "deleted")
+	}
+	if hasUntracked {
+		states = append(states, "untracked")
+	}
+
+	if len(states) > 0 {
+		return strings.Join(states, ", ")
+	}
+	return statusStr
 }

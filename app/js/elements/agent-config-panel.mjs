@@ -534,6 +534,21 @@ export class AgentConfigPanel extends Block {
 			editBtn.title = "Edit connection settings";
 			editBtn.onclick = () => this.showConnectionModal(conn);
 
+			const copyBtn = new Button("");
+			copyBtn.icon = "content_copy";
+			copyBtn.className = "icon-button secondary";
+			copyBtn.title = "Copy connection";
+			copyBtn.onclick = () => {
+				const newConn = JSON.parse(JSON.stringify(conn));
+				newConn.id = `conn-${crypto.randomUUID()}`;
+				newConn.name = `${newConn.name} Copy`;
+				AIConnections.saveConnection(newConn);
+				this.renderConnectionsList();
+				if (window.modal && typeof window.modal.toast === "function") {
+					window.modal.toast(`Copied connection as "${newConn.name}"`);
+				}
+			};
+
 			const deleteBtn = new Button("");
 			deleteBtn.icon = "delete";
 			deleteBtn.className = "icon-button secondary danger";
@@ -550,6 +565,7 @@ export class AgentConfigPanel extends Block {
 			};
 
 			right.appendChild(editBtn);
+			right.appendChild(copyBtn);
 			right.appendChild(deleteBtn);
 			item.appendChild(right);
 
@@ -698,6 +714,27 @@ export class AgentConfigPanel extends Block {
 				return inp;
 			};
 
+			const createSelect = (labelVal, value, options) => {
+				const wrapper = document.createElement("div");
+				wrapper.style.display = "flex";
+				wrapper.style.flexDirection = "column";
+				wrapper.innerHTML = `<label style="font-size: 11px; font-weight: bold; margin-bottom: 2px;">${labelVal}</label>`;
+				const sel = document.createElement("select");
+				sel.className = "themed-select";
+				options.forEach(opt => {
+					const o = document.createElement("option");
+					o.value = opt.value;
+					o.textContent = opt.label;
+					if (opt.value === value) {
+						o.selected = true;
+					}
+					sel.appendChild(o);
+				});
+				wrapper.appendChild(sel);
+				specContainer.appendChild(wrapper);
+				return sel;
+			};
+
 			if (provider === "gemini") {
 				const defServer = "https://generativelanguage.googleapis.com";
 				const srv = conn && conn.provider === "gemini" ? conn.config.server : defServer;
@@ -709,9 +746,19 @@ export class AgentConfigPanel extends Block {
 				const rpm = conn && conn.provider === "gemini" ? (conn.config.rpmLimit || 15) : 15;
 				const tpm = conn && conn.provider === "gemini" ? (conn.config.tpmLimit || 250000) : 250000;
 				const rpd = conn && conn.provider === "gemini" ? (conn.config.rpdLimit || 500) : 500;
+				const maxInput = conn && conn.provider === "gemini" ? (conn.config.maxInputTokens || 0) : 0;
+				const thinking = conn && conn.provider === "gemini" ? (conn.config.thinkingLevel || "medium") : "medium";
 				provSelect.rpmInput = createInput("RPM Limit (Requests/Min)", rpm);
 				provSelect.tpmInput = createInput("TPM Limit (Tokens/Min)", tpm);
 				provSelect.rpdInput = createInput("RPD Limit (Requests/Day)", rpd);
+				provSelect.maxInputTokensInput = createInput("Max Input Tokens (0 for unlimited)", maxInput);
+				provSelect.thinkingInput = createSelect("Thinking Budget", thinking, [
+					{ value: "off", label: "Off" },
+					{ value: "low", label: "Low" },
+					{ value: "medium", label: "Medium" },
+					{ value: "high", label: "High" },
+					{ value: "unlimited", label: "Unlimited" }
+				]);
 			} else if (provider === "llamacpp") {
 				const defServer = "http://localhost:8080";
 				const srv = conn && conn.provider === "llamacpp" ? conn.config.server : defServer;
@@ -722,10 +769,18 @@ export class AgentConfigPanel extends Block {
 				const topK = conn && conn.provider === "llamacpp" ? (conn.config.top_k || 40) : 40;
 				const topP = conn && conn.provider === "llamacpp" ? (conn.config.top_p || 0.9) : 0.9;
 				const temp = conn && conn.provider === "llamacpp" ? (conn.config.temperature !== undefined ? conn.config.temperature : 0.7) : 0.7;
+				const thinking = conn && conn.provider === "llamacpp" ? (conn.config.thinkingLevel || "medium") : "medium";
 				provSelect.nctxInput = createInput("Context Size (n_ctx, 0 for auto)", nctx);
 				provSelect.topKInput = createInput("Top K", topK);
 				provSelect.topPInput = createInput("Top P", topP);
 				provSelect.tempInput = createInput("Temperature", temp);
+				provSelect.thinkingInput = createSelect("Thinking Budget", thinking, [
+					{ value: "off", label: "Off" },
+					{ value: "low", label: "Low" },
+					{ value: "medium", label: "Medium" },
+					{ value: "high", label: "High" },
+					{ value: "unlimited", label: "Unlimited" }
+				]);
 			} else if (provider === "ollama") {
 				const defServer = "http://localhost:11434";
 				const srv = conn && conn.provider === "ollama" ? conn.config.server : defServer;
@@ -791,6 +846,9 @@ export class AgentConfigPanel extends Block {
 			if (provSelect.rpdInput) {
 				configObj.rpdLimit = parseInt(provSelect.rpdInput.value) || 500;
 			}
+			if (provSelect.maxInputTokensInput) {
+				configObj.maxInputTokens = parseInt(provSelect.maxInputTokensInput.value) || 0;
+			}
 			if (provSelect.nctxInput) {
 				configObj.n_ctx = parseInt(provSelect.nctxInput.value) || 0;
 			}
@@ -802,6 +860,9 @@ export class AgentConfigPanel extends Block {
 			}
 			if (provSelect.tempInput) {
 				configObj.temperature = parseFloat(provSelect.tempInput.value) !== undefined ? parseFloat(provSelect.tempInput.value) : 0.7;
+			}
+			if (provSelect.thinkingInput) {
+				configObj.thinkingLevel = provSelect.thinkingInput.value;
 			}
 			return {
 				id: conn ? conn.id : `conn-${crypto.randomUUID()}`,

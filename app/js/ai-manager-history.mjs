@@ -1939,7 +1939,23 @@ class AIManagerHistory {
 			});
 
 			if (directivesText) {
-				contextForAI.splice(contextForAI.length - 1, 0, {
+				// Find a safe insertion index that doesn't split a model tool call and its tool response.
+				let insertIdx = contextForAI.length - 1;
+				while (insertIdx > 0) {
+					const currentMsg = contextForAI[insertIdx];
+					const prevMsg = contextForAI[insertIdx - 1];
+					
+					// A tool response starts with "[Tool Response: "
+					const isToolResponse = currentMsg && currentMsg.content && currentMsg.content.startsWith("[Tool Response:");
+					const prevIsModelWithTools = prevMsg && prevMsg.role === "model" && prevMsg.toolCalls && prevMsg.toolCalls.length > 0;
+					
+					if (isToolResponse || prevIsModelWithTools) {
+						insertIdx--;
+					} else {
+						break;
+					}
+				}
+				contextForAI.splice(insertIdx, 0, {
 					role: "system",
 					content: directivesText
 				});

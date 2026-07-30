@@ -15,7 +15,8 @@ class Gemini extends AI {
             rpmLimit: 15,
             tpmLimit: 250000,
             rpdLimit: 500,
-            thinkingLevel: "medium"
+            thinkingLevel: "medium",
+            maxInputTokens: 0
         };
         this.MAX_CONTEXT_TOKENS = 32768*2; 
 
@@ -40,12 +41,14 @@ class Gemini extends AI {
                     { value: "off", label: "Off" },
                     { value: "low", label: "Low" },
                     { value: "medium", label: "Medium" },
-                    { value: "high", label: "High" }
+                    { value: "high", label: "High" },
+                    { value: "unlimited", label: "Unlimited" }
                 ]
             },
             rpmLimit: { type: "number", label: "RPM Limit (Requests/Min)", default: 15 },
             tpmLimit: { type: "number", label: "TPM Limit (Tokens/Min)", default: 250000 },
-            rpdLimit: { type: "number", label: "RPD Limit (Requests/Day)", default: 500 }
+            rpdLimit: { type: "number", label: "RPD Limit (Requests/Day)", default: 500 },
+            maxInputTokens: { type: "number", label: "Max Input Tokens (0 for unlimited)", default: 0 }
             //system: { type: "string", label: "System Prompt", default: systemPrompt, multiline: true },
         };
     }
@@ -693,19 +696,36 @@ class Gemini extends AI {
                     requestBody.systemInstruction = { parts: [{ text: this.config.system }] };
                 }
 
-                const supportsThinking = this.config.model.includes('thinking') || this.config.model.includes('pro') || this.config.model.includes('2.0') || this.config.model.includes('2.5') || this.config.model.includes('3.1') || this.config.model.includes('3.5');
+                // Truncate prompt if it exceeds maxInputTokens
+                const limit = this.config.maxInputTokens;
+                if (limit > 0) {
+                    const tokens = await this._countTokens([{ role: "user", content: userPromptContent }]);
+                    if (tokens > limit) {
+                        const ratio = limit / tokens;
+                        const keepLen = Math.floor(userPromptContent.length * ratio);
+                        userPromptContent = userPromptContent.substring(0, keepLen);
+                        console.warn(`[Gemini] Truncated single prompt to ${keepLen} chars to fit maxInputTokens limit of ${limit}`);
+                    }
+                }
+
                 if (supportsThinking) {
                     requestBody.generationConfig = requestBody.generationConfig || {};
-                    if (this.config.thinkingLevel === 'off') {
-                        requestBody.generationConfig.thinkingConfig = {
-                            thinkingBudget: 0
-                        };
-                    } else {
-                        requestBody.generationConfig.thinkingConfig = {
-                            includeThoughts: true,
-                            thinkingLevel: this.config.thinkingLevel || "medium"
-                        };
+                    let budget = 2048;
+                    const level = this.config.thinkingLevel || "medium";
+                    if (level === 'off') {
+                        budget = 0;
+                    } else if (level === 'low') {
+                        budget = 1024;
+                    } else if (level === 'med' || level === 'medium') {
+                        budget = 2048;
+                    } else if (level === 'high') {
+                        budget = 4096;
+                    } else if (level === 'unlimited' || level === 'ultra') {
+                        budget = 32768;
                     }
+                    requestBody.generationConfig.thinkingConfig = {
+                        thinkingBudget: budget
+                    };
                 }
 
                 requestBody.contents = [{ role: "user", parts: [{ text: userPromptContent }] }];
@@ -738,7 +758,7 @@ class Gemini extends AI {
                     { category: "HARM_CATEGORY_DANGEROUS_CONTENT", threshold: "BLOCK_NONE" },
                 ];
 
-                const currentTokens = await this._countTokens([{ role: "user", content: prompt }]);
+                const currentTokens = await this._countTokens([{ role: "user", content: userPromptContent }]);
                 const contextRatio = currentTokens / this.MAX_CONTEXT_TOKENS;
 
                 if (onContextRatioUpdate) {
@@ -833,17 +853,46 @@ class Gemini extends AI {
             try {
                 const isGemmaModel = this.config.model.includes('gemma');
                 const effectiveSystemPrompt = systemPrompt || this.config.system;
-                let processedMessages = messages;
+                let processedMessages = [...messages];
+                
+                // Truncate context window to fit maxInputTokens
+                const limit = this.config.maxInputTokens;
+                if (limit > 0) {
+                    let estimatedSum = 0;
+                    let keepCount = 0;
+                    for (let i = processedMessages.length - 1; i >= 0; i--) {
+                        const msg = processedMessages[i];
+                        const charCount = (msg.content || "").length;
+                        const est = Math.ceil(charCount / 3.8);
+                        if (estimatedSum + est > limit && keepCount > 0) {
+                            break;
+                        }
+                        estimatedSum += est;
+                        keepCount++;
+                    }
+                    
+                    let candidateMessages = processedMessages.slice(processedMessages.length - keepCount);
+                    let actualTokens = await this._countTokens(candidateMessages);
+                    while (actualTokens > limit && candidateMessages.length > 1) {
+                        candidateMessages.shift();
+                        actualTokens = await this._countTokens(candidateMessages);
+                    }
+                    processedMessages = candidateMessages;
+                    console.info(`[Gemini] Truncated context to ${processedMessages.length} messages (${actualTokens} tokens) to fit maxInputTokens limit of ${limit}`);
+                }
+
                 const requestBody = {};
 
                 if (effectiveSystemPrompt) {
                     if (isGemmaModel) {
                         // For Gemma, inject system prompt into the first user message.
-                        // Create a copy to avoid mutating the original history array.
-                        processedMessages = JSON.parse(JSON.stringify(messages));
+                        // Create a copy of the specific message object to avoid mutating the original
                         const firstUserMessageIndex = processedMessages.findIndex(m => m.role === 'user');
                         if (firstUserMessageIndex !== -1) {
-                            processedMessages[firstUserMessageIndex].content = `${effectiveSystemPrompt}\n\n${processedMessages[firstUserMessageIndex].content}`;
+                            processedMessages[firstUserMessageIndex] = {
+                                ...processedMessages[firstUserMessageIndex],
+                                content: `${effectiveSystemPrompt}\n\n${processedMessages[firstUserMessageIndex].content}`
+                            };
                         }
                     } else {
                         // For other models, use the standard systemInstruction field.
@@ -854,16 +903,29 @@ class Gemini extends AI {
                 const supportsThinking = this.config.model.includes('thinking') || this.config.model.includes('pro') || this.config.model.includes('2.0') || this.config.model.includes('2.5') || this.config.model.includes('3.1') || this.config.model.includes('3.5');
                 if (supportsThinking) {
                     requestBody.generationConfig = requestBody.generationConfig || {};
-                    if (this.config.thinkingLevel === 'off') {
-                        requestBody.generationConfig.thinkingConfig = {
-                            thinkingBudget: 0
-                        };
-                    } else {
-                        requestBody.generationConfig.thinkingConfig = {
-                            includeThoughts: true,
-                            thinkingLevel: this.config.thinkingLevel || "medium"
-                        };
+                    let budget = 2048;
+                    const level = this.config.thinkingLevel || "medium";
+                    if (level === 'off') {
+                        budget = 0;
+                    } else if (level === 'low') {
+                        budget = 1024;
+                    } else if (level === 'med' || level === 'medium') {
+                        budget = 2048;
+                    } else if (level === 'high') {
+                        budget = 4096;
+                    } else if (level === 'unlimited' || level === 'ultra') {
+                        budget = 32768;
                     }
+                    requestBody.generationConfig.thinkingConfig = {
+                        thinkingBudget: budget
+                    };
+                }
+
+                requestBody.generationConfig = requestBody.generationConfig || {};
+                if (session && session.temperatureOverride !== undefined) {
+                    requestBody.generationConfig.temperature = session.temperatureOverride;
+                } else if (this.config.temperature !== undefined) {
+                    requestBody.generationConfig.temperature = this.config.temperature;
                 }
 
                 requestBody.contents = this._toGeminiContents(processedMessages);
@@ -905,7 +967,7 @@ class Gemini extends AI {
                     { category: "HARM_CATEGORY_DANGEROUS_CONTENT", threshold: "BLOCK_NONE" },
                 ];
 
-                const currentTokens = await this._countTokens(messages);
+                const currentTokens = await this._countTokens(processedMessages);
                 const contextRatio = currentTokens / this.MAX_CONTEXT_TOKENS;
 
                 if (onContextRatioUpdate) {
@@ -935,7 +997,8 @@ class Gemini extends AI {
                 
                 messages.push({ role: "model", content: fullResponse });
 
-                const finalTokens = await this._countTokens(messages);
+                const sentMessagesWithResponse = [...processedMessages, { role: "model", content: fullResponse }];
+                const finalTokens = await this._countTokens(sentMessagesWithResponse);
                 const outputTokens = Math.max(0, finalTokens - currentTokens);
                 const finalContextRatio = finalTokens / this.MAX_CONTEXT_TOKENS;
                 if (onContextRatioUpdate) {

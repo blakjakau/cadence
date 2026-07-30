@@ -215,20 +215,26 @@
 		<ui-menu-item command="newfile" icon="note_add">New File</ui-menu-item>
 		<ui-menu-item command="refresh" icon="refresh">Refresh Folder</ui-menu-item>
 		<ui-menu-item command="remove" icon="remove">Remove Folder</ui-menu-item>
+		<ui-menu-split></ui-menu-split>
+		<ui-menu-item command="info" icon="info">Folder Info</ui-menu-item>
 	</ui-menu>
 
 	<ui-menu id="folder_context" onclick="(e)=>{ console.log(e) }">
-	<ui-menu-item command="newfile" icon="note_add">New File</ui-menu-item>
-	<ui-menu-item command="refresh" icon="refresh">Refresh Folder</ui-menu-item>
-	<ui-menu-item command="rename" icon="edit">Rename Folder</ui-menu-item>
-	<!--<ui-menu-split></ui-menu-split>-->
-	<!--<ui-menu-item command="delete" icon="delete">Delete Folder</ui-menu-item>-->
+		<ui-menu-item command="newfile" icon="note_add">New File</ui-menu-item>
+		<ui-menu-item command="refresh" icon="refresh">Refresh Folder</ui-menu-item>
+		<ui-menu-item command="rename" icon="edit">Rename Folder</ui-menu-item>
+		<!--<ui-menu-split></ui-menu-split>-->
+		<!--<ui-menu-item command="delete" icon="delete">Delete Folder</ui-menu-item>-->
+		<ui-menu-split></ui-menu-split>
+		<ui-menu-item command="info" icon="info">Folder Info</ui-menu-item>
 	</ui-menu>
 	
 	<ui-menu id="file_context" onclick="(e)=>console.log(e)">
 		<ui-menu-item command="rename" icon="edit">Rename File</ui-menu-item>
 		<ui-menu-split></ui-menu-split>
 		<ui-menu-item command="delete" icon="delete">Delete File</ui-menu-item>
+		<ui-menu-split></ui-menu-split>
+		<ui-menu-item command="info" icon="info">File Info</ui-menu-item>
 	</ui-menu>
 
 	<ui-menu id="ai_tab_context" onclick="(e)=>console.log(e)">
