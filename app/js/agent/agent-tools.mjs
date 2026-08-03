@@ -233,11 +233,6 @@ Snippet: ${r.snippet}`).join('\n\n');
         }
     }
 
-    /**
-     * Fetches a URL and returns a cleaned-up summary of its content.
-     * @param {string} url
-     * @returns {Promise<string>}
-     */
     async webFetch(url) {
         try {
             if (!url) return "Error: URL is empty.";
@@ -306,7 +301,67 @@ ${truncated}`;
     }
 
     /**
+     * Performs high-quality research using Tavily AI-native search if API key is available,
+     * otherwise falls back to DuckDuckGo web search.
+     * @param {string} query
+     * @returns {Promise<string>}
+     */
+    async research(query) {
+        try {
+            if (!query) return "Error: Query is empty.";
+            const apiKey = localStorage.getItem("tavilyApiKey");
+
+            if (apiKey) {
+                const response = await fetch("https://api.tavily.com/search", {
+                    method: "POST",
+                    headers: {
+                        "Content-Type": "application/json"
+                    },
+                    body: JSON.stringify({
+                        api_key: apiKey,
+                        query: query,
+                        search_depth: "advanced",
+                        include_answer: true,
+                        max_results: 5
+                    })
+                });
+
+                if (!response.ok) {
+                    throw new Error(`Tavily API responded with ${response.status}: ${response.statusText}`);
+                }
+
+                const data = await response.json();
+
+                if (data.results && data.results.length > 0) {
+                    let output = "";
+                    if (data.answer) {
+                        output += `Summary Answer: ${data.answer}\n\n`;
+                    }
+
+                    output += data.results.map((r, i) => {
+                        return `Result ${i + 1}:
+Title: ${r.title}
+URL: ${r.url}
+Snippet: ${r.content || r.snippet || ""}`;
+                    }).join('\n\n');
+
+                    return output;
+                } else {
+                    return "Tavily returned no results. Falling back to web search.";
+                }
+            } else {
+                // No API key, fall back to existing webSearch
+                return await this.webSearch(query);
+            }
+        } catch (error) {
+            console.error("[AgentTools] Tavily research failed, falling back to web search:", error);
+            return await this.webSearch(query);
+        }
+    }
+
+    /**
      * Helper to verify if the agent is permitted to interact with the file.
+
      * Enforces size limits: max 1MB generally, max 0.5MB for binaries.
      * @param {string} path 
      * @returns {boolean|string} Returns true if permitted, or an error string if blocked.
@@ -1933,6 +1988,8 @@ ${truncated}`;
                 return await this.fileInfo(args.path);
             case 'web_search':
                 return await this.webSearch(args.query);
+            case 'research':
+                return await this.research(args.query);
             case 'web_fetch':
                 return await this.webFetch(args.url);
             case 'read_file':

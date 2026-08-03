@@ -12,7 +12,8 @@ export const subAgentToolsList = [
     "query",
     "sub_agent_complete",
     "query_parent",
-    "web_search",
+    // "web_search",
+    "research",
     "web_fetch"
 ];
 
@@ -268,16 +269,27 @@ export const tools = [
         }
     },
     {
-        name: "web_search",
-        description: "Search the web for information using a query. Returns a clean list of search result titles, URLs, and snippets.",
+        name: "research",
+        description: "Perform high-quality research using Tavily AI-native search. Use this tool to retrieve real-time or current information that may have changed since your training cutoff, including market prices, software versions, and recent news",
         parameters: {
             type: "object",
             properties: {
-                query: { type: "string", description: "The search query to lookup." }
+                query: { type: "string", description: "The research query to perform." }
             },
             required: ["query"]
         }
     },
+    // {
+    //     name: "web_search",
+    //     description: "Search the web for information using a query. Returns a clean list of search result titles, URLs, and snippets.",
+    //     parameters: {
+    //         type: "object",
+    //         properties: {
+    //             query: { type: "string", description: "The search query to lookup." }
+    //         },
+    //         required: ["query"]
+    //     }
+    // },
     {
         name: "web_fetch",
         description: "Fetch the content of a specific web URL. Returns a cleaned-up text summary of the page's contents.",

@@ -141,11 +141,14 @@ ${generateXmlToolDocs(planningMode)}
     } else {
         coreRules = `
 - AWALYS consider the most appropriate / efficient tool choices for the task
+- For information that is temporaly variant (technology, pricing, current events), treat your internal knowledge as potentially obsolete. Prioritize using \`research\` to validate facts against the the current date (${new Intl.DateTimeFormat('en-US', { month: 'long', year: 'numeric', }).format(new Date())})
 - Context Limits **STRICT REQUIREMENT**: 
-	ALWAYS Explore files by reading their outlines with \`read_file_outline\` and \`search_in_file\`
-	ALWAYS use outline symbols and searched line numbers  to read targetted file sections
-	ALWAYS Use \`edit_file\` for code changes in small blocks, the system accumulates them for user review and rollback (if needed)
+	Conserve context size by
+	Explore files by reading their outlines with \`read_file_outline\` and \`search_in_file\`
+	Use outline symbols and searched line numbers to read targetted file sections
+	Use \`edit_file\` for code changes in small blocks, the system accumulates them for user review and rollback (if needed)
 	NEVER read a whole file if you can just read part of it
+	
 `;
     }
 

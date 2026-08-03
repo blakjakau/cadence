@@ -73,6 +73,7 @@ export class AgentConfigPanel extends Block {
 
 		this._buildDefaultsAccordion();
 		this._buildCustomisationAccordion();
+		this._buildServiceKeysAccordion();
 		this._buildConnectionsAccordion();
 		this._buildTelemetryAccordion();
 	}
@@ -213,10 +214,48 @@ export class AgentConfigPanel extends Block {
 
 	_buildCustomisationAccordion() {
 		this.customisationAccordion = new UIAccordion("customisation", "Chat Prompt Customisation", "edit", "#d19a66");
-		const content = this.customisationAccordion.content;
-		content.className = "accordion-content settings-content-wrapper";
+		this.customisationAccordion.content.className = "accordion-content settings-content-wrapper";
 		this.container.appendChild(this.customisationAccordion);
 		this.renderCustomisationAccordion();
+	}
+
+	_buildServiceKeysAccordion() {
+		this.serviceKeysAccordion = new UIAccordion("service-keys", "Service Keys", "key", "#e67e22");
+		const content = this.serviceKeysAccordion.content;
+		content.className = "accordion-content settings-content-wrapper";
+		this.container.appendChild(this.serviceKeysAccordion);
+
+		const grid = document.createElement("div");
+		grid.className = "settings-grid";
+		content.appendChild(grid);
+
+		const createPasswordInputRow = (id, title, desc, key) => {
+			const wrapper = document.createElement("div");
+			wrapper.style.display = "flex";
+			wrapper.style.flexDirection = "column";
+			wrapper.style.gap = "4px";
+			const label = document.createElement("label");
+			label.style.fontWeight = "bold";
+			label.style.fontSize = "12px";
+			label.textContent = title;
+			const input = document.createElement("input");
+			input.type = "password";
+			input.id = id;
+			input.style.padding = "6px";
+			input.style.borderRadius = "4px";
+			input.style.border = "1px solid var(--border)";
+			input.style.background = "var(--bg-input, rgba(0,0,0,0.1))";
+			input.style.color = "var(--text)";
+			input.value = localStorage.getItem(key) || "";
+			input.onchange = () => {
+				localStorage.setItem(key, input.value);
+			};
+			wrapper.appendChild(label);
+			wrapper.appendChild(input);
+			grid.appendChild(wrapper);
+		};
+
+		createPasswordInputRow("tavily-api-key", "Tavily API Key", "Enter your Tavily API key to enable high-quality research capabilities.", "tavilyApiKey");
 	}
 
 	renderCustomisationAccordion() {
