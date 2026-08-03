@@ -298,6 +298,10 @@ class ConduitClient {
         return this._send({ action: 'file_info', path });
     }
 
+    wsWebGet(url) {
+        return this._send({ action: 'web_get', path: url });
+    }
+
     wsSetActiveRoots(roots, ignorePaths = null) {
         if (!ignorePaths && window.workspace && window.workspace.ignorePaths) {
             ignorePaths = window.workspace.ignorePaths;

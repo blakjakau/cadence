@@ -166,6 +166,146 @@ class AgentTools {
     }
 
     /**
+     * Gets detailed information about a file or folder.
+     * @param {string} path 
+     * @returns {Promise<string>}
+     */
+    async fileInfo(path) {
+        try {
+            const resolvedPath = this._resolveAndValidatePath(path);
+            if (this.conduit.isConnected) {
+                const result = await this.conduit.wsFileInfo(resolvedPath);
+                if (result.error) throw new Error(result.error);
+                const data = result.data;
+                return `Path: ${data.path}
+Full Path: ${data.fullPath}
+Type: ${data.isDir ? 'Folder' : 'File'}
+Size: ${data.sizeFormatted} (${data.size.toLocaleString()} bytes)
+Modified: ${data.modTimeStr}
+Git Status: ${data.gitStatus}`;
+            } else {
+                return "Error: Conduit not connected.";
+            }
+        } catch (error) {
+            return `Error getting file info: ${error.message}`;
+        }
+    }
+
+    /**
+     * Searches the web using DuckDuckGo HTML search.
+     * @param {string} query
+     * @returns {Promise<string>}
+     */
+    async webSearch(query) {
+        try {
+            if (!query) return "Error: Query is empty.";
+            const url = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
+            if (this.conduit.isConnected) {
+                const result = await this.conduit.wsWebGet(url);
+                if (result.error) throw new Error(result.error);
+                const html = result.data;
+                const doc = new DOMParser().parseFromString(html, 'text/html');
+                const results = [];
+                const elements = doc.querySelectorAll('.result');
+                elements.forEach(el => {
+                    const titleEl = el.querySelector('.result__a');
+                    const snippetEl = el.querySelector('.result__snippet');
+                    if (titleEl) {
+                        results.push({
+                            title: titleEl.textContent.trim(),
+                            url: titleEl.getAttribute('href'),
+                            snippet: snippetEl ? snippetEl.textContent.trim() : ""
+                        });
+                    }
+                });
+                if (results.length === 0) {
+                    return "No search results found.";
+                }
+                return results.slice(0, 8).map((r, i) => `Result ${i + 1}:
+Title: ${r.title}
+URL: ${r.url}
+Snippet: ${r.snippet}`).join('\n\n');
+            } else {
+                return "Error: Conduit not connected.";
+            }
+        } catch (error) {
+            return `Error performing web search: ${error.message}`;
+        }
+    }
+
+    /**
+     * Fetches a URL and returns a cleaned-up summary of its content.
+     * @param {string} url
+     * @returns {Promise<string>}
+     */
+    async webFetch(url) {
+        try {
+            if (!url) return "Error: URL is empty.";
+            if (this.conduit.isConnected) {
+                const result = await this.conduit.wsWebGet(url);
+                if (result.error) throw new Error(result.error);
+                const html = result.data;
+                
+                const doc = new DOMParser().parseFromString(html, 'text/html');
+                const elementsToRemove = doc.querySelectorAll('script, style, head, nav, footer, iframe, noscript');
+                elementsToRemove.forEach(el => el.remove());
+                let text = doc.body ? doc.body.innerText || doc.body.textContent : "";
+                text = text.replace(/\s+/g, ' ').trim();
+
+                if (!text) return "The page contains no readable text content.";
+
+                const maxLength = 6000;
+                let truncated = text;
+                if (text.length > maxLength) {
+                    truncated = text.substring(0, maxLength) + "... [Content Truncated]";
+                }
+
+                const activeAi = window.ui?.aiManager?.ai;
+                if (activeAi && activeAi.isConfigured()) {
+                    const prompt = `Please summarize or extract the key information from the following webpage content. Focus on details relevant to code, API usage, libraries, or programming information if present.
+--- Webpage Content ---
+${truncated}`;
+                    const systemPrompt = "You are a helpful assistant. Clean up and summarize the web content provided, keeping it concise and factual.";
+                    try {
+                        const summary = await new Promise((resolve, reject) => {
+                            const oldSystem = activeAi.config.system;
+                            activeAi.config.system = systemPrompt;
+                            const oldAgentMode = window.ui?.aiManager?.agentMode;
+                            if (window.ui?.aiManager) window.ui.aiManager.agentMode = false;
+
+                            activeAi.generate(prompt, {
+                                onDone: (res) => {
+                                    activeAi.config.system = oldSystem;
+                                    if (window.ui?.aiManager) window.ui.aiManager.agentMode = oldAgentMode;
+                                    resolve(res);
+                                },
+                                onError: (err) => {
+                                    activeAi.config.system = oldSystem;
+                                    if (window.ui?.aiManager) window.ui.aiManager.agentMode = oldAgentMode;
+                                    reject(err);
+                                }
+                            }).catch(err => {
+                                activeAi.config.system = oldSystem;
+                                if (window.ui?.aiManager) window.ui.aiManager.agentMode = oldAgentMode;
+                                reject(err);
+                            });
+                        });
+                        return summary;
+                    } catch (err) {
+                        console.error("Failed to summarize webpage using active model connection, returning raw text:", err);
+                    }
+                }
+
+                return truncated;
+            } else {
+                return "Error: Conduit not connected.";
+            }
+        } catch (error) {
+            return `Error fetching webpage: ${error.message}`;
+        }
+    }
+
+    /**
      * Helper to verify if the agent is permitted to interact with the file.
      * Enforces size limits: max 1MB generally, max 0.5MB for binaries.
      * @param {string} path 
@@ -1789,6 +1929,12 @@ class AgentTools {
         switch (name) {
             case 'list_files':
                 return await this.listFiles(args.path);
+            case 'file_info':
+                return await this.fileInfo(args.path);
+            case 'web_search':
+                return await this.webSearch(args.query);
+            case 'web_fetch':
+                return await this.webFetch(args.url);
             case 'read_file':
                 return await this.readFile(args.path, args.startLine, args.lineCount);
             case 'read_file_outline':

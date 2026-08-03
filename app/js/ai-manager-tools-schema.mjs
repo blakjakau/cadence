@@ -11,7 +11,9 @@ export const subAgentToolsList = [
     "create_file",
     "query",
     "sub_agent_complete",
-    "query_parent"
+    "query_parent",
+    "web_search",
+    "web_fetch"
 ];
 
 export const tools = [
@@ -263,6 +265,28 @@ export const tools = [
                 prompt: { type: "string", description: "The question or information requested from the parent agent." }
             },
             required: ["prompt"]
+        }
+    },
+    {
+        name: "web_search",
+        description: "Search the web for information using a query. Returns a clean list of search result titles, URLs, and snippets.",
+        parameters: {
+            type: "object",
+            properties: {
+                query: { type: "string", description: "The search query to lookup." }
+            },
+            required: ["query"]
+        }
+    },
+    {
+        name: "web_fetch",
+        description: "Fetch the content of a specific web URL. Returns a cleaned-up text summary of the page's contents.",
+        parameters: {
+            type: "object",
+            properties: {
+                url: { type: "string", description: "The URL of the webpage to fetch." }
+            },
+            required: ["url"]
         }
     }
 ];

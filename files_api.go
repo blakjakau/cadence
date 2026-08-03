@@ -359,11 +359,15 @@ func handleFileWs(w http.ResponseWriter, r *http.Request) {
 
 func handleWsRequest(ws *websocket.Conn, req fileRequest) {
 	log.Printf("[DEBUG] WS Request: action=%s, path=%s, requestId=%d", req.Action, req.Path, req.RequestId)
-	fullPath, err := securePath(req.Path)
-	if err != nil {
-		log.Printf("[DEBUG] WS Error: securePath failed for path %s: %v", req.Path, err)
-		safeWriteJSON(ws, fileResponse{Action: req.Action, Path: req.Path, Error: "Forbidden"})
-		return
+	var fullPath string
+	var err error
+	if req.Action != "web_get" {
+		fullPath, err = securePath(req.Path)
+		if err != nil {
+			log.Printf("[DEBUG] WS Error: securePath failed for path %s: %v", req.Path, err)
+			safeWriteJSON(ws, fileResponse{Action: req.Action, Path: req.Path, Error: "Forbidden"})
+			return
+		}
 	}
 
 	var resp fileResponse
@@ -554,6 +558,31 @@ func handleWsRequest(ws *websocket.Conn, req fileRequest) {
 				"modTime":       stat.ModTime().Unix(),
 				"modTimeStr":    stat.ModTime().Format("2006-01-02 15:04:05"),
 				"gitStatus":     getGitStatus(fullPath),
+			}
+		}
+	case "web_get":
+		urlStr := req.Path
+		if !strings.HasPrefix(urlStr, "http://") && !strings.HasPrefix(urlStr, "https://") {
+			resp.Error = "Invalid URL protocol. Only http/https are allowed."
+		} else {
+			client := &http.Client{Timeout: 15 * time.Second}
+			httpReq, err := http.NewRequest("GET", urlStr, nil)
+			if err != nil {
+				resp.Error = err.Error()
+			} else {
+				httpReq.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+				httpResp, err := client.Do(httpReq)
+				if err != nil {
+					resp.Error = err.Error()
+				} else {
+					defer httpResp.Body.Close()
+					bodyBytes, err := ioutil.ReadAll(httpResp.Body)
+					if err != nil {
+						resp.Error = err.Error()
+					} else {
+						resp.Data = string(bodyBytes)
+					}
+				}
 			}
 		}
 	default:
