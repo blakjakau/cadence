@@ -52,7 +52,10 @@ export function getAgentDirectives(features = {}) {
 
 export default function getAgentSystemPrompt(modelName = '', features = {}) {
     // True native reasoning models like DeepSeek R1 or Gemini Flash Thinking
-    const isNativeReasoning = modelName.includes('r1') || modelName.includes('thinking') || modelName.includes('gemma-4');
+    // True native reasoning models like DeepSeek R1 or Gemini Flash Thinking
+    const isNativeReasoning = features.isNativeReasoning;
+    
+    // Unpack features
     
     // Unpack features
     const supportsNativeTools = features.supportsJSONTools !== undefined ? features.supportsJSONTools : modelName.includes('gemini');
@@ -140,6 +143,7 @@ ${generateXmlToolDocs(planningMode)}
 - NEVER use control or tool tags to discuss or think about your actions, only to perform them.`;
     } else {
         coreRules = `
+- AWALYS call EXACTLY ONE tool per turn
 - AWALYS consider the most appropriate / efficient tool choices for the task
 - For information that is temporaly variant (technology, pricing, current events), treat your internal knowledge as potentially obsolete. Prioritize using \`research\` to validate facts against the the current date (${new Intl.DateTimeFormat('en-US', { month: 'long', year: 'numeric', }).format(new Date())})
 - Context Limits **STRICT REQUIREMENT**: 

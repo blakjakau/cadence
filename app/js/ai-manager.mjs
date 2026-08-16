@@ -1,6 +1,6 @@
 // ai-manager.mjs
 // Styles for this module are located in css/ai-manager.css
-import { Block, Button, Icon, TabBar, TabItem, FileBar } from "./elements.mjs"
+import { Block, Button, Icon, TabBar, TabItem, FileBar, SkillPicker } from "./elements.mjs"
 import AIManagerHistory, { MAX_RECENT_MESSAGES_TO_PRESERVE } from "./ai-manager-history.mjs"
 import AIManagerMessageRenderer from "./ai-manager-message-renderer.mjs" // NEW: Settings manager
 import AIManagerSessions from "./ai-manager-sessions.mjs" // NEW: Sessions manager
@@ -195,7 +195,8 @@ class AIManager {
 				hasTasks,
 				hasAcceptedPlan,
 				hasCompletedAllTasks,
-				planningMode: targetPlanningMode
+				planningMode: targetPlanningMode,
+				isNativeReasoning: !!(activeAi && activeAi.supportsReasoning)
 			});
 		} else {
 			basePrompt = systemPromptBuilder(this.getSystemPromptConfig());
@@ -238,12 +239,40 @@ class AIManager {
 		}
 
 		// Skills interpreter: load and match active skills based on user's query
+		// Skills interpreter: load and match active skills based on user's query and pinned status
 		try {
 			const lastUserMsg = targetSession?.messages?.filter(m => m.role === "user" || m.type === "user")?.pop();
 			const userPromptText = lastUserMsg ? lastUserMsg.content : "";
-			const matchedSkills = await this._loadAndMatchSkills(userPromptText);
-			for (const skill of matchedSkills) {
+			
+			const allParsedSkills = await this._loadAllParsedSkills();
+			const pinnedSkillNames = targetSession?.pinnedSkills || [];
+			
+			// 1. Get ephemeral skills (matched via relevance)
+			const ephemeralSkills = await this._loadAndMatchSkills(userPromptText, allParsedSkills);
+			
+			// 2. Get persistent skills (pinned)
+			const pinnedSkills = allParsedSkills.filter(s => pinnedSkillNames.includes(s.name));
+			
+			// 3. Combine and de-duplicate
+			const activeSkills = new Map();
+			
+			// Add pinned first
+			for (const skill of pinnedSkills) {
+				activeSkills.set(skill.name, { name: skill.name, body: skill.body });
+			}
+			
+			// Add ephemeral (if not already in pinned)
+			for (const skill of ephemeralSkills) {
+				if (!activeSkills.has(skill.name)) {
+					activeSkills.set(skill.name, skill);
+				}
+			}
+
+			for (const skill of activeSkills.values()) {
 				basePrompt += `\n\n=== ACTIVE SKILL: ${skill.name} ===\n\n${skill.body}\n===================================`;
+				if (this.fileBar) {
+					this.fileBar.addSkill({ name: skill.name, id: `skillchip-${skill.name}` });
+				}
 			}
 		} catch (err) {
 			console.warn("[AIManager] Failed to load/match skills:", err);
@@ -252,12 +281,10 @@ class AIManager {
 		return basePrompt;
 	}
 
-	async _loadAndMatchSkills(userPrompt) {
-		if (!userPrompt) return [];
+	async _loadAllParsedSkills() {
 		const folders = window.workspace?.folders || [];
 		const roots = [...folders.map(f => `${f}/.agents/skills`), "/home/jason/.gemini/config/skills"];
 		const parsedSkills = [];
-		const addedSkills = new Set();
 
 		for (const root of roots) {
 			try {
@@ -281,10 +308,33 @@ class AIManager {
 								}
 							}
 							if (content) {
+								// Helper to clean/parse frontmatter
+								const parseFrontmatter = (text) => {
+									const match = text.match(/^---\r?\n([\s\S]+?)\r?\n---/);
+									if (!match) return { metadata: {}, body: text };
+									const yamlText = match[1];
+									const body = text.substring(match[0].length).trim();
+									
+									const metadata = {};
+									const lines = yamlText.split("\n");
+									for (const line of lines) {
+										const colonIdx = line.indexOf(":");
+										if (colonIdx !== -1) {
+											const key = line.substring(0, colonIdx).trim().toLowerCase();
+											const val = line.substring(colonIdx + 1).trim();
+											metadata[key] = val;
+										}
+									}
+									return { metadata, body };
+								};
+
+								const { metadata, body } = parseFrontmatter(content);
 								parsedSkills.push({
-									name: dir.name,
+									name: metadata.name || dir.name,
 									path: skillPath,
-									content
+									content,
+									metadata,
+									body
 								});
 							}
 						} catch (e) {
@@ -296,26 +346,11 @@ class AIManager {
 				// Root directory doesn't exist or is unreachable
 			}
 		}
+		return parsedSkills;
+	}
 
-		// Helper to clean/parse frontmatter
-		const parseFrontmatter = (text) => {
-			const match = text.match(/^---\r?\n([\s\S]+?)\r?\n---/);
-			if (!match) return { metadata: {}, body: text };
-			const yamlText = match[1];
-			const body = text.substring(match[0].length).trim();
-			
-			const metadata = {};
-			const lines = yamlText.split("\n");
-			for (const line of lines) {
-				const colonIdx = line.indexOf(":");
-				if (colonIdx !== -1) {
-					const key = line.substring(0, colonIdx).trim().toLowerCase();
-					const val = line.substring(colonIdx + 1).trim();
-					metadata[key] = val;
-				}
-			}
-			return { metadata, body };
-		};
+	async _loadAndMatchSkills(userPrompt, allParsedSkills) {
+		if (!userPrompt) return [];
 
 		// Relevance matcher
 		const isSkillRelevant = (prompt, name, description) => {
@@ -342,10 +377,11 @@ class AIManager {
 		};
 
 		const matchedSkills = [];
-		for (const skill of parsedSkills) {
-			const { metadata, body } = parseFrontmatter(skill.content);
-			const skillName = metadata.name || skill.name;
-			const skillDesc = metadata.description || "";
+		const addedSkills = new Set();
+
+		for (const skill of allParsedSkills) {
+			const skillName = skill.name;
+			const skillDesc = skill.metadata.description || "";
 			
 			if (addedSkills.has(skillName)) continue;
 			
@@ -353,7 +389,7 @@ class AIManager {
 				addedSkills.add(skillName);
 				matchedSkills.push({
 					name: skillName,
-					body
+					body: skill.body
 				});
 			}
 		}
@@ -479,6 +515,26 @@ class AIManager {
 
 		this.fileBar = new FileBar();
 		this.fileBar.classList.add('ai-file-context-bar');
+		this.fileBar.addLibraryButton(async () => {
+			const picker = new SkillPicker(this);
+			window.modal.inner.innerHTML = '';
+			window.modal.inner.append(picker);
+			window.modal.actionBar.empty();
+
+			const createBtn = new Button('New Skill');
+			createBtn.icon = 'add';
+			createBtn.className = 'theme-button secondary';
+			createBtn.onclick = () => picker.showEditor(null);
+			window.modal.actionBar.append(createBtn);
+
+			const closeBtn = new Button('Close');
+			closeBtn.icon = 'close';
+			closeBtn.className = 'theme-button';
+			closeBtn.onclick = () => window.modal.hide(false);
+			window.modal.actionBar.append(closeBtn);
+			await window.modal.show();
+		});
+		// Listen for requests to remove a file, originating from a chip's close button
 		// Listen for requests to remove a file, originating from a chip's close button
 		this.fileBar.on('file-remove-request', (e) => {
 			const fileId = e.detail.fileId;
@@ -495,6 +551,26 @@ class AIManager {
 			this.historyManager._handleDeleteFileContextItem(fileId);
 		});
 		
+		this.fileBar.on('skill-remove-request', async (e) => {
+			const skillName = e.detail.skillName;
+			if (this.activeSession) {
+				// If it's a pinned skill, remove it from the session's pinnedSkills
+				if (this.activeSession.pinnedSkills && this.activeSession.pinnedSkills.includes(skillName)) {
+					this.activeSession.pinnedSkills = this.activeSession.pinnedSkills.filter(s => s !== skillName);
+					await workspaceClient.setSession(this.activeSession.id, this.activeSession);
+				}
+				// Always remove the chip from the bar
+				this.fileBar.remove(`skillchip-${skillName}`);
+
+				// Provide feedback
+				this.historyManager.addMessage({
+					type: 'system_message',
+					content: `**${skillName}** skill removed from context.`,
+					timestamp: Date.now()
+				}, false);
+			}
+		});
+
 		this.fileBar.on('file-mode-toggle', (e) => {
 			const fileId = e.detail.fileId;
 			const mode = e.detail.mode;
@@ -1027,7 +1103,7 @@ class AIManager {
 				// This regex tells ACE what constitutes a "word" for this completer.
 				// It will activate on '@' and replace the whole token.
 				identifierRegexps: [/@[\w.#\-]*/],
-				getCompletions: (editor, session, pos, prefix, callback) => {
+				getCompletions: async (editor, session, pos, prefix, callback) => {
 					// Only activate this completer for our AI prompt editor
 					if (editor.id !== "ai-prompt-editor") {
 						return callback(null, []);
@@ -1043,6 +1119,22 @@ class AIManager {
 					const searchTerm = match[1];
 					
 					// Handle Symbol Lookup (@file.js#symbol)
+					// 1. Handle Skill Lookup (@skill...)
+					if (searchTerm.startsWith('skill')) {
+						const skillQuery = searchTerm.substring(5);
+						const allSkills = await this._loadAllParsedSkills();
+						const skillCompletions = allSkills
+							.filter(s => s.name.toLowerCase().includes(skillQuery.toLowerCase()))
+							.map(s => ({
+								caption: s.name,
+								value: `@skill ${s.name}`,
+								meta: "Skill"
+							}));
+						callback(null, skillCompletions);
+						return;
+					}
+
+					// 2. Handle Symbol Lookup (@file.js#symbol)
 					if (searchTerm.includes('#')) {
 						const parts = searchTerm.split('#');
 						const fileFilter = parts[0];

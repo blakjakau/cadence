@@ -4,6 +4,10 @@ export { Ripple } from './elements/ripple.mjs';
 export { Input } from './elements/input.mjs'; // Re-export Input as it's not a singleton
 export { Button } from './elements/button.mjs';
 export { FileChip } from './elements/filechip.mjs';
+export { SkillChip } from './elements/skillchip.mjs';
+export { SkillItem } from './elements/skillitem.mjs';
+export { SkillPicker } from './elements/skillpicker.mjs';
+export { SkillEditor } from './elements/skill-editor.mjs';
 export { FileItem } from './elements/fileitem.mjs';
 export { TabItem } from './elements/tabitem.mjs';
 export { CounterButton } from './elements/counterbutton.mjs';

@@ -1,6 +1,7 @@
 // agent.mjs
 import workspaceClient from "../workspace-client.mjs";
 import agentTools from "./agent-tools.mjs";
+import { Block, Inline, Button } from "../elements.mjs";
 
 export class Agent {
 	constructor(aiManager, session, connection) {
@@ -11,6 +12,7 @@ export class Agent {
 		this.throttleBar = null;
 		this.consecutiveHaltCount = 0;
 		this.repetitionHaltCount = 0;
+		this.protocolFlagRepeatCount = 0;
 		this.subAgentsCreated = [];
 		this.reportedSubAgents = new Set();
 	}
@@ -178,6 +180,115 @@ export class Agent {
 
 			try {
 				const responseContent = await runPromise;
+
+				if (forcedReason === "secondary_thought" || forcedReason === "secondary_tool_call") {
+					if (this.protocolFlagRepeatCount < 5) {
+						this.protocolFlagRepeatCount++;
+						console.warn(`⚠️ [Agent Protocol Flag Detected] Removing last response and re-submitting (Attempt ${this.protocolFlagRepeatCount} of 5)...`);
+
+						// 1. Remove the model response and the protocol flag alert message from session.messages
+						session.messages = session.messages.filter(m => m.id !== modelMessageId && !(m.type === "system_message" && m.content.includes("Agent Protocol Flag")));
+						session.lastModified = Date.now();
+						await workspaceClient.setSession(session.id, session);
+
+						// 2. Remove the response block element
+						if (responseBlock && typeof responseBlock.remove === "function") {
+							responseBlock.remove();
+						}
+
+						// 3. Update DOM if active
+						if (aiManager.isSessionViewed(session.id)) {
+							aiManager.historyManager.render();
+						}
+
+						// 4. Show recovery progress bar
+						const autoMsg = new Block();
+						autoMsg.className = "agent-tool-progress";
+						
+						const spinIcon = document.createElement("ui-icon");
+						spinIcon.className = "spin";
+						spinIcon.textContent = "cached";
+						
+						const msgText = new Inline();
+						msgText.textContent = `Recovering from Agent Protocol Flag (Attempt ${this.protocolFlagRepeatCount} of 5)...`;
+						
+						autoMsg.append(spinIcon, msgText);
+
+						if (aiManager.isSessionViewed(session.id)) {
+							aiManager.conversationArea.append(autoMsg);
+							if (aiManager._shouldAutoScroll() && aiManager.conversationArea) {
+								aiManager.conversationArea.scrollTop = aiManager.conversationArea.scrollHeight;
+							}
+						}
+						await new Promise(r => setTimeout(r, 1500));
+						autoMsg.remove();
+
+						loopCount--; // Decrement loopCount to retry this step in the loop
+						continue; // Go to next loop iteration
+					} else {
+						// 5 recovery attempts exhausted: halt and display the flag with a button to continue for another 5 repeats.
+						console.error("❌ [Agent Protocol Flag] 5 attempts exhausted. Halting agent.");
+						
+						// Show the flag/halt banner with a Continue button
+						const haltPromise = new Promise(resolve => {
+							const haltBar = new Block();
+							haltBar.className = "agent-halt-bar";
+							
+							const iconEl = document.createElement("ui-icon");
+							iconEl.textContent = "warning";
+							iconEl.className = "halt-icon";
+
+							const textEl = new Inline();
+							textEl.className = "halt-text";
+							textEl.innerHTML = "⚠️ <b>Agent Halted:</b> Agent Protocol Flag triggered 5 times consecutively.";
+
+							const actionsEl = new Block();
+							actionsEl.className = "halt-actions";
+
+							const continueBtn = new Button("Continue (5 More Attempts)");
+							continueBtn.className = "halt-continue theme-button";
+							continueBtn.onclick = async () => {
+								haltBar.remove();
+								this.protocolFlagRepeatCount = 0; // Reset for another 5 attempts
+
+								// Remove the model response and the protocol flag alert message from session.messages
+								session.messages = session.messages.filter(m => m.id !== modelMessageId && !(m.type === "system_message" && m.content.includes("Agent Protocol Flag")));
+								session.lastModified = Date.now();
+								await workspaceClient.setSession(session.id, session);
+
+								if (responseBlock && typeof responseBlock.remove === "function") {
+									responseBlock.remove();
+								}
+
+								if (aiManager.isSessionViewed(session.id)) {
+									aiManager.historyManager.render();
+								}
+								
+								// Set status back to processing
+								aiManager.setSessionProcessing(session.id, true, 'agent', null);
+
+								resolve();
+							};
+
+							actionsEl.append(continueBtn);
+							haltBar.append(iconEl, textEl, actionsEl);
+							aiManager.chatContainer.append(haltBar);
+
+							// Scroll to make sure it's visible
+							if (aiManager.conversationArea) {
+								aiManager.conversationArea.scrollTop = aiManager.conversationArea.scrollHeight;
+							}
+						});
+
+						aiManager.setSessionProcessing(session.id, false);
+						aiManager._updateTabStatus(session.id, "halted");
+
+						await haltPromise;
+
+						loopCount--; // Decrement loopCount to retry this step in the loop
+						continue; // Go to next loop iteration
+					}
+				}
 
 				if (forcedReason === "repetition_loop") {
 					if (this.repetitionHaltCount < 5) {
@@ -443,6 +554,7 @@ export class Agent {
 				// Reset consecutive halt count since the agent generated valid tool calls
 				this.consecutiveHaltCount = 0;
 				this.repetitionHaltCount = 0;
+				this.protocolFlagRepeatCount = 0;
 				delete session.temperatureOverride;
 
 				// Execute all parsed tool calls sequentially

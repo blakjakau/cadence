@@ -93,6 +93,7 @@ class AIManagerSessions {
 			forgivenessMode: lastForgivenessMode,
 			connectionId: defaultConnectionId,
 			allowSubAgents: this.manager.config.defaultAllowSubAgents ?? true,
+			pinnedSkills: [],
 		};
 
 		await workspaceClient.setSession(newId, newSessionData);

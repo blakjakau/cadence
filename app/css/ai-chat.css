@@ -368,7 +368,7 @@
 .ai-file-context-bar {
     flex-wrap: wrap;
     gap: 6px;
-    padding: 6px 8px;
+    padding: 6px 0 0 0;
     max-height: 150px; /* Limit height and allow scrolling if needed */
     overflow-y: auto;
 }
@@ -1127,6 +1127,105 @@
     opacity: 1;
     pointer-events: auto;
 }
+
+/* Color coding for chat-turn-expander based on size */
+.chat-turn-expander.size-yellow {
+    border-color: #eab308;
+    background-color: #fef9c3;
+}
+.chat-turn-expander.size-yellow .expander-header {
+    background-color: #fef08a;
+}
+.chat-turn-expander.size-yellow .expander-header,
+.chat-turn-expander.size-yellow .expander-header ui-icon,
+.chat-turn-expander.size-yellow .expander-header .role-label,
+.chat-turn-expander.size-yellow .expander-header .content-preview,
+.chat-turn-expander.size-yellow .expander-header .item-size-badge,
+.chat-turn-expander.size-yellow .expander-header .expand-arrow {
+    color: #854d0e !important;
+}
+
+.chat-turn-expander.size-orange {
+    border-color: #f97316;
+    background-color: #ffedd5;
+}
+.chat-turn-expander.size-orange .expander-header {
+    background-color: #fed7aa;
+}
+.chat-turn-expander.size-orange .expander-header,
+.chat-turn-expander.size-orange .expander-header ui-icon,
+.chat-turn-expander.size-orange .expander-header .role-label,
+.chat-turn-expander.size-orange .expander-header .content-preview,
+.chat-turn-expander.size-orange .expander-header .item-size-badge,
+.chat-turn-expander.size-orange .expander-header .expand-arrow {
+    color: #c2410c !important;
+}
+
+.chat-turn-expander.size-red {
+    border-color: #ef4444;
+    background-color: #fee2e2;
+}
+.chat-turn-expander.size-red .expander-header {
+    background-color: #fecaca;
+}
+.chat-turn-expander.size-red .expander-header,
+.chat-turn-expander.size-red .expander-header ui-icon,
+.chat-turn-expander.size-red .expander-header .role-label,
+.chat-turn-expander.size-red .expander-header .content-preview,
+.chat-turn-expander.size-red .expander-header .item-size-badge,
+.chat-turn-expander.size-red .expander-header .expand-arrow {
+    color: #991b1b !important;
+}
+
+/* Dark Mode Overrides */
+.darkmode .chat-turn-expander.size-yellow {
+    border-color: #ca8a04;
+    background-color: #3a351c;
+}
+.darkmode .chat-turn-expander.size-yellow .expander-header {
+    background-color: #4e452a;
+}
+.darkmode .chat-turn-expander.size-yellow .expander-header,
+.darkmode .chat-turn-expander.size-yellow .expander-header ui-icon,
+.darkmode .chat-turn-expander.size-yellow .expander-header .role-label,
+.darkmode .chat-turn-expander.size-yellow .expander-header .content-preview,
+.darkmode .chat-turn-expander.size-yellow .expander-header .item-size-badge,
+.darkmode .chat-turn-expander.size-yellow .expander-header .expand-arrow {
+    color: #fef08a !important;
+}
+
+.darkmode .chat-turn-expander.size-orange {
+    border-color: #ea580c;
+    background-color: #4c2c1a;
+}
+.darkmode .chat-turn-expander.size-orange .expander-header {
+    background-color: #5c351f;
+}
+.darkmode .chat-turn-expander.size-orange .expander-header,
+.darkmode .chat-turn-expander.size-orange .expander-header ui-icon,
+.darkmode .chat-turn-expander.size-orange .expander-header .role-label,
+.darkmode .chat-turn-expander.size-orange .expander-header .content-preview,
+.darkmode .chat-turn-expander.size-orange .expander-header .item-size-badge,
+.darkmode .chat-turn-expander.size-orange .expander-header .expand-arrow {
+    color: #fed7aa !important;
+}
+
+.darkmode .chat-turn-expander.size-red {
+    border-color: #dc2626;
+    background-color: #4a1d1d;
+}
+.darkmode .chat-turn-expander.size-red .expander-header {
+    background-color: #5a2424;
+}
+.darkmode .chat-turn-expander.size-red .expander-header,
+.darkmode .chat-turn-expander.size-red .expander-header ui-icon,
+.darkmode .chat-turn-expander.size-red .expander-header .role-label,
+.darkmode .chat-turn-expander.size-red .expander-header .content-preview,
+.darkmode .chat-turn-expander.size-red .expander-header .item-size-badge,
+.darkmode .chat-turn-expander.size-red .expander-header .expand-arrow {
+    color: #fecaca !important;
+}
+
 
 
 

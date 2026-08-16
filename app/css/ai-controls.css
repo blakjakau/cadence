@@ -291,32 +291,6 @@
     }
 }
 
-.ai-file-context-bar {
-    flex-wrap: wrap;
-    gap: 6px;
-    padding: 6px 8px;
-    max-height: 150px; /* Limit height and allow scrolling if needed */
-    overflow-y: auto;
-}
-
-.ai-filebar-container {
-    position: sticky; /* Now it's sticky within the conversation-area */
-    top: 0;
-    background-color: var(--bg-primary);
-    z-index: 2;
-    border-bottom: 1px solid var(--theme-dark);
-    display: flex;
-    flex-direction: column;
-}
-
-.ai-filebar-container > .progress-bar {
-    width: calc(100% - 16px); /* Match padding of file-context-bar, which is 8px on each side. */
-    margin: 4px 4px 4px 4px; /* Give it some space */
-    height: 6px;
-    background-color: var(--theme-dark);
-    border-radius: 4px;
-}
-
 .ai-session-tab-container .new-session-button:hover {
     background-color: var(--bg-tertiary);
 }

@@ -113,10 +113,16 @@ class AIManagerHistory {
 	populateFileBar() {
 		if (!this.manager.fileBar) return;
 		this.manager.fileBar.clear();
+		// Add file context chips
 		for (const message of this.chatHistory) {
 			if (message.type === 'file_context') {
 				this.manager.fileBar.add(message);
 			}
+		}
+		// Add pinned skill chips
+		const pinnedSkills = this.manager.activeSession?.pinnedSkills || [];
+		for (const skillName of pinnedSkills) {
+			this.manager.fileBar.addSkill({ name: skillName, id: `skillchip-${skillName}` });
 		}
 	}
 
@@ -1065,6 +1071,14 @@ class AIManagerHistory {
 		const sizeInBytes = message.content ? new TextEncoder().encode(message.content).length : 0;
 		const sizeInKB = (sizeInBytes / 1024).toFixed(2);
 
+		if (tokenCount >= 3000) {
+			expanderBlock.classList.add("size-red");
+		} else if (tokenCount >= 2000) {
+			expanderBlock.classList.add("size-orange");
+		} else if (tokenCount >= 1000) {
+			expanderBlock.classList.add("size-yellow");
+		}
+
 		const icon = new Icon();
 		icon.textContent = iconName;
 
@@ -1572,7 +1586,7 @@ class AIManagerHistory {
 			(msg) => msg.type !== "task_state" && msg.type !== "system_message" && msg.type !== "agent_query" && msg.role !== "temp_ai_response"
 		);
 
-		// Pruning gate: Substitute older completed cycles with their summaries, keeping only the most recent completed cycle in full.
+		// Pruning gate: Substitute all completed cycles with their summaries.
 		const summaries = chatHistory.filter(msg => msg.type === "cycle_summary");
 		if (summaries.length > 0) {
 			let newChatHistory = [];
@@ -1580,28 +1594,21 @@ class AIManagerHistory {
 			while (i < chatHistory.length) {
 				const msg = chatHistory[i];
 				if (msg.type === "cycle_summary") {
-					const isLastSummary = msg.id === summaries[summaries.length - 1].id;
-					if (isLastSummary) {
-						// Keep the most recent completed cycle in full. Omit the summary message itself to avoid redundancy.
+					// Substitute the summary in place of the cycle messages.
+					const startId = msg.cycleStartMsgId;
+					const endId = msg.cycleEndMsgId;
+					if (startId && endId) {
+						const startIdx = newChatHistory.findIndex(m => m.id === startId);
+						const replaceStartIdx = startIdx !== -1 ? startIdx : 0;
+						newChatHistory.splice(replaceStartIdx, newChatHistory.length - replaceStartIdx, {
+							id: msg.id,
+							role: "user",
+							type: "cycle_summary",
+							content: `**Cycle: ${msg.title || "Completed Task"}**\n\n${msg.content}`,
+							timestamp: msg.timestamp
+						});
 						i++;
 						continue;
-					} else {
-						// This is an older cycle. Substitute the summary in place of the cycle messages.
-						const startId = msg.cycleStartMsgId;
-						const endId = msg.cycleEndMsgId;
-						if (startId && endId) {
-							const startIdx = newChatHistory.findIndex(m => m.id === startId);
-							const replaceStartIdx = startIdx !== -1 ? startIdx : 0;
-							newChatHistory.splice(replaceStartIdx, newChatHistory.length - replaceStartIdx, {
-								id: msg.id,
-								role: "user",
-								type: "cycle_summary",
-								content: `**Cycle: ${msg.title || "Completed Task"}**\n\n${msg.content}`,
-								timestamp: msg.timestamp
-							});
-							i++;
-							continue;
-						}
 					}
 				}
 				newChatHistory.push(msg);
@@ -1683,6 +1690,44 @@ class AIManagerHistory {
 			}
 			return msg;
 		}).filter(msg => msg.content && msg.content.trim() !== "");
+
+		// NEW: Strip redundant full read_file outputs (keeping only the latest read for each file)
+		const fullReads = [];
+		for (let msgIdx = 0; msgIdx < chatHistory.length; msgIdx++) {
+			const msg = chatHistory[msgIdx];
+			if (!msg.content || typeof msg.content !== 'string') continue;
+			
+			const chunks = msg.content.split('\n\n---\n\n');
+			for (let chunkIdx = 0; chunkIdx < chunks.length; chunkIdx++) {
+				const chunk = chunks[chunkIdx];
+				const headerMatch = chunk.match(/^\[Tool Response: read_file ([^\]\n]+)\]/);
+				if (headerMatch && !headerMatch[1].includes('#')) {
+					const filePath = headerMatch[1].trim();
+					fullReads.push({
+						msgIdx,
+						chunkIdx,
+						path: filePath,
+						header: headerMatch[0]
+					});
+				}
+			}
+		}
+
+		const lastReadIdxByPath = new Map();
+		for (let i = 0; i < fullReads.length; i++) {
+			lastReadIdxByPath.set(fullReads[i].path, i);
+		}
+
+		for (let i = 0; i < fullReads.length; i++) {
+			const isLast = lastReadIdxByPath.get(fullReads[i].path) === i;
+			if (!isLast) {
+				const { msgIdx, chunkIdx, header } = fullReads[i];
+				const msg = chatHistory[msgIdx];
+				const chunks = msg.content.split('\n\n---\n\n');
+				chunks[chunkIdx] = `${header}\n\n[content obsolete, see later turns]`;
+				msg.content = chunks.join('\n\n---\n\n');
+			}
+		}
 
 		// NEW: If Agent Mode is turned OFF, strip out agent-specific tags and filter tool responses 
 		// to prevent chat history prompt contamination/few-shot leakage.
@@ -1862,6 +1907,45 @@ class AIManagerHistory {
 			} else {
 				let content = msg.content;
 				let toolCalls = msg.toolCalls;
+				
+				const msgIdx = chatHistory.indexOf(msg);
+				const hasToolResponse = (toolName) => {
+					for (let i = msgIdx + 1; i < chatHistory.length; i++) {
+						const nextMsg = chatHistory[i];
+						if (nextMsg.type === "tool_response" && nextMsg.content) {
+							const regex = /\[Tool Response: ([^\]]+)\]/g;
+							let match;
+							while ((match = regex.exec(nextMsg.content)) !== null) {
+								const responseToolName = match[1].split(' ')[0];
+								if (responseToolName === toolName) {
+									return true;
+								}
+							}
+						}
+					}
+					return false;
+				};
+
+				if (msg.role === "model") {
+					if (content && content.includes("<tool_call")) {
+						const toolCallRegex = /<tool_call\s+name=["']([^"']+)["']\s*>[\s\S]*?<\/tool_call>/gi;
+						content = content.replace(toolCallRegex, (match, toolName) => {
+							if (hasToolResponse(toolName)) {
+								return match;
+							}
+							return "";
+						}).trim();
+					}
+					if (toolCalls && toolCalls.length > 0) {
+						toolCalls = toolCalls.filter(tc => {
+							const callObj = tc.functionCall || tc;
+							return hasToolResponse(callObj.name);
+						});
+					}
+					if ((!content || !content.trim()) && (!toolCalls || toolCalls.length === 0)) {
+						return; // Hide/omit this empty model message from context
+					}
+				}
 				
 				if (this.ai.supportsJSONTools) {
 					// Self-healing: if no toolCalls are present on the message, but content has XML, parse them!

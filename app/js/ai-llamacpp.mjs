@@ -63,7 +63,12 @@ class LlamaCpp extends AI {
 
     get supportsReasoning() {
         const model = (this.config.model || "").toLowerCase();
-        return model.includes('r1') || model.includes('reasoning') || model.includes('deepseek') || model.includes('think') || model.includes("gemma-4");
+        return model.includes('r1') 
+        	|| model.includes('reasoning') 
+        	|| model.includes('deepseek') 
+        	|| model.includes('think') 
+        	|| model.includes("gemma-4")
+        	|| model.includes('qwen')
     }
 
     async init() {
