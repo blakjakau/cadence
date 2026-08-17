@@ -4,6 +4,7 @@ import { tools } from "../ai-manager-tools-schema.mjs";
 import workspaceClient from '../workspace-client.mjs';
 import { Agent } from './agent.mjs';
 import AIConnections from '../ai-connections.mjs';
+import syntaxValidator from '../syntax-validator.mjs';
 
 /**
  * Implements the core tools for Cadence.
@@ -1006,6 +1007,21 @@ Snippet: ${r.content || r.snippet || ""}`;
             const startLineIndex = mappedSource[matchIndex].index;
             const endLineIndex = mappedSource[matchIndex + mappedSearch.length - 1].index;
 
+            // Construct proposed new content buffer in memory without applying to editor or disk yet
+            const replacementLines = (replacementString ?? "").split(/\r?\n/);
+            const proposedLines = [
+                ...sourceLines.slice(0, startLineIndex),
+                ...replacementLines,
+                ...sourceLines.slice(endLineIndex + 1)
+            ];
+            const proposedContent = proposedLines.join("\n");
+
+            // Pre-Save Syntax Validation
+            const syntaxCheck = await syntaxValidator.validate(resolvedPath, proposedContent);
+            if (!syntaxCheck.valid) {
+                return `Syntax validation failed! Changes were NOT applied to disk or editor.\n${syntaxCheck.error}\nPlease fix the syntax error and try again.`;
+            }
+
             const isForgivenessMode = window.ui?.aiManager?.forgivenessMode === true;
             if (isForgivenessMode) {
                 // 1. Create backup if not already present in the active session
@@ -1850,6 +1866,12 @@ Snippet: ${r.content || r.snippet || ""}`;
             const activeSession = window.ui?.aiManager?.activeSession;
             const actId = sourceId || activeSession?.id || "default";
 
+            // Pre-Save Syntax Validation
+            const syntaxCheck = await syntaxValidator.validate(resolvedPath, content);
+            if (!syntaxCheck.valid) {
+                return `Syntax validation failed! File was NOT created on disk or editor.\n${syntaxCheck.error}\nPlease fix the syntax error and try again.`;
+            }
+
             if (isForgivenessMode) {
                 const base64Content = btoa(unescape(encodeURIComponent(content))); // Safe base64 encoding
                 const result = await this.conduit.wsWrite(resolvedPath, base64Content);
@@ -2033,6 +2055,12 @@ Snippet: ${r.content || r.snippet || ""}`;
                 );
             case 'create_file':
                 return await this.createFile(args.path, args.content, sourceId);
+            case 'validate_syntax':
+                const syntaxCheck = await syntaxValidator.validate(args.path, args.content);
+                if (syntaxCheck.valid) {
+                    return `Valid syntax for ${args.path}.`;
+                }
+                return `Syntax validation failed for ${args.path}:\n${syntaxCheck.error}`;
             case 'open_file':
                 return await this.openFile(args.path);
             case 'find_file':

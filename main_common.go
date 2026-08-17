@@ -99,6 +99,7 @@ func createServerMux() *http.ServeMux {
 	mux.HandleFunc("/up", upcheckHandler)
 	mux.HandleFunc("/files", filesApiHandler)
 	mux.HandleFunc("/api/config", appConfigHandler)
+	mux.HandleFunc("/api/check-syntax", checkSyntaxHandler)
 	mux.HandleFunc("/api/workspace", workspaceHandler)
 	mux.HandleFunc("/api/session", sessionHandler)
 	mux.HandleFunc("/api/sessions", sessionsHandler)

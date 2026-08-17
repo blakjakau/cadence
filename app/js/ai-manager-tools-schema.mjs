@@ -9,6 +9,7 @@ export const subAgentToolsList = [
     // "edit_remove_lines",
     // "refactor_copy_lines",
     "create_file",
+    "validate_syntax",
     "query",
     "sub_agent_complete",
     "query_parent",
@@ -18,6 +19,18 @@ export const subAgentToolsList = [
 ];
 
 export const tools = [
+    {
+        name: "validate_syntax",
+        description: "Validates the syntax of JavaScript (.js, .mjs), JSON (.json), HTML, or CSS code content without writing it to disk. Returns 'Valid syntax' or exact line/column SyntaxError details.",
+        parameters: {
+            type: "object",
+            properties: {
+                path: { type: "string", description: "The path or filename (used for extension detection)." },
+                content: { type: "string", description: "The unsaved file content to validate." }
+            },
+            required: ["path", "content"]
+        }
+    },
     {
         name: "list_files",
         description: "List the files and directories inside a given directory path.",

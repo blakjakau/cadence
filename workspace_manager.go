@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -335,4 +336,80 @@ func sessionsHandler(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(sessions)
+}
+
+type SyntaxCheckRequest struct {
+	Path    string `json:"path"`
+	Content string `json:"content"`
+}
+
+type SyntaxCheckResponse struct {
+	Valid         bool   `json:"valid"`
+	Error         string `json:"error,omitempty"`
+	NodeAvailable bool   `json:"nodeAvailable"`
+}
+
+func checkSyntaxHandler(w http.ResponseWriter, r *http.Request) {
+	if !checkRequestAuthorization(r) {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req SyntaxCheckRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	nodePath, err := exec.LookPath("node")
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(SyntaxCheckResponse{
+			Valid:         true,
+			NodeAvailable: false,
+		})
+		return
+	}
+
+	ext := strings.ToLower(filepath.Ext(req.Path))
+	if ext != ".js" && ext != ".mjs" && ext != ".cjs" && ext != ".json" {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(SyntaxCheckResponse{
+			Valid:         true,
+			NodeAvailable: true,
+		})
+		return
+	}
+
+	cmd := exec.Command(nodePath, "--check")
+	cmd.Stdin = strings.NewReader(req.Content)
+
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+
+	runErr := cmd.Run()
+	w.Header().Set("Content-Type", "application/json")
+
+	if runErr != nil {
+		errMsg := strings.TrimSpace(stderr.String())
+		if errMsg == "" {
+			errMsg = runErr.Error()
+		}
+		json.NewEncoder(w).Encode(SyntaxCheckResponse{
+			Valid:         false,
+			Error:         errMsg,
+			NodeAvailable: true,
+		})
+		return
+	}
+
+	json.NewEncoder(w).Encode(SyntaxCheckResponse{
+		Valid:         true,
+		NodeAvailable: true,
+	})
 }
