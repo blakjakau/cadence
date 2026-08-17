@@ -2087,7 +2087,6 @@ class AIManager {
 		const estimatedTokensBeforeNewPrompt = targetAI.estimateTokens(targetSession.messages);
 		const maxContextTokens = targetAI.MAX_CONTEXT_TOKENS;
 		if (
-			!targetAgentMode &&
 			maxContextTokens > 0 &&
 			(estimatedTokensBeforeNewPrompt / maxContextTokens) * 100 >= this.config.summarizeThreshold
 		) {
@@ -2096,8 +2095,15 @@ class AIManager {
 					(estimatedTokensBeforeNewPrompt / maxContextTokens) * 100
 				)}%, triggering summarization.`
 			);
-			await this.historyManager.performSummarization(); // Await summarization before continuing
+
+			if (targetAgentMode) {
+				// Agent mode: standard performSummarization() is gated OFF here, so condense the latest completed-but-unsummarized task cycle into one cycle_summary instead — same boundary logic & idempotency guard as the manual "Summarize Cycle" path. No-op (no AI call) when there's no such cycle yet; sliding-window pruning in prepareMessagesForAI remains the hard cap either way, this just trades lost turns for a durable summary before they'd be pruned away forever.
+				const compacted = await this.historyManager.autoCompactAgentCycle(targetSession);
+			} else {
+				await this.historyManager.performSummarization(); // Await summarization before continuing (standard mode only).
+			}
 		}
+
 		// NEW: Check for stale context files and handle user interaction
 		const proceed = await this._checkForStaleContextFiles(userPrompt);
 		if (!proceed) {

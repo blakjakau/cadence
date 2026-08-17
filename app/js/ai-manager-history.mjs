@@ -1572,6 +1572,101 @@ class AIManagerHistory {
 		}
 	}
 
+	/**
+	 * Agent-mode auto-compaction: condenses the most recent COMPLETED task cycle (ended with a `done` tool call and not yet summarized) into one cycle_summary message — reusing exactly what the manual "Summarize Cycle" path in agent.mjs does, so UI rendering stays identical. No-op unless the target session is in agent mode AND has at least one completed-but-unsummarized boundary; returns true only if a new summary was actually inserted and persisted (idempotent — boundaries already carrying an adjacent cycle_summary are skipped).
+	 */
+	async autoCompactAgentCycle(sessionObj = null) {
+		const targetSession = sessionObj || this.manager.activeSession;
+		if (!targetSession || !this.ai?.isConfigured()) return false;
+
+		const agentModeEnabled = targetSession.agentMode ?? this.manager.agentMode;
+		if (!agentModeEnabled) return false; // Standard mode has its own performSummarization() path.
+
+		const messages = targetSession.messages;
+		if (messages.length < 2) return false;
+
+		const isDoneBoundary = (msg) => {
+			if (!msg || !msg.content && !(Array.isArray(msg.toolCalls))) return false;
+			if (msg.type === "tool_response" && msg.content?.includes("[Tool Response: done]")) return true; // Accumulated tool results confirming a `done` call.
+			const hasDoneCall = Array.isArray(msg.toolCalls) && msg.toolCalls.some(tc => (tc.functionCall?.name || tc.name) === "done");
+			if ((msg.role === "model" || msg.type === "model") && hasDoneCall) return true; // The model turn that invoked `done`.
+			return false;
+		};
+
+		const isToolResponse = (msg) => msg && msg.type === "tool_response"; // Operator precedence: must parenthesize the comparison itself, not just `!!` on a possibly-undefined value.
+
+
+		// Locate the latest completed cycle boundary not already summarized — mirrors agent.mjs' manual path exactly, including its idempotency guard.
+		let lastDoneIdx = -1;
+		for (let i = messages.length - 1; i >= 0; i--) {
+			if (!isDoneBoundary(messages[i])) continue;
+
+			const hasSummary = messages.some(m => m.type === "cycle_summary" && (m.cycleEndMsgId === messages[i].id || m.cycleEndMsgId === messages[i + 1]?.id)); // Already summarized — keep scanning older boundaries.
+			if (!hasSummary) {
+				lastDoneIdx = i;
+				break;
+			}
+		}
+
+		if (lastDoneIdx === -1) return false; // No completed cycle awaiting summarization yet.
+
+		let endIdx = lastDoneIdx;
+		const nextMsg = messages[lastDoneIdx + 1];
+		if ((messages[lastDoneIdx].role === "model" || messages[lastDoneIdx].type === "model") && isToolResponse(nextMsg)) {
+			endIdx = lastDoneIdx + 1; // Pull the trailing accumulated tool_response into the summarized span so nothing dangles after it.
+		}
+
+		let cycleStartIdx = -1; // Scan backwards for a previous boundary marker (summary or done call) — start AFTER it, mirroring agent.mjs' manual path exactly.
+		for (let i = endIdx - 2; i >= 0; i--) {
+			const msg = messages[i];
+			if (msg.type === "cycle_summary" || isDoneBoundary(msg)) {
+				cycleStartIdx = i + 1;
+				break;
+			}
+		}
+
+		if (cycleStartIdx === -1) { // No previous boundary found anywhere before this one — fall back to the first conversational message, mirroring agent.mjs' manual path exactly.
+			const fallbackIdx = messages.findIndex(msg => msg.type === "user" || msg.role === "model");
+			cycleStartIdx = fallbackIdx; // -1 if there's no user/model turn at all — handled by the span guard below (never summarize an empty / non-conversational span).
+		}
+
+
+		if (cycleStartIdx >= endIdx) return false; // Span too small (<2 messages) to summarize meaningfully — same guard as performSummarization().
+
+		const cycleMessages = messages.slice(cycleStartIdx, endIdx + 1);
+
+		try {
+			const result = await this.manager.generateCycleSummary(cycleMessages);
+			if (!result || !result.summary) return false; // AI unavailable or returned nothing — safe no-op.
+
+			const summaryMessage = {
+				id: crypto.randomUUID(),
+				role: "system",
+				type: "cycle_summary",
+				title: result.title,
+				content: result.summary,
+				timestamp: Date.now(),
+				cycleStartMsgId: messages[cycleStartIdx].id, // render() already hides the covered span and shows this block instead — identical to manual-path behavior.
+				cycleEndMsgId: messages[endIdx].id
+			};
+
+			messages.splice(endIdx + 1, 0, summaryMessage); // Insert AFTER the cycle end so it renders as a collapsed summary of exactly that span (same position as agent.mjs' manual path).
+			targetSession.lastModified = Date.now();
+			await workspaceClient.setSession(targetSession.id, targetSession);
+
+			if (this.manager.isSessionViewed?.(targetSession.id)) {
+				this.render({ isNewMessage: true }); // Collapse the just-summarized span into its summary block automatically.
+				const conversationArea = this.conversationArea;
+				if (conversationArea) conversationArea.scrollTop = conversationArea.scrollHeight;
+			}
+
+			return true;
+		} catch (e) {
+			console.error("Error during automatic agent cycle compaction:", e); // Safe no-op on failure — the prompt proceeds without compacting.
+			return false;
+		}
+	}
+
 	prepareMessagesForAI(sessionObj = null) {
 		const targetSession = sessionObj || this.manager.activeSession;
 		// Create a deep enough copy of messages to avoid modifying the original history.
@@ -1620,18 +1715,18 @@ class AIManagerHistory {
 		// Calculate extra tokens of evergreen plan, task list, directives, task state, and system prompt
 		let extraTokens = 0;
 		if (this.manager.agentMode) {
-			if (this.manager.activeSession?.implementationPlan) {
+			if (targetSession?.implementationPlan) {
 				extraTokens += this.ai.estimateTokens([{
 					role: "system",
-					content: `EVERGREEN IMPLEMENTATION PLAN:\n${this.manager.activeSession.implementationPlan}`,
-					tokenCount: this.manager.activeSession.implementationPlanTokenCount
+					content: `EVERGREEN IMPLEMENTATION PLAN:\n${targetSession.implementationPlan}`,
+					tokenCount: targetSession.implementationPlanTokenCount
 				}]);
 			}
-			if (this.manager.activeSession?.taskList) {
+			if (targetSession?.taskList) {
 				extraTokens += this.ai.estimateTokens([{
 					role: "system",
-					content: `EVERGREEN TASK LIST:\n${this.manager.activeSession.taskList}`,
-					tokenCount: this.manager.activeSession.taskListTokenCount
+					content: `EVERGREEN TASK LIST:\n${targetSession.taskList}`,
+					tokenCount: targetSession.taskListTokenCount
 				}]);
 			}
 		}
@@ -1644,14 +1739,15 @@ class AIManagerHistory {
 		}
 		
 		if (this.manager.agentMode && chatHistory.length > 0) {
-			const hasPlan = !!this.manager.activeSession?.implementationPlan;
-			const hasTasks = !!this.manager.activeSession?.taskList;
-			const hasAcceptedPlan = this.manager.activeSession?.messages?.some(m => m.planStatus === "accepted") || false;
+			const hasPlan = !!targetSession?.implementationPlan;
+			const hasTasks = !!targetSession?.taskList;
+			const hasAcceptedPlan = targetSession?.messages?.some(m => m.planStatus === "accepted") || false;
 			
 			let hasCompletedAllTasks = false;
-			if (hasTasks && this.manager.activeSession.taskList) {
-				hasCompletedAllTasks = !this.manager.activeSession.taskList.includes("- [ ]") && !this.manager.activeSession.taskList.includes("* [ ]");
+			if (hasTasks && targetSession.taskList) {
+				hasCompletedAllTasks = !targetSession.taskList.includes("- [ ]") && !targetSession.taskList.includes("* [ ]");
 			}
+
 
 			const directivesText = getAgentDirectives({
 				hasPlan,
@@ -1725,7 +1821,10 @@ class AIManagerHistory {
 				const msg = chatHistory[msgIdx];
 				const chunks = msg.content.split('\n\n---\n\n');
 				chunks[chunkIdx] = `${header}\n\n[content obsolete, see later turns]`;
-				msg.content = chunks.join('\n\n---\n\n');
+				chatHistory[msgIdx] = {
+					...msg,
+					content: chunks.join('\n\n---\n\n')
+				};
 			}
 		}
 
@@ -1768,36 +1867,45 @@ class AIManagerHistory {
 			const targetLimit = Math.max(1000, Math.floor((this.ai?.MAX_CONTEXT_TOKENS || 8192) * 0.8) - extraTokens);
 			const currentTokens = this.ai.estimateTokens([...fileContexts, ...dialogueHistory]);
 			if (currentTokens > targetLimit) {
-				const userPrompts = dialogueHistory.filter(msg => msg.type === "user");
-				
-				// Search backwards to find the maximum number of recent dialogue turns we can keep
+				const n = dialogueHistory.length;
+				const userPrompts = dialogueHistory.filter(msg => msg.type === "user"); // ALL kept, regardless of boundary — chronological task timeline.
+
+				// estimateTokens() is purely additive per message: exact msg.tokenCount when cached, else chars/3.2 — the same rule used to build currentTokens above for this very array. So a kept subset's cost equals the sum of its members' individual costs and we can walk candidate boundaries with precomputed sums (O(n)) instead of re-filtering + full re-estimation every iteration (was O(n²)).
+				// Kept set at boundary b = ALL user messages ∪ dialogueHistory[b..n) — so pruned set is exactly {i < b : non-user}. Cost(kept) = fileCtxCosts + totalDialogue − Σ(non-user costs before candidateIndex). One forward pass builds the per-message cost table and that prefix sum; each iteration below just looks up a precomputed value instead of rebuilding+re-estimating a fresh slice.
+				const msgTokenCounts = new Array(n); // exact tokenCount when cached, else chars/3.2 — same rule as estimateTokens() (read-only: never mutates message objects)
+				let totalDialogueCosts = 0;
+				for (let i = 0; i < n; i++) {
+					msgTokenCounts[i] = typeof dialogueHistory[i].tokenCount === 'number' ? dialogueHistory[i].tokenCount : this.ai.estimateTokens([dialogueHistory[i]]); // cached for later passes too (section-4 brute force below reuses it)
+					totalDialogueCosts += msgTokenCounts[i];
+				}
+
+
+				const fileContextTotalTokens = this.ai.estimateTokens(fileContexts); // agent mode: always [] (file contexts already partitioned out), one estimate call either way.
+
+				const nonUserPrunedCostBefore = new Array(n + 1); // Cost of NON-USER messages at index < i — one O(n) prepass. User prompts are always kept (chronological task timeline), so only non-user costs can ever be pruned away by a boundary advance; users never enter this table, which is exactly what makes each step below an O(1) lookup instead of re-filtering + full re-estimation every time (which was O(n²)).
+				nonUserPrunedCostBefore[0] = 0;
+				for (let i = 0; i < n; i++) {
+					nonUserPrunedCostBefore[i + 1] = nonUserPrunedCostBefore[i] + (dialogueHistory[i].type !== "user" ? msgTokenCounts[i] : 0);
+				}
+
+				// Search backwards to find the maximum number of recent dialogue turns we can keep. The pairing fixup below is unchanged from before: if a candidate message is a tool_response, its model turn must stay with it (pulled one index earlier). Kept set at boundary b = ALL user messages ∪ dialogueHistory[b..n), so cost(kept) = fileCtx + totalDialogue − nonUserPrunedCostBefore[candidateIndex] — O(1) per step.
 				let sliceIndex = 0;
-				for (let count = 1; count <= dialogueHistory.length; count++) {
-					let candidateIndex = dialogueHistory.length - count;
-					
+				for (let count = 1; count <= n; count++) {
+					const rawBoundary = n - count;
+
 					// Fix paired pruning boundary:
 					// If the candidate message is a tool_response, we must keep its model message as well.
-					if (candidateIndex > 0 && dialogueHistory[candidateIndex].type === "tool_response") {
-						candidateIndex -= 1;
-					}
-					
-					const recentHistory = dialogueHistory.slice(candidateIndex);
-					
-					const keepIds = new Set();
-					userPrompts.forEach(m => keepIds.add(m.id));
-					recentHistory.forEach(m => keepIds.add(m.id));
-					
-					const testDialogue = dialogueHistory.filter(msg => keepIds.has(msg.id));
-					const testHistory = [...fileContexts, ...testDialogue];
-					const testTokens = this.ai.estimateTokens(testHistory);
+					let candidateIndex = dialogueHistory[rawBoundary].type === "tool_response" && rawBoundary > 0 ? rawBoundary - 1 : rawBoundary;
+
+					const testTokens = fileContextTotalTokens + totalDialogueCosts - nonUserPrunedCostBefore[candidateIndex];
 					
 					if (testTokens <= targetLimit) {
 						sliceIndex = candidateIndex;
 					} else {
-						break;
+						break; // First boundary that doesn't fit — stop, same as before.
 					}
 				}
-				
+
 				if (sliceIndex > 0) {
 					const recentHistory = dialogueHistory.slice(sliceIndex);
 					const keepIds = new Set();
@@ -1834,13 +1942,17 @@ class AIManagerHistory {
 		const stripCodeBlocks = this.manager.ai.config.stripCodeBlocksFromContext;
 		if (stripCodeBlocks) {
 			const codeBlockWithHeaderRegex = /(?:^|\n)\s*(?:#{1,6}[^\n]*\n+)?\s*```(?:\w+)?\n[\s\S]*?\n\s*```/g;
-			chatHistory.forEach((msg, index) => {
+			chatHistory = chatHistory.map((msg, index) => {
 				const isLastMessage = index === chatHistory.length - 1;
 				const isToolResponse = msg.content && msg.content.startsWith('[Tool Response:');
 				
 				if (!isLastMessage && !isToolResponse && (msg.type === 'model' || msg.type === 'user') && msg.content) {
-					msg.content = msg.content.replace(codeBlockWithHeaderRegex, '\n\n<OBSOLETE CODE STRIPPED>\n\n').trim();
+					return {
+						...msg,
+						content: msg.content.replace(codeBlockWithHeaderRegex, '\n\n<OBSOLETE CODE STRIPPED>\n\n').trim()
+					};
 				}
+				return msg;
 			});
 		}
 
@@ -1850,10 +1962,50 @@ class AIManagerHistory {
 		let currentTokens = this.ai.estimateTokens(chatHistory);
 		const minimumMessagesToKeep = 1;
 
-		while (currentTokens > allowedTokens && chatHistory.length > minimumMessagesToKeep) {
-			chatHistory.shift(); // Remove oldest message
-			currentTokens = this.ai.estimateTokens(chatHistory);
+		if (currentTokens > allowedTokens) {
+			// Pair-safe, oldest-first eviction: a blind shift() would orphan tool responses from their model turn and drop user instructions outright. Instead we evict in "units": contiguous spans starting at a MODEL message that carries tool calls — those turns plus every immediately-following response are removed together so no call is left without its answer (and vice-versa, an unpaired leading response can't be dropped on its own). User messages never form or contain part of an eviction unit: they carry the task timeline and stay. Leading re-derivable noise before a unit's start index — file_context attachments & system_message entries like pruned-gap markers / stale task-state lines — is dropped along with it since tools can recover that content on demand.
+			const isToolResponse = (msg) => msg.type === "tool_response" || (!!(msg.content && msg.content.startsWith("[Tool Response:")));
+
+			while (currentTokens > allowedTokens && chatHistory.length > minimumMessagesToKeep) {
+				let foundUnit = false;
+
+				for (let i = 0; !foundUnit && i < chatHistory.length; i++) {
+					const msg = chatHistory[i];
+					if (!msg || isToolResponse(msg)) continue; // Orphaned responses can't be evicted on their own — they'd lose the pairing context.
+
+					// Only model turns carrying tool calls form eviction units (their content may also embed serialized "[Tool Response:" text, but those are already handled via type).
+					if (!msg.toolCalls || msg.toolCalls.length === 0) continue; // user instructions / plain system noise — protected by design, never dropped here.
+
+					foundUnit = true; // i..unitEndIndex inclusive — evict ONLY this span [i..end]. Everything before `i` (user instructions especially) is left untouched: user turns carry the task timeline and are never dropped by this pass even if they precede an evicted unit.
+
+					let unitEndIndex = i; // A model turn whose responses were pruned away earlier still forms a valid standalone unit (nothing to pair with).
+					
+					// Pull in every immediately-following response so the call and its answer are evicted as one unit — never orphaned.
+					while (unitEndIndex + 1 < chatHistory.length && isToolResponse(chatHistory[unitEndIndex + 1])) {
+						unitEndIndex++;
+					}
+
+					const evictionUnit = chatHistory.slice(i, unitEndIndex + 1); // Exact [i..end] span only — leading content (user instructions / other protected turns) before `i` is NOT included here.
+					const evictedTokens = Math.max(0, this.ai.estimateTokens(evictionUnit));
+					
+					// If the unit had no token cost or failed to reduce count, break loop safely
+					if (evictedTokens <= 0) {
+						foundUnit = false;
+						break;
+					}
+					
+					currentTokens -= evictedTokens; // Exact cost of what we're removing
+					chatHistory.splice(i, evictionUnit.length);
+				}
+
+				if (!foundUnit) {
+					break; // No more safe units — all remaining content is protected user instruction / task timeline. Stop here rather than drop them blindly like shift() used to do; the over-cap warning below will still flag that we're out of budget regardless of which messages were evicted (which this pass now logs implicitly via what's left).
+				}
+			}
 		}
+
+
+
 
 		// 5. Reconstruct the context for the AI
 		// We always want the Task State to be the very first thing the AI sees.
@@ -1861,21 +2013,22 @@ class AIManagerHistory {
 
 		// NEW: Prepend evergreen plan and task checklist at the top of AI context in Agent Mode
 		if (this.manager.agentMode) {
-			if (this.manager.activeSession?.implementationPlan) {
+			if (targetSession?.implementationPlan) {
 				contextForAI.push({
 					role: "system",
-					content: `EVERGREEN IMPLEMENTATION PLAN:\n${this.manager.activeSession.implementationPlan}`,
-					tokenCount: this.manager.activeSession.implementationPlanTokenCount
+					content: `EVERGREEN IMPLEMENTATION PLAN:\n${targetSession.implementationPlan}`,
+					tokenCount: targetSession.implementationPlanTokenCount
 				});
 			}
-			if (this.manager.activeSession?.taskList) {
+			if (targetSession?.taskList) {
 				contextForAI.push({
 					role: "system",
-					content: `EVERGREEN TASK LIST:\n${this.manager.activeSession.taskList}`,
-					tokenCount: this.manager.activeSession.taskListTokenCount
+					content: `EVERGREEN TASK LIST:\n${targetSession.taskList}`,
+					tokenCount: targetSession.taskListTokenCount
 				});
 			}
 		}
+
 
 		if (taskStateMessage) {
 			contextForAI.push({
@@ -2006,14 +2159,15 @@ class AIManagerHistory {
 		});
 
 		if (this.manager.agentMode && contextForAI.length > 0) {
-			const hasPlan = !!this.manager.activeSession?.implementationPlan;
-			const hasTasks = !!this.manager.activeSession?.taskList;
-			const hasAcceptedPlan = this.manager.activeSession?.messages?.some(m => m.planStatus === "accepted") || false;
+			const hasPlan = !!targetSession?.implementationPlan;
+			const hasTasks = !!targetSession?.taskList;
+			const hasAcceptedPlan = targetSession?.messages?.some(m => m.planStatus === "accepted") || false;
 			
 			let hasCompletedAllTasks = false;
-			if (hasTasks && this.manager.activeSession.taskList) {
-				hasCompletedAllTasks = !this.manager.activeSession.taskList.includes("- [ ]") && !this.manager.activeSession.taskList.includes("* [ ]");
+			if (hasTasks && targetSession.taskList) {
+				hasCompletedAllTasks = !targetSession.taskList.includes("- [ ]") && !targetSession.taskList.includes("* [ ]");
 			}
+
 
 			const directivesText = getAgentDirectives({
 				hasPlan,

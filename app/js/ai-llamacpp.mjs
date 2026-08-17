@@ -275,16 +275,21 @@ class LlamaCpp extends AI {
             if (this.supportsReasoning) {
                 requestBody.enable_thinking = true;
                 const level = this.config.thinkingLevel || "medium";
-                if (level !== 'unlimited' && level !== 'ultra') {
-                    let budget = 0;
+                if (level === 'off') {
+                    requestBody.enable_thinking = false;
+                    requestBody.thinking_budget = 0;
+                    requestBody.thinking_budget_tokens = 0;
+                } else if (level !== 'unlimited' && level !== 'ultra') {
+                    let budget = 2048;
                     if (level === 'low') {
-                        budget = Math.min(1024, Math.round(this.MAX_CONTEXT_TOKENS * 0.03125));
+                        budget = Math.max(512, Math.min(1024, Math.round(this.MAX_CONTEXT_TOKENS * 0.03125)));
                     } else if (level === 'medium' || level === 'med') {
-                        budget = Math.min(2048, Math.round(this.MAX_CONTEXT_TOKENS * 0.0625));
+                        budget = Math.max(1024, Math.min(2048, Math.round(this.MAX_CONTEXT_TOKENS * 0.0625)));
                     } else if (level === 'high') {
-                        budget = Math.min(4096, Math.round(this.MAX_CONTEXT_TOKENS * 0.125));
+                        budget = Math.max(2048, Math.min(4096, Math.round(this.MAX_CONTEXT_TOKENS * 0.125)));
                     }
                     requestBody.thinking_budget_tokens = budget;
+                    requestBody.thinking_budget = budget;
                 }
             }
 
