@@ -939,6 +939,7 @@ class Gemini extends AI {
                         filteredTools = cadenceTools.filter(t => {
                             if (isPlanning && (t.name === "create_file" || t.name === "edit_file")) return false;
                             if (session && session.allowSubAgents === false && t.name === "create_sub_agent") return false;
+                            if (session && session.allowRunCommand === false && (t.name === "run_command" || t.name === "exec_command")) return false;
                             return true;
                         });
                     }

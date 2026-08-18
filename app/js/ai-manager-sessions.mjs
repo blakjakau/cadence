@@ -93,6 +93,7 @@ class AIManagerSessions {
 			forgivenessMode: lastForgivenessMode,
 			connectionId: defaultConnectionId,
 			allowSubAgents: this.manager.config.defaultAllowSubAgents ?? true,
+			allowRunCommand: this.manager.config.defaultAllowRunCommand ?? true,
 			pinnedSkills: [],
 		};
 
@@ -256,6 +257,7 @@ class AIManagerSessions {
 		this.manager.agentMode = newSessionData.agentMode ?? false;
 		this.manager.planningMode = newSessionData.planningMode ?? true;
 		this.manager.forgivenessMode = newSessionData.forgivenessMode ?? false;
+		this.manager.allowRunCommand = newSessionData.allowRunCommand ?? (this.manager.config.defaultAllowRunCommand ?? true);
 		this._unsentPromptBuffer = null; // Clear any pending unsent prompt from the previous session
 
 		// Update the rest of the UI based on the new data

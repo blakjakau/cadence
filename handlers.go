@@ -136,34 +136,37 @@ func readPump(ws *websocket.Conn, ptmx io.Writer, ptyCmd *exec.Cmd, sessionID in
 
 	defer func() {
 		ws.Close()
-		// On Windows, ptyCmd.Process can be nil because the conpty library
-		// doesn't expose it. The ptmx.Close() call in the calling function
-		// (terminalServer) handles killing the process correctly on all platforms.
 		if ptyCmd.Process != nil {
 			ptyCmd.Process.Kill()
 		}
 	}()
 
 	for {
-		var msg wsMessage
-		// ReadJSON is a convenient helper for JSON-based APIs.
-		err := ws.ReadJSON(&msg)
+		messageType, p, err := ws.ReadMessage()
 		if err != nil {
-			// Report unexpected close errors.
 			if !websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
 				log.Printf("WS read error for session #%d: %v", sessionID, err)
 			}
 			break
 		}
-		switch msg.Type {
-		case "resize":
-			// TODO: Resizing is now platform-specific. A new cross-platform
-			// interface is needed to handle this properly.
-			if resizePty != nil {
-				resizePty(msg.Cols, msg.Rows)
+
+		if messageType == websocket.TextMessage || messageType == websocket.BinaryMessage {
+			// Try parsing as JSON control message first
+			var msg wsMessage
+			if err := json.Unmarshal(p, &msg); err == nil && msg.Type != "" {
+				switch msg.Type {
+				case "resize":
+					if resizePty != nil {
+						resizePty(msg.Cols, msg.Rows)
+					}
+				case "data":
+					ptmx.Write([]byte(msg.Content))
+				}
+				continue
 			}
-		case "data":
-			ptmx.Write([]byte(msg.Content))
+
+			// Direct raw stream data sent from terminal clients or agent tools
+			ptmx.Write(p)
 		}
 	}
 }

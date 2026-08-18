@@ -112,7 +112,7 @@ export class AgentConfigPanel extends Block {
 			const input = document.createElement("input");
 			input.type = "checkbox";
 			input.id = id;
-			if (key === "defaultAllowSubAgents") {
+			if (key === "defaultAllowSubAgents" || key === "defaultAllowRunCommand") {
 				input.checked = localStorage.getItem(key) !== "false";
 			} else {
 				input.checked = localStorage.getItem(key) === "true";
@@ -124,6 +124,7 @@ export class AgentConfigPanel extends Block {
 					if (key === "defaultAgentMode") window.ui.aiManager.config.defaultAgentMode = input.checked;
 					if (key === "defaultPlanningMode") window.ui.aiManager.config.defaultPlanningMode = input.checked;
 					if (key === "defaultAllowSubAgents") window.ui.aiManager.config.defaultAllowSubAgents = input.checked;
+					if (key === "defaultAllowRunCommand") window.ui.aiManager.config.defaultAllowRunCommand = input.checked;
 					window.ui.aiManager._updatePromptAreaPlaceholder();
 				}
 			};
@@ -158,6 +159,7 @@ export class AgentConfigPanel extends Block {
 		createToggleRow("default-agent-mode", "Default Agent Mode", "Start new sessions in Agent Mode automatically.", "defaultAgentMode");
 		createToggleRow("default-planning-mode", "Default Planning Mode", "Start new sessions with Planning Mode enabled.", "defaultPlanningMode");
 		createToggleRow("default-allow-sub-agents", "Default Allow Sub-Agents", "Start new sessions with sub-agents allowed automatically.", "defaultAllowSubAgents");
+		createToggleRow("default-allow-run-command", "Default Allow Terminal Commands", "Start new sessions with terminal command execution allowed automatically.", "defaultAllowRunCommand");
 
 		const createNumberInputRow = (id, title, desc, key, defaultValue) => {
 			const wrapper = document.createElement("div");

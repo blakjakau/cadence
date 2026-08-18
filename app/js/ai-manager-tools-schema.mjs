@@ -10,6 +10,7 @@ export const subAgentToolsList = [
     // "refactor_copy_lines",
     "create_file",
     "validate_syntax",
+    "run_command",
     "query",
     "sub_agent_complete",
     "query_parent",
@@ -19,6 +20,18 @@ export const subAgentToolsList = [
 ];
 
 export const tools = [
+    {
+        name: "run_command",
+        description: "Executes a terminal shell command in the project directory. Execution requires explicit user approval unless whitelisted.",
+        parameters: {
+            type: "object",
+            properties: {
+                command: { type: "string", description: "The exact shell command line to run." },
+                cwd: { type: "string", description: "Optional working directory for execution." }
+            },
+            required: ["command"]
+        }
+    },
     {
         name: "validate_syntax",
         description: "Validates the syntax of JavaScript (.js, .mjs), JSON (.json), HTML, or CSS code content without writing it to disk. Returns 'Valid syntax' or exact line/column SyntaxError details.",

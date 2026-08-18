@@ -167,6 +167,7 @@ export class SessionArtifactsPanel extends Block {
         this.planningModeCheckbox = createToggleRow("accordion-planning-mode", "Planning Mode", "Focus Cadence on generating structured implementation plans before applying edits.", "planning-toggle-wrapper");
         this.forgivenessModeCheckbox = createToggleRow("accordion-forgiveness-mode", "Forgiveness Mode", "Commit edits immediately to disk with robust single-click rollback safety.", "agent-toggle-wrapper");
         this.allowSubAgentsCheckbox = createToggleRow("accordion-allow-sub-agents", "Allow Sub-Agents", "Allow Cadence to spawn sub-agents to solve smaller tasks.", "sub-agents-toggle-wrapper");
+        this.allowRunCommandCheckbox = createToggleRow("accordion-allow-run-command", "Allow Terminal Commands", "Allow Cadence to execute terminal shell commands via the run_command tool.", "run-command-toggle-wrapper");
 
         this.container.appendChild(this.settingsAccordion);
 
@@ -221,6 +222,16 @@ export class SessionArtifactsPanel extends Block {
             const checked = e.target.checked;
             if (ui.aiManager.activeSession) {
                 ui.aiManager.activeSession.allowSubAgents = checked;
+                await workspaceClient.setSession(ui.aiManager.activeSession.id, ui.aiManager.activeSession);
+            }
+        });
+
+        this.allowRunCommandCheckbox.addEventListener("change", async (e) => {
+            const checked = e.target.checked;
+            ui.aiManager.allowRunCommand = checked;
+            localStorage.setItem("aiAllowRunCommand", checked);
+            if (ui.aiManager.activeSession) {
+                ui.aiManager.activeSession.allowRunCommand = checked;
                 await workspaceClient.setSession(ui.aiManager.activeSession.id, ui.aiManager.activeSession);
             }
         });
@@ -416,6 +427,7 @@ export class SessionArtifactsPanel extends Block {
         this.planningModeCheckbox.checked = ui.aiManager.planningMode || false;
         this.forgivenessModeCheckbox.checked = ui.aiManager.forgivenessMode || false;
         this.allowSubAgentsCheckbox.checked = session.allowSubAgents !== false;
+        this.allowRunCommandCheckbox.checked = session.allowRunCommand !== false;
 
         // Render implementation plan content if not editing
         if (!this.planEditorInstance) {

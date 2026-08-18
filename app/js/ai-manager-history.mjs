@@ -1002,11 +1002,9 @@ class AIManagerHistory {
 
 				submitBtn.onclick = submitAnswer;
 				answerInput.addEventListener("keydown", (e) => {
-					if (e.key === "Enter") {
-						if (e.ctrlKey || e.metaKey) {
-							e.preventDefault();
-							submitAnswer();
-						}
+					if (e.key === "Enter" && !e.shiftKey) {
+						e.preventDefault();
+						submitAnswer();
 					}
 				});
 
@@ -1020,6 +1018,115 @@ class AIManagerHistory {
 					}, 100);
 				}
 			}
+		} else if (message.type === "agent_command_approval") {
+			if (message.status === "approved") {
+				// Approved command cards are hidden since the execution output block carries the command
+				return null;
+			}
+
+			element = new Block();
+			element.classList.add("response-block", "agent-command-approval-block");
+			element.dataset.messageId = message.id;
+
+			const header = new Block();
+			header.className = "agent-query-header";
+			const icon = new Icon();
+			icon.textContent = "terminal";
+			const title = new Inline();
+			title.className = "agent-query-title";
+			title.textContent = "Terminal Command Approval Request";
+			header.append(icon, title);
+
+			const cmdBox = new Block();
+			cmdBox.className = "agent-cmd-box";
+			cmdBox.innerHTML = `<code>$ ${this._escapeHtml(message.command)}</code>`;
+
+			element.append(header, cmdBox);
+
+			if (message.status === "pending") {
+				const actions = new Block();
+				actions.className = "agent-cmd-actions";
+				actions.style.display = "flex";
+				actions.style.flexDirection = "column";
+				actions.style.gap = "8px";
+				actions.style.marginTop = "8px";
+
+				const noteInput = document.createElement("input");
+				noteInput.type = "text";
+				noteInput.placeholder = "Optional feedback or reason for refusal...";
+				noteInput.className = "agent-query-input";
+				noteInput.style.width = "100%";
+
+				const btnRow = new Block();
+				btnRow.style.display = "flex";
+				btnRow.style.gap = "8px";
+				btnRow.style.justifyContent = "flex-end";
+
+				const rememberLabel = document.createElement("label");
+				rememberLabel.style.display = "flex";
+				rememberLabel.style.alignItems = "center";
+				rememberLabel.style.gap = "4px";
+				rememberLabel.style.fontSize = "12px";
+				rememberLabel.style.marginRight = "auto";
+				rememberLabel.innerHTML = `<input type="checkbox" id="chk_${message.id}"> Always allow in this session`;
+
+				const denyBtn = new Button("Deny");
+				denyBtn.className = "theme-button danger";
+				denyBtn.onclick = () => {
+					const resolver = window._agentCommandResolvers?.[message.id];
+					if (resolver) {
+						delete window._agentCommandResolvers[message.id];
+						resolver({ approved: false, userNote: noteInput.value.trim() });
+					}
+				};
+
+				const approveBtn = new Button("Approve");
+				approveBtn.className = "theme-button primary";
+				approveBtn.onclick = () => {
+					const chk = document.getElementById(`chk_${message.id}`);
+					const resolver = window._agentCommandResolvers?.[message.id];
+					if (resolver) {
+						delete window._agentCommandResolvers[message.id];
+						resolver({ approved: true, rememberChoice: chk ? chk.checked : false });
+					}
+				};
+
+				btnRow.append(rememberLabel, denyBtn, approveBtn);
+				actions.append(noteInput, btnRow);
+				element.append(actions);
+			} else {
+				const statusTag = new Block();
+				statusTag.className = `agent-query-answer answered ${message.status}`;
+				statusTag.textContent = message.status === "approved" ? "✓ Approved by user" : "✗ Denied by user";
+				element.append(statusTag);
+			}
+		} else if (message.type === "agent_command_output") {
+			element = new Block();
+			element.classList.add("response-block", "agent-cmd-output-block");
+			element.dataset.messageId = message.id;
+
+			const statusText = message.status === "running" ? "Running..." : (message.status === "completed" ? "Completed" : "Failed");
+			const details = document.createElement("details");
+			details.open = true;
+
+			const summary = document.createElement("summary");
+			summary.innerHTML = `<ui-icon style="font-size: 14px; vertical-align: middle;">terminal</ui-icon> <code>$ ${this._escapeHtml(message.command)}</code> <span style="opacity: 0.8; font-weight: normal; margin-left: auto;">[${statusText}]</span>`;
+
+			const pre = document.createElement("pre");
+			pre.style.maxHeight = "300px";
+			pre.style.overflowY = "auto";
+			pre.style.padding = "8px";
+			pre.style.margin = "4px 0 0 0";
+			pre.style.background = "#1e1e1e";
+			pre.style.color = "#d4d4d4";
+			pre.style.borderRadius = "4px";
+			
+			const code = document.createElement("code");
+			code.textContent = message.output || "(Waiting for output...)";
+			pre.append(code);
+
+			details.append(summary, pre);
+			element.append(details);
 		}
 
 		return element;
@@ -1678,7 +1785,7 @@ class AIManagerHistory {
 		// 2. Separate chat/system/file messages from the protected task state
 		// We filter out task_state from the main pool so it doesn't get pruned.
 		let chatHistory = messages.filter(
-			(msg) => msg.type !== "task_state" && msg.type !== "system_message" && msg.type !== "agent_query" && msg.role !== "temp_ai_response"
+			(msg) => msg.type !== "task_state" && msg.type !== "system_message" && msg.type !== "agent_query" && msg.type !== "agent_command_approval" && msg.type !== "agent_command_output" && msg.role !== "temp_ai_response"
 		);
 
 		// Pruning gate: Substitute all completed cycles with their summaries.

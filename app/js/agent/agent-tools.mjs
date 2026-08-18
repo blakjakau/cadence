@@ -1972,13 +1972,225 @@ Snippet: ${r.content || r.snippet || ""}`;
     }
 
     /**
-     * Executes a terminal command.
+     * Executes a terminal shell command gated by explicit user approval / dynamic whitelist.
      */
-    async execCommand(command) {
-        if (typeof command !== 'string') {
-            return "Error: Command must be a string.";
+    async runCommand(command, cwdOverride = null, subSessionId = null) {
+        if (typeof command !== 'string' || !command.trim()) {
+            return "Error: Command must be a non-empty string.";
         }
-        return `Executing: ${command}\nOutput: (Terminal execution via agent is not supported directly for security reasons. Please use the terminal tab instead.)`;
+        const cleanCmd = command.trim();
+        const aiManager = window.ui?.aiManager;
+        const targetSessionId = subSessionId || aiManager?.activeSessionId;
+        
+        // 0. Check session / global toggle
+        const sessionObj = aiManager?.runningSessions.get(targetSessionId)?.instance?.session ||
+                           aiManager?.activeSession;
+
+        if (sessionObj && sessionObj.allowRunCommand === false) {
+            return "Tool Error: Terminal command execution (`run_command`) is disabled for this session.";
+        }
+        
+        if (sessionObj) {
+            sessionObj.commandPolicy = sessionObj.commandPolicy || { whitelist: [], blacklist: [] };
+        }
+        const policy = sessionObj?.commandPolicy || { whitelist: [], blacklist: [] };
+
+        // 2. Check Blacklist & Whitelist
+        const isBlacklisted = policy.blacklist.some(rule => cleanCmd.startsWith(rule));
+        if (isBlacklisted) {
+            return `Command execution rejected by workspace security policy for command: ${cleanCmd}`;
+        }
+
+        const isWhitelisted = policy.whitelist.some(rule => cleanCmd === rule || cleanCmd.startsWith(rule + " "));
+        let isApproved = isWhitelisted;
+
+        // 3. User Approval Workflow if not whitelisted
+        if (!isApproved) {
+            const runningSub = aiManager?.runningSessions.get(targetSessionId);
+            const activeSession = (runningSub && runningSub.instance?.session)
+                ? runningSub.instance.session
+                : (aiManager?.activeSessionId === targetSessionId ? aiManager.activeSession : await workspaceClient.getSession(targetSessionId));
+            
+            if (!activeSession) {
+                return "Error: Session context not found for command approval.";
+            }
+
+            const queryId = crypto.randomUUID();
+            const cmdMsg = {
+                id: queryId,
+                role: "system",
+                type: "agent_command_approval",
+                command: cleanCmd,
+                cwd: cwdOverride || "",
+                status: "pending",
+                subSessionId: targetSessionId,
+                timestamp: Date.now()
+            };
+
+            activeSession.messages.push(cmdMsg);
+            activeSession.pendingQueryId = queryId;
+            activeSession.lastModified = Date.now();
+            await workspaceClient.setSession(targetSessionId, activeSession);
+
+            if (aiManager?.isSessionViewed(targetSessionId)) {
+                aiManager.historyManager.render();
+            }
+
+            const decision = await new Promise((resolve) => {
+                if (!window._agentCommandResolvers) {
+                    window._agentCommandResolvers = {};
+                }
+                window._agentCommandResolvers[queryId] = resolve;
+            });
+
+            cmdMsg.status = decision.approved ? "approved" : "rejected";
+            cmdMsg.userNote = decision.userNote || "";
+            delete activeSession.pendingQueryId;
+            await workspaceClient.setSession(targetSessionId, activeSession);
+
+            if (decision.rememberChoice && decision.approved) {
+                policy.whitelist.push(cleanCmd);
+            }
+
+            if (!decision.approved) {
+                return `Command execution rejected by user. ${decision.userNote ? `User feedback: ${decision.userNote}` : ''}`;
+            }
+        }
+
+        // 4. Streamed Terminal Execution via WebSocket
+        return await new Promise((resolve) => {
+            let outputBuffer = "";
+            const port = (window.runtime) ? 3022 : (window.location.port || 3022);
+            const wsHost = (window.runtime) ? `localhost:${port}` : (window.location.host || `localhost:${port}`);
+            const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            let wsUrl = `${wsProtocol}//${wsHost}/terminal?sessionId=agent_${Date.now()}`;
+            
+            const workspaceFolder = (window.workspace?.folders && window.workspace.folders[0]) || "";
+            const targetDir = cwdOverride || workspaceFolder;
+            if (targetDir) {
+                wsUrl += `&dir=${encodeURIComponent(targetDir)}`;
+            }
+
+            const activeSession = aiManager?.runningSessions.get(targetSessionId)?.instance?.session || aiManager?.activeSession;
+            const executionMsgId = crypto.randomUUID();
+            const streamMsg = {
+                id: executionMsgId,
+                role: "system",
+                type: "agent_command_output",
+                command: cleanCmd,
+                cwd: targetDir,
+                output: "",
+                status: "running",
+                subSessionId: targetSessionId,
+                timestamp: Date.now()
+            };
+
+            if (activeSession) {
+                activeSession.messages.push(streamMsg);
+                if (aiManager?.isSessionViewed(targetSessionId)) {
+                    aiManager.historyManager.render();
+                }
+            }
+
+            const ws = new WebSocket(wsUrl);
+            ws.binaryType = 'arraybuffer';
+
+            const cdCommandStr = targetDir ? `cd ${JSON.stringify(targetDir)} && ` : "";
+            let cleanedOutput = "";
+
+            const sanitizeText = (rawStr) => {
+                if (!rawStr) return "";
+                let s = rawStr;
+                // 1. Strip OSC escape sequences (e.g. \x1b]9;9;...\x1b\ or \x1b]0;...\x07)
+                s = s.replace(/\x1b\][^\x1b\x07]*[\x1b\x07\\]/g, "");
+                // 2. Strip standard ANSI color/cursor escape sequences
+                s = s.replace(/\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g, "");
+                // 3. Strip non-printable ASCII control characters except newlines/tabs
+                s = s.replace(/[\x00-\x08\x0B-\x1F\x7F-\x9F]/g, "");
+                return s;
+            };
+
+            const updateOutputDom = (chunk) => {
+                outputBuffer += chunk;
+                
+                let s = sanitizeText(outputBuffer);
+
+                // 4. Strip command input echo lines up to the first newline after the clean command
+                if (cleanCmd && s.includes(cleanCmd)) {
+                    const idx = s.indexOf(cleanCmd);
+                    const afterCmd = s.substring(idx + cleanCmd.length);
+                    const firstNewline = afterCmd.indexOf('\n');
+                    if (firstNewline !== -1) {
+                        s = afterCmd.substring(firstNewline + 1);
+                    }
+                }
+
+                // 5. Strip trailing exit command and prompt noise
+                s = s.replace(/^.*?[#$]\s*exit\s*$/gm, "");
+                s = s.replace(/^.*?[#$]\s*/gm, "");
+                s = s.trim();
+
+                cleanedOutput = s;
+                streamMsg.output = cleanedOutput;
+                
+                const container = document.querySelector(`.agent-cmd-output-block[data-message-id="${executionMsgId}"] code`);
+                if (container) {
+                    container.textContent = cleanedOutput ? `$ ${cleanCmd}\n\n${cleanedOutput}` : "(Running command...)";
+                    const pre = container.parentElement;
+                    if (pre) pre.scrollTop = pre.scrollHeight;
+                }
+            };
+
+            ws.onopen = () => {
+                const fullCmdLine = `${cdCommandStr}${cleanCmd}\nexit\n`;
+                ws.send(fullCmdLine);
+            };
+
+            ws.onmessage = (event) => {
+                let text = "";
+                if (typeof event.data === 'string') {
+                    try {
+                        const jsonMsg = JSON.parse(event.data);
+                        if (jsonMsg && jsonMsg.type === "terminalInfo") {
+                            return;
+                        }
+                    } catch (e) {}
+                    text = event.data;
+                } else if (event.data instanceof ArrayBuffer) {
+                    text = new TextDecoder('utf-8').decode(new Uint8Array(event.data));
+                } else if (event.data && event.data.arrayBuffer) {
+                    event.data.arrayBuffer().then(buf => {
+                        const blobText = new TextDecoder('utf-8').decode(new Uint8Array(buf));
+                        updateOutputDom(blobText);
+                    });
+                    return;
+                }
+
+                if (text) {
+                    updateOutputDom(text);
+                }
+            };
+
+            const finish = (code = 0) => {
+                streamMsg.status = code === 0 ? "completed" : "failed";
+                if (activeSession) {
+                    workspaceClient.setSession(targetSessionId, activeSession).catch(() => {});
+                }
+                if (aiManager?.isSessionViewed(targetSessionId)) {
+                    aiManager.historyManager.render();
+                }
+                resolve(`Command execution completed.\nOutput:\n${cleanedOutput || "(No output)"}`);
+            };
+
+            ws.onerror = (err) => {
+                updateOutputDom(`\n[Execution Error: ${err.message || 'Connection failed'}]`);
+                finish(1);
+            };
+
+            ws.onclose = () => {
+                finish(0);
+            };
+        });
     }
 
     /**
@@ -2065,8 +2277,9 @@ Snippet: ${r.content || r.snippet || ""}`;
                 return await this.openFile(args.path);
             case 'find_file':
                 return await this.findFile(args.path);
+            case 'run_command':
             case 'exec_command':
-                return await this.execCommand(args.command);
+                return await this.runCommand(args.command || args.cmd, args.cwd, sourceId);
             case 'create_implementation_plan':
                 return "Implementation plan created. The user is reviewing it.";
             case 'create_task_list':

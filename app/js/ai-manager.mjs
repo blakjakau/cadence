@@ -103,6 +103,7 @@ class AIManager {
 		this.planningMode = false; // NEW: Toggle planning mode
 		this.planningModeToggle = null;
 		this.forgivenessMode = false; // NEW: Toggle Permission vs Forgiveness mode
+		this.allowRunCommand = localStorage.getItem("aiAllowRunCommand") === "true"; // Toggle command tool availability
 		this.rawViewMode = false; // NEW: Tracks alternate expander raw view
 		this.rawViewButton = null;
 		this.autoContinue = localStorage.getItem("aiAutoContinue") === "true"; // NEW: Auto-continue on agent loop halt
@@ -3444,6 +3445,11 @@ ${summarizationPromptContent}`;
 		const storedDefaultAllowSubAgents = localStorage.getItem("defaultAllowSubAgents")
 		if (storedDefaultAllowSubAgents !== null) {
 			this.config.defaultAllowSubAgents = storedDefaultAllowSubAgents === "true"
+		}
+
+		const storedDefaultAllowRunCommand = localStorage.getItem("defaultAllowRunCommand")
+		if (storedDefaultAllowRunCommand !== null) {
+			this.config.defaultAllowRunCommand = storedDefaultAllowRunCommand === "true"
 		}
 	}
 }

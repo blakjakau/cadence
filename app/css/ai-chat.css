@@ -891,17 +891,57 @@
     display: none !important;
 }
 
-/* Sub-agent query block */
-.agent-query-block {
+/* Sub-agent query block & Command approval card */
+.agent-query-block,
+.agent-command-approval-block {
     background: linear-gradient(135deg, color-mix(in srgb, var(--color-warning, #b58900) 8%, var(--bg-secondary)), var(--bg-secondary));
     border: 1px solid color-mix(in srgb, var(--color-warning, #b58900) 40%, transparent);
     border-left: 3px solid var(--color-warning, #b58900);
     border-radius: var(--borderRadius);
     padding: 12px 14px;
-    margin: 6px 0;
+    margin: 6px 16px;
+    box-sizing: border-box;
     display: flex;
     flex-direction: column;
     gap: 8px;
+}
+
+.agent-cmd-box {
+    background: var(--bg-primary);
+    padding: 6px 10px;
+    border-radius: 4px;
+    border: 1px solid var(--border-primary);
+    font-family: var(--font-mono);
+    font-size: 12px;
+}
+
+/* Agent Command Output Block */
+.agent-cmd-output-block {
+    width: 100%;
+    margin: 6px 0;
+    box-sizing: border-box;
+}
+
+.agent-cmd-output-block details {
+    border: 1px solid var(--border-primary);
+    border-left: 3px solid var(--theme, #303f9f);
+    border-radius: var(--borderRadius);
+    overflow: hidden;
+    background: var(--bg-secondary);
+    width: 100%;
+    box-sizing: border-box;
+}
+
+.agent-cmd-output-block summary {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px !important;
+    background: color-mix(in srgb, var(--text-primary) 2%, transparent) !important;
+    font-size: 12.5px;
+    font-weight: 500 !important;
+    user-select: none;
+    outline: none;
 }
 
 .agent-query-header {
