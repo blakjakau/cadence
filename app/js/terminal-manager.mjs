@@ -195,18 +195,51 @@ class TerminalManager {
 		if (this.config.prompt) url += `&prompt=${encodeURIComponent(this.config.prompt)}`;
 		
 		let dir = "";
-		if (this.config.defaultDir === "home") {
-			// Backend defaults to home if empty
-		} else if (this.config.defaultDir === "current") {
-			const currentFile = window.ui && window.ui.currentFile;
-			if (currentFile && currentFile.path) {
-				const parts = currentFile.path.split("/");
-				parts.pop(); // Remove filename
-				dir = parts.join("/");
+		
+		const activeEl = document.activeElement;
+		const isTerminalFocused = activeEl && (activeEl.closest?.(".terminal-instance-container") || activeEl.closest?.(".terminal-panel-container"));
+
+		// 1. If terminal currently has focus (e.g. CTRL+N from terminal), prioritize current terminal's CWD
+		if (isTerminalFocused && this._activeSessionId) {
+			const activeSession = this._sessions.get(this._activeSessionId);
+			if (activeSession && activeSession.cwd) {
+				dir = activeSession.cwd;
 			}
-		} else if (this.config.defaultDir === "restore") {
-			dir = localStorage.getItem('terminalLastDir') || "";
 		}
+
+		// 2. Directory of the currently active/focused code editor tab
+		if (!dir) {
+			const activeTab = window.ui?.currentTabs?.activeTab || window.ui?.leftTabs?.activeTab || window.ui?.rightTabs?.activeTab;
+			if (activeTab?.config) {
+				const config = activeTab.config;
+				const filePath = config.handle?.path || config.fileItem?.path || config.path || (typeof config.folder === 'string' ? config.folder : null);
+				if (filePath && typeof filePath === 'string') {
+					const normalized = filePath.replace(/\\/g, '/');
+					if (config.isDir || config.handle?.isDir) {
+						dir = normalized;
+					} else {
+						const parts = normalized.split('/');
+						parts.pop();
+						dir = parts.join('/');
+					}
+				}
+			}
+		}
+
+		// 3. Fallback: CWD of the current active terminal window
+		if (!dir && this._activeSessionId) {
+			const activeSession = this._sessions.get(this._activeSessionId);
+			if (activeSession && activeSession.cwd) {
+				dir = activeSession.cwd;
+			}
+		}
+
+		// 4. Fallback: First root folder of the current project workspace
+		if (!dir) {
+			const rawFolder = window.workspace?.folders?.[0];
+			dir = typeof rawFolder === 'string' ? rawFolder : (rawFolder?.path || rawFolder?.name || "");
+		}
+
 		if (dir) url += `&dir=${encodeURIComponent(dir)}`;
 
 		const ws = new WebSocket(url);

@@ -2065,8 +2065,18 @@ Snippet: ${r.content || r.snippet || ""}`;
             const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
             let wsUrl = `${wsProtocol}//${wsHost}/terminal?sessionId=agent_${Date.now()}`;
             
-            const workspaceFolder = (window.workspace?.folders && window.workspace.folders[0]) || "";
-            const targetDir = cwdOverride || workspaceFolder;
+            const folders = window.workspace?.folders || [];
+            let workspaceFolder = "";
+            if (folders.length > 0) {
+                const item = folders[0];
+                workspaceFolder = typeof item === 'string' ? item : (item?.path || item?.name || "");
+            }
+            let targetDir = cwdOverride || workspaceFolder;
+            if (targetDir && targetDir.startsWith('.')) {
+                try {
+                    targetDir = this._resolveAndValidatePath(targetDir);
+                } catch (e) {}
+            }
             if (targetDir) {
                 wsUrl += `&dir=${encodeURIComponent(targetDir)}`;
             }
@@ -2125,8 +2135,8 @@ Snippet: ${r.content || r.snippet || ""}`;
                     }
                 }
 
-                // 5. Strip trailing exit command and prompt noise
-                s = s.replace(/^.*?[#$]\s*exit\s*$/gm, "");
+                // 5. Strip trailing exit command, standalone 'exit' lines, and prompt noise
+                s = s.replace(/(?:^|\n)(?:[^\n]*?[#$]\s*)?exit(?:\s+status\s+\d+)?(?=\n|$)/gi, "");
                 s = s.replace(/^.*?[#$]\s*/gm, "");
                 s = s.trim();
 
@@ -2142,8 +2152,7 @@ Snippet: ${r.content || r.snippet || ""}`;
             };
 
             ws.onopen = () => {
-                const fullCmdLine = `${cdCommandStr}${cleanCmd}\nexit\n`;
-                ws.send(fullCmdLine);
+                ws.send(`${cleanCmd}\nexit\n`);
             };
 
             ws.onmessage = (event) => {

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -201,21 +202,41 @@ func terminalServer(w http.ResponseWriter, r *http.Request) {
 
 	// Determine starting directory
 	startDir := customDir
+	homeDir, homeErr := os.UserHomeDir()
+
 	if startDir == "" {
-		homeDir, err := os.UserHomeDir()
-		if err != nil {
-			log.Printf("ERROR: Could not get user home directory: %v, using current directory.", err)
+		if homeErr != nil {
+			log.Printf("ERROR: Could not get user home directory: %v, using current directory.", homeErr)
 			startDir = "."
 		} else {
 			startDir = homeDir
+		}
+	} else {
+		// 1. Expand leading ~/
+		if strings.HasPrefix(startDir, "~/") && homeErr == nil {
+			startDir = filepath.Join(homeDir, startDir[2:])
+		} else if homeErr == nil {
+			// 2. If startDir doesn't exist as an absolute path, test if it is relative to homeDir
+			// (handles cases where frontend passes paths like "/repo/..." or "repo/..." meant relative to home)
+			if _, err := os.Stat(startDir); os.IsNotExist(err) {
+				cleanRel := strings.TrimPrefix(startDir, "/")
+				candidate := filepath.Join(homeDir, cleanRel)
+				if _, cErr := os.Stat(candidate); cErr == nil {
+					startDir = candidate
+				}
+			}
+		}
+		if absPath, err := filepath.Abs(startDir); err == nil {
+			startDir = absPath
 		}
 	}
 	
 	// Check if startDir exists, fallback to home if not
 	if _, err := os.Stat(startDir); os.IsNotExist(err) {
 		log.Printf("WARNING: Directory %s does not exist, falling back to home.", startDir)
-		homeDir, _ := os.UserHomeDir()
-		startDir = homeDir
+		if homeErr == nil {
+			startDir = homeDir
+		}
 	}
 
 	// Use our new platform-agnostic function to start the PTY.

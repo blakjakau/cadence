@@ -325,6 +325,7 @@ func startServer(addr string, handler http.Handler) error {
 	for i := 0; i < 30; i++ { // Try for up to 3 seconds
 		listener, err = net.Listen("tcp", addr)
 		if err == nil {
+			activeListener = listener
 			break
 		}
 		log.Printf("Port %s is busy, retrying in 100ms... (%d/30)", addr, i+1)
@@ -380,8 +381,17 @@ func stopHandler(w http.ResponseWriter, r *http.Request) {
 	}()
 }
 
+var activeListener net.Listener
+
 func restartProcess() {
 	log.Println("Relaunching process...")
+
+	if activeListener != nil {
+		activeListener.Close()
+	}
+	if mainServer != nil {
+		mainServer.Close()
+	}
 
 	argv0, err := exec.LookPath(os.Args[0])
 	if err != nil {
