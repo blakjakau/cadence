@@ -198,9 +198,9 @@ class ConduitClient {
         // Let onclose handle the retry/disconnect logic
     }
 
-    _send(payload) {
+    _send(payload, explicitRequestId = null) {
         return new Promise((resolve, reject) => {
-            const requestId = ++this.requestIdCounter;
+            const requestId = explicitRequestId || ++this.requestIdCounter;
             const message = { ...payload, requestId };
             this.pendingRequests.set(requestId, { resolve, reject });
 
@@ -276,6 +276,10 @@ class ConduitClient {
 
     wsSearch(path, type, query) {
         return this._send({ action: 'search', path, type, query });
+    }
+
+    wsSearchWithId(requestId, path, type, query) {
+        return this._send({ action: 'search', path, type, query }, requestId);
     }
 
     wsSearchSymbols(query) {

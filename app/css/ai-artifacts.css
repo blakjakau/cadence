@@ -361,6 +361,21 @@
     border-bottom: 1px dotted var(--text-secondary);
 }
 
+.tool-call-link {
+    color: var(--theme);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    text-decoration: underline;
+    text-underline-offset: 2px;
+    transition: color 0.15s ease, opacity 0.15s ease;
+    cursor: pointer;
+}
+
+.tool-call-link:hover {
+    color: var(--theme-light, #33a3dc);
+    opacity: 0.9;
+}
+
 .tool-call-query {
     color: var(--text-primary);
     font-style: italic;

@@ -35,16 +35,17 @@ export class Agent {
 		const maxLoops = 15;
 		this._abortAgent = false;
 		let isThrottled = true;
-		this.throttleBar = null;
-
 		const { aiManager, session, connection } = this;
+		const connConfig = connection?.config || {};
+		const hasRateLimits = !!(connConfig.rpmLimit || connConfig.rpdLimit || connConfig.tpmLimit || connConfig.requestsPerMin || connection?.requestsPerMin);
 
 		while (aiManager.runningSessions.has(session.id)) {
 			if (this._abortAgent) break;
 
 			loopCount++;
 
-			if (loopCount > maxLoops) {
+			// Apply throttle only if the connection specifies rate limits (RPM, RPD, TPM)
+			if (hasRateLimits && loopCount > maxLoops) {
 				if (!this.throttleBar) {
 					this.throttleBar = document.createElement("div");
 					this.throttleBar.className = "agent-throttle-bar";
@@ -55,18 +56,17 @@ export class Agent {
 					`;
 					const btn = this.throttleBar.querySelector('.throttle-toggle');
 					btn.onclick = () => {
-						isThrottled = !isThrottled;
-						if (isThrottled) {
-							btn.innerText = "Continue >";
-							this.throttleBar.classList.remove('unthrottled');
-						} else {
-							btn.innerText = "Throttle";
-							this.throttleBar.classList.add('unthrottled');
+						isThrottled = false;
+						if (this.throttleBar) {
+							this.throttleBar.remove();
+							this.throttleBar = null;
 						}
 					};
 					aiManager.chatContainer.append(this.throttleBar);
 				}
-				this.throttleBar.querySelector('.throttle-text').innerText = `Agent execution throttled due to long running task: ${loopCount} of ${maxLoops} iterations`;
+				if (this.throttleBar) {
+					this.throttleBar.querySelector('.throttle-text').innerText = `Agent execution throttled due to long running task: ${loopCount} of ${maxLoops} iterations`;
+				}
 
 				if (isThrottled) {
 					await new Promise(r => setTimeout(r, 7000));
@@ -366,31 +366,60 @@ export class Agent {
 						loopCount--; // Decrement to retry this turn
 						continue; // Go to next loop iteration
 					} else {
-						// 5 recovery attempts exhausted: close agent loop and notify user
-						console.error("❌ [Agent Repetition Loop] 5 recovery attempts exhausted. Exiting loop.");
+						// 5 recovery attempts exhausted: close agent loop and prompt user to continue
+						console.error("❌ [Agent Repetition Loop] 5 recovery attempts exhausted.");
 						delete session.temperatureOverride;
-						const errorBlock = document.createElement("div");
-						errorBlock.className = "response-block warning-block";
-						errorBlock.style.border = "1px solid var(--color-error, #dc3545)";
-						errorBlock.style.background = "var(--bg-secondary)";
-						errorBlock.style.padding = "12px 16px";
-						errorBlock.style.borderRadius = "var(--borderRadius)";
-						errorBlock.style.margin = "8px 0 16px 0";
-						errorBlock.innerHTML = `
-							<div style="font-weight: 500; display: flex; align-items: center; gap: 8px;">
-								<ui-icon style="color: var(--color-error, #dc3545);">error</ui-icon>
-								<span><b>Agent Halted:</b> Repetitive generation loop detected. 3 recovery attempts were exhausted.</span>
-							</div>
-						`;
-						if (aiManager.isSessionViewed(session.id)) {
-							aiManager.conversationArea.append(errorBlock);
-							if (aiManager.conversationArea) {
-								aiManager.conversationArea.scrollTop = aiManager.conversationArea.scrollHeight;
+
+						const haltPromise = new Promise(resolve => {
+							const errorBlock = document.createElement("div");
+							errorBlock.className = "response-block warning-block";
+							errorBlock.style.border = "1px solid var(--color-error, #dc3545)";
+							errorBlock.style.background = "var(--bg-secondary)";
+							errorBlock.style.padding = "12px 16px";
+							errorBlock.style.borderRadius = "var(--borderRadius)";
+							errorBlock.style.margin = "8px 0 16px 0";
+							errorBlock.innerHTML = `
+								<div style="font-weight: 500; display: flex; align-items: center; gap: 8px;">
+									<ui-icon style="color: var(--color-error, #dc3545);">error</ui-icon>
+									<span><b>Agent Halted:</b> Repetitive generation loop detected. 5 recovery attempts were exhausted.</span>
+								</div>
+								<div style="margin-top: 8px; display: flex; gap: 12px; align-items: center; margin-left: 24px;">
+									<button class="theme-button primary rep-continue-btn" style="padding: 4px 10px; font-size: 11px; font-weight: 600; min-width: 80px; cursor: pointer; border-radius: var(--borderRadius); border: none;">Continue (5 More Attempts)</button>
+								</div>
+							`;
+
+							const btn = errorBlock.querySelector(".rep-continue-btn");
+							btn.onclick = async () => {
+								errorBlock.remove();
+								this.repetitionHaltCount = 0; // Reset for another 5 attempts
+
+								if (responseBlock && typeof responseBlock.remove === "function") {
+									responseBlock.remove();
+								}
+
+								if (aiManager.isSessionViewed(session.id)) {
+									aiManager.historyManager.render();
+								}
+
+								aiManager.setSessionProcessing(session.id, true, 'agent', null);
+								resolve();
+							};
+
+							if (aiManager.isSessionViewed(session.id)) {
+								aiManager.conversationArea.append(errorBlock);
+								if (aiManager.conversationArea) {
+									aiManager.conversationArea.scrollTop = aiManager.conversationArea.scrollHeight;
+								}
 							}
-						}
+						});
+
 						aiManager.setSessionProcessing(session.id, false);
 						aiManager._updateTabStatus(session.id, "halted");
-						break;
+
+						await haltPromise;
+
+						loopCount--; // Decrement to retry this turn
+						continue; // Go to next loop iteration
 					}
 				}
 
@@ -629,6 +658,14 @@ export class Agent {
 
 						try {
 							toolResult = await agentTools.execute(toolCall.name, toolCall.arguments, session.id);
+							if (typeof toolResult === 'string' && toolResult.startsWith("__AGENT_HALT_AWAITING_COMMAND_APPROVAL__")) {
+								progressMsg.remove();
+								// Halt the current agent loop cleanly.
+								// When the user clicks Approve or Deny, the approval handler will execute the command and resume the agent.
+								aiManager.setSessionProcessing(session.id, false);
+								aiManager._updateTabStatus(session.id, "halted");
+								return;
+							}
 							if (toolCall.name === "query") {
 								loopCount = 0;
 								if (this.throttleBar) {

@@ -2252,7 +2252,6 @@ class AIManager {
 		if (this.isSessionViewed(targetSessionId)) {
 			this._startGlow(targetSessionId);
 			this.conversationArea.append(responseBlock);
-			responseBlock.style.minHeight = `${Math.max(50, availableHeightForResponse)}px`; // Ensure a minimum of 50px
 
 			// NEW: Scroll the conversation area so the user's prompt is near the top.
 			if (userMessageElement) {
@@ -2677,44 +2676,154 @@ class AIManager {
 			(msg) => msg.type === "user" || msg.type === "model" || msg.type === "tool_response"
 		);
 
-		const summarizationPromptContent = eligibleMessages
-			.map((msg) => {
-				if (msg.type === "tool_response") {
-					return `[Tool Response]\n${msg.content}`;
-				}
-				const roleName = msg.role === "user" ? "User" : "Assistant";
-				return `[${roleName}]\n${msg.content}`;
-			})
-			.join("\n\n");
+		// Distill messages to capture essential intent and action without bloating context
+		const distillMessage = (msg) => {
+			let content = msg.content || "";
+			
+			// 1. Strip raw thinking blocks from summarization prompt
+			content = content.replace(/<thought>[\s\S]*?<\/thought>/gi, '');
+			content = content.replace(/<think>[\s\S]*?<\/think>/gi, '');
+			content = content.replace(/<\|channel>thought[\s\S]*?<channel\|>/gi, '');
 
-		const summarizationPrompt = `Please summarize the following agent task cycle.
+			if (msg.type === "tool_response") {
+				// Truncate massive tool response outputs (e.g. huge file reads or directory listings)
+				if (content.length > 800) {
+					content = content.substring(0, 500) + "\n...[output truncated for summarization]...\n" + content.substring(content.length - 200);
+				}
+				return `[Tool Response]\n${content.trim()}`;
+			}
+
+			if (msg.role === "model") {
+				// If model did a tool call, summarize the tool call parameters concisely
+				if (msg.toolCalls && msg.toolCalls.length > 0) {
+					const toolDetails = msg.toolCalls.map(tc => {
+						const call = tc.functionCall || tc;
+						const name = call.name;
+						const args = typeof call.args === 'string' ? JSON.parse(call.args || '{}') : (call.args || {});
+						let argSummary = "";
+						if (args.path) argSummary = `path: ${args.path}`;
+						else if (args.command) argSummary = `cmd: ${args.command}`;
+						else if (args.query) argSummary = `query: ${args.query}`;
+						return `[Action: ${name} (${argSummary})]`;
+					}).join(" ");
+					
+					// Combine tool details with any accompanying text
+					const cleanText = content.replace(/<tool_call\s+name=["']([^"']+)["']\s*>[\s\S]*?<\/tool_call>/gi, '').trim();
+					return `[Assistant]\n${toolDetails}${cleanText ? `\n${cleanText}` : ''}`;
+				}
+				return `[Assistant]\n${content.trim()}`;
+			}
+
+			return `[User]\n${content.trim()}`;
+		};
+
+		// Distill all messages in the cycle
+		const distilledTurns = eligibleMessages.map(distillMessage).filter(Boolean);
+
+		// Determine target AI connection for summarization: prefer small/medium background connection
+		let summarizationAI = this.ai;
+		try {
+			const parentConnId = this.activeSession?.connectionId || "default-gemini";
+			const smallConnId = await this.selectConnectionForSubAgent("small", parentConnId);
+			if (smallConnId) {
+				const candidateAI = AIConnections.getInstance(smallConnId);
+				if (candidateAI && candidateAI.isConfigured()) {
+					summarizationAI = candidateAI;
+				}
+			}
+		} catch (e) {
+			console.warn("[Cycle Summary] Could not select smaller sub-agent connection, using current AI:", e);
+		}
+
+		// Determine safe token budget for summarization (use 60% of model context window or fallback to 8000 tokens)
+		const maxTokens = (summarizationAI.MAX_CONTEXT_TOKENS || 8192);
+		const budgetTokens = Math.max(2000, Math.floor(maxTokens * 0.6));
+
+		// Function to perform a single AI summarization call without reasoning overhead
+		const runSummaryCall = async (contextText) => {
+			const prompt = `Please summarize the following agent task cycle.
 You must output your response in the following XML format:
 <title>A very concise, single-line, active-voice title summarizing the main outcome of the cycle (max 10 words)</title>
 <summary>
-Outline what the user requested, the implementation plan created, what actions (file edits, creations, commands) the agent performed, and the final outcome/results. Keep the summary concise but descriptive of all changes.
+Outline what the user requested, what implementation actions (file edits, creations, commands) the agent performed, and the final outcome/results. Keep the summary concise but descriptive of all changes.
 </summary>
 
 Here is the task cycle to summarize:
-${summarizationPromptContent}`;
-		const internalMessagesForAI = [{ role: "user", content: summarizationPrompt }];
+${contextText}`;
 
-		let summaryResponse = "";
-		try {
+			let summaryResponse = "";
 			await new Promise((resolve, reject) => {
-				this.ai.chat(internalMessagesForAI, {
-					onUpdate: (response) => {
-						summaryResponse = response;
+				summarizationAI.chat(
+					[{ role: "user", content: prompt }],
+					{
+						onUpdate: (response) => {
+							summaryResponse = response;
+						},
+						onDone: () => resolve(),
+						onError: (error) => reject(error),
 					},
-					onDone: () => resolve(),
-					onError: (error) => reject(error),
-				});
+					null,
+					{ disableReasoning: true } // Disable reasoning overhead
+				);
 			});
+			return summaryResponse;
+		};
+
+		let finalSummaryResponse = "";
+
+		try {
+			const fullContent = distilledTurns.join("\n\n");
+			const estimated = this.ai.estimateTokens(fullContent);
+
+			if (estimated <= budgetTokens) {
+				// Fits easily in single context call
+				finalSummaryResponse = await runSummaryCall(fullContent);
+			} else {
+				// Large cycle: split turns into sequential chunks, summarize each chunk, then summarize the condensed chunks
+				console.info(`[Cycle Summary] Large cycle (${estimated} est. tokens). Summarizing in chunks within ${budgetTokens} token budget.`);
+				
+				const chunks = [];
+				let currentChunk = [];
+				let currentTokens = 0;
+
+				for (const turn of distilledTurns) {
+					const turnTokens = this.ai.estimateTokens(turn);
+					if (currentTokens + turnTokens > budgetTokens && currentChunk.length > 0) {
+						chunks.push(currentChunk.join("\n\n"));
+						currentChunk = [turn];
+						currentTokens = turnTokens;
+					} else {
+						currentChunk.push(turn);
+						currentTokens += turnTokens;
+					}
+				}
+				if (currentChunk.length > 0) {
+					chunks.push(currentChunk.join("\n\n"));
+				}
+
+				// Summarize each chunk
+				const intermediateSummaries = [];
+				for (let i = 0; i < chunks.length; i++) {
+					const chunkResp = await runSummaryCall(chunks[i]);
+					const cleanChunk = chunkResp.trim();
+					const sMatch = cleanChunk.match(/<summary>([\s\S]*?)<\/summary>/i);
+					intermediateSummaries.push(`--- Phase ${i + 1} Summary ---\n${sMatch ? sMatch[1].trim() : cleanChunk}`);
+				}
+
+				// Final recursive consolidation
+				finalSummaryResponse = await runSummaryCall(intermediateSummaries.join("\n\n"));
+			}
 		} catch (error) {
 			console.error("Error during cycle summarization AI call:", error);
 			return null;
 		}
 
-		const cleanResponse = summaryResponse.trim();
+		let cleanResponse = (finalSummaryResponse || "").trim();
+		// Explicitly strip any thought blocks emitted by thinking models
+		cleanResponse = cleanResponse.replace(/<thought>[\s\S]*?<\/thought>/gi, '').trim();
+		cleanResponse = cleanResponse.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+		cleanResponse = cleanResponse.replace(/<\|channel>thought[\s\S]*?<channel\|>/gi, '').trim();
+
 		let title = "";
 		let summary = "";
 		const titleMatch = cleanResponse.match(/<title>([\s\S]*?)<\/title>/i);
@@ -2726,16 +2835,24 @@ ${summarizationPromptContent}`;
 		if (!title && !summary) {
 			summary = cleanResponse;
 			title = summary.split(/[.\n]/)[0].trim();
-			if (title.length > 60) {
-				title = title.substring(0, 57) + "...";
-			}
 		} else if (!title) {
 			title = summary.split(/[.\n]/)[0].trim();
-			if (title.length > 60) {
-				title = title.substring(0, 57) + "...";
-			}
 		} else if (!summary) {
-			summary = cleanResponse;
+			// If summary tag was missing or unclosed but title was extracted, strip title from text to get summary
+			summary = cleanResponse.replace(/<title>[\s\S]*?<\/title>/i, '').replace(/<\/?summary>/gi, '').trim();
+			if (!summary) summary = cleanResponse;
+		}
+
+		// Clean up any remaining residual XML tags in extracted summary
+		summary = summary.replace(/<\/?summary>/gi, '').trim();
+
+		// Hard-limit title: strip extraneous tags/quotes and cap at max 10 words
+		if (title) {
+			title = title.replace(/^["'«“]+|["'»”]+$/g, '').trim();
+			const words = title.split(/\s+/).filter(Boolean);
+			if (words.length > 10) {
+				title = words.slice(0, 10).join(" ") + "...";
+			}
 		}
 
 		return { title, summary };
@@ -2849,6 +2966,9 @@ ${summarizationPromptContent}`;
 			diffStatuses: [],
 			timestamp: Date.now()
 		};
+		if (callbacks.totalThinkingMs !== undefined) {
+			modelMessage.thoughtDurationMs = callbacks.totalThinkingMs;
+		}
 		if (callbacks.thoughtSignature) {
 			modelMessage.thoughtSignature = callbacks.thoughtSignature;
 		}

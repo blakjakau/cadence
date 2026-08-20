@@ -902,6 +902,11 @@ const uiManager = {
 		})
 
 		conduitClient.on("search_done", (message) => {
+			// If this search was cancelled by the server because a newer search started, ignore it
+			if (message.error === "Cancelled") {
+				return
+			}
+
 			if (message.requestId === sidebarActiveSearchRequestId) {
 				if (sidebarRenderTimeout) {
 					clearTimeout(sidebarRenderTimeout)
@@ -1175,12 +1180,14 @@ const uiManager = {
 		}
 
 		const executeSidebarGrepSearch = async (query) => {
+			const requestId = ++conduitClient.requestIdCounter
+			sidebarActiveSearchRequestId = requestId
 			try {
-				const searchPromise = conduitClient.wsSearch(".", "grep", query)
-				sidebarActiveSearchRequestId = conduitClient.requestIdCounter
-				await searchPromise
+				await conduitClient.wsSearchWithId(requestId, ".", "grep", query)
 			} catch (err) {
-				console.error("Sidebar grep search failed:", err)
+				if (err.message !== "Cancelled") {
+					console.error("Sidebar grep search failed:", err)
+				}
 			}
 		}
 

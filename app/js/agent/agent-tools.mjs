@@ -2036,28 +2036,25 @@ Snippet: ${r.content || r.snippet || ""}`;
                 aiManager.historyManager.render();
             }
 
-            const decision = await new Promise((resolve) => {
-                if (!window._agentCommandResolvers) {
-                    window._agentCommandResolvers = {};
-                }
-                window._agentCommandResolvers[queryId] = resolve;
-            });
-
-            cmdMsg.status = decision.approved ? "approved" : "rejected";
-            cmdMsg.userNote = decision.userNote || "";
-            delete activeSession.pendingQueryId;
-            await workspaceClient.setSession(targetSessionId, activeSession);
-
-            if (decision.rememberChoice && decision.approved) {
-                policy.whitelist.push(cleanCmd);
+            // Halt the agent loop so waiting for approval does not hold active resources
+            // and can survive workspace/app reloads
+            if (aiManager) {
+                aiManager.setSessionProcessing(targetSessionId, false);
+                aiManager._updateTabStatus(targetSessionId, "halted");
             }
 
-            if (!decision.approved) {
-                return `Command execution rejected by user. ${decision.userNote ? `User feedback: ${decision.userNote}` : ''}`;
-            }
+            return `__AGENT_HALT_AWAITING_COMMAND_APPROVAL__:${queryId}`;
         }
 
-        // 4. Streamed Terminal Execution via WebSocket
+        // 4. Streamed Terminal Execution via WebSocket (if auto-approved / whitelisted)
+        return await this.executeTerminalCommand(cleanCmd, cwdOverride, targetSessionId);
+    }
+
+    /**
+     * Executes a terminal shell command via WebSocket and streams output to chat.
+     */
+    async executeTerminalCommand(cleanCmd, cwdOverride = null, targetSessionId = null) {
+        const aiManager = window.ui?.aiManager;
         return await new Promise((resolve) => {
             let outputBuffer = "";
             const port = (window.runtime) ? 3022 : (window.location.port || 3022);
@@ -2125,6 +2122,9 @@ Snippet: ${r.content || r.snippet || ""}`;
                 
                 let s = sanitizeText(outputBuffer);
 
+                // Strip initial export environment setup echo
+                s = s.replace(/^export\s+PAGER=cat[^\n]*\n?/gm, "");
+
                 // 4. Strip command input echo lines up to the first newline after the clean command
                 if (cleanCmd && s.includes(cleanCmd)) {
                     const idx = s.indexOf(cleanCmd);
@@ -2143,16 +2143,21 @@ Snippet: ${r.content || r.snippet || ""}`;
                 cleanedOutput = s;
                 streamMsg.output = cleanedOutput;
                 
-                const container = document.querySelector(`.agent-cmd-output-block[data-message-id="${executionMsgId}"] code`);
-                if (container) {
-                    container.textContent = cleanedOutput ? `$ ${cleanCmd}\n\n${cleanedOutput}` : "(Running command...)";
-                    const pre = container.parentElement;
-                    if (pre) pre.scrollTop = pre.scrollHeight;
+                const block = document.querySelector(`.agent-cmd-output-block[data-message-id="${executionMsgId}"]`);
+                if (block) {
+                    const code = block.querySelector("pre code");
+                    if (code) {
+                        code.textContent = cleanedOutput || "(Running command...)";
+                        const pre = code.parentElement;
+                        if (pre) pre.scrollTop = pre.scrollHeight;
+                    }
                 }
             };
 
             ws.onopen = () => {
-                ws.send(`${cleanCmd}\nexit\n`);
+                // Disable interactive pagers (git log, git diff, man, etc.) and non-interactive environment flags
+                // so commands run to completion without getting stuck on pagination prompts like ":::No next tag (press RETURN):"
+                ws.send(`export PAGER=cat GIT_PAGER=cat CI=true NO_COLOR=1 2>/dev/null || true\n${cleanCmd}\nexit\n`);
             };
 
             ws.onmessage = (event) => {

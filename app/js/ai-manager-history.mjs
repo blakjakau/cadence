@@ -4,6 +4,8 @@ import { Block, Button, Inline, Icon } from "./elements.mjs"
 import DEFAULT_WELCOME_MESSAGE_MARKDOWN from "./ai-manager-setup-guide.mjs"
 import workspaceClient from "./workspace-client.mjs"
 import { getAgentDirectives } from "./ai-manager-agent-prompt.mjs"
+import agentTools from "./agent/agent-tools.mjs"
+import { Agent } from "./agent/agent.mjs"
 export const MAX_RECENT_MESSAGES_TO_PRESERVE = 5
 
 class AIManagerHistory {
@@ -268,13 +270,32 @@ class AIManagerHistory {
 				}
 			}
 
+			let currentSubModelTurnContent = null;
 			for (let i = 0; i < subMessages.length; i++) {
 				const message = subMessages[i];
 				if (message.type === 'file_context') continue;
 				if (summarizedIds.has(message.id)) continue;
 				
 				const element = this._createMessageElement(message, i);
-				if (element) this.conversationArea.append(element);
+				if (!element) continue;
+
+				if (message.type === "model" || message.type === "error") {
+					currentSubModelTurnContent = element.querySelector(".model-turn-content");
+					this.conversationArea.append(element);
+				} else if (
+					(message.type === "agent_command_output" || 
+					 message.type === "agent_command_approval" || 
+					 message.type === "tool_response" || 
+					 (message.content && message.content.startsWith("[Tool Response:"))) &&
+					currentSubModelTurnContent
+				) {
+					currentSubModelTurnContent.append(element);
+				} else {
+					if (message.type === "user") {
+						currentSubModelTurnContent = null;
+					}
+					this.conversationArea.append(element);
+				}
 			}
 
 			if (runningSubAgent && runningSubAgent.responseBlock) {
@@ -353,6 +374,7 @@ class AIManagerHistory {
 		}
 
 		// Use the new element factory for each message in the history
+		let currentModelTurnContent = null;
 		for (let i = 0; i < this.chatHistory.length; i++) {
 			const message = this.chatHistory[i];
 			if (message.type === 'file_context') continue;
@@ -362,7 +384,30 @@ class AIManagerHistory {
 				? this._createExpanderMessageElement(message, i)
 				: this._createMessageElement(message, i); // No isNewMessage for full render
 
-			if (element) this.conversationArea.append(element);
+			if (!element) continue;
+
+			if (!this.manager.rawViewMode) {
+				if (message.type === "model" || message.type === "error") {
+					currentModelTurnContent = element.querySelector(".model-turn-content");
+					this.conversationArea.append(element);
+				} else if (
+					(message.type === "agent_command_output" || 
+					 message.type === "agent_command_approval" || 
+					 message.type === "tool_response" || 
+					 (message.content && message.content.startsWith("[Tool Response:"))) &&
+					currentModelTurnContent
+				) {
+					// Nest the command execution, approval cards, and tool responses inside the model turn that triggered them
+					currentModelTurnContent.append(element);
+				} else {
+					if (message.type === "user") {
+						currentModelTurnContent = null; // User prompt resets the turn
+					}
+					this.conversationArea.append(element);
+				}
+			} else {
+				this.conversationArea.append(element);
+			}
 		}
 
 		// Re-append the active streaming block if we are currently processing/generating
@@ -370,6 +415,40 @@ class AIManagerHistory {
 		if (runningSession && runningSession.responseBlock) {
 			this.conversationArea.append(runningSession.responseBlock);
 		}
+
+		// Manage default expanded state:
+		// If there is an active streaming turn, previous model turns collapse unless manually opened.
+		// If no active streaming turn, only the LAST model turn stays open unless previous ones were manually opened.
+		const modelTurnBlocks = Array.from(this.conversationArea.querySelectorAll(".model-turn-block"));
+		const hasActiveStreaming = !!(runningSession && runningSession.responseBlock);
+
+		modelTurnBlocks.forEach((block, idx) => {
+			const isLast = (idx === modelTurnBlocks.length - 1);
+			const manuallyExpanded = block.dataset.manuallyExpanded;
+			
+			if (manuallyExpanded === "true") {
+				block.setAttribute("expanded", "");
+			} else if (manuallyExpanded === "false") {
+				block.removeAttribute("expanded");
+			} else {
+				// No manual override by user:
+				// If streaming, keep the streaming one open, previous ones closed.
+				// If idle, keep the last model turn open, previous ones closed.
+				if (hasActiveStreaming) {
+					if (block.classList.contains("streaming") || isLast) {
+						block.setAttribute("expanded", "");
+					} else {
+						block.removeAttribute("expanded");
+					}
+				} else {
+					if (isLast) {
+						block.setAttribute("expanded", "");
+					} else {
+						block.removeAttribute("expanded");
+					}
+				}
+			}
+		});
 
 		// Render pending queued prompts
 		if (this.manager.activeSession && this.manager.activeSession.promptQueue) {
@@ -486,9 +565,44 @@ class AIManagerHistory {
 		} else {
 			const responseBlock = new Block();
 			responseBlock.sessionId = targetSessionId;
-			responseBlock.classList.add("response-block");
+			responseBlock.classList.add("response-block", "model-turn-block", "streaming");
 			if (type === "error") responseBlock.classList.add("error-block");
 			responseBlock.dataset.messageId = messageId;
+			responseBlock.setAttribute("expanded", "");
+			
+			// Header
+			const header = new Block();
+			header.className = "model-turn-header";
+
+			const expandIcon = new Icon();
+			expandIcon.className = "expand-icon";
+			expandIcon.textContent = "chevron_right";
+
+			const summarySpan = new Inline();
+			summarySpan.className = "model-turn-summary";
+			summarySpan.innerHTML = `Generating response...`;
+
+			const deleteButton = this._createSingleDeleteButton(messageId);
+			deleteButton.classList.add("delete-turn-btn");
+
+			header.append(expandIcon, summarySpan, deleteButton);
+
+			// Content Body
+			const contentDiv = new Block();
+			contentDiv.className = "model-turn-content";
+
+			header.onclick = (e) => {
+				if (e.target.closest('.delete-history-button') || e.target.closest('.delete-turn-btn')) return;
+				if (responseBlock.hasAttribute('expanded')) {
+					responseBlock.removeAttribute('expanded');
+					responseBlock.dataset.manuallyExpanded = "false";
+				} else {
+					responseBlock.setAttribute('expanded', '');
+					responseBlock.dataset.manuallyExpanded = "true";
+				}
+			};
+
+			responseBlock.append(header, contentDiv);
 			responseBlock.finalizedSegmentDivs = [];
 			responseBlock.activeSegmentDiv = null;
 			
@@ -499,11 +613,15 @@ class AIManagerHistory {
 						prefillContainer.remove();
 					}
 				}
+				
+				// Update live summary
+				summarySpan.innerHTML = this.manager.messageRenderer.getModelTurnSummary(fullResponse, { id: messageId });
+
 				const segments = this.manager.messageRenderer.segmentContent(fullResponse);
 				
 				if (!responseBlock.activeSegmentDiv) {
 					responseBlock.activeSegmentDiv = document.createElement("div");
-					responseBlock.append(responseBlock.activeSegmentDiv);
+					contentDiv.append(responseBlock.activeSegmentDiv);
 				}
 
 				while (segments.length > responseBlock.finalizedSegmentDivs.length + 1) {
@@ -516,7 +634,7 @@ class AIManagerHistory {
 					responseBlock.finalizedSegmentDivs.push(responseBlock.activeSegmentDiv);
 					
 					responseBlock.activeSegmentDiv = document.createElement("div");
-					responseBlock.append(responseBlock.activeSegmentDiv);
+					contentDiv.append(responseBlock.activeSegmentDiv);
 				}
 				
 				const activeText = segments[segments.length - 1];
@@ -528,10 +646,11 @@ class AIManagerHistory {
 				const running = this.manager.runningSessions.get(targetSessionId);
 				if (running) running.responseBlock = null;
 				this._localActiveStreamingBlock = null;
-				responseBlock.innerHTML = this.manager.messageRenderer.renderResponseContent(fullResponse, finalizedMessage, true);
-				this.manager.messageRenderer.addCodeBlockButtons(responseBlock, finalizedMessage);
-				const deleteButton = this._createSingleDeleteButton(messageId);
-				responseBlock.append(deleteButton);
+				
+				responseBlock.classList.remove("streaming");
+				summarySpan.innerHTML = this.manager.messageRenderer.getModelTurnSummary(fullResponse, finalizedMessage);
+				contentDiv.innerHTML = this.manager.messageRenderer.renderResponseContent(fullResponse, finalizedMessage, true);
+				this.manager.messageRenderer.addCodeBlockButtons(contentDiv, finalizedMessage);
 				
 				const tokenCount = typeof finalizedMessage.tokenCount === 'number' ? finalizedMessage.tokenCount : this.ai.estimateTokens([finalizedMessage]);
 				responseBlock.setAttribute("title", `Tokens: ${tokenCount}`);
@@ -696,17 +815,48 @@ class AIManagerHistory {
 
 		} else if (message.type === "model" || message.type === "error") {
 			element = new Block();
-			element.classList.add("response-block");
+			element.classList.add("response-block", "model-turn-block");
 			if (message.type === "error") element.classList.add("error-block");
 			element.dataset.messageId = message.id;
 			element.setAttribute("title", `Tokens: ${tokenCount}`);
-			element.innerHTML = this.manager.messageRenderer.renderResponseContent(message.content, message, isNew);
-			
+
+			// Expander Header
+			const header = new Block();
+			header.className = "model-turn-header";
+
+			const expandIcon = new Icon();
+			expandIcon.className = "expand-icon";
+			expandIcon.textContent = "chevron_right";
+
+			const summarySpan = new Inline();
+			summarySpan.className = "model-turn-summary";
+			summarySpan.innerHTML = message.type === "error" ? `Error: ${this._escapeHtml(message.content || "")}` : this.manager.messageRenderer.getModelTurnSummary(message.content, message);
+
 			const deleteButton = this._createSingleDeleteButton(message.id);
-			element.append(deleteButton);
+			deleteButton.classList.add("delete-turn-btn");
+
+			header.append(expandIcon, summarySpan, deleteButton);
+
+			// Content Body
+			const contentDiv = new Block();
+			contentDiv.className = "model-turn-content";
+			contentDiv.innerHTML = this.manager.messageRenderer.renderResponseContent(message.content, message, isNew);
+
+			header.onclick = (e) => {
+				if (e.target.closest('.delete-history-button') || e.target.closest('.delete-turn-btn')) return;
+				if (element.hasAttribute('expanded')) {
+					element.removeAttribute('expanded');
+					element.dataset.manuallyExpanded = "false";
+				} else {
+					element.setAttribute('expanded', '');
+					element.dataset.manuallyExpanded = "true";
+				}
+			};
+
+			element.append(header, contentDiv);
 			
 			if (message.type === "model") {
-				this.manager.messageRenderer.addCodeBlockButtons(element, message);
+				this.manager.messageRenderer.addCodeBlockButtons(contentDiv, message);
 
 				// Add manual cycle summarization trigger button if this model message called "done" and isn't summarized yet
 				if (message.toolCalls?.some(tc => (tc.functionCall?.name || tc.name) === "done")) {
@@ -785,7 +935,7 @@ class AIManagerHistory {
 									}
 								} else {
 									summarizeBtn.classList.add("outside-header");
-									element.append(summarizeBtn);
+									contentDiv.append(summarizeBtn);
 								}
 							}
 						}
@@ -822,6 +972,7 @@ class AIManagerHistory {
 			const deleteButton = this._createSingleDeleteButton(message.id);
 			element.append(deleteButton);
 		} else if (message.type === "cycle_summary") {
+			const targetSessionId = message.subSessionId || this.manager.activeSessionId;
 			element = new Block();
 			element.classList.add("cycle-summary-block");
 			element.dataset.messageId = message.id;
@@ -838,11 +989,101 @@ class AIManagerHistory {
 			const titleSpan = new Inline();
 			titleSpan.className = "cycle-summary-title";
 			titleSpan.textContent = summaryTitleText;
-			
+
+			const actionsContainer = new Block();
+			actionsContainer.className = "cycle-summary-actions";
+
+			const editBtn = new Icon();
+			editBtn.className = "cycle-summary-action-btn";
+			editBtn.textContent = "edit";
+			editBtn.title = "Edit Title and Summary";
+			editBtn.onclick = async (e) => {
+				e.stopPropagation();
+				const currentTitle = message.title || summaryTitleText;
+				const currentContent = message.content || "";
+				
+				const newTitle = await window.modal.prompt("Edit Cycle Title (max 10 words):", "Edit Cycle Title", currentTitle);
+				if (newTitle === null) return;
+				
+				let finalTitle = newTitle.trim();
+				const words = finalTitle.split(/\s+/).filter(Boolean);
+				if (words.length > 10) {
+					finalTitle = words.slice(0, 10).join(" ") + "...";
+				}
+				
+				message.title = finalTitle;
+				message.lastModified = Date.now();
+				
+				const activeSession = this.manager.runningSessions.get(targetSessionId)?.instance?.session ||
+				                      (this.manager.activeSessionId === targetSessionId ? this.manager.activeSession : await workspaceClient.getSession(targetSessionId));
+				if (activeSession) {
+					const msgInSession = activeSession.messages.find(m => m.id === message.id);
+					if (msgInSession) {
+						msgInSession.title = finalTitle;
+						activeSession.lastModified = Date.now();
+						await workspaceClient.setSession(targetSessionId, activeSession);
+					}
+				}
+				this.render();
+			};
+
+			const regenBtn = new Icon();
+			regenBtn.className = "cycle-summary-action-btn";
+			regenBtn.textContent = "refresh";
+			regenBtn.title = "Regenerate Summary";
+			regenBtn.onclick = async (e) => {
+				e.stopPropagation();
+				const startId = message.cycleStartMsgId;
+				const endId = message.cycleEndMsgId;
+				const allMsgs = this.chatHistory;
+				const startIdx = allMsgs.findIndex(m => m.id === startId);
+				const endIdx = allMsgs.findIndex(m => m.id === endId);
+				if (startIdx === -1 || endIdx === -1 || startIdx > endIdx) {
+					window.modal.notice("Cannot regenerate summary: original cycle messages are no longer in history.", "Regenerate Summary");
+					return;
+				}
+
+				const originalTitleHtml = titleSpan.innerHTML;
+				titleSpan.innerHTML = `<ui-icon class="spin" style="font-size: 14px; vertical-align: middle; margin-right: 4px;">cached</ui-icon> <em>Regenerating summary...</em>`;
+				regenBtn.classList.add("spin");
+				try {
+					const cycleMsgs = allMsgs.slice(startIdx, endIdx + 1);
+					const result = await this.manager.generateCycleSummary(cycleMsgs);
+					if (result && (result.title || result.summary)) {
+						message.title = result.title;
+						message.content = result.summary;
+						message.lastModified = Date.now();
+						
+						const activeSession = this.manager.runningSessions.get(targetSessionId)?.instance?.session ||
+						                      (this.manager.activeSessionId === targetSessionId ? this.manager.activeSession : await workspaceClient.getSession(targetSessionId));
+						if (activeSession) {
+							const msgInSession = activeSession.messages.find(m => m.id === message.id);
+							if (msgInSession) {
+								msgInSession.title = result.title;
+								msgInSession.content = result.summary;
+								activeSession.lastModified = Date.now();
+								await workspaceClient.setSession(targetSessionId, activeSession);
+							}
+						}
+						window.modal.toast("Cycle summary regenerated.");
+						this.render();
+					} else {
+						titleSpan.innerHTML = originalTitleHtml;
+					}
+				} catch (err) {
+					console.error("Failed to regenerate cycle summary:", err);
+					titleSpan.innerHTML = originalTitleHtml;
+					window.modal.notice(`Failed to regenerate summary: ${err.message}`, "Error");
+				} finally {
+					regenBtn.classList.remove("spin");
+				}
+			};
+
 			const toggleBtn = new Button("Show Detail");
 			toggleBtn.className = "toggle-history-btn theme-button secondary hidden";
-			
-			header.append(icon, titleSpan, toggleBtn);
+
+			actionsContainer.append(editBtn, regenBtn, toggleBtn);
+			header.append(icon, titleSpan, actionsContainer);
 			
 			const contentDiv = new Block();
 			contentDiv.className = "cycle-summary-content hidden";
@@ -1070,25 +1311,89 @@ class AIManagerHistory {
 				rememberLabel.style.marginRight = "auto";
 				rememberLabel.innerHTML = `<input type="checkbox" id="chk_${message.id}"> Always allow in this session`;
 
+				const targetSessionId = message.subSessionId || this.manager.activeSessionId;
+
 				const denyBtn = new Button("Deny");
 				denyBtn.className = "theme-button danger";
-				denyBtn.onclick = () => {
-					const resolver = window._agentCommandResolvers?.[message.id];
-					if (resolver) {
-						delete window._agentCommandResolvers[message.id];
-						resolver({ approved: false, userNote: noteInput.value.trim() });
+				denyBtn.onclick = async () => {
+					actions.style.display = "none";
+					const userNote = noteInput.value.trim();
+					message.status = "rejected";
+					message.userNote = userNote;
+
+					const activeSession = this.manager.runningSessions.get(targetSessionId)?.instance?.session ||
+					                      (this.manager.activeSessionId === targetSessionId ? this.manager.activeSession : await workspaceClient.getSession(targetSessionId));
+					if (activeSession) {
+						delete activeSession.pendingQueryId;
+						const toolResponseMessage = {
+							id: crypto.randomUUID(),
+							role: "user",
+							type: "tool_response",
+							content: `[Tool Response: run_command]\nCommand execution rejected by user.${userNote ? ` User feedback: ${userNote}` : ''}`,
+							timestamp: Date.now()
+						};
+						activeSession.messages.push(toolResponseMessage);
+						activeSession.lastModified = Date.now();
+						await workspaceClient.setSession(targetSessionId, activeSession);
 					}
+
+					this.render();
+
+					// Resume agent
+					this.manager.setSessionProcessing(targetSessionId, true, 'agent', null);
+					this.manager._updateTabStatus(targetSessionId, "running");
+					const agent = new Agent(this.manager, activeSession, this.manager.ai);
+					await agent.run(null, null);
 				};
 
 				const approveBtn = new Button("Approve");
 				approveBtn.className = "theme-button primary";
-				approveBtn.onclick = () => {
+				approveBtn.onclick = async () => {
+					actions.style.display = "none";
 					const chk = document.getElementById(`chk_${message.id}`);
-					const resolver = window._agentCommandResolvers?.[message.id];
-					if (resolver) {
-						delete window._agentCommandResolvers[message.id];
-						resolver({ approved: true, rememberChoice: chk ? chk.checked : false });
+					message.status = "approved";
+
+					const activeSession = this.manager.runningSessions.get(targetSessionId)?.instance?.session ||
+					                      (this.manager.activeSessionId === targetSessionId ? this.manager.activeSession : await workspaceClient.getSession(targetSessionId));
+
+					if (activeSession) {
+						delete activeSession.pendingQueryId;
+						if (chk && chk.checked) {
+							activeSession.commandPolicy = activeSession.commandPolicy || { whitelist: [], blacklist: [] };
+							if (!activeSession.commandPolicy.whitelist.includes(message.command)) {
+								activeSession.commandPolicy.whitelist.push(message.command);
+							}
+						}
+						activeSession.lastModified = Date.now();
+						await workspaceClient.setSession(targetSessionId, activeSession);
 					}
+
+					this.render();
+
+					// Execute the approved command
+					this.manager.setSessionProcessing(targetSessionId, true, 'agent', null);
+					this.manager._updateTabStatus(targetSessionId, "running");
+
+					const cmdResult = await agentTools.executeTerminalCommand(message.command, message.cwd, targetSessionId);
+
+					if (activeSession) {
+						const toolResponseMessage = {
+							id: crypto.randomUUID(),
+							role: "user",
+							type: "tool_response",
+							content: `[Tool Response: run_command]\n${cmdResult}`,
+							timestamp: Date.now()
+						};
+						activeSession.messages.push(toolResponseMessage);
+						activeSession.lastModified = Date.now();
+						await workspaceClient.setSession(targetSessionId, activeSession);
+					}
+
+					this.render();
+
+					// Resume agent
+					const agent = new Agent(this.manager, activeSession, this.manager.ai);
+					await agent.run(null, null);
 				};
 
 				btnRow.append(rememberLabel, denyBtn, approveBtn);

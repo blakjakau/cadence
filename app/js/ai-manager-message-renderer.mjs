@@ -333,14 +333,20 @@ export default class AIManagerMessageRenderer {
         }
 
         let thinkHtml = "";
+        let thoughtSeconds = null;
+        if (message && message.thoughtDurationMs !== undefined) {
+            thoughtSeconds = (message.thoughtDurationMs / 1000).toFixed(1);
+        }
+
         if (parsed.thoughtBlock) {
             const thinkContent = content.substring(parsed.thoughtBlock.contentStartIdx, parsed.thoughtBlock.contentEndIdx).trim();
             const isClosed = parsed.thoughtBlock.closed;
+            const thinkLabel = isClosed ? (thoughtSeconds ? `Thought Process (${thoughtSeconds}s)` : "Thought Process") : "Thinking...";
             thinkHtml = `
                 <div class="thought-block" ${isClosed ? "" : "expanded"}>
                     <div class="thought-header" onclick="this.parentElement.hasAttribute('expanded') ? this.parentElement.removeAttribute('expanded') : this.parentElement.setAttribute('expanded', '')">
                         <ui-icon>chevron_right</ui-icon>
-                        <span>${isClosed ? "Thought Process" : "Thinking..."}</span>
+                        <span>${thinkLabel}</span>
                     </div>
                     <div class="thought-content">
                         ${this.aiManager.md.render(thinkContent)}
@@ -531,11 +537,16 @@ export default class AIManagerMessageRenderer {
             else if (toolName.includes("edit")) icon = "edit";
             else if (toolName.includes("create")) icon = "create_new_folder";
             else if (toolName.includes("open")) icon = "launch";
+            else if (toolName.includes("fetch") || toolName.includes("web")) icon = "language";
             else if (toolName === "query") icon = "help";
 
             let label = `<code>${toolName}</code>`;
             const fileActions = ["edit_file", "read_file", "create_file", "find_file", "open_file", "search_in_file"];
-            if (args.path) {
+            if (args.url) {
+                const rawUrl = args.url.trim();
+                const displayUrl = rawUrl.length > 55 ? rawUrl.substring(0, 55) + "..." : rawUrl;
+                label = `<code>${toolName}:</code> <a href="${this._escapeHtml(rawUrl)}" target="_blank" rel="noopener noreferrer" class="tool-call-link" title="${this._escapeHtml(rawUrl)}">${this._escapeHtml(displayUrl)}</a>`;
+            } else if (args.path) {
                 if (fileActions.includes(toolName)) {
                     const shortFile = args.path.split('/').pop() || args.path;
                     let fileChipHtml = `<ui-filechip filename="${this._escapeHtml(shortFile)}" path="${this._escapeHtml(args.path)}"></ui-filechip>`;
@@ -563,6 +574,9 @@ export default class AIManagerMessageRenderer {
                 } else {
                     label = `<code>${toolName}:</code> <span class="tool-call-path" title="${this._escapeHtml(args.path)}">${this._escapeHtml(args.path)}</span>`;
                 }
+            } else if (args.command) {
+                const truncatedCmd = args.command.length > 50 ? args.command.substring(0, 50) + "..." : args.command;
+                label = `<code>${toolName}:</code> <span class="tool-call-query"><code>$ ${this._escapeHtml(truncatedCmd)}</code></span>`;
             } else if (args.query) {
                 label = `<code>${toolName}:</code> <span class="tool-call-query">"${this._escapeHtml(args.query)}"</span>`;
             } else if (args.question) {
@@ -624,6 +638,82 @@ export default class AIManagerMessageRenderer {
         }
 
         return finalHtml;
+    }
+
+    getModelTurnSummary(content, message = null) {
+        let thoughtSeconds = null;
+        if (message && message.thoughtDurationMs !== undefined) {
+            thoughtSeconds = (message.thoughtDurationMs / 1000).toFixed(1);
+        }
+
+        const parsed = this.parseBlocks(content || "");
+        
+        let toolSummary = "";
+        if (parsed.toolCallBlocks && parsed.toolCallBlocks.length > 0) {
+            const tc = parsed.toolCallBlocks[0];
+            const toolName = tc.name;
+            const toolArgs = content.substring(tc.contentStartIdx, tc.contentEndIdx);
+            
+            const args = {};
+            const tagRegex = /<([a-zA-Z0-9_-]+)>([\s\S]*?)<\/\1>/g;
+            let tagMatch;
+            while ((tagMatch = tagRegex.exec(toolArgs)) !== null) {
+                const key = tagMatch[1];
+                let val = tagMatch[2];
+                if (key !== 'search' && key !== 'replace' && key !== 'content' && key !== 'plan' && key !== 'tasks') {
+                    val = val.trim();
+                }
+                args[key] = val;
+            }
+
+            if (args.url) {
+                const rawUrl = args.url.trim();
+                const shortUrl = rawUrl.length > 35 ? rawUrl.substring(0, 35) + "..." : rawUrl;
+                toolSummary = `called <code>${toolName}</code> <span style="opacity:0.85;">${this._escapeHtml(shortUrl)}</span>`;
+            } else if (args.command) {
+                const shortCmd = args.command.length > 35 ? args.command.substring(0, 35) + "..." : args.command;
+                toolSummary = `called <code>${toolName}</code> <span style="opacity:0.85;">$ ${this._escapeHtml(shortCmd)}</span>`;
+            } else if (args.path) {
+                const shortFile = args.path.split('/').pop() || args.path;
+                let details = shortFile;
+                if (toolName === "edit_file" && args.search && args.replace) {
+                    const searchLines = args.search.split('\n').length;
+                    const replaceLines = args.replace.split('\n').length;
+                    details += ` (+${replaceLines} -${searchLines})`;
+                }
+                toolSummary = `called <code>${toolName}</code> <span style="opacity:0.85;">${this._escapeHtml(details)}</span>`;
+            } else if (args.query) {
+                const shortQuery = args.query.length > 30 ? args.query.substring(0, 30) + "..." : args.query;
+                toolSummary = `called <code>${toolName}</code> <span style="opacity:0.85;">"${this._escapeHtml(shortQuery)}"</span>`;
+            } else {
+                toolSummary = `called <code>${toolName}</code>`;
+            }
+        }
+
+        // Calculate text words if no tool call, or in addition
+        const rangesToRemove = [];
+        if (parsed.thoughtBlock) {
+            rangesToRemove.push({ startIdx: parsed.thoughtBlock.startIdx, endIdx: parsed.thoughtBlock.endIdx });
+        }
+        if (parsed.toolCallBlocks) {
+            parsed.toolCallBlocks.forEach(b => rangesToRemove.push({ startIdx: b.startIdx, endIdx: b.endIdx }));
+        }
+        const textOnly = this.removeRanges(content || "", rangesToRemove).trim();
+        const wordCount = textOnly ? textOnly.split(/\s+/).filter(Boolean).length : 0;
+
+        let parts = [];
+        if (thoughtSeconds) {
+            parts.push(`Thought ${thoughtSeconds}s`);
+        }
+        if (toolSummary) {
+            parts.push(toolSummary);
+        } else if (wordCount > 0) {
+            parts.push(`responded ${wordCount} words`);
+        } else if (!thoughtSeconds) {
+            parts.push(`Model Response`);
+        }
+
+        return parts.join(", ");
     }
 
     inferLanguageFromDiff(diffContent) {

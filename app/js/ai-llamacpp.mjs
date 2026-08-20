@@ -272,14 +272,17 @@ class LlamaCpp extends AI {
                 return_progress: true
             };
 
-            if (this.supportsReasoning) {
+            const isReasoningDisabled = (session && session.disableReasoning === true) || (this.config.thinkingLevel === 'off');
+            if (isReasoningDisabled) {
+                requestBody.enable_thinking = false;
+                requestBody.thinking_budget = 0;
+                requestBody.thinking_budget_tokens = 0;
+                requestBody.reasoning_budget = 0;
+                requestBody.reasoning_effort = "none";
+            } else if (this.supportsReasoning) {
                 requestBody.enable_thinking = true;
                 const level = this.config.thinkingLevel || "medium";
-                if (level === 'off') {
-                    requestBody.enable_thinking = false;
-                    requestBody.thinking_budget = 0;
-                    requestBody.thinking_budget_tokens = 0;
-                } else if (level !== 'unlimited' && level !== 'ultra') {
+                if (level !== 'unlimited' && level !== 'ultra') {
                     let budget = 2048;
                     if (level === 'low') {
                         budget = Math.max(512, Math.min(1024, Math.round(this.MAX_CONTEXT_TOKENS * 0.03125)));
@@ -290,6 +293,7 @@ class LlamaCpp extends AI {
                     }
                     requestBody.thinking_budget_tokens = budget;
                     requestBody.thinking_budget = budget;
+                    requestBody.reasoning_budget = budget;
                 }
             }
 
@@ -409,9 +413,11 @@ class LlamaCpp extends AI {
                                 }
 
                                 // Commit chunkUpdate (e.g. </thought>) immediately so it's not lost if tool parsing throws
+                                callbacks.totalThinkingMs = totalThinkingMs;
                                 if (chunkUpdate) {
                                     fullResponse += chunkUpdate;
                                     chunkUpdate = '';
+                                    if (onUpdate) onUpdate(fullResponse);
                                 }
 
                                 if (delta.tool_calls && Array.isArray(delta.tool_calls)) {
@@ -510,6 +516,7 @@ class LlamaCpp extends AI {
             }
 
             this.recordTelemetry(currentTokens, outputTokens, requestEndTime - requestStartTime, Math.round(totalThinkingMs / 1000));
+            callbacks.totalThinkingMs = totalThinkingMs;
 
             if (onDone) onDone(finalResponse, Math.round((finalTokens / this.MAX_CONTEXT_TOKENS) * 100));
 

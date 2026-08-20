@@ -636,6 +636,7 @@ class Gemini extends AI {
                                         fullResponseAccumulator += xmlToolCall;
                                     }
                                 }
+                                callbacks.totalThinkingMs = totalThinkingMs;
                                 if (onUpdate) onUpdate(fullResponseAccumulator);
                             }
                         }
@@ -905,7 +906,9 @@ class Gemini extends AI {
                     requestBody.generationConfig = requestBody.generationConfig || {};
                     let budget = 2048;
                     const level = this.config.thinkingLevel || "medium";
-                    if (level === 'off') {
+                    if (session && session.disableReasoning === true) {
+                        budget = 0;
+                    } else if (level === 'off') {
                         budget = 0;
                     } else if (level === 'low') {
                         budget = 1024;

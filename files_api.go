@@ -1085,16 +1085,21 @@ func startGrepSearch(ws *websocket.Conn, reqId int, query string) {
 
 	done:
 		activeSearchesMu.Lock()
+		wasCancelled := false
 		if search, ok := activeSearches[ws]; ok && search == searchTracker {
 			search.requestId = 0
+		} else {
+			wasCancelled = true
 		}
 		activeSearchesMu.Unlock()
 
-		safeWriteJSON(ws, fileResponse{
-			RequestId: reqId,
-			Action:    "search_done",
-			Data:      count,
-		})
+		if !wasCancelled && ctx.Err() == nil {
+			safeWriteJSON(ws, fileResponse{
+				RequestId: reqId,
+				Action:    "search_done",
+				Data:      count,
+			})
+		}
 	}()
 
 	// Wait for searches and close chan
