@@ -22,7 +22,7 @@ export const subAgentToolsList = [
 export const tools = [
     {
         name: "run_command",
-        description: "Executes a terminal shell command in the project directory. Execution requires explicit user approval unless whitelisted.",
+        description: "Executes a terminal shell command (run in the project directory). Execution requires explicit user approval unless whitelisted.",
         parameters: {
             type: "object",
             properties: {

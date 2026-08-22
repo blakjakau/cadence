@@ -73,6 +73,7 @@ class AIManager {
 		
 		// Reference to the AI info display element
 		this.aiInfoDisplay = null;
+		this.thinkingBudgetSelect = null;
 		this.editBufferDisplay = null; // NEW: Edit buffer display
 
 		// Load summarization and mode settings defaults
@@ -190,6 +191,12 @@ class AIManager {
 				hasCompletedAllTasks = !targetSession.taskList.includes("- [ ]") && !targetSession.taskList.includes("* [ ]");
 			}
 
+			const sessionThinking = targetSession?.thinkingLevel;
+			const effectiveThinkingLevel = (sessionThinking && sessionThinking !== "auto")
+				? sessionThinking
+				: (activeAi?.config?.thinkingLevel || "medium");
+			const isNativeReasoning = !!(activeAi && activeAi.supportsReasoning && effectiveThinkingLevel !== "off" && !targetSession?.disableReasoning);
+
 			basePrompt = getAgentSystemPrompt(modelName, {
 				supportsJSONTools,
 				hasPlan,
@@ -197,7 +204,7 @@ class AIManager {
 				hasAcceptedPlan,
 				hasCompletedAllTasks,
 				planningMode: targetPlanningMode,
-				isNativeReasoning: !!(activeAi && activeAi.supportsReasoning)
+				isNativeReasoning
 			});
 		} else {
 			basePrompt = systemPromptBuilder(this.getSystemPromptConfig());
@@ -991,9 +998,34 @@ class AIManager {
 			this.switchConnection(e.target.value);
 		});
 
+		this.thinkingBudgetSelect = document.createElement("select");
+		this.thinkingBudgetSelect.classList.add("ai-thinking-select", "ai-provider-select");
+		this.thinkingBudgetSelect.setAttribute("title", "Session Thinking Budget Override");
+		const thinkingOptions = [
+			{ value: "auto", label: "Think: Auto" },
+			{ value: "off", label: "Think: Off" },
+			{ value: "low", label: "Think: Low" },
+			{ value: "medium", label: "Think: Med" },
+			{ value: "high", label: "Think: High" },
+			{ value: "unlimited", label: "Think: Max" }
+		];
+		thinkingOptions.forEach(opt => {
+			const optionEl = document.createElement("option");
+			optionEl.value = opt.value;
+			optionEl.textContent = opt.label;
+			this.thinkingBudgetSelect.appendChild(optionEl);
+		});
+		this.thinkingBudgetSelect.addEventListener('change', async (e) => {
+			if (!this.activeSession) return;
+			const val = e.target.value;
+			this.activeSession.thinkingLevel = val;
+			await workspaceClient.setSession(this.activeSession.id, this.activeSession);
+			this._updateAIInfoDisplay();
+		});
 
 		buttonContainer.append(this.artifactsButton);
 		buttonContainer.append(this.aiInfoDisplay); // Element is created, but content will be set by _updateAIInfoDisplay()
+		buttonContainer.append(this.thinkingBudgetSelect);
 		buttonContainer.append(this.rawViewButton); // Add raw view button
 		buttonContainer.append(this.settingsButton);
 		this.stopButton = new Button("Stop");
@@ -1734,6 +1766,11 @@ class AIManager {
 			} else {
 				this.aiInfoDisplay.setAttribute("title", `Connection Status: Not Configured`);
 			}
+		}
+
+		if (this.thinkingBudgetSelect) {
+			const sessionThinking = this.activeSession?.thinkingLevel || "auto";
+			this.thinkingBudgetSelect.value = sessionThinking;
 		}
 	}
 
@@ -2493,7 +2530,7 @@ class AIManager {
 		// Since we now return early if `processedPrompt` is empty, we can unconditionally call the AI here.
 		const messagesForAI = this.historyManager.prepareMessagesForAI();
 		const systemPrompt = await this.getSystemPrompt();
-		targetAI.chat(messagesForAI, callbacks, systemPrompt);
+		targetAI.chat(messagesForAI, callbacks, systemPrompt, targetSession); // Pass session so per-session thinkingLevel override applies.
 	}
 
 	_parseToolCalls(content) {
@@ -3514,7 +3551,7 @@ ${contextText}`;
 
 		const messagesForAI = this.historyManager.prepareMessagesForAI();
 		const systemPrompt = await this.getSystemPrompt();
-		this.ai.chat(messagesForAI, callbacks, systemPrompt);
+		this.ai.chat(messagesForAI, callbacks, systemPrompt, this.activeSession); // Pass session so per-session thinkingLevel override applies.
 	}
 
 	async loadSettings() {

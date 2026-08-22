@@ -386,7 +386,14 @@ func checkSyntaxHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	cmd := exec.Command(nodePath, "--check")
+	args := []string{"--check"}
+	if ext == ".cjs" {
+		args = append(args, "--input-type=commonjs")
+	} else if ext == ".js" || ext == ".mjs" {
+		args = append(args, "--input-type=module")
+	}
+
+	cmd := exec.Command(nodePath, args...)
 	cmd.Stdin = strings.NewReader(req.Content)
 
 	var stderr strings.Builder

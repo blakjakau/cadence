@@ -905,7 +905,8 @@ class Gemini extends AI {
                 if (supportsThinking) {
                     requestBody.generationConfig = requestBody.generationConfig || {};
                     let budget = 2048;
-                    const level = this.config.thinkingLevel || "medium";
+                    const sessionLevel = session?.thinkingLevel;
+                    const level = (sessionLevel && sessionLevel !== 'auto') ? sessionLevel : (this.config.thinkingLevel || "medium");
                     if (session && session.disableReasoning === true) {
                         budget = 0;
                     } else if (level === 'off') {

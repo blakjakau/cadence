@@ -950,71 +950,91 @@ Snippet: ${r.content || r.snippet || ""}`;
 
             const session = targetTab.config.session;
             const originalContent = session.getValue();
-            const sourceLines = originalContent.split(/\r?\n/);
 
-            // Helper to clean a line: strip leading spaces and comments
-            const cleanLine = (line) => {
-                let cleaned = line.replace(/^\s+/, "");
-                cleaned = cleaned.replace(/("[^"\\]*(?:\\.[^"\\]*)*"|'[^'\\]*(?:\\.[^'\\]*)*'|`[^`\\]*(?:\\.[^`\\]*)*`)|(\/\/.*|#.*|\/\*.*?\*\/)/g, (match, g1, g2) => {
-                    if (g2 !== undefined) return "";
-                    return g1;
-                });
-                return cleaned.trim();
-            };
+            // Normalize line endings to \n for consistent matching
+            const normOriginal = originalContent.replace(/\r\n/g, "\n");
+            const normSearch = (searchString || "").replace(/\r\n/g, "\n");
+            const normReplace = (replacementString ?? "").replace(/\r\n/g, "\n");
 
-            const mappedSource = [];
-            for (let i = 0; i < sourceLines.length; i++) {
-                const cleaned = cleanLine(sourceLines[i]);
-                if (cleaned !== "") {
-                    mappedSource.push({ cleaned, index: i });
+            let startLineIndex = -1;
+            let startColIndex = 0;
+            let endLineIndex = -1;
+            let endColIndex = 0;
+            let proposedContent = "";
+
+            // 1. Primary Match Strategy: Exact character-for-character substring match
+            let matchCount = 0;
+            let firstMatchOffset = -1;
+            let searchOffset = 0;
+
+            if (normSearch.length > 0) {
+                while ((searchOffset = normOriginal.indexOf(normSearch, searchOffset)) !== -1) {
+                    matchCount++;
+                    if (matchCount === 1) firstMatchOffset = searchOffset;
+                    searchOffset += normSearch.length;
                 }
             }
 
-            const searchLines = (searchString || "").split(/\r?\n/);
-            const mappedSearch = [];
-            for (let i = 0; i < searchLines.length; i++) {
-                const cleaned = cleanLine(searchLines[i]);
-                if (cleaned !== "") {
-                    mappedSearch.push({ cleaned, index: i });
-                }
+            if (matchCount > 1) {
+                throw new Error("Search text matches multiple locations. Provide more surrounding context lines.");
             }
 
-            let matchIndices = [];
+            if (matchCount === 1) {
+                const beforeMatch = normOriginal.slice(0, firstMatchOffset);
+                const matchedText = normOriginal.slice(firstMatchOffset, firstMatchOffset + normSearch.length);
 
-            if (mappedSearch.length > 0) {
-                for (let i = 0; i <= mappedSource.length - mappedSearch.length; i++) {
-                    let isMatch = true;
-                    for (let j = 0; j < mappedSearch.length; j++) {
-                        if (mappedSource[i + j].cleaned !== mappedSearch[j].cleaned) {
-                            isMatch = false;
-                            break;
+                const beforeLines = beforeMatch.split("\n");
+                startLineIndex = beforeLines.length - 1;
+                startColIndex = beforeLines[beforeLines.length - 1].length;
+
+                const matchedLines = matchedText.split("\n");
+                endLineIndex = startLineIndex + matchedLines.length - 1;
+                endColIndex = matchedLines.length === 1 ? startColIndex + matchedText.length : matchedLines[matchedLines.length - 1].length;
+
+                proposedContent = normOriginal.slice(0, firstMatchOffset) + normReplace + normOriginal.slice(firstMatchOffset + normSearch.length);
+            } else {
+                // 2. Secondary Match Strategy (Fallback): Strict line-by-line match with trailing whitespace tolerance
+                const sourceLines = normOriginal.split("\n");
+                const searchLines = normSearch.split("\n");
+
+                const lineMatches = [];
+                if (searchLines.length > 0) {
+                    for (let i = 0; i <= sourceLines.length - searchLines.length; i++) {
+                        let isMatch = true;
+                        for (let j = 0; j < searchLines.length; j++) {
+                            // Match exact line or match with trimmed right-end whitespace only
+                            if (sourceLines[i + j] !== searchLines[j] && sourceLines[i + j].trimEnd() !== searchLines[j].trimEnd()) {
+                                isMatch = false;
+                                break;
+                            }
+                        }
+                        if (isMatch) {
+                            lineMatches.push(i);
                         }
                     }
-                    if (isMatch) {
-                        matchIndices.push(i);
-                    }
                 }
-            }
 
-            if (matchIndices.length === 0) {
-                throw new Error("Search text not found");
-            }
-            if (matchIndices.length > 1) {
-                throw new Error("Search text match multiple places, provide more surrounding context");
-            }
+                if (lineMatches.length === 0) {
+                    throw new Error("Search text not found");
+                }
+                if (lineMatches.length > 1) {
+                    throw new Error("Search text matches multiple locations. Provide more surrounding context lines.");
+                }
 
-            const matchIndex = matchIndices[0];
-            const startLineIndex = mappedSource[matchIndex].index;
-            const endLineIndex = mappedSource[matchIndex + mappedSearch.length - 1].index;
+                const matchLineIndex = lineMatches[0];
+                startLineIndex = matchLineIndex;
+                startColIndex = 0;
+                endLineIndex = matchLineIndex + searchLines.length - 1;
+                endColIndex = sourceLines[endLineIndex].length;
 
-            // Construct proposed new content buffer in memory without applying to editor or disk yet
-            const replacementLines = (replacementString ?? "").split(/\r?\n/);
-            const proposedLines = [
-                ...sourceLines.slice(0, startLineIndex),
-                ...replacementLines,
-                ...sourceLines.slice(endLineIndex + 1)
-            ];
-            const proposedContent = proposedLines.join("\n");
+                const replacementLines = normReplace.split("\n");
+                const proposedLines = [
+                    ...sourceLines.slice(0, startLineIndex),
+                    ...replacementLines,
+                    ...sourceLines.slice(endLineIndex + 1)
+                ];
+                proposedContent = proposedLines.join("\n");
+            }
 
             // Pre-Save Syntax Validation
             const syntaxCheck = await syntaxValidator.validate(resolvedPath, proposedContent);
@@ -1053,9 +1073,9 @@ Snippet: ${r.content || r.snippet || ""}`;
                     }
                 }
 
-                // 2. Perform the edit on Ace session using the aligned lines range
+                // 2. Perform the edit on Ace session using the aligned range
                 const Range = window.ace.require("ace/range").Range;
-                const rangeToReplace = new Range(startLineIndex, 0, endLineIndex, sourceLines[endLineIndex].length);
+                const rangeToReplace = new Range(startLineIndex, startColIndex, endLineIndex, endColIndex);
                 session.replace(rangeToReplace, replacementString ?? "");
 
                 // 3. Save to disk immediately
@@ -1081,9 +1101,9 @@ Snippet: ${r.content || r.snippet || ""}`;
                 return `Successfully edited ${path} in Forgiveness Mode. The change has been committed directly to the file and ${backupMsg}. The tab has switched to the side-by-side Diff view for your review.`;
             }
 
-            // Permission Mode: clean replacement in memory using the aligned lines range
+            // Permission Mode: clean replacement in memory using the aligned range
             const Range = window.ace.require("ace/range").Range;
-            const rangeToReplace = new Range(startLineIndex, 0, endLineIndex, sourceLines[endLineIndex].length);
+            const rangeToReplace = new Range(startLineIndex, startColIndex, endLineIndex, endColIndex);
             session.replace(rangeToReplace, replacementString ?? "");
             // Set tab to diff view mode automatically for implicit review
             targetTab.config.viewMode = "diff";

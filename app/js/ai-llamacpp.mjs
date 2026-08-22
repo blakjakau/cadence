@@ -272,7 +272,9 @@ class LlamaCpp extends AI {
                 return_progress: true
             };
 
-            const isReasoningDisabled = (session && session.disableReasoning === true) || (this.config.thinkingLevel === 'off');
+            const sessionLevel = session?.thinkingLevel;
+            const level = (sessionLevel && sessionLevel !== 'auto') ? sessionLevel : (this.config.thinkingLevel || "medium");
+            const isReasoningDisabled = (session && session.disableReasoning === true) || (level === 'off');
             if (isReasoningDisabled) {
                 requestBody.enable_thinking = false;
                 requestBody.thinking_budget = 0;
@@ -281,7 +283,6 @@ class LlamaCpp extends AI {
                 requestBody.reasoning_effort = "none";
             } else if (this.supportsReasoning) {
                 requestBody.enable_thinking = true;
-                const level = this.config.thinkingLevel || "medium";
                 if (level !== 'unlimited' && level !== 'ultra') {
                     let budget = 2048;
                     if (level === 'low') {

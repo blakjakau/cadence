@@ -92,6 +92,7 @@ class AIManagerSessions {
 			planningMode: defaultPlanning,
 			forgivenessMode: lastForgivenessMode,
 			connectionId: defaultConnectionId,
+			thinkingLevel: "auto",
 			allowSubAgents: this.manager.config.defaultAllowSubAgents ?? true,
 			allowRunCommand: this.manager.config.defaultAllowRunCommand ?? true,
 			pinnedSkills: [],
