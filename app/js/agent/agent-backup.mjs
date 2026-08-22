@@ -5,6 +5,7 @@ const SESSION_CLEANUP_THRESHOLD = 30 * 24 * 60 * 60 * 1000; // 30 days
 
 /**
  * Handles file backups before modification to allow for rollback functionality.
+ * Supports individual file versioning and multi-file atomic transactions.
  * Stored in IndexedDB via idb-keyval.
  */
 class AgentBackup {
@@ -12,7 +13,7 @@ class AgentBackup {
      * Creates a backup of a file's content.
      * @param {string} path - The absolute or relative path of the file.
      * @param {string} content - The current (pre-write) content of the file.
-     * @param {string} sourceId - An identifier for the action that triggered the backup (e.g., message ID).
+     * @param {string} sourceId - An identifier for the action that triggered the backup (e.g., message ID, transaction ID).
      */
     static async create(path, content, sourceId) {
         const timestamp = Date.now();
@@ -73,13 +74,142 @@ class AgentBackup {
         return backup.content;
     }
 
+    // --- Multi-File Atomic Transaction Rollback Methods ---
+
+    /**
+     * Begins or registers a multi-file transaction group.
+     * @param {string} transactionId - Unique identifier for the multi-file transaction (e.g. turn ID).
+     */
+    static async beginTransaction(transactionId) {
+        const txKey = `agent_tx_${transactionId}`;
+        const existing = await get(txKey);
+        if (!existing) {
+            await set(txKey, {
+                id: transactionId,
+                startedAt: Date.now(),
+                status: "active",
+                files: []
+            });
+        }
+        return transactionId;
+    }
+
+    /**
+     * Records a file change within an atomic transaction.
+     * Creates an individual backup and associates it with the transaction group.
+     * @param {string} transactionId 
+     * @param {string} path 
+     * @param {string} originalContent 
+     * @param {string} sourceId 
+     */
+    static async recordFileChange(transactionId, path, originalContent, sourceId = "tx") {
+        const backupId = await this.create(path, originalContent, `${transactionId}_${sourceId}`);
+        const txKey = `agent_tx_${transactionId}`;
+        
+        await update(txKey, (txData = { id: transactionId, startedAt: Date.now(), status: "active", files: [] }) => {
+            const fileEntry = {
+                path,
+                backupId,
+                timestamp: Date.now()
+            };
+            // Deduplicate path within transaction (keep earliest backup)
+            const exists = txData.files.some(f => f.path === path);
+            if (!exists) {
+                txData.files.push(fileEntry);
+            }
+            return txData;
+        });
+
+        return backupId;
+    }
+
+    /**
+     * Retrieves transaction metadata and file entries.
+     * @param {string} transactionId 
+     */
+    static async getTransaction(transactionId) {
+        return await get(`agent_tx_${transactionId}`);
+    }
+
+    /**
+     * Atomically rolls back all files modified during a multi-file transaction.
+     * Restores memory buffers in open tabs and writes changes to disk.
+     * @param {string} transactionId 
+     * @returns {Promise<Array<{path: string, restored: boolean}>>}
+     */
+    static async rollbackTransaction(transactionId) {
+        const txKey = `agent_tx_${transactionId}`;
+        const txData = await get(txKey);
+        if (!txData || !Array.isArray(txData.files) || txData.files.length === 0) {
+            console.warn(`[AgentBackup] No transaction data found to rollback for ${transactionId}`);
+            return [];
+        }
+
+        const results = [];
+
+        for (const fileEntry of txData.files) {
+            try {
+                const originalContent = await this.rollback(fileEntry.backupId);
+                const path = fileEntry.path;
+
+                // 1. If tab is open in Ace editor, restore its buffer and baseline
+                let targetTab = null;
+                const openTabs = [...(window.ui?.leftTabs?.tabs || []), ...(window.ui?.rightTabs?.tabs || [])];
+                const normTarget = path.replace(/\\/g, '/').replace(/\/+/g, '/').toLowerCase();
+                
+                targetTab = openTabs.find(tab => {
+                    const tabPath = (tab.config?.path || "").replace(/\\/g, '/').replace(/\/+/g, '/').toLowerCase();
+                    return tabPath === normTarget || tabPath.endsWith('/' + normTarget) || normTarget.endsWith('/' + tabPath);
+                });
+
+                if (targetTab && targetTab.config?.session) {
+                    targetTab.config.session.setValue(originalContent);
+                    targetTab.config.session.baseValue = originalContent;
+                    targetTab.config.viewMode = "editor";
+                    delete targetTab.config.backupId;
+                }
+
+                // 2. Write original content back to disk via Conduit WebSocket API
+                if (window.conduit && window.conduit.isConnected) {
+                    await window.conduit.wsWrite(path, btoa(unescape(encodeURIComponent(originalContent))));
+                } else if (targetTab && window.saveFileTab) {
+                    await window.saveFileTab(targetTab);
+                }
+
+                results.push({ path, restored: true });
+            } catch (err) {
+                console.error(`[AgentBackup] Failed to rollback file ${fileEntry.path} in transaction ${transactionId}:`, err);
+                results.push({ path: fileEntry.path, restored: false, error: err.message });
+            }
+        }
+
+        // Mark transaction as rolled back
+        txData.status = "rolled_back";
+        txData.rolledBackAt = Date.now();
+        await set(txKey, txData);
+
+        return results;
+    }
+
+    /**
+     * Commits a transaction group.
+     * @param {string} transactionId 
+     */
+    static async commitTransaction(transactionId) {
+        const txKey = `agent_tx_${transactionId}`;
+        const txData = await get(txKey);
+        if (txData) {
+            txData.status = "committed";
+            txData.committedAt = Date.now();
+            await set(txKey, txData);
+        }
+    }
+
     /**
      * Periodically clean up old backups (optional call).
      */
     static async cleanup() {
-        // This is a more complex operation as idb-keyval doesn't support prefix listing easily.
-        // We'd need to iterate over all keys in the default store if we wanted a global cleanup.
-        // For now, cleanup is handled on a per-file basis during 'create'.
+        // Handled on a per-file basis during 'create'.
     }
 }
 

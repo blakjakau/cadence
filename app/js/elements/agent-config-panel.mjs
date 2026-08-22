@@ -788,11 +788,13 @@ export class AgentConfigPanel extends Block {
 				const tpm = conn && conn.provider === "gemini" ? (conn.config.tpmLimit || 250000) : 250000;
 				const rpd = conn && conn.provider === "gemini" ? (conn.config.rpdLimit || 500) : 500;
 				const maxInput = conn && conn.provider === "gemini" ? (conn.config.maxInputTokens || 0) : 0;
+				const maxTurns = conn && conn.provider === "gemini" ? (conn.config.maxTurns !== undefined ? conn.config.maxTurns : 50) : 50;
 				const thinking = conn && conn.provider === "gemini" ? (conn.config.thinkingLevel || "medium") : "medium";
 				provSelect.rpmInput = createInput("RPM Limit (Requests/Min)", rpm);
 				provSelect.tpmInput = createInput("TPM Limit (Tokens/Min)", tpm);
 				provSelect.rpdInput = createInput("RPD Limit (Requests/Day)", rpd);
 				provSelect.maxInputTokensInput = createInput("Max Input Tokens (0 for unlimited)", maxInput);
+				provSelect.maxTurnsInput = createInput("Max Agent Turns (0 for unlimited)", maxTurns);
 				provSelect.thinkingInput = createSelect("Thinking Budget", thinking, [
 					{ value: "off", label: "Off" },
 					{ value: "low", label: "Low" },
@@ -810,11 +812,13 @@ export class AgentConfigPanel extends Block {
 				const topK = conn && conn.provider === "llamacpp" ? (conn.config.top_k || 40) : 40;
 				const topP = conn && conn.provider === "llamacpp" ? (conn.config.top_p || 0.9) : 0.9;
 				const temp = conn && conn.provider === "llamacpp" ? (conn.config.temperature !== undefined ? conn.config.temperature : 0.7) : 0.7;
+				const maxTurns = conn && conn.provider === "llamacpp" ? (conn.config.maxTurns || 0) : 0;
 				const thinking = conn && conn.provider === "llamacpp" ? (conn.config.thinkingLevel || "medium") : "medium";
 				provSelect.nctxInput = createInput("Context Size (n_ctx, 0 for auto)", nctx);
 				provSelect.topKInput = createInput("Top K", topK);
 				provSelect.topPInput = createInput("Top P", topP);
 				provSelect.tempInput = createInput("Temperature", temp);
+				provSelect.maxTurnsInput = createInput("Max Agent Turns (0 for unlimited)", maxTurns);
 				provSelect.thinkingInput = createSelect("Thinking Budget", thinking, [
 					{ value: "off", label: "Off" },
 					{ value: "low", label: "Low" },
@@ -825,13 +829,17 @@ export class AgentConfigPanel extends Block {
 			} else if (provider === "ollama") {
 				const defServer = "http://localhost:11434";
 				const srv = conn && conn.provider === "ollama" ? conn.config.server : defServer;
+				const maxTurns = conn && conn.provider === "ollama" ? (conn.config.maxTurns || 0) : 0;
 				provSelect.serverInput = createInput("Ollama API Server", srv);
+				provSelect.maxTurnsInput = createInput("Max Agent Turns (0 for unlimited)", maxTurns);
 			} else if (provider === "claude") {
 				const defServer = "https://api.anthropic.com";
 				const srv = conn && conn.provider === "claude" ? conn.config.server : defServer;
 				const key = conn && conn.provider === "claude" ? conn.config.apiKey : "";
+				const maxTurns = conn && conn.provider === "claude" ? (conn.config.maxTurns !== undefined ? conn.config.maxTurns : 50) : 50;
 				provSelect.serverInput = createInput("Anthropic API Server", srv);
 				provSelect.keyInput = createInput("Anthropic API Key", key, true);
+				provSelect.maxTurnsInput = createInput("Max Agent Turns (0 for unlimited)", maxTurns);
 			}
 		};
 
@@ -889,6 +897,9 @@ export class AgentConfigPanel extends Block {
 			}
 			if (provSelect.maxInputTokensInput) {
 				configObj.maxInputTokens = parseInt(provSelect.maxInputTokensInput.value) || 0;
+			}
+			if (provSelect.maxTurnsInput) {
+				configObj.maxTurns = parseInt(provSelect.maxTurnsInput.value) || 0;
 			}
 			if (provSelect.nctxInput) {
 				configObj.n_ctx = parseInt(provSelect.nctxInput.value) || 0;

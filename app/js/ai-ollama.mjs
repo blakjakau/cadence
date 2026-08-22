@@ -19,7 +19,8 @@ class Ollama extends AI {
 		this.config = {
 			server: "http://localhost:11434",
 			model: null, // Initial model is null, not an empty string
-			system: ""
+			system: "",
+			maxTurns: 0
 		};
 		this.context = null; // For /api/generate context (Ollama's internal context)
         this.MAX_CONTEXT_TOKENS = 0; // This will be dynamically set by _queryModelCapability
@@ -34,7 +35,8 @@ class Ollama extends AI {
                 default: null, // Default for settings schema is null
                 enum: defaultModels, // Initial enum uses the object format
                 lookupCallback: this._getAvailableModels.bind(this) 
-            }
+            },
+            maxTurns: { type: "number", label: "Max Agent Turns (0 for unlimited)", default: 0 }
         };
 	}
 

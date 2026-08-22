@@ -1,18 +1,19 @@
 // ai-claude.mjs
 import AI from './ai.mjs';
 import systemPrompt from "./claudeSystemPrompt.mjs";
+import { tools as cadenceTools } from "./ai-manager-tools-schema.mjs";
 
 // Fallback static list of common Claude models with their context window sizes.
 // Used when the API endpoint is unavailable or fails.
 const fallbackClaudeModels = [
+    { value: "claude-3-7-sonnet-20250219", label: "Claude 3.7 Sonnet (200k)", maxTokens: 200000 },
     { value: "claude-3-5-sonnet-20241022", label: "Claude 3.5 Sonnet (200k)", maxTokens: 200000 },
+    { value: "claude-3-5-haiku-20241022", label: "Claude 3.5 Haiku (200k)", maxTokens: 200000 },
     { value: "claude-sonnet-4-20250514", label: "Claude 4 Sonnet (200k)", maxTokens: 200000 },
     { value: "claude-opus-4-1-20250805", label: "Claude 4.1 Opus (200k)", maxTokens: 200000 },
-    
 ];
 
 let claudeModels = [...fallbackClaudeModels]; // Start with fallback models
-
 
 class Claude extends AI {
     constructor() {
@@ -20,12 +21,15 @@ class Claude extends AI {
         this.providerId = 'claude';
         this.config = {
             apiKey: "",
-            model: "claude-3-5-sonnet-20240620", 
+            model: "claude-3-5-sonnet-20241022", 
             server: "https://api.anthropic.com", 
             system: "",
+            maxTurns: 50
         };
         // Default to the max tokens for the default model. This will be updated in init().
         this.MAX_CONTEXT_TOKENS = 200000;
+        this.abortController = null;
+        this.abortReason = "";
 
         this._settingsSchema = {
             apiKey: { type: "string", label: "Anthropic API Key", default: "" },
@@ -33,10 +37,11 @@ class Claude extends AI {
             model: { 
                 type: "enum", 
                 label: "Model", 
-                default: "claude-3-5-sonnet-20240620", 
+                default: "claude-3-5-sonnet-20241022", 
                 enum: claudeModels,
                 lookupCallback: this._getAvailableModels.bind(this) 
             },
+            maxTurns: { type: "number", label: "Max Agent Turns (0 for unlimited)", default: 50 }
         };
     }
     
@@ -44,22 +49,34 @@ class Claude extends AI {
     	return this.config.apiKey !== "" && this.config.model !== "";
     }
 
+    get supportsJSONTools() {
+        return true;
+    }
+
     get supportsReasoning() {
         const model = (this.config.model || "").toLowerCase();
-        return model.includes('thinking') || model.includes('reasoning');
+        return model.includes('thinking') || model.includes('reasoning') || model.includes('3-7');
+    }
+
+    stop(reason = "User requested stop") {
+        if (this.abortController) {
+            this.abortReason = reason;
+            this.abortController.abort(reason);
+            this.abortController = null;
+        }
     }
 
     async _getAvailableModels() {
         // Try to fetch models from the API, fall back to static list if it fails
         try {
-            const response = await fetch(`${this.config.server}/v1/models`, {
+            const response = await this._fetchWithRetry(`${this.config.server}/v1/models`, {
                 method: 'GET',
                 headers: {
                     'x-api-key': this.config.apiKey,
                     'anthropic-version': '2023-06-01',
                     'anthropic-dangerous-direct-browser-access': 'true',
                 },
-            });
+            }, { maxRetries: 2, initialDelayMs: 500 });
 
             if (response.ok) {
                 const data = await response.json();
@@ -68,22 +85,18 @@ class Claude extends AI {
                     const apiModels = data.data
                         .filter(model => model.id && model.id.startsWith('claude'))
                         .map(model => {
-                            // Try to extract context size from model name or use default
-                            let maxTokens = 200000; // Default context size
+                            let maxTokens = 200000;
                             let label = model.id;
                             
-                            // Generate a more readable label
                             if (model.display_name) {
                                 label = model.display_name;
                             } else {
-                                // Prettify the model ID
                                 label = model.id
                                     .replace(/-/g, ' ')
                                     .replace(/\b\w/g, c => c.toUpperCase())
                                     .replace(/(\d+)/, ' $1');
                             }
                             
-                            // Add context size to label if not already present
                             if (!label.includes('k')) {
                                 label += ` (${maxTokens / 1000}k)`;
                             }
@@ -92,7 +105,6 @@ class Claude extends AI {
                         });
                     
                     claudeModels = apiModels.length > 0 ? apiModels : fallbackClaudeModels;
-                    console.log(`[Claude] Fetched ${apiModels.length} models from API`);
                     return apiModels;
                 }
             }
@@ -106,52 +118,117 @@ class Claude extends AI {
     async init() {
         await super.init(); 
         
-        // Ensure the initial MAX_CONTEXT_TOKENS is set correctly based on the loaded config.
         const selectedModelInfo = claudeModels.find(
             model => model.value === this.config.model
         );
         if (selectedModelInfo) {
             this.MAX_CONTEXT_TOKENS = selectedModelInfo.maxTokens;
         } else {
-            // Fallback if the configured model isn't in our list (e.g., from old settings).
             const defaultModel = claudeModels.find(m => m.value === this._settingsSchema.model.default);
             this.MAX_CONTEXT_TOKENS = defaultModel?.maxTokens || 200000;
         }
-        console.log(`[Claude] Initialized with model: '${this.config.model}', MAX_CONTEXT_TOKENS: ${this.MAX_CONTEXT_TOKENS}`);
     }
     
     get _apiUrl() {
         return `${this.config.server}/v1/messages`;
     }
 
+    _getFormattedTools() {
+        return cadenceTools.map(tool => ({
+            name: tool.name,
+            description: tool.description || "",
+            input_schema: {
+                type: "object",
+                properties: tool.parameters?.properties || {},
+                required: tool.parameters?.required || []
+            }
+        }));
+    }
+
     // Transforms internal message format to Claude's format.
-    // Anthropic's API requires that consecutive messages from the same role be merged,
-    // which this function handles for 'user' messages.
+    // Handles text, file contexts, tool_use blocks, and tool_result blocks.
     _toClaudeMessages(messages) {
         const claudeMessages = [];
+
+        // Build a map of tool_use id by tool name in recent turns
+        let lastToolUseIdsByName = new Map();
+
         for (const msg of messages) {
-            const role = (msg.role === 'model') ? 'assistant' : 'user';
+            const isModel = (msg.role === 'model' || msg.role === 'assistant');
+            const role = isModel ? 'assistant' : 'user';
 
             if (msg.type === 'file_context') {
-                const fileContent = `--- File: ${msg.filename} ---\n\`\`\`${msg.language}\n${msg.content}\n\`\`\``;
-                if (claudeMessages.length > 0 && claudeMessages[claudeMessages.length - 1].role === 'user') {
-                    claudeMessages[claudeMessages.length - 1].content.push({ type: 'text', text: fileContent });
-                } else {
-                    claudeMessages.push({ role: 'user', content: [{ type: 'text', text: fileContent }] });
+                const fileContent = `--- File: ${msg.filename || msg.id} ---\n\`\`\`${msg.language || ''}\n${msg.content}\n\`\`\``;
+                this._appendClaudeContentBlock(claudeMessages, 'user', { type: 'text', text: fileContent });
+            } else if (msg.type === 'tool_response') {
+                // If this is a tool response, format as tool_result if possible
+                const contentStr = typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content);
+                
+                // Extract matching tool name if present in standard header
+                const match = contentStr.match(/\[Tool Response:\s*([a-zA-Z0-9_]+)/);
+                const toolName = match ? match[1] : null;
+                const toolUseId = (toolName && lastToolUseIdsByName.get(toolName)) || `toolu_${crypto.randomUUID().replace(/-/g, '').slice(0, 16)}`;
+
+                this._appendClaudeContentBlock(claudeMessages, 'user', {
+                    type: 'tool_result',
+                    tool_use_id: toolUseId,
+                    content: contentStr
+                });
+            } else if (isModel) {
+                const contentBlocks = [];
+                if (msg.content && msg.content.trim()) {
+                    contentBlocks.push({ type: 'text', text: msg.content.trim() });
                 }
-            } else if (role === 'user' || role === 'assistant') {
-                if (role === 'user' && claudeMessages.length > 0 && claudeMessages[claudeMessages.length - 1].role === 'user') {
-                    claudeMessages[claudeMessages.length - 1].content.push({ type: 'text', text: msg.content });
-                } else {
-                    claudeMessages.push({ role, content: [{ type: 'text', text: msg.content }] });
+
+                if (msg.toolCalls && msg.toolCalls.length > 0) {
+                    for (const tc of msg.toolCalls) {
+                        const callObj = tc.functionCall || tc;
+                        const toolName = callObj.name;
+                        let argsObj = {};
+                        try {
+                            argsObj = typeof callObj.args === 'string' ? JSON.parse(callObj.args) : (callObj.args || callObj.arguments || {});
+                        } catch (e) {
+                            argsObj = {};
+                        }
+                        const toolUseId = tc.id || `toolu_${crypto.randomUUID().replace(/-/g, '').slice(0, 16)}`;
+                        lastToolUseIdsByName.set(toolName, toolUseId);
+
+                        contentBlocks.push({
+                            type: 'tool_use',
+                            id: toolUseId,
+                            name: toolName,
+                            input: argsObj
+                        });
+                    }
+                }
+
+                if (contentBlocks.length === 0) {
+                    contentBlocks.push({ type: 'text', text: "..." });
+                }
+
+                for (const block of contentBlocks) {
+                    this._appendClaudeContentBlock(claudeMessages, 'assistant', block);
+                }
+            } else if (role === 'user') {
+                if (msg.content) {
+                    this._appendClaudeContentBlock(claudeMessages, 'user', { type: 'text', text: msg.content });
                 }
             }
         }
-        return claudeMessages;
+
+        // Ensure alternating user/assistant structure and non-empty content
+        return claudeMessages.filter(m => m.content && m.content.length > 0);
+    }
+
+    _appendClaudeContentBlock(claudeMessages, targetRole, block) {
+        if (claudeMessages.length > 0 && claudeMessages[claudeMessages.length - 1].role === targetRole) {
+            claudeMessages[claudeMessages.length - 1].content.push(block);
+        } else {
+            claudeMessages.push({ role: targetRole, content: [block] });
+        }
     }
 
     async _countTokens(messages) {
-        // Anthropic has no public token counting endpoint, so we use the base class estimation.
         return this.estimateTokens(messages);
     }
 
@@ -169,6 +246,8 @@ class Claude extends AI {
         let buffer = '';
         const decoder = new TextDecoder('utf-8');
         let fullResponseAccumulator = '';
+        let currentToolCall = null;
+        let isReasoning = false;
 
         try {
             while (true) {
@@ -177,7 +256,7 @@ class Claude extends AI {
 
                 buffer += decoder.decode(value, { stream: true });
                 const lines = buffer.split('\n');
-                buffer = lines.pop(); // Keep potentially incomplete last line for the next chunk.
+                buffer = lines.pop();
 
                 for (const line of lines) {
                     if (line.startsWith('data:')) {
@@ -185,9 +264,77 @@ class Claude extends AI {
                         if (!jsonString) continue;
                         try {
                             const parsed = JSON.parse(jsonString);
-                            if (parsed.type === 'content_block_delta' && parsed.delta?.type === 'text_delta') {
-                                fullResponseAccumulator += parsed.delta.text;
-                                if (onUpdate) onUpdate(fullResponseAccumulator);
+
+                            // Handle content block start
+                            if (parsed.type === 'content_block_start') {
+                                const block = parsed.content_block;
+                                if (block?.type === 'tool_use') {
+                                    currentToolCall = {
+                                        id: block.id,
+                                        name: block.name,
+                                        partial_json: ''
+                                    };
+                                } else if (block?.type === 'thinking') {
+                                    isReasoning = true;
+                                    fullResponseAccumulator += "<thought>\n";
+                                    if (onUpdate) onUpdate(fullResponseAccumulator);
+                                }
+                            }
+
+                            // Handle content deltas
+                            if (parsed.type === 'content_block_delta') {
+                                const delta = parsed.delta;
+                                if (delta?.type === 'text_delta') {
+                                    fullResponseAccumulator += delta.text;
+                                    if (onUpdate) onUpdate(fullResponseAccumulator);
+                                } else if (delta?.type === 'thinking_delta') {
+                                    fullResponseAccumulator += delta.thinking;
+                                    if (onUpdate) onUpdate(fullResponseAccumulator);
+                                } else if (delta?.type === 'input_json_delta' && currentToolCall) {
+                                    currentToolCall.partial_json += delta.partial_json;
+                                }
+                            }
+
+                            // Handle content block stop
+                            if (parsed.type === 'content_block_stop') {
+                                if (isReasoning) {
+                                    isReasoning = false;
+                                    fullResponseAccumulator += "\n</thought>\n";
+                                    if (onUpdate) onUpdate(fullResponseAccumulator);
+                                }
+
+                                if (currentToolCall) {
+                                    let argsObj = {};
+                                    try {
+                                        argsObj = currentToolCall.partial_json ? JSON.parse(currentToolCall.partial_json) : {};
+                                    } catch (e) {
+                                        console.warn("[Claude] Failed to parse input_json from tool_use:", currentToolCall.partial_json);
+                                        argsObj = {};
+                                    }
+
+                                    if (!callbacks.toolCalls) callbacks.toolCalls = [];
+                                    callbacks.toolCalls.push({
+                                        id: currentToolCall.id,
+                                        name: currentToolCall.name,
+                                        args: argsObj,
+                                        functionCall: {
+                                            name: currentToolCall.name,
+                                            args: argsObj
+                                        }
+                                    });
+
+                                    // Format XML representation into text accumulator for uniform UI rendering
+                                    let xml = `\n<tool_call name="${currentToolCall.name}">\n`;
+                                    for (const [k, v] of Object.entries(argsObj)) {
+                                        const stringValue = typeof v === 'object' ? JSON.stringify(v) : v;
+                                        xml += `  <${k}>${stringValue}</${k}>\n`;
+                                    }
+                                    xml += `</tool_call>\n`;
+                                    fullResponseAccumulator += xml;
+
+                                    if (onUpdate) onUpdate(fullResponseAccumulator);
+                                    currentToolCall = null;
+                                }
                             }
                         } catch (e) {
                             console.warn("[Claude] Failed to parse stream JSON object:", jsonString, e);
@@ -205,7 +352,6 @@ class Claude extends AI {
     }
 
     async generate(prompt, callbacks = {}) {
-        // This method is maintained for API consistency, but AIManager primarily uses chat().
         const messages = [{ role: "user", type: "user", content: prompt }];
         return this.chat(messages, callbacks);
     }
@@ -214,6 +360,9 @@ class Claude extends AI {
         const { onStart, onError, onDone, onContextRatioUpdate } = callbacks;
         if (onStart) onStart();
 
+        this.abortController = new AbortController();
+        const signal = this.abortController.signal;
+
         try {
             const claudeMessages = this._toClaudeMessages(messages);
             
@@ -221,7 +370,8 @@ class Claude extends AI {
                 model: this.config.model,
                 messages: claudeMessages,
                 stream: true,
-                max_tokens: 4096 // A required parameter for the Anthropic Messages API
+                max_tokens: 4096,
+                tools: this._getFormattedTools()
             };
 
             if (session && session.temperatureOverride !== undefined) {
@@ -230,8 +380,8 @@ class Claude extends AI {
                 requestBody.temperature = this.config.temperature;
             }
 
-            if(systemPrompt) {
-            	requestBody.system = systemPrompt
+            if (systemPrompt) {
+            	requestBody.system = systemPrompt;
             } else if (this.config.system) {
                 requestBody.system = this.config.system;
             }
@@ -244,7 +394,7 @@ class Claude extends AI {
             }
 
             const requestStartTime = Date.now();
-            const response = await fetch(this._apiUrl, {
+            const response = await this._fetchWithRetry(this._apiUrl, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
@@ -253,6 +403,10 @@ class Claude extends AI {
                     'anthropic-dangerous-direct-browser-access': 'true',
                 },
                 body: JSON.stringify(requestBody),
+            }, {
+                maxRetries: 3,
+                initialDelayMs: 1000,
+                signal
             });
 
             if (!response.ok) {
@@ -282,8 +436,14 @@ class Claude extends AI {
             }
 
         } catch (error) {
+            if (error.name === "AbortError" || signal.aborted) {
+                console.debug("[Claude] Chat aborted by user/system:", this.abortReason);
+                return;
+            }
             console.error("[Claude] Error in chat:", error);
             if (onError) onError(error);
+        } finally {
+            this.abortController = null;
         }
     }
     
@@ -295,7 +455,7 @@ class Claude extends AI {
 	            if (this.config[key] !== newSettings[key]) {
 	                this.config[key] = newSettings[key];
 	                changesApplied = true;
-                    if(key === 'model') modelChanged = true;
+                    if (key === 'model') modelChanged = true;
 	            }
 	        }
 	    }
@@ -306,12 +466,11 @@ class Claude extends AI {
             );
             if (selectedModelInfo) {
                 this.MAX_CONTEXT_TOKENS = selectedModelInfo.maxTokens;
-                console.log(`[Claude] Model changed. New MAX_CONTEXT_TOKENS: ${this.MAX_CONTEXT_TOKENS}`);
             }
         }
 	
 	    if (changesApplied) {
-	    	if("function" == typeof onSuccessCallback) {
+	    	if ("function" == typeof onSuccessCallback) {
 	        	onSuccessCallback("Settings saved successfully.");
 	    	}
 	        const event = new CustomEvent('setting-changed', {
@@ -327,19 +486,14 @@ class Claude extends AI {
     }
 
     clearContext() {
-        // AIManager manages history, so this is a no-op, but good to have for interface consistency.
         console.log("Claude internal context cleared (AIManager manages chat history).");
     }
 
     async refreshModels() {
-        // Try to fetch fresh models from the API
         const freshModels = await this._getAvailableModels();
         if (freshModels && freshModels.length > 0) {
             claudeModels = freshModels;
             this._settingsSchema.model.enum = freshModels;
-            console.log(`[Claude] Refreshed models list with ${freshModels.length} models.`);
-        } else {
-            console.log("[Claude] Using fallback models list.");
         }
     }
 }

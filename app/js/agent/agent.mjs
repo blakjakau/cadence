@@ -1,6 +1,7 @@
 // agent.mjs
 import workspaceClient from "../workspace-client.mjs";
 import agentTools from "./agent-tools.mjs";
+import AgentBackup from "./agent-backup.mjs";
 import { Block, Inline, Button } from "../elements.mjs";
 
 export class Agent {
@@ -10,6 +11,7 @@ export class Agent {
 		this.connection = connection; // Instantiated AI adapter subclass
 		this._abortAgent = false;
 		this.throttleBar = null;
+		this.haltBar = null;
 		this.consecutiveHaltCount = 0;
 		this.repetitionHaltCount = 0;
 		this.protocolFlagRepeatCount = 0;
@@ -23,9 +25,10 @@ export class Agent {
 			this.connection.stop(reason);
 		}
 		// Cascade abort to all active child sub-agents
-		for (const [id, run] of this.aiManager.runningSessions) {
-			if (run.type === 'agent' && run.instance?.session?.parentId === this.session.id) {
-				run.instance.stop(reason);
+		const parentId = this.session.id;
+		for (const [subId, run] of this.aiManager.runningSessions) {
+			if (run.type === 'agent' && run.instance?.session?.parentId === parentId) {
+				run.instance.stop(`Parent agent aborted: ${reason}`);
 			}
 		}
 	}
@@ -38,11 +41,54 @@ export class Agent {
 		const { aiManager, session, connection } = this;
 		const connConfig = connection?.config || {};
 		const hasRateLimits = !!(connConfig.rpmLimit || connConfig.rpdLimit || connConfig.tpmLimit || connConfig.requestsPerMin || connection?.requestsPerMin);
+		const maxTurns = connConfig.maxTurns !== undefined ? connConfig.maxTurns : (connection?.config?.maxTurns || 0);
 
 		while (aiManager.runningSessions.has(session.id)) {
 			if (this._abortAgent) break;
 
 			loopCount++;
+
+			// Check maxTurns limit (0 = unlimited / off)
+			if (maxTurns > 0 && loopCount > maxTurns) {
+				console.warn(`🛑 [Agent Loop Halted] Reached connection maximum turn limit of ${maxTurns} turns.`);
+				
+				const haltPromise = new Promise(resolve => {
+					if (this.haltBar) {
+						this.haltBar.remove();
+					}
+					const haltBar = new Block();
+					this.haltBar = haltBar;
+					haltBar.className = "agent-throttle-bar";
+					haltBar.style.borderLeft = "4px solid var(--accent, #e5a50a)";
+					
+					haltBar.innerHTML = `
+						<ui-icon style="vertical-align: middle; margin-right: 4px; font-size: 16px;">pause_circle</ui-icon>
+						<span class="throttle-text">Agent halted: reached limit of ${maxTurns} turns.</span>
+						<ui-button class="throttle-toggle theme-button primary" style="padding: 4px 8px; font-size: 11px; margin-left: 12px; min-width: 90px;">Continue &gt;</ui-button>
+					`;
+
+					const btn = haltBar.querySelector('.throttle-toggle');
+					btn.onclick = () => {
+						haltBar.remove();
+						this.haltBar = null;
+						loopCount = 1; // Reset counter for the next batch
+						aiManager.setSessionProcessing(session.id, true, 'agent', null);
+						aiManager._updateTabStatus(session.id, "active");
+						resolve();
+					};
+
+					aiManager.chatContainer.append(haltBar);
+					if (aiManager.conversationArea) {
+						aiManager.conversationArea.scrollTop = aiManager.conversationArea.scrollHeight;
+					}
+				});
+
+				aiManager.setSessionProcessing(session.id, false);
+				aiManager._updateTabStatus(session.id, "halted");
+
+				await haltPromise;
+				if (this._abortAgent || !aiManager.runningSessions.has(session.id)) break;
+			}
 
 			// Apply throttle only if the connection specifies rate limits (RPM, RPD, TPM)
 			if (hasRateLimits && loopCount > maxLoops) {
@@ -72,6 +118,11 @@ export class Agent {
 					await new Promise(r => setTimeout(r, 7000));
 				}
 			}
+
+			// Begin multi-file atomic transaction for this turn
+			const turnTxId = `tx_${session.id}_${loopCount}_${Date.now()}`;
+			session.turnTransactionId = turnTxId;
+			await AgentBackup.beginTransaction(turnTxId);
 
 			// Check and compile any newly completed sub-agents at start of turn
 			const compiledResults = await this.checkAndCompileSubAgentResults(session);
@@ -761,18 +812,33 @@ export class Agent {
 					}
 
 					await new Promise(resolve => {
-						const interval = setInterval(() => {
+						let resolved = false;
+						const checkOrResolve = () => {
+							if (resolved) return;
 							if (this._abortAgent) {
-								clearInterval(interval);
+								resolved = true;
+								cleanup();
 								resolve();
 								return;
 							}
 							const activeIds = getActiveSubAgentIds();
 							if (activeIds.length === 0) {
-								clearInterval(interval);
+								resolved = true;
+								cleanup();
 								resolve();
 							}
-						}, 1000);
+						};
+
+						const handler = () => checkOrResolve();
+						window.addEventListener('subagent-updated', handler);
+						const safetyTimer = setInterval(checkOrResolve, 4000);
+
+						const cleanup = () => {
+							window.removeEventListener('subagent-updated', handler);
+							clearInterval(safetyTimer);
+						};
+
+						checkOrResolve();
 					});
 
 					waitMsg.remove();
@@ -795,6 +861,12 @@ export class Agent {
 					session.messages.push(toolResponseMessage);
 					session.lastModified = Date.now();
 					await workspaceClient.setSession(session.id, session);
+				}
+
+				// Commit turn transaction group
+				if (session.turnTransactionId) {
+					await AgentBackup.commitTransaction(session.turnTransactionId);
+					delete session.turnTransactionId;
 				}
 
 				if (hasPlan) {

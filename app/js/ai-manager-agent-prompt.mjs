@@ -1,20 +1,28 @@
 import { tools } from './ai-manager-tools-schema.mjs';
 
-function generateXmlToolDocs(planningMode = false) {
+function generateXmlToolDocs(planningMode = false, compact = false) {
     let xml = "";
     for (const tool of tools) {
         if (planningMode && (tool.name === "create_file" || tool.name === "edit_file")) {
             continue;
         }
-        xml += `<tool_call name="${tool.name}">\n`;
-        for (const [propName, propDetails] of Object.entries(tool.parameters.properties)) {
-            const isOptional = !tool.parameters.required.includes(propName);
-            const optionalStr = isOptional ? " <!-- Optional -->" : "";
-            xml += `  <${propName}>...</${propName}>${optionalStr}\n`;
+        if (compact) {
+            const params = Object.keys(tool.parameters.properties || {}).map(p => {
+                const req = tool.parameters.required?.includes(p);
+                return `${p}${req ? '' : '?'}`;
+            }).join(", ");
+            xml += `<tool_call name="${tool.name}">[${params}]</tool_call>\n`;
+        } else {
+            xml += `<tool_call name="${tool.name}">\n`;
+            for (const [propName, propDetails] of Object.entries(tool.parameters.properties)) {
+                const isOptional = !tool.parameters.required.includes(propName);
+                const optionalStr = isOptional ? " <!-- Optional -->" : "";
+                xml += `  <${propName}>...</${propName}>${optionalStr}\n`;
+            }
+            xml += `</tool_call>\n`;
         }
-        xml += `</tool_call>\n`;
     }
-    if (!planningMode) {
+    if (!planningMode && !compact) {
         xml += `* Note: For edit_file, <search> MUST perfectly match existing file content character-for-character.\n`;
     }
     return xml.trim();
@@ -122,11 +130,12 @@ I am reading app.js to locate the issue.
     }
 
     let toolsSection = "";
+    const isSmallContext = (features.maxContextTokens && features.maxContextTokens <= 16384) || features.isLocalModel;
     if (!supportsNativeTools) {
         toolsSection = `
 # Available Tools
 Choose AT MOST ONE tool per turn and use its exact format, the host will return results for your next step.
-${generateXmlToolDocs(planningMode)}
+${generateXmlToolDocs(planningMode, isSmallContext)}
 `;
     }
 

@@ -3,7 +3,9 @@ export default class AI {
 	constructor() {
 		this._editor = null;
 		this.connectionId = null; // Associated connection config ID
-		this.config = {}; // Internal configuration object
+		this.config = {
+			maxTurns: 0
+		}; // Internal configuration object
 		this._settingsSchema = {}; // Schema for settings metadata
         this._settingsSource = 'global'; // 'global' or 'workspace'
 		this.providerId = 'generic'; // Override in subclasses
@@ -549,6 +551,70 @@ export default class AI {
 				signal.addEventListener("abort", onAbort);
 			}
 		});
+	}
+
+	async _fetchWithRetry(url, options = {}, retryConfig = {}) {
+		const {
+			maxRetries = 3,
+			initialDelayMs = 1000,
+			maxDelayMs = 30000,
+			signal = null
+		} = retryConfig;
+
+		let attempt = 0;
+		while (true) {
+			if (signal?.aborted) {
+				throw new DOMException("Aborted", "AbortError");
+			}
+
+			try {
+				const response = await fetch(url, { ...options, signal });
+				
+				// Handle 429 Too Many Requests or 5xx Temporary Server Errors
+				const isRateLimit = response.status === 429;
+				const isServerError = response.status === 500 || response.status === 502 || response.status === 503 || response.status === 504;
+
+				if ((isRateLimit || isServerError) && attempt < maxRetries) {
+					attempt++;
+					let delayMs = initialDelayMs * Math.pow(2, attempt - 1);
+					
+					// Check for Retry-After header
+					const retryAfterHeader = response.headers.get("retry-after") || response.headers.get("Retry-After");
+					if (retryAfterHeader) {
+						const seconds = parseFloat(retryAfterHeader);
+						if (!isNaN(seconds) && seconds > 0) {
+							delayMs = seconds * 1000;
+						}
+					} else {
+						// Add jitter (+/- 25%)
+						const jitter = (Math.random() * 0.5 - 0.25) * delayMs;
+						delayMs = Math.min(maxDelayMs, Math.max(500, Math.round(delayMs + jitter)));
+					}
+
+					const reasonStr = isRateLimit ? "Rate limit (429)" : `Server error (${response.status})`;
+					console.warn(`⏳ [${this.providerId || 'AI'}] ${reasonStr} encountered. Retrying in ${(delayMs / 1000).toFixed(1)}s (Attempt ${attempt} of ${maxRetries})...`);
+					
+					await this._sleep(delayMs, signal);
+					continue;
+				}
+
+				return response;
+			} catch (fetchError) {
+				if (fetchError.name === "AbortError" || signal?.aborted) {
+					throw fetchError;
+				}
+
+				if (attempt < maxRetries) {
+					attempt++;
+					const delayMs = Math.min(maxDelayMs, initialDelayMs * Math.pow(2, attempt - 1) + Math.random() * 500);
+					console.warn(`⏳ [${this.providerId || 'AI'}] Network fetch error (${fetchError.message}). Retrying in ${(delayMs / 1000).toFixed(1)}s (Attempt ${attempt} of ${maxRetries})...`);
+					await this._sleep(delayMs, signal);
+					continue;
+				}
+
+				throw fetchError;
+			}
+		}
 	}
 
 	generate(messages, callbacks) {

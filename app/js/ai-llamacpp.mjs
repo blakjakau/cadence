@@ -17,7 +17,8 @@ class LlamaCpp extends AI {
             top_p: 0.9,
             n_predict: 4096,
             stop: ["</s>", "<|end|>", "<|im_end|>", "Llama:", "User:", "Assistant:"],
-            thinkingLevel: "medium"
+            thinkingLevel: "medium",
+            maxTurns: 0
         };
         this.MAX_CONTEXT_TOKENS = 32768; // Default, will try to query if possible
 
@@ -41,6 +42,7 @@ class LlamaCpp extends AI {
                     { value: "unlimited", label: "Unlimited" }
                 ]
             },
+            maxTurns: { type: "number", label: "Max Agent Turns (0 for unlimited)", default: 0 },
             system: { type: "textarea", label: "System Prompt Override", default: "", multiline: true }
         };
     }
@@ -260,10 +262,13 @@ class LlamaCpp extends AI {
             let stopTokens = Array.isArray(this.config.stop) ? [...this.config.stop] : ["</s>", "<|end|>", "<|im_end|>", "Llama:", "User:", "Assistant:"];
             stopTokens = stopTokens.filter(token => token !== "</tool_call>");
 
+            const nCtx = this.config.n_ctx || this.MAX_CONTEXT_TOKENS || 0;
+            const maxTokens = Math.max(4096, Math.round(nCtx * 0.2));
+
             const requestBody = {
                 messages: formattedMessages,
                 stream: true,
-                max_tokens: this.config.n_predict,
+                max_tokens: maxTokens,
                 temperature: (session && session.temperatureOverride !== undefined) ? session.temperatureOverride : this.config.temperature,
                 top_k: this.config.top_k,
                 top_p: this.config.top_p,

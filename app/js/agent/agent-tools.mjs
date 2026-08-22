@@ -915,6 +915,77 @@ Snippet: ${r.content || r.snippet || ""}`;
     }
 
     /**
+     * Fuzzy line-by-line matching with similarity scoring and tolerance for minor indentation/whitespace differences.
+     * @param {string[]} sourceLines 
+     * @param {string[]} searchLines 
+     * @returns {{ matchLineIndex: number, endLineIndex: number, bestScore: number, nearestLineIndex?: number } | null}
+     */
+    _fuzzyMatchLines(sourceLines, searchLines) {
+        if (!sourceLines || !searchLines || searchLines.length === 0 || sourceLines.length < searchLines.length) {
+            return null;
+        }
+
+        const normalizeLine = (l) => (l || "").replace(/\s+/g, ' ').trim().toLowerCase();
+        const searchNorm = searchLines.map(normalizeLine);
+        const searchTotalChars = searchNorm.join("").length;
+        if (searchTotalChars === 0) return null;
+
+        let bestScore = 0;
+        let bestStart = -1;
+        let bestEnd = -1;
+        let secondBestScore = 0;
+
+        const targetLen = searchLines.length;
+
+        for (let i = 0; i <= sourceLines.length - targetLen; i++) {
+            let matchingChars = 0;
+            let matchingLines = 0;
+
+            for (let j = 0; j < targetLen; j++) {
+                const sLine = normalizeLine(sourceLines[i + j]);
+                const qLine = searchNorm[j];
+
+                if (sLine === qLine) {
+                    matchingChars += qLine.length;
+                    matchingLines++;
+                } else if (sLine.includes(qLine) || qLine.includes(sLine)) {
+                    matchingChars += Math.min(sLine.length, qLine.length);
+                    matchingLines += 0.5;
+                }
+            }
+
+            const lineScore = matchingLines / targetLen;
+            const charScore = matchingChars / Math.max(1, searchTotalChars);
+            const combinedScore = (lineScore * 0.6) + (charScore * 0.4);
+
+            if (combinedScore > bestScore) {
+                secondBestScore = bestScore;
+                bestScore = combinedScore;
+                bestStart = i;
+                bestEnd = i + targetLen - 1;
+            } else if (combinedScore > secondBestScore) {
+                secondBestScore = combinedScore;
+            }
+        }
+
+        // Require at least 85% similarity and clear distinction from second best candidate
+        if (bestScore >= 0.85 && (bestScore - secondBestScore >= 0.15 || secondBestScore < 0.70)) {
+            return {
+                matchLineIndex: bestStart,
+                endLineIndex: bestEnd,
+                bestScore
+            };
+        }
+
+        return {
+            matchLineIndex: -1,
+            endLineIndex: -1,
+            bestScore,
+            nearestLineIndex: bestStart
+        };
+    }
+
+    /**
      * Performs a surgical edit on a file.
      * @param {string} path 
      * @param {string} searchString 
@@ -993,7 +1064,7 @@ Snippet: ${r.content || r.snippet || ""}`;
 
                 proposedContent = normOriginal.slice(0, firstMatchOffset) + normReplace + normOriginal.slice(firstMatchOffset + normSearch.length);
             } else {
-                // 2. Secondary Match Strategy (Fallback): Strict line-by-line match with trailing whitespace tolerance
+                // 2. Secondary Match Strategy: Line-by-line match with trailing whitespace tolerance
                 const sourceLines = normOriginal.split("\n");
                 const searchLines = normSearch.split("\n");
 
@@ -1014,26 +1085,48 @@ Snippet: ${r.content || r.snippet || ""}`;
                     }
                 }
 
-                if (lineMatches.length === 0) {
-                    throw new Error("Search text not found");
-                }
                 if (lineMatches.length > 1) {
                     throw new Error("Search text matches multiple locations. Provide more surrounding context lines.");
                 }
 
-                const matchLineIndex = lineMatches[0];
-                startLineIndex = matchLineIndex;
-                startColIndex = 0;
-                endLineIndex = matchLineIndex + searchLines.length - 1;
-                endColIndex = sourceLines[endLineIndex].length;
+                if (lineMatches.length === 1) {
+                    const matchLineIndex = lineMatches[0];
+                    startLineIndex = matchLineIndex;
+                    startColIndex = 0;
+                    endLineIndex = matchLineIndex + searchLines.length - 1;
+                    endColIndex = sourceLines[endLineIndex].length;
 
-                const replacementLines = normReplace.split("\n");
-                const proposedLines = [
-                    ...sourceLines.slice(0, startLineIndex),
-                    ...replacementLines,
-                    ...sourceLines.slice(endLineIndex + 1)
-                ];
-                proposedContent = proposedLines.join("\n");
+                    const replacementLines = normReplace.split("\n");
+                    const proposedLines = [
+                        ...sourceLines.slice(0, startLineIndex),
+                        ...replacementLines,
+                        ...sourceLines.slice(endLineIndex + 1)
+                    ];
+                    proposedContent = proposedLines.join("\n");
+                } else {
+                    // 3. Tertiary Match Strategy (Fuzzy/Normalized token fallback)
+                    const fuzzy = this._fuzzyMatchLines(sourceLines, searchLines);
+                    if (fuzzy && fuzzy.matchLineIndex !== -1) {
+                        console.info(`🎯 [AgentTools] Fuzzy match found for edit_file at lines ${fuzzy.matchLineIndex + 1}-${fuzzy.endLineIndex + 1} (${Math.round(fuzzy.bestScore * 100)}% similarity)`);
+                        startLineIndex = fuzzy.matchLineIndex;
+                        startColIndex = 0;
+                        endLineIndex = fuzzy.endLineIndex;
+                        endColIndex = sourceLines[endLineIndex].length;
+
+                        const replacementLines = normReplace.split("\n");
+                        const proposedLines = [
+                            ...sourceLines.slice(0, startLineIndex),
+                            ...replacementLines,
+                            ...sourceLines.slice(endLineIndex + 1)
+                        ];
+                        proposedContent = proposedLines.join("\n");
+                    } else {
+                        const nearest = fuzzy?.nearestLineIndex >= 0 
+                            ? ` Nearest candidate match found near line ${fuzzy.nearestLineIndex + 1} (${Math.round(fuzzy.bestScore * 100)}% match). Check search string indentation or re-read file around that line.` 
+                            : "";
+                        throw new Error(`Search text not found.${nearest}`);
+                    }
+                }
             }
 
             // Pre-Save Syntax Validation
@@ -1054,7 +1147,11 @@ Snippet: ${r.content || r.snippet || ""}`;
                 } else {
                     try {
                         const actId = sourceId || activeSession?.id || "default";
-                        backupId = await AgentBackup.create(resolvedPath, originalContent, actId);
+                        if (activeSession?.turnTransactionId) {
+                            backupId = await AgentBackup.recordFileChange(activeSession.turnTransactionId, resolvedPath, originalContent, actId);
+                        } else {
+                            backupId = await AgentBackup.create(resolvedPath, originalContent, actId);
+                        }
                         
                         if (activeSession) {
                             activeSession.modifiedFiles = activeSession.modifiedFiles || {};
@@ -1994,7 +2091,7 @@ Snippet: ${r.content || r.snippet || ""}`;
     /**
      * Executes a terminal shell command gated by explicit user approval / dynamic whitelist.
      */
-    async runCommand(command, cwdOverride = null, subSessionId = null) {
+    async runCommand(command, cwdOverride = null, subSessionId = null, timeoutMs = 60000) {
         if (typeof command !== 'string' || !command.trim()) {
             return "Error: Command must be a non-empty string.";
         }
@@ -2042,6 +2139,7 @@ Snippet: ${r.content || r.snippet || ""}`;
                 type: "agent_command_approval",
                 command: cleanCmd,
                 cwd: cwdOverride || "",
+                timeoutMs: timeoutMs,
                 status: "pending",
                 subSessionId: targetSessionId,
                 timestamp: Date.now()
@@ -2067,16 +2165,19 @@ Snippet: ${r.content || r.snippet || ""}`;
         }
 
         // 4. Streamed Terminal Execution via WebSocket (if auto-approved / whitelisted)
-        return await this.executeTerminalCommand(cleanCmd, cwdOverride, targetSessionId);
+        return await this.executeTerminalCommand(cleanCmd, cwdOverride, targetSessionId, timeoutMs);
     }
 
     /**
-     * Executes a terminal shell command via WebSocket and streams output to chat.
+     * Executes a terminal shell command via WebSocket and streams output to chat with timeout cancellation.
      */
-    async executeTerminalCommand(cleanCmd, cwdOverride = null, targetSessionId = null) {
+    async executeTerminalCommand(cleanCmd, cwdOverride = null, targetSessionId = null, timeoutMs = 60000) {
         const aiManager = window.ui?.aiManager;
         return await new Promise((resolve) => {
             let outputBuffer = "";
+            let isFinished = false;
+            const timeoutDuration = (typeof timeoutMs === 'number' && timeoutMs > 0) ? timeoutMs : 60000;
+
             const port = (window.runtime) ? 3022 : (window.location.port || 3022);
             const wsHost = (window.runtime) ? `localhost:${port}` : (window.location.host || `localhost:${port}`);
             const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -2122,7 +2223,6 @@ Snippet: ${r.content || r.snippet || ""}`;
             const ws = new WebSocket(wsUrl);
             ws.binaryType = 'arraybuffer';
 
-            const cdCommandStr = targetDir ? `cd ${JSON.stringify(targetDir)} && ` : "";
             let cleanedOutput = "";
 
             const sanitizeText = (rawStr) => {
@@ -2174,9 +2274,44 @@ Snippet: ${r.content || r.snippet || ""}`;
                 }
             };
 
+            const finish = (code = 0, isTimedOut = false) => {
+                if (isFinished) return;
+                isFinished = true;
+                clearTimeout(timeoutTimer);
+
+                streamMsg.status = isTimedOut ? "timed_out" : (code === 0 ? "completed" : "failed");
+                if (activeSession) {
+                    workspaceClient.setSession(targetSessionId, activeSession).catch(() => {});
+                }
+                if (aiManager?.isSessionViewed(targetSessionId)) {
+                    aiManager.historyManager.render();
+                }
+
+                if (isTimedOut) {
+                    resolve(`Command execution timed out after ${(timeoutDuration / 1000).toFixed(0)}s.\nOutput captured:\n${cleanedOutput || "(No output)"}`);
+                } else {
+                    resolve(`Command execution completed.\nOutput:\n${cleanedOutput || "(No output)"}`);
+                }
+            };
+
+            const timeoutTimer = setTimeout(() => {
+                if (isFinished) return;
+                updateOutputDom(`\n[Command Execution Timed Out after ${(timeoutDuration / 1000).toFixed(0)}s. Terminating process...]`);
+                try {
+                    if (ws.readyState === WebSocket.OPEN) {
+                        ws.send('\x03\nexit\n');
+                        setTimeout(() => {
+                            try {
+                                if (ws.readyState === WebSocket.OPEN) ws.close();
+                            } catch (e) {}
+                        }, 500);
+                    }
+                } catch (e) {}
+                finish(124, true);
+            }, timeoutDuration);
+
             ws.onopen = () => {
                 // Disable interactive pagers (git log, git diff, man, etc.) and non-interactive environment flags
-                // so commands run to completion without getting stuck on pagination prompts like ":::No next tag (press RETURN):"
                 ws.send(`export PAGER=cat GIT_PAGER=cat CI=true NO_COLOR=1 2>/dev/null || true\n${cleanCmd}\nexit\n`);
             };
 
@@ -2205,24 +2340,13 @@ Snippet: ${r.content || r.snippet || ""}`;
                 }
             };
 
-            const finish = (code = 0) => {
-                streamMsg.status = code === 0 ? "completed" : "failed";
-                if (activeSession) {
-                    workspaceClient.setSession(targetSessionId, activeSession).catch(() => {});
-                }
-                if (aiManager?.isSessionViewed(targetSessionId)) {
-                    aiManager.historyManager.render();
-                }
-                resolve(`Command execution completed.\nOutput:\n${cleanedOutput || "(No output)"}`);
-            };
-
             ws.onerror = (err) => {
                 updateOutputDom(`\n[Execution Error: ${err.message || 'Connection failed'}]`);
-                finish(1);
+                finish(1, false);
             };
 
             ws.onclose = () => {
-                finish(0);
+                finish(0, false);
             };
         });
     }
@@ -2313,7 +2437,7 @@ Snippet: ${r.content || r.snippet || ""}`;
                 return await this.findFile(args.path);
             case 'run_command':
             case 'exec_command':
-                return await this.runCommand(args.command || args.cmd, args.cwd, sourceId);
+                return await this.runCommand(args.command || args.cmd, args.cwd, sourceId, args.timeoutMs || args.timeout);
             case 'create_implementation_plan':
                 return "Implementation plan created. The user is reviewing it.";
             case 'create_task_list':
@@ -2740,13 +2864,15 @@ You operate with a limited toolset. Do not try to perform tasks outside this sco
                 }
             } finally {
                 window.ui.aiManager.runningSessions.delete(subId);
-                // Trigger parent history update to reflect completion status badge
+                // Trigger parent history update and wake waiting parent loops
+                window.dispatchEvent(new CustomEvent('subagent-updated', { detail: { subSessionId: subId, parentSessionId, status: "finished" } }));
                 if (window.ui?.aiManager?.activeSessionId === parentSessionId) {
                     window.ui.aiManager.historyManager.render();
                 }
             }
         })();
 
+        window.dispatchEvent(new CustomEvent('subagent-updated', { detail: { subSessionId: subId, parentSessionId, status: "spawned" } }));
         return `[Sub-Agent ${subId} spawned to perform: "${args.objective}"]`;
     }
 
@@ -2771,6 +2897,7 @@ You operate with a limited toolset. Do not try to perform tasks outside this sco
             await workspaceClient.setSession(subSessionId, subSession);
         }
 
+        window.dispatchEvent(new CustomEvent('subagent-updated', { detail: { subSessionId, status: "completed" } }));
         return "Sub-agent task successfully completed and reported back.";
     }
 
@@ -2827,6 +2954,7 @@ You operate with a limited toolset. Do not try to perform tasks outside this sco
                     console.error(`Sub-Agent ${subSessionId} resume run failed:`, e);
                 } finally {
                     aiManager.runningSessions.delete(subSessionId);
+                    window.dispatchEvent(new CustomEvent('subagent-updated', { detail: { subSessionId, parentSessionId, status: "finished" } }));
                     if (aiManager.activeSessionId === parentSessionId) {
                         aiManager.historyManager.render();
                     }
@@ -2843,6 +2971,8 @@ You operate with a limited toolset. Do not try to perform tasks outside this sco
                 console.error(`Failed to resume running subagent:`, err);
             });
         }
+
+        window.dispatchEvent(new CustomEvent('subagent-updated', { detail: { subSessionId, parentSessionId, status: "resumed" } }));
 
         // 5. Update UI
         if (aiManager?.activeSessionId === parentSessionId) {
@@ -2897,6 +3027,8 @@ You operate with a limited toolset. Do not try to perform tasks outside this sco
         subSession.pendingParentQuery = prompt;
         subSession.lastModified = Date.now();
         await workspaceClient.setSession(subSessionId, subSession);
+
+        window.dispatchEvent(new CustomEvent('subagent-updated', { detail: { subSessionId, parentSessionId, status: "waiting_for_parent" } }));
 
         // 3. Block subagent loop until parent agent calls query_sub_agent
         const answer = await new Promise((resolve) => {

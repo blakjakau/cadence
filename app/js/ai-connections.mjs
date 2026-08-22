@@ -36,6 +36,7 @@ class AIConnections {
 						rpmLimit: 15,
 						tpmLimit: 250000,
 						rpdLimit: 500,
+						maxTurns: 50,
 						stripCodeBlocksFromContext: false
 					}
 				},
@@ -53,6 +54,7 @@ class AIConnections {
 						top_p: 0.9,
 						top_k: 40,
 						thinkingLevel: "medium",
+						maxTurns: 0,
 						system: "",
 						stop: ["</s>", "<|end|>", "<|im_end|>", "Llama:", "User:", "Assistant:"]
 					}

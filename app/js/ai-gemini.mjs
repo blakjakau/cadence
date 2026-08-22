@@ -16,7 +16,8 @@ class Gemini extends AI {
             tpmLimit: 250000,
             rpdLimit: 500,
             thinkingLevel: "medium",
-            maxInputTokens: 0
+            maxInputTokens: 0,
+            maxTurns: 50
         };
         this.MAX_CONTEXT_TOKENS = 32768*2; 
 
@@ -48,7 +49,8 @@ class Gemini extends AI {
             rpmLimit: { type: "number", label: "RPM Limit (Requests/Min)", default: 15 },
             tpmLimit: { type: "number", label: "TPM Limit (Tokens/Min)", default: 250000 },
             rpdLimit: { type: "number", label: "RPD Limit (Requests/Day)", default: 500 },
-            maxInputTokens: { type: "number", label: "Max Input Tokens (0 for unlimited)", default: 0 }
+            maxInputTokens: { type: "number", label: "Max Input Tokens (0 for unlimited)", default: 0 },
+            maxTurns: { type: "number", label: "Max Agent Turns (0 for unlimited)", default: 50 }
             //system: { type: "string", label: "System Prompt", default: systemPrompt, multiline: true },
         };
     }

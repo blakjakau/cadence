@@ -27,7 +27,8 @@ export const tools = [
             type: "object",
             properties: {
                 command: { type: "string", description: "The exact shell command line to run." },
-                cwd: { type: "string", description: "Optional working directory for execution." }
+                cwd: { type: "string", description: "Optional working directory for execution." },
+                timeoutMs: { type: "number", description: "Optional timeout in milliseconds before terminating the command process (default: 60000)." }
             },
             required: ["command"]
         }
