@@ -1512,9 +1512,9 @@ class AIManager {
 			this.stopButton.style.display = this._isProcessing ? 'flex' : 'none';
 		}
 
-		// Also disable all history delete buttons while processing
+		// Also disable all history delete, replay, and edit buttons while processing
 		if (this.conversationArea) {
-			this.conversationArea.querySelectorAll('.delete-history-button').forEach(btn => btn.disabled = disabled);
+			this.conversationArea.querySelectorAll('.delete-history-button, .replay-history-button, .edit-history-button').forEach(btn => btn.disabled = disabled);
 		}
 
 		// Never disable tabs/pointer-events! Keep them interactive.
@@ -3288,6 +3288,44 @@ ${contextText}`;
 					console.error("Failed to delete sub-agent session:", subId, e);
 				}
 			}
+		}
+	}
+
+	async editMessage(messageId) {
+		if (this._isProcessing) {
+			console.warn("AI is currently processing another request. Please wait.");
+			return;
+		}
+
+		if (!this.activeSession) return;
+
+		const msgIndex = this.activeSession.messages.findIndex(m => m.id === messageId);
+		if (msgIndex === -1) return;
+
+		const userMessage = this.activeSession.messages[msgIndex];
+		if (userMessage.type !== "user") return;
+
+		const promptText = userMessage.content || "";
+
+		// 1. Delete target turn and all subsequent turns and their sub-agents
+		const deletedMessages = this.activeSession.messages.slice(msgIndex);
+		await this.deleteSubAgentsInMessages(deletedMessages);
+
+		this.activeSession.messages.splice(msgIndex);
+		this.activeSession.lastModified = Date.now();
+		await workspaceClient.setSession(this.activeSession.id, this.activeSession);
+
+		// 2. Re-render the history so all following messages disappear from the screen
+		this.historyManager.render();
+
+		// 3. Update buttons and dispatch update
+		this._setButtonsDisabledState(this._isProcessing);
+		this._dispatchContextUpdate("edit_prompt");
+
+		// 4. Copy prompt text into editor and focus
+		if (this.promptEditor) {
+			this.promptEditor.setValue(promptText, -1);
+			this.promptEditor.focus();
 		}
 	}
 

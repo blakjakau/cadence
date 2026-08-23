@@ -806,6 +806,9 @@ class AIManagerHistory {
 			messageBlock.innerHTML = this.md.render(message.content);
 			wrapper.append(messageBlock);
 
+			const editButton = this._createSingleEditButton(message.id);
+			wrapper.append(editButton);
+
 			const replayButton = this._createSingleReplayButton(message.id);
 			wrapper.append(replayButton);
 
@@ -1115,6 +1118,8 @@ class AIManagerHistory {
 									if (nestedDelete) nestedDelete.remove();
 									const nestedReplay = cEl.querySelector(".replay-history-button");
 									if (nestedReplay) nestedReplay.remove();
+									const nestedEdit = cEl.querySelector(".edit-history-button");
+									if (nestedEdit) nestedEdit.remove();
 									detailContainer.append(cEl);
 								}
 							}
@@ -1585,14 +1590,34 @@ class AIManagerHistory {
 		this.manager._dispatchContextUpdate("task_state_updated");
 	}
 
+	_createSingleEditButton(messageId) {
+		const editButton = new Button();
+		editButton.classList.add("edit-history-button");
+		editButton.icon = "edit";
+		editButton.title = "Edit this prompt (prunes subsequent turns and copies into editor)";
+		editButton.on("click", async (e) => {
+			e.stopPropagation();
+			if (this.manager._isProcessing) {
+				console.warn("AI is currently processing another request. Please wait.");
+				return;
+			}
+			const confirmed = await window.modal.confirm("This will prune all subsequent turns, are you sure?", "Edit Prompt");
+			if (confirmed) {
+				this.manager.editMessage(messageId);
+			}
+		});
+		return editButton;
+	}
+
 	_createSingleReplayButton(messageId) {
 		const replayButton = new Button();
 		replayButton.classList.add("replay-history-button");
 		replayButton.icon = "replay";
 		replayButton.title = "Replay this prompt (deletes subsequent turns and regenerates)";
-		replayButton.on("click", (e) => {
+		replayButton.on("click", async (e) => {
 			e.stopPropagation();
-			if (confirm("Are you sure you want to replay this prompt? This will permanently delete all subsequent messages in this session and request a new response.")) {
+			const confirmed = await window.modal.confirm("Are you sure you want to replay this prompt? This will permanently delete all subsequent messages in this session and request a new response.", "Replay Prompt");
+			if (confirmed) {
 				this.manager.replayMessage(messageId);
 			}
 		});
@@ -1603,20 +1628,40 @@ class AIManagerHistory {
 		const deleteButton = new Button();
 		deleteButton.classList.add("delete-history-button");
 		deleteButton.icon = "delete";
-		deleteButton.title = "Delete this message permanently";
+		deleteButton.title = "Delete this message (Ctrl+Click to delete this and all subsequent turns)";
 		deleteButton.on("click", (e) => {
 			e.stopPropagation();
-			this._handleDeleteSingleMessage(messageId);
+			const pruneForward = e.ctrlKey || e.metaKey;
+			this._handleDeleteSingleMessage(messageId, pruneForward);
 		});
 		return deleteButton;
 	}
 
-	async _handleDeleteSingleMessage(messageId) {
+	async _handleDeleteSingleMessage(messageId, pruneForward = false) {
 		if (!this.manager.activeSession) return;
 
 		const msgIndex = this.chatHistory.findIndex(msg => msg.id === messageId);
 		if (msgIndex === -1) {
 			console.warn(`Attempted to delete a message with ID ${messageId} that was not found.`);
+			return;
+		}
+
+		if (pruneForward) {
+			if (this.manager._isProcessing) {
+				console.warn("AI is currently processing another request. Please wait.");
+				return;
+			}
+			const deletedMessages = this.manager.activeSession.messages.slice(msgIndex);
+			await this.manager.deleteSubAgentsInMessages(deletedMessages);
+
+			this.manager.activeSession.messages.splice(msgIndex);
+			this.manager.activeSession.lastModified = Date.now();
+			await workspaceClient.setSession(this.manager.activeSession.id, this.manager.activeSession);
+
+			this.render();
+
+			this.manager._setButtonsDisabledState(this.manager._isProcessing);
+			this.manager._dispatchContextUpdate("delete_item");
 			return;
 		}
 
@@ -1742,6 +1787,9 @@ class AIManagerHistory {
 			if (!userElement.querySelector(".delete-history-button")) {
 				const userPromptIndex = this.chatHistory.findIndex(msg => msg.id === userMessage.id);
 				if (userPromptIndex !== -1) { // Check that message is still in history
+					const editButton = this._createSingleEditButton(userMessage.id);
+					userElement.append(editButton);
+
 					const replayButton = this._createSingleReplayButton(userMessage.id);
 					userElement.append(replayButton);
 
@@ -2154,18 +2202,19 @@ class AIManagerHistory {
 			const hasPlan = !!targetSession?.implementationPlan;
 			const hasTasks = !!targetSession?.taskList;
 			const hasAcceptedPlan = targetSession?.messages?.some(m => m.planStatus === "accepted") || false;
+			const planningMode = targetSession ? (targetSession.planningMode ?? this.manager.planningMode) : this.manager.planningMode;
 			
 			let hasCompletedAllTasks = false;
 			if (hasTasks && targetSession.taskList) {
 				hasCompletedAllTasks = !targetSession.taskList.includes("- [ ]") && !targetSession.taskList.includes("* [ ]");
 			}
 
-
 			const directivesText = getAgentDirectives({
 				hasPlan,
 				hasTasks,
 				hasAcceptedPlan,
-				hasCompletedAllTasks
+				hasCompletedAllTasks,
+				planningMode
 			});
 
 			if (directivesText) {
@@ -2574,18 +2623,19 @@ class AIManagerHistory {
 			const hasPlan = !!targetSession?.implementationPlan;
 			const hasTasks = !!targetSession?.taskList;
 			const hasAcceptedPlan = targetSession?.messages?.some(m => m.planStatus === "accepted") || false;
+			const planningMode = targetSession ? (targetSession.planningMode ?? this.manager.planningMode) : this.manager.planningMode;
 			
 			let hasCompletedAllTasks = false;
 			if (hasTasks && targetSession.taskList) {
 				hasCompletedAllTasks = !targetSession.taskList.includes("- [ ]") && !targetSession.taskList.includes("* [ ]");
 			}
 
-
 			const directivesText = getAgentDirectives({
 				hasPlan,
 				hasTasks,
 				hasAcceptedPlan,
-				hasCompletedAllTasks
+				hasCompletedAllTasks,
+				planningMode
 			});
 
 			if (directivesText) {

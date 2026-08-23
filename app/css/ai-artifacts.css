@@ -388,6 +388,65 @@
     padding: 1px 4px;
 }
 
+/* Tool Call Byte Count */
+.tool-call-bytes {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-secondary);
+    opacity: 0.85;
+    margin-left: 2px;
+}
+
+/* Tool Call Live Preview Expander */
+.tool-call-preview-expander {
+    border-top: 1px solid var(--border-primary);
+    background: var(--bg-secondary);
+    font-size: 11px;
+}
+
+.tool-call-preview-summary {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 3px 10px;
+    cursor: pointer;
+    user-select: none;
+    color: var(--text-secondary);
+    font-size: 10.5px;
+    list-style: none;
+}
+
+.tool-call-preview-summary::-webkit-details-marker {
+    display: none;
+}
+
+.tool-call-preview-summary ui-icon {
+    font-size: 13px;
+    color: var(--text-secondary);
+}
+
+.tool-call-preview-summary:hover {
+    color: var(--text-primary);
+}
+
+.tool-call-preview-summary:hover ui-icon {
+    color: var(--text-primary);
+}
+
+.tool-call-preview-code {
+    margin: 0;
+    padding: 6px 10px;
+    background: var(--bg-code);
+    border-top: 1px solid var(--border-primary);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    line-height: 1.4;
+    white-space: pre-wrap;
+    word-break: break-all;
+    max-height: 120px;
+    overflow-y: auto;
+}
+
 /* Collapsible Agent Approval Cards after decision */
 .agent-approval-card.action-decided {
     cursor: pointer;

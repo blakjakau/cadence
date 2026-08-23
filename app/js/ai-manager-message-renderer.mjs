@@ -566,8 +566,14 @@ export default class AIManagerMessageRenderer {
                     } else if (toolName === "edit_file") {
                         const searchLines = (args.search && args.search.length > 0) ? args.search.split('\n').length : 0;
                         const replaceLines = (args.replace && args.replace.length > 0) ? args.replace.split('\n').length : 0;
+                        const replaceBytes = (new TextEncoder().encode(args.replace || "")).length;
                         const badgeClass = isClosed ? "tool-call-lines-badge" : "tool-call-lines-badge streaming";
-                        fileChipHtml += ` <span class="${badgeClass}">[<span style="color: var(--color-success, #2ea44f);">+${replaceLines}</span> <span style="color: var(--color-error, #cf222e);">${searchLines > 0 ? `-${searchLines}` : '-0'}</span>]</span>`;
+                        fileChipHtml += ` <span class="tool-call-bytes">${replaceBytes.toLocaleString()} bytes</span> <span class="${badgeClass}">[<span style="color: var(--color-success, #2ea44f);">+${replaceLines}</span> <span style="color: var(--color-error, #cf222e);">${searchLines > 0 ? `-${searchLines}` : '-0'}</span>]</span>`;
+                    } else if (toolName === "create_file") {
+                        const contentLines = (args.content && args.content.length > 0) ? args.content.split('\n').length : 0;
+                        const contentBytes = (new TextEncoder().encode(args.content || "")).length;
+                        const badgeClass = isClosed ? "tool-call-lines-badge" : "tool-call-lines-badge streaming";
+                        fileChipHtml += ` <span class="tool-call-bytes">${contentBytes.toLocaleString()} bytes</span> <span class="${badgeClass}">[<span style="color: var(--color-success, #2ea44f);">+${contentLines}</span>]</span>`;
                     }
                     
                     label = `<code>${toolName}:</code> ${fileChipHtml}`;
@@ -590,6 +596,25 @@ export default class AIManagerMessageRenderer {
                 badgeText = isClosed ? (isFailed ? 'Failed' : 'Completed') : 'Reporting...';
             } else if (toolName === "query") {
                 badgeText = isClosed ? (isFailed ? 'Failed' : 'Answered') : 'Waiting...';
+            }
+
+            let expanderHtml = "";
+            if (toolName === "create_file" || toolName === "edit_file") {
+                const newContent = toolName === "create_file" ? (args.content || "") : (args.replace || "");
+                if (newContent.length > 0) {
+                    const allLines = newContent.split('\n');
+                    const last5Lines = allLines.slice(-5);
+                    const previewText = last5Lines.join('\n');
+                    expanderHtml = `
+                        <details class="tool-call-preview-expander" ${isClosed ? '' : 'open'}>
+                            <summary class="tool-call-preview-summary">
+                                <ui-icon>unfold_more</ui-icon>
+                                <span>Preview (last ${last5Lines.length} lines)</span>
+                            </summary>
+                            <pre class="tool-call-preview-code"><code>${this._escapeHtml(previewText)}</code></pre>
+                        </details>
+                    `;
+                }
             }
 
             let toolCardHtml;
@@ -617,6 +642,7 @@ export default class AIManagerMessageRenderer {
                             <span class="tool-call-title compact">${label}</span>
                             <span class="tool-call-status-badge compact ${badgeClass}">${badgeText}</span>
                         </div>
+                        ${expanderHtml}
                     </div>
                 `;
             }
@@ -679,7 +705,12 @@ export default class AIManagerMessageRenderer {
                 if (toolName === "edit_file" && args.search && args.replace) {
                     const searchLines = args.search.split('\n').length;
                     const replaceLines = args.replace.split('\n').length;
-                    details += ` (+${replaceLines} -${searchLines})`;
+                    const replaceBytes = (new TextEncoder().encode(args.replace || "")).length;
+                    details += ` (+${replaceLines} -${searchLines}, ${replaceBytes.toLocaleString()}B)`;
+                } else if (toolName === "create_file" && args.content) {
+                    const contentLines = args.content.split('\n').length;
+                    const contentBytes = (new TextEncoder().encode(args.content || "")).length;
+                    details += ` (+${contentLines}, ${contentBytes.toLocaleString()}B)`;
                 }
                 toolSummary = `called <code>${toolName}</code> <span style="opacity:0.85;">${this._escapeHtml(details)}</span>`;
             } else if (args.query) {

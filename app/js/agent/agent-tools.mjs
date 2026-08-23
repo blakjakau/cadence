@@ -14,6 +14,7 @@ class AgentTools {
     constructor() {
         this.conduit = conduit;
         this.editBuffer = {}; // Tracks { [resolvedPath]: { markerIds: [] } }
+        this.syntaxErrors = {}; // Tracks pending syntax errors: { [resolvedPath]: errorString }
     }
 
     _resolveAndValidatePath(targetPath) {
@@ -414,7 +415,10 @@ Snippet: ${r.content || r.snippet || ""}`;
             const resolvedPath = this._resolveAndValidatePath(path);
             
             // Try to find if the file is open in the editor
-            const openTab = this._findOpenTab(resolvedPath);
+            let openTab = this._findOpenTab(resolvedPath);
+
+            const hasPendingDeferredEdits = !!(this.syntaxErrors && this.syntaxErrors[resolvedPath]) ||
+                !!(window.ui?.aiManager?.activeSession?.pendingEdits && window.ui.aiManager.activeSession.pendingEdits[resolvedPath]);
 
             let content = "";
             if (openTab && openTab.config.session) {
@@ -422,7 +426,18 @@ Snippet: ${r.content || r.snippet || ""}`;
                 const session = openTab.config.session;
                 const edits = this.editBuffer[resolvedPath]?.edits || [];
                 content = this._getCleanContentOfSession(session, edits);
-            } else if (this.conduit.isConnected) {
+            } else if (hasPendingDeferredEdits && window.ui?.fileList?.open) {
+                // If deferred validation edits exist but tab wasn't actively open, load from session
+                await window.ui.fileList.open(resolvedPath, resolvedPath);
+                openTab = this._findOpenTab(resolvedPath);
+                if (openTab && openTab.config.session) {
+                    const session = openTab.config.session;
+                    const edits = this.editBuffer[resolvedPath]?.edits || [];
+                    content = this._getCleanContentOfSession(session, edits);
+                }
+            }
+            
+            if (!content && this.conduit.isConnected) {
                 const result = await this.conduit.wsRead(resolvedPath);
                 if (result.error) throw new Error(result.error);
                 if (result.data) {
@@ -435,12 +450,12 @@ Snippet: ${r.content || r.snippet || ""}`;
                 } else {
                     content = result.content || "";
                 }
-            } else {
+            } else if (!content && !openTab) {
                 return "Error: Conduit not connected. Use @file context to provide content.";
             }
 
-            // Check if content matches an existing unpruned tool response
-            if (!bypassCache && startLine === undefined && lineCount === undefined && content && this._isContentInUnprunedHistory(content)) {
+            // Check if content matches an existing unpruned tool response (skip cache if has pending deferred edits)
+            if (!bypassCache && !hasPendingDeferredEdits && startLine === undefined && lineCount === undefined && content && this._isContentInUnprunedHistory(content)) {
                 return "Content is unchanged from previous request";
             }
 
@@ -1131,8 +1146,10 @@ Snippet: ${r.content || r.snippet || ""}`;
 
             // Pre-Save Syntax Validation
             const syntaxCheck = await syntaxValidator.validate(resolvedPath, proposedContent);
-            if (!syntaxCheck.valid) {
-                return `Syntax validation failed! Changes were NOT applied to disk or editor.\n${syntaxCheck.error}\nPlease fix the syntax error and try again.`;
+            if (syntaxCheck.valid) {
+                delete this.syntaxErrors[resolvedPath];
+            } else {
+                this.syntaxErrors[resolvedPath] = syntaxCheck.error;
             }
 
             const isForgivenessMode = window.ui?.aiManager?.forgivenessMode === true;
@@ -1175,8 +1192,8 @@ Snippet: ${r.content || r.snippet || ""}`;
                 const rangeToReplace = new Range(startLineIndex, startColIndex, endLineIndex, endColIndex);
                 session.replace(rangeToReplace, replacementString ?? "");
 
-                // 3. Save to disk immediately
-                if (window.saveFileTab) {
+                // 3. Save to disk immediately only if syntax is valid; otherwise defer save to memory
+                if (syntaxCheck.valid && window.saveFileTab) {
                     await window.saveFileTab(targetTab);
                     session.baseValue = session.getValue();
                 }
@@ -1195,7 +1212,12 @@ Snippet: ${r.content || r.snippet || ""}`;
                 const backupMsg = hasExistingBackup 
                     ? "the rollback backup has been retained" 
                     : "a rollback backup was created";
-                return `Successfully edited ${path} in Forgiveness Mode. The change has been committed directly to the file and ${backupMsg}. The tab has switched to the side-by-side Diff view for your review.`;
+
+                if (syntaxCheck.valid) {
+                    return `Successfully edited ${path}.`;
+                } else {
+                    return `Successfully edited ${path}.\n⚠️ Notice: File currently has syntax errors (${syntaxCheck.error}). Ensure subsequent edits resolve this before completing the task.`;
+                }
             }
 
             // Permission Mode: clean replacement in memory using the aligned range
@@ -1216,7 +1238,11 @@ Snippet: ${r.content || r.snippet || ""}`;
 
             // Focus & Redraw
             targetTab.click();
-            return `Successfully edited ${path} in memory (Permission Mode). The tab has switched to the side-by-side Diff view for your review. Please click 'Apply Changes' at the top to save to disk or 'Discard' to revert.`;
+            if (syntaxCheck.valid) {
+                return `Successfully edited ${path}.`;
+            } else {
+                return `Successfully edited ${path}.\n⚠️ Notice: File currently has syntax errors (${syntaxCheck.error}). Ensure subsequent edits resolve this before completing the task.`;
+            }
         } catch (error) {
             return `Error editing file: ${error.message}`;
         }
@@ -1985,11 +2011,13 @@ Snippet: ${r.content || r.snippet || ""}`;
 
             // Pre-Save Syntax Validation
             const syntaxCheck = await syntaxValidator.validate(resolvedPath, content);
-            if (!syntaxCheck.valid) {
-                return `Syntax validation failed! File was NOT created on disk or editor.\n${syntaxCheck.error}\nPlease fix the syntax error and try again.`;
+            if (syntaxCheck.valid) {
+                delete this.syntaxErrors[resolvedPath];
+            } else {
+                this.syntaxErrors[resolvedPath] = syntaxCheck.error;
             }
 
-            if (isForgivenessMode) {
+            if (isForgivenessMode && syntaxCheck.valid) {
                 const base64Content = btoa(unescape(encodeURIComponent(content))); // Safe base64 encoding
                 const result = await this.conduit.wsWrite(resolvedPath, base64Content);
                 if (result.error) throw new Error(result.error);
@@ -2020,7 +2048,7 @@ Snippet: ${r.content || r.snippet || ""}`;
                 return `Successfully created ${path}.`;
             }
 
-            // Permission Mode: Create empty on disk, open, set content in memory, show diff
+            // Permission Mode or Deferred Forgiveness Mode: Create empty on disk, open, set content in memory, show diff
             const result = await this.conduit.wsWrite(resolvedPath, "");
             if (result.error) throw new Error(result.error);
 
@@ -2061,7 +2089,11 @@ Snippet: ${r.content || r.snippet || ""}`;
 
             // Trigger click to render side-by-side diff review showing all lines added!
             targetTab.click();
-            return `Successfully created empty file ${path} on disk. The tab has switched to the side-by-side Diff view to review the pending content in memory. Please click 'Apply Changes' at the top to save to disk or 'Discard' to delete/revert.`;
+            if (syntaxCheck.valid) {
+                return `Successfully created ${path}.`;
+            } else {
+                return `Successfully created ${path}.\n⚠️ Notice: File currently has syntax errors (${syntaxCheck.error}). Ensure subsequent edits resolve this before completing the task.`;
+            }
         } catch (error) {
             return `Error creating file: ${error.message}`;
         }
@@ -2352,6 +2384,36 @@ Snippet: ${r.content || r.snippet || ""}`;
     }
 
     /**
+     * Verifies that all files currently flagged with syntax errors have been resolved.
+     * If a file has been resolved to valid syntax, saves to disk in Forgiveness Mode.
+     * @returns {Promise<string|null>} Error message if any file has syntax errors, or null if all clean.
+     */
+    async _checkPendingSyntaxErrors() {
+        const pathsWithErrors = Object.keys(this.syntaxErrors);
+        for (const resolvedPath of pathsWithErrors) {
+            const tab = this._findOpenTab(resolvedPath);
+            const content = tab?.config?.session?.getValue();
+            if (typeof content === 'string') {
+                const check = await syntaxValidator.validate(resolvedPath, content);
+                if (check.valid) {
+                    delete this.syntaxErrors[resolvedPath];
+                    // In forgiveness mode, commit to disk now that syntax is valid
+                    if (window.ui?.aiManager?.forgivenessMode === true && tab && window.saveFileTab) {
+                        await window.saveFileTab(tab);
+                        tab.config.session.baseValue = tab.config.session.getValue();
+                    }
+                } else {
+                    this.syntaxErrors[resolvedPath] = check.error;
+                    return `File '${resolvedPath}' has remaining syntax errors:\n${check.error}`;
+                }
+            } else if (this.syntaxErrors[resolvedPath]) {
+                return `File '${resolvedPath}' has remaining syntax errors:\n${this.syntaxErrors[resolvedPath]}`;
+            }
+        }
+        return null;
+    }
+
+    /**
      * Centralized tool execution dispatcher.
      * @param {string} name - The tool name.
      * @param {object} args - The arguments.
@@ -2425,12 +2487,26 @@ Snippet: ${r.content || r.snippet || ""}`;
                 );
             case 'create_file':
                 return await this.createFile(args.path, args.content, sourceId);
-            case 'validate_syntax':
-                const syntaxCheck = await syntaxValidator.validate(args.path, args.content);
+            case 'validate_syntax': {
+                let contentToValidate = args.content;
+                if (!contentToValidate && args.search && args.replace !== undefined) {
+                    try {
+                        const resolvedPath = this._resolveAndValidatePath(args.path);
+                        const targetTab = this._findOpenTab(resolvedPath);
+                        const originalContent = targetTab?.config?.session?.getValue() || (await this.readFile(args.path));
+                        if (typeof originalContent === 'string') {
+                            contentToValidate = originalContent.replace(args.search, args.replace);
+                        }
+                    } catch (e) {
+                        // fallback to args.content
+                    }
+                }
+                const syntaxCheck = await syntaxValidator.validate(args.path, contentToValidate || "");
                 if (syntaxCheck.valid) {
                     return `Valid syntax for ${args.path}.`;
                 }
                 return `Syntax validation failed for ${args.path}:\n${syntaxCheck.error}`;
+            }
             case 'open_file':
                 return await this.openFile(args.path);
             case 'find_file':
@@ -2444,20 +2520,35 @@ Snippet: ${r.content || r.snippet || ""}`;
             	return "Task list created.";
             case 'update_task_list':
                 return "Task list updated.";
-            case 'complete_task':
+            case 'complete_task': {
+                const syntaxIssue = await this._checkPendingSyntaxErrors();
+                if (syntaxIssue) {
+                    return `Cannot mark task complete: ${syntaxIssue}\nPlease resolve the syntax error before completing the task.`;
+                }
                 return `Task marked complete: ${args.taskName}`;
+            }
             case 'query':
                 return await this.queryUser(args, sourceId);
             case 'create_sub_agent':
                 return await this.createSubAgent(args, sourceId);
-            case 'sub_agent_complete':
+            case 'sub_agent_complete': {
+                const syntaxIssue = await this._checkPendingSyntaxErrors();
+                if (syntaxIssue) {
+                    return `Cannot complete sub-agent execution: ${syntaxIssue}\nPlease resolve the syntax error before finishing.`;
+                }
                 return await this.subAgentComplete(args, sourceId);
+            }
             case 'query_sub_agent':
                 return await this.querySubAgent(args, sourceId);
             case 'query_parent':
                 return await this.queryParent(args, sourceId);
-            case 'done':
+            case 'done': {
+                const syntaxIssue = await this._checkPendingSyntaxErrors();
+                if (syntaxIssue) {
+                    return `Cannot finish agent execution: ${syntaxIssue}\nPlease resolve the syntax error before completing your work.`;
+                }
                 return "Agent successfully completed the execution loop.";
+            }
             default:
                 throw new Error(`Tool '${name}' is not recognized.`);
         }

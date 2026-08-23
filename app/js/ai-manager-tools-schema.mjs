@@ -35,14 +35,16 @@ export const tools = [
     },
     {
         name: "validate_syntax",
-        description: "Validates the syntax of JavaScript (.js, .mjs), JSON (.json), HTML, or CSS code content without writing it to disk. Returns 'Valid syntax' or exact line/column SyntaxError details.",
+        description: "Validates the syntax of JavaScript (.js, .mjs), JSON (.json), HTML, or CSS code content without writing it to disk. Can validate full file content or simulated search/replace edits. Returns 'Valid syntax' or exact line/column SyntaxError details.",
         parameters: {
             type: "object",
             properties: {
                 path: { type: "string", description: "The path or filename (used for extension detection)." },
-                content: { type: "string", description: "The unsaved file content to validate." }
+                content: { type: "string", description: "Optional. The full unsaved file content to validate." },
+                search: { type: "string", description: "Optional. Target search text to replace for simulated patch validation." },
+                replace: { type: "string", description: "Optional. Replacement text for simulated patch validation." }
             },
-            required: ["path", "content"]
+            required: ["path"]
         }
     },
     {
@@ -198,7 +200,7 @@ export const tools = [
     // },
     {
         name: "create_implementation_plan",
-        description: "Create a detailed implementation plan before modifying code.",
+        description: "Create a structured implementation plan and optional initial task list for complex, multi-file changes or when planning mode is enabled.",
         parameters: {
             type: "object",
             properties: {
