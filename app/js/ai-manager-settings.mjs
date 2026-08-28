@@ -207,6 +207,7 @@ class AIManagerSettings {
         localStorage.setItem("defaultAllowRunCommand", aiManager.config.defaultAllowRunCommand);
 
         // --- Save Forgiveness Mode ---
+        aiManager.config.defaultForgivenessMode = !!values.forgivenessMode;
         aiManager.forgivenessMode = !!values.forgivenessMode;
         localStorage.setItem("aiForgivenessMode", aiManager.forgivenessMode);
         if (aiManager.activeSession) {

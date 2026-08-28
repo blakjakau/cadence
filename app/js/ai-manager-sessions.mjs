@@ -75,10 +75,27 @@ class AIManagerSessions {
 	async createNewSession() {
 		const newId = `ai-session-${crypto.randomUUID()}`;
 		const newName = `Chat ${this.allSessionMetadata.length + 1}`;
-		const lastForgivenessMode = this.activeSession ? (this.activeSession.forgivenessMode ?? false) : (this.manager.forgivenessMode ?? false);
-		const defaultAgent = this.manager.config.defaultAgentMode ?? false;
-		const defaultPlanning = this.manager.config.defaultPlanningMode ?? true;
 		
+		const defaultAgent = (this.manager.config.defaultAgentMode !== undefined)
+			? this.manager.config.defaultAgentMode
+			: (localStorage.getItem("defaultAgentMode") === "true");
+
+		const defaultPlanning = (this.manager.config.defaultPlanningMode !== undefined)
+			? this.manager.config.defaultPlanningMode
+			: (localStorage.getItem("defaultPlanningMode") !== "false");
+
+		const defaultForgiveness = (this.manager.config.defaultForgivenessMode !== undefined)
+			? this.manager.config.defaultForgivenessMode
+			: (localStorage.getItem("aiForgivenessMode") === "true");
+
+		const defaultSubAgents = (this.manager.config.defaultAllowSubAgents !== undefined)
+			? this.manager.config.defaultAllowSubAgents
+			: (localStorage.getItem("defaultAllowSubAgents") !== "false");
+
+		const defaultRunCommand = (this.manager.config.defaultAllowRunCommand !== undefined)
+			? this.manager.config.defaultAllowRunCommand
+			: (localStorage.getItem("defaultAllowRunCommand") !== "false");
+
 		let defaultConnectionId = localStorage.getItem("cadence_default_connection_id");
 		if (!defaultConnectionId && window.ui?.aiManager?.connectionsManager) {
 			defaultConnectionId = window.ui.aiManager.connectionsManager.defaultConnectionId;
@@ -90,11 +107,11 @@ class AIManagerSessions {
 			evergreenFiles: [], modifiedFiles: {}, pendingEdits: {},
 			agentMode: defaultAgent,
 			planningMode: defaultPlanning,
-			forgivenessMode: lastForgivenessMode,
+			forgivenessMode: defaultForgiveness,
 			connectionId: defaultConnectionId,
 			thinkingLevel: "auto",
-			allowSubAgents: this.manager.config.defaultAllowSubAgents ?? true,
-			allowRunCommand: this.manager.config.defaultAllowRunCommand ?? true,
+			allowSubAgents: defaultSubAgents,
+			allowRunCommand: defaultRunCommand,
 			pinnedSkills: [],
 		};
 
@@ -255,9 +272,9 @@ class AIManagerSessions {
 		// Update manager's state
 		this.activeSession = newSessionData;
 		this.activeSessionId = sessionId;
-		this.manager.agentMode = newSessionData.agentMode ?? false;
-		this.manager.planningMode = newSessionData.planningMode ?? true;
-		this.manager.forgivenessMode = newSessionData.forgivenessMode ?? false;
+		this.manager.agentMode = newSessionData.agentMode ?? (this.manager.config.defaultAgentMode ?? false);
+		this.manager.planningMode = newSessionData.planningMode ?? (this.manager.config.defaultPlanningMode ?? true);
+		this.manager.forgivenessMode = newSessionData.forgivenessMode ?? (this.manager.config.defaultForgivenessMode ?? false);
 		this.manager.allowRunCommand = newSessionData.allowRunCommand ?? (this.manager.config.defaultAllowRunCommand ?? true);
 		this._unsentPromptBuffer = null; // Clear any pending unsent prompt from the previous session
 

@@ -423,6 +423,11 @@
 .tool-call-preview-summary ui-icon {
     font-size: 13px;
     color: var(--text-secondary);
+    transition: transform 0.15s ease;
+}
+
+.tool-call-preview-expander:not([open]) > .tool-call-preview-summary ui-icon {
+    transform: rotate(-90deg);
 }
 
 .tool-call-preview-summary:hover {

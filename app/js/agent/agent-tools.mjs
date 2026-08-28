@@ -27,47 +27,97 @@ class AgentTools {
         }
 
         // Clean and normalize targetPath
-        targetPath = targetPath.replace(/\\/g, '/');
+        targetPath = targetPath.replace(/\\/g, '/').trim();
 
-        // Check if targetPath is already absolute and starts with one of the folders
-        let resolvedPath = "";
-        const matchesAbsolute = folders.some(folder => {
-            const normalizedFolder = folder.replace(/\\/g, '/').replace(/\/$/, '');
-            return targetPath === normalizedFolder || targetPath.startsWith(normalizedFolder + '/');
-        });
+        // 1. If targetPath is already absolute and starts with one of the open workspace folders
+        for (const folder of folders) {
+            const normFolder = folder.replace(/\\/g, '/').replace(/\/+$/, '');
+            if (targetPath === normFolder || targetPath.startsWith(normFolder + '/')) {
+                return this._cleanNormalizedPath(targetPath);
+            }
+        }
 
-        if (targetPath.startsWith('/') && matchesAbsolute) {
-            resolvedPath = targetPath;
-        } else {
-            // It is a relative path or has a partial overlap.
-            // Let's find if the targetPath starts with an overlapping segment of any open folder
-            const baseFolder = folders[0].replace(/\\/g, '/').replace(/\/$/, '');
-            const folderSegments = baseFolder.split('/').filter(p => p);
-            
-            // Normalize targetPath segments
-            let targetSegments = targetPath.split('/').filter(p => p);
-            
-            // Find maximum segment overlap
+        // 2. Check if targetPath starts with the folder basename of ANY open workspace folder
+        // e.g. targetPath = "dev.jakbox.docs/src/index.js" or "dev.jakbox.docs"
+        for (const folder of folders) {
+            const normFolder = folder.replace(/\\/g, '/').replace(/\/+$/, '');
+            const folderName = normFolder.split('/').filter(Boolean).pop();
+            if (folderName) {
+                if (targetPath === folderName) {
+                    return this._cleanNormalizedPath(normFolder);
+                }
+                if (targetPath.startsWith(folderName + '/')) {
+                    const subPath = targetPath.substring(folderName.length + 1);
+                    return this._cleanNormalizedPath(`${normFolder}/${subPath}`);
+                }
+            }
+        }
+
+        // 3. Check for segment overlap against ALL open workspace folders
+        // Pick the folder with the maximum segment overlap >= 1
+        let bestOverlapCount = 0;
+        let bestOverlapFolder = null;
+        let bestTargetSegments = null;
+
+        const targetSegments = targetPath.split('/').filter(p => p && p !== '.');
+
+        for (const folder of folders) {
+            const normFolder = folder.replace(/\\/g, '/').replace(/\/+$/, '');
+            const folderSegments = normFolder.split('/').filter(Boolean);
+
             let maxOverlap = 0;
             for (let k = 1; k <= Math.min(folderSegments.length, targetSegments.length); k++) {
                 const folderSlice = folderSegments.slice(-k);
                 const targetSlice = targetSegments.slice(0, k);
-                if (folderSlice.join('/') === targetSlice.join('/')) {
+                if (folderSlice.join('/').toLowerCase() === targetSlice.join('/').toLowerCase()) {
                     maxOverlap = k;
                 }
             }
-            
-            if (maxOverlap > 0) {
-                // Strip the overlapping prefix from the target segments
-                targetSegments = targetSegments.slice(maxOverlap);
+
+            if (maxOverlap > bestOverlapCount) {
+                bestOverlapCount = maxOverlap;
+                bestOverlapFolder = normFolder;
+                bestTargetSegments = targetSegments.slice(maxOverlap);
             }
-            
-            const cleanRelativePath = targetSegments.join('/');
-            resolvedPath = cleanRelativePath ? `${baseFolder}/${cleanRelativePath}` : baseFolder;
         }
 
-        // Clean directory traversal sequences
-        const parts = resolvedPath.split('/');
+        if (bestOverlapFolder && bestOverlapCount > 0) {
+            const cleanRelative = bestTargetSegments.join('/');
+            const resolved = cleanRelative ? `${bestOverlapFolder}/${cleanRelative}` : bestOverlapFolder;
+            return this._cleanNormalizedPath(resolved);
+        }
+
+        // 4. Check if targetPath matches a known file path in the workspace file index
+        if (window.ui?.fileList?.index?.files) {
+            const cleanTarget = targetPath.replace(/^\/+/, '').toLowerCase();
+            const indexedFile = window.ui.fileList.index.files.find(f => {
+                const fPath = f.path.replace(/\\/g, '/').replace(/^\/+/, '').toLowerCase();
+                return fPath === cleanTarget || fPath.endsWith('/' + cleanTarget);
+            });
+            if (indexedFile) {
+                const normIndexMatch = indexedFile.path.replace(/\\/g, '/');
+                return this._cleanNormalizedPath(normIndexMatch.startsWith('/') ? normIndexMatch : `/${normIndexMatch}`);
+            }
+        }
+
+        // 5. If targetPath is '.' or empty and there's 1 root folder
+        if ((targetPath === '.' || targetPath === '' || targetPath === '/') && folders.length === 1) {
+            return this._cleanNormalizedPath(folders[0]);
+        }
+
+        // 6. Default to first workspace folder for relative paths
+        const baseFolder = folders[0].replace(/\\/g, '/').replace(/\/+$/, '');
+        const cleanRelative = targetSegments.join('/');
+        const resolvedPath = cleanRelative ? `${baseFolder}/${cleanRelative}` : baseFolder;
+        return this._cleanNormalizedPath(resolvedPath);
+    }
+
+    _cleanNormalizedPath(rawPath) {
+        const folders = window.workspace?.folders || [];
+        rawPath = rawPath.replace(/\\/g, '/');
+
+        // Resolve traversal sequences
+        const parts = rawPath.split('/');
         const resolvedParts = [];
         for (const part of parts) {
             if (part === '.' || part === '') continue;
@@ -79,42 +129,32 @@ class AgentTools {
                 resolvedParts.push(part);
             }
         }
-        
-        // Reconstruct absolute path
-        const finalResolvedPath = '/' + resolvedParts.join('/');
-        
-        // Clean double/triple slashes
-        const cleanFinalResolvedPath = finalResolvedPath.replace(/\/+/g, '/');
 
-        // Verify it starts with at least one of the allowed folders, or is in the workspace file index
+        const finalResolvedPath = '/' + resolvedParts.join('/');
+        const cleanFinalPath = finalResolvedPath.replace(/\/+/g, '/');
+
+        // Verify security against open workspace folders
         const isSafe = folders.some(folder => {
-            const normalizedFolder = folder.replace(/\\/g, '/').replace(/\/+/g, '/').replace(/\/$/, '');
-            
-            // Case 1: Folder is relative or dot
+            const normalizedFolder = folder.replace(/\\/g, '/').replace(/\/+/g, '/').replace(/\/+$/, '');
             if (normalizedFolder === '.' || normalizedFolder === '' || !normalizedFolder.startsWith('/')) {
-                return true; // Any clean path in the workspace is allowed
+                return true;
             }
-            
-            // Case 2: Check standard absolute prefix
-            return cleanFinalResolvedPath === normalizedFolder || cleanFinalResolvedPath.startsWith(normalizedFolder + '/');
+            return cleanFinalPath === normalizedFolder || cleanFinalPath.startsWith(normalizedFolder + '/');
         }) || (window.ui?.fileList?.index?.files || []).some(file => {
-            // Case 3: Fallback check against the loaded workspace file index
             const normalizedFilePath = file.path.replace(/\\/g, '/').replace(/\/+/g, '/');
-            return cleanFinalResolvedPath === normalizedFilePath || 
-                   normalizedFilePath === targetPath.replace(/\\/g, '/').replace(/\/+/g, '/');
+            return cleanFinalPath === normalizedFilePath;
         });
 
         if (!isSafe) {
             console.error("Security violation check failed:", {
-                targetPath,
+                rawPath,
                 folders,
-                cleanFinalResolvedPath,
-                indexCount: window.ui?.fileList?.index?.files?.length
+                cleanFinalPath
             });
-            throw new Error(`Security Exception: Access to path '${targetPath}' is denied. It lies outside the allowed workspace folders.`);
+            throw new Error(`Security Exception: Access to path '${rawPath}' is denied. It lies outside the allowed workspace folders.`);
         }
 
-        return cleanFinalResolvedPath;
+        return cleanFinalPath;
     }
 
     _normalizePathForTabComparison(p) {
@@ -144,6 +184,22 @@ class AgentTools {
      */
     async listFiles(path = '.') {
         try {
+            const folders = window.workspace?.folders || [];
+            
+            // If in a multi-root workspace and path is root/unspecified, list all workspace root folders
+            if ((!path || path === '.' || path === '' || path === '/') && folders.length > 1) {
+                const rootLines = [];
+                rootLines.push(`This workspace contains ${folders.length} root folders:`);
+                for (let i = 0; i < folders.length; i++) {
+                    const f = folders[i];
+                    const folderName = f.split(/[\\/]/).filter(Boolean).pop() || f;
+                    rootLines.push(`📁 [ROOT FOLDER] ${folderName} (${f})`);
+                }
+                const firstRootName = folders[0].split(/[\\/]/).filter(Boolean).pop() || folders[0];
+                rootLines.push(`\nTo explore files inside a specific root, pass its folder name or path (e.g. list_files with path: "${firstRootName}")`);
+                return rootLines.join('\n');
+            }
+
             const resolvedPath = this._resolveAndValidatePath(path);
             if (this.conduit.isConnected) {
                 const result = await this.conduit.wsList(resolvedPath);
@@ -677,20 +733,29 @@ Snippet: ${r.content || r.snippet || ""}`;
             if (this.conduit.isConnected) {
                 console.debug(`[AgentTools] Running backend Go search for query: "${query}"`);
                 try {
-                    const res = await this.conduit.wsSearch(".", "content", query);
-                    if (res && !res.error && Array.isArray(res.data)) {
-                        for (const match of res.data) {
-                            try {
-                                const resolved = this._resolveAndValidatePath(match.path);
-                                if (searchedPaths.has(resolved)) continue; // Already searched
-                                matches.push({
-                                    path: match.path,
-                                    line: match.line,
-                                    content: match.content
-                                });
-                            } catch (e) {
-                                // Skip files that fail path resolution
+                    const folders = window.workspace?.folders || [];
+                    const searchRoots = folders.length > 0 ? folders : ["."];
+                    for (const rootFolder of searchRoots) {
+                        try {
+                            const res = await this.conduit.wsSearch(rootFolder, "content", query);
+                            if (res && !res.error && Array.isArray(res.data)) {
+                                for (const match of res.data) {
+                                    try {
+                                        const resolved = this._resolveAndValidatePath(match.path);
+                                        if (searchedPaths.has(resolved)) continue; // Already searched
+                                        searchedPaths.add(resolved);
+                                        matches.push({
+                                            path: match.path,
+                                            line: match.line,
+                                            content: match.content
+                                        });
+                                    } catch (e) {
+                                        // Skip files that fail path resolution
+                                    }
+                                }
                             }
+                        } catch (errRoot) {
+                            console.warn(`[AgentTools] Search failed for root ${rootFolder}:`, errRoot);
                         }
                     }
                 } catch (e) {
@@ -1007,15 +1072,156 @@ Snippet: ${r.content || r.snippet || ""}`;
      * @param {string} replacementString 
      * @param {string} sourceId - For backup tracking
      */
-    async editFile(path, searchString, replacementString, sourceId) {
+    _applySingleSearchReplace(originalContent, searchString, replacementString, editIndex = 0, totalEdits = 1) {
+        const cleanSearch = (searchString || "").replace(/\s+/g, "");
+        const cleanReplace = (replacementString || "").replace(/\s+/g, "");
+        if (cleanSearch === cleanReplace) {
+            throw new Error(`Malformed edit${totalEdits > 1 ? ` (edit #${editIndex + 1})` : ""}: replace and search blocks are identical`);
+        }
+
+        const normOriginal = originalContent.replace(/\r\n/g, "\n");
+        const normSearch = (searchString || "").replace(/\r\n/g, "\n");
+        const normReplace = (replacementString ?? "").replace(/\r\n/g, "\n");
+
+        let startLineIndex = -1;
+        let startColIndex = 0;
+        let endLineIndex = -1;
+        let endColIndex = 0;
+        let proposedContent = "";
+
+        // 1. Primary Match Strategy: Exact character-for-character substring match
+        let matchCount = 0;
+        let firstMatchOffset = -1;
+        let searchOffset = 0;
+
+        if (normSearch.length > 0) {
+            while ((searchOffset = normOriginal.indexOf(normSearch, searchOffset)) !== -1) {
+                matchCount++;
+                if (matchCount === 1) firstMatchOffset = searchOffset;
+                searchOffset += normSearch.length;
+            }
+        }
+
+        if (matchCount > 1) {
+            throw new Error(`Search text${totalEdits > 1 ? ` for edit #${editIndex + 1}` : ""} matches multiple locations (${matchCount} matches). Provide more surrounding context lines.`);
+        }
+
+        if (matchCount === 1) {
+            const beforeMatch = normOriginal.slice(0, firstMatchOffset);
+            const matchedText = normOriginal.slice(firstMatchOffset, firstMatchOffset + normSearch.length);
+
+            const beforeLines = beforeMatch.split("\n");
+            startLineIndex = beforeLines.length - 1;
+            startColIndex = beforeLines[beforeLines.length - 1].length;
+
+            const matchedLines = matchedText.split("\n");
+            endLineIndex = startLineIndex + matchedLines.length - 1;
+            endColIndex = matchedLines.length === 1 ? startColIndex + matchedText.length : matchedLines[matchedLines.length - 1].length;
+
+            proposedContent = normOriginal.slice(0, firstMatchOffset) + normReplace + normOriginal.slice(firstMatchOffset + normSearch.length);
+        } else {
+            // 2. Secondary Match Strategy: Line-by-line match with trailing whitespace tolerance
+            const sourceLines = normOriginal.split("\n");
+            const searchLines = normSearch.split("\n");
+
+            const lineMatches = [];
+            if (searchLines.length > 0) {
+                for (let i = 0; i <= sourceLines.length - searchLines.length; i++) {
+                    let isMatch = true;
+                    for (let j = 0; j < searchLines.length; j++) {
+                        if (sourceLines[i + j] !== searchLines[j] && sourceLines[i + j].trimEnd() !== searchLines[j].trimEnd()) {
+                            isMatch = false;
+                            break;
+                        }
+                    }
+                    if (isMatch) {
+                        lineMatches.push(i);
+                    }
+                }
+            }
+
+            if (lineMatches.length > 1) {
+                throw new Error(`Search text${totalEdits > 1 ? ` for edit #${editIndex + 1}` : ""} matches multiple locations (${lineMatches.length} matches). Provide more surrounding context lines.`);
+            }
+
+            if (lineMatches.length === 1) {
+                const matchLineIndex = lineMatches[0];
+                startLineIndex = matchLineIndex;
+                startColIndex = 0;
+                endLineIndex = matchLineIndex + searchLines.length - 1;
+                endColIndex = sourceLines[endLineIndex].length;
+
+                const replacementLines = normReplace.split("\n");
+                const proposedLines = [
+                    ...sourceLines.slice(0, startLineIndex),
+                    ...replacementLines,
+                    ...sourceLines.slice(endLineIndex + 1)
+                ];
+                proposedContent = proposedLines.join("\n");
+            } else {
+                // 3. Tertiary Match Strategy (Fuzzy/Normalized token fallback)
+                const fuzzy = this._fuzzyMatchLines(sourceLines, searchLines);
+                if (fuzzy && fuzzy.matchLineIndex !== -1) {
+                    console.info(`🎯 [AgentTools] Fuzzy match found for edit_file at lines ${fuzzy.matchLineIndex + 1}-${fuzzy.endLineIndex + 1} (${Math.round(fuzzy.bestScore * 100)}% similarity)`);
+                    startLineIndex = fuzzy.matchLineIndex;
+                    startColIndex = 0;
+                    endLineIndex = fuzzy.endLineIndex;
+                    endColIndex = sourceLines[endLineIndex].length;
+
+                    const replacementLines = normReplace.split("\n");
+                    const proposedLines = [
+                        ...sourceLines.slice(0, startLineIndex),
+                        ...replacementLines,
+                        ...sourceLines.slice(endLineIndex + 1)
+                    ];
+                    proposedContent = proposedLines.join("\n");
+                } else {
+                    const nearest = fuzzy?.nearestLineIndex >= 0 
+                        ? ` Nearest candidate match found near line ${fuzzy.nearestLineIndex + 1} (${Math.round(fuzzy.bestScore * 100)}% match). Check search string indentation or re-read file around that line with read_file.` 
+                        : " Check search string or re-read file with read_file.";
+                    throw new Error(`Search text${totalEdits > 1 ? ` for edit #${editIndex + 1}` : ""} not found.${nearest}`);
+                }
+            }
+        }
+
+        return {
+            proposedContent,
+            startLineIndex,
+            startColIndex,
+            endLineIndex,
+            endColIndex
+        };
+    }
+
+    /**
+     * Replaces exact search blocks with replacement blocks in a file.
+     * Supports either a single (searchString, replacementString) or an array of edits [{ search, replace }].
+     * @param {string} path 
+     * @param {string} [searchString] 
+     * @param {string} [replacementString] 
+     * @param {string} [sourceId] - For backup tracking
+     * @param {Array<{search: string, replace: string}>} [edits] - Optional array of edits
+     */
+    async editFile(path, searchString, replacementString, sourceId, edits = null) {
         try {
             const permitted = this._checkFilePermitted(path);
             if (permitted !== true) return permitted;
 
-            const cleanSearch = (searchString || "").replace(/\s+/g, "");
-            const cleanReplace = (replacementString || "").replace(/\s+/g, "");
-            if (cleanSearch === cleanReplace) {
-                return "Malformed edit, replace and search blocks are the same";
+            // Normalize edit operations list
+            let editList = [];
+            if (Array.isArray(edits) && edits.length > 0) {
+                editList = edits;
+            } else if (typeof edits === "string") {
+                try {
+                    const parsed = JSON.parse(edits);
+                    if (Array.isArray(parsed) && parsed.length > 0) editList = parsed;
+                } catch (e) {}
+            }
+            if (editList.length === 0) {
+                if (searchString === undefined && replacementString === undefined) {
+                    throw new Error("Missing search and replace arguments or edits array for edit_file.");
+                }
+                editList = [{ search: searchString || "", replace: replacementString || "" }];
             }
 
             const resolvedPath = this._resolveAndValidatePath(path);
@@ -1037,112 +1243,33 @@ Snippet: ${r.content || r.snippet || ""}`;
             const session = targetTab.config.session;
             const originalContent = session.getValue();
 
-            // Normalize line endings to \n for consistent matching
-            const normOriginal = originalContent.replace(/\r\n/g, "\n");
-            const normSearch = (searchString || "").replace(/\r\n/g, "\n");
-            const normReplace = (replacementString ?? "").replace(/\r\n/g, "\n");
+            let currentContent = originalContent;
+            let firstStartLine = -1;
+            let firstStartCol = 0;
+            let lastEndLine = -1;
+            let lastEndCol = 0;
 
-            let startLineIndex = -1;
-            let startColIndex = 0;
-            let endLineIndex = -1;
-            let endColIndex = 0;
-            let proposedContent = "";
+            for (let idx = 0; idx < editList.length; idx++) {
+                const item = editList[idx];
+                const s = item.search !== undefined ? item.search : (item.searchString || "");
+                const r = item.replace !== undefined ? item.replace : (item.replacementString ?? "");
+                
+                const applied = this._applySingleSearchReplace(currentContent, s, r, idx, editList.length);
+                currentContent = applied.proposedContent;
 
-            // 1. Primary Match Strategy: Exact character-for-character substring match
-            let matchCount = 0;
-            let firstMatchOffset = -1;
-            let searchOffset = 0;
-
-            if (normSearch.length > 0) {
-                while ((searchOffset = normOriginal.indexOf(normSearch, searchOffset)) !== -1) {
-                    matchCount++;
-                    if (matchCount === 1) firstMatchOffset = searchOffset;
-                    searchOffset += normSearch.length;
+                if (idx === 0) {
+                    firstStartLine = applied.startLineIndex;
+                    firstStartCol = applied.startColIndex;
                 }
+                lastEndLine = applied.endLineIndex;
+                lastEndCol = applied.endColIndex;
             }
 
-            if (matchCount > 1) {
-                throw new Error("Search text matches multiple locations. Provide more surrounding context lines.");
-            }
-
-            if (matchCount === 1) {
-                const beforeMatch = normOriginal.slice(0, firstMatchOffset);
-                const matchedText = normOriginal.slice(firstMatchOffset, firstMatchOffset + normSearch.length);
-
-                const beforeLines = beforeMatch.split("\n");
-                startLineIndex = beforeLines.length - 1;
-                startColIndex = beforeLines[beforeLines.length - 1].length;
-
-                const matchedLines = matchedText.split("\n");
-                endLineIndex = startLineIndex + matchedLines.length - 1;
-                endColIndex = matchedLines.length === 1 ? startColIndex + matchedText.length : matchedLines[matchedLines.length - 1].length;
-
-                proposedContent = normOriginal.slice(0, firstMatchOffset) + normReplace + normOriginal.slice(firstMatchOffset + normSearch.length);
-            } else {
-                // 2. Secondary Match Strategy: Line-by-line match with trailing whitespace tolerance
-                const sourceLines = normOriginal.split("\n");
-                const searchLines = normSearch.split("\n");
-
-                const lineMatches = [];
-                if (searchLines.length > 0) {
-                    for (let i = 0; i <= sourceLines.length - searchLines.length; i++) {
-                        let isMatch = true;
-                        for (let j = 0; j < searchLines.length; j++) {
-                            // Match exact line or match with trimmed right-end whitespace only
-                            if (sourceLines[i + j] !== searchLines[j] && sourceLines[i + j].trimEnd() !== searchLines[j].trimEnd()) {
-                                isMatch = false;
-                                break;
-                            }
-                        }
-                        if (isMatch) {
-                            lineMatches.push(i);
-                        }
-                    }
-                }
-
-                if (lineMatches.length > 1) {
-                    throw new Error("Search text matches multiple locations. Provide more surrounding context lines.");
-                }
-
-                if (lineMatches.length === 1) {
-                    const matchLineIndex = lineMatches[0];
-                    startLineIndex = matchLineIndex;
-                    startColIndex = 0;
-                    endLineIndex = matchLineIndex + searchLines.length - 1;
-                    endColIndex = sourceLines[endLineIndex].length;
-
-                    const replacementLines = normReplace.split("\n");
-                    const proposedLines = [
-                        ...sourceLines.slice(0, startLineIndex),
-                        ...replacementLines,
-                        ...sourceLines.slice(endLineIndex + 1)
-                    ];
-                    proposedContent = proposedLines.join("\n");
-                } else {
-                    // 3. Tertiary Match Strategy (Fuzzy/Normalized token fallback)
-                    const fuzzy = this._fuzzyMatchLines(sourceLines, searchLines);
-                    if (fuzzy && fuzzy.matchLineIndex !== -1) {
-                        console.info(`🎯 [AgentTools] Fuzzy match found for edit_file at lines ${fuzzy.matchLineIndex + 1}-${fuzzy.endLineIndex + 1} (${Math.round(fuzzy.bestScore * 100)}% similarity)`);
-                        startLineIndex = fuzzy.matchLineIndex;
-                        startColIndex = 0;
-                        endLineIndex = fuzzy.endLineIndex;
-                        endColIndex = sourceLines[endLineIndex].length;
-
-                        const replacementLines = normReplace.split("\n");
-                        const proposedLines = [
-                            ...sourceLines.slice(0, startLineIndex),
-                            ...replacementLines,
-                            ...sourceLines.slice(endLineIndex + 1)
-                        ];
-                        proposedContent = proposedLines.join("\n");
-                    } else {
-                        const nearest = fuzzy?.nearestLineIndex >= 0 
-                            ? ` Nearest candidate match found near line ${fuzzy.nearestLineIndex + 1} (${Math.round(fuzzy.bestScore * 100)}% match). Check search string indentation or re-read file around that line.` 
-                            : "";
-                        throw new Error(`Search text not found.${nearest}`);
-                    }
-                }
-            }
+            const proposedContent = currentContent;
+            const startLineIndex = firstStartLine;
+            const startColIndex = firstStartCol;
+            const endLineIndex = lastEndLine;
+            const endColIndex = lastEndCol;
 
             // Pre-Save Syntax Validation
             const syntaxCheck = await syntaxValidator.validate(resolvedPath, proposedContent);
@@ -1998,11 +2125,28 @@ Snippet: ${r.content || r.snippet || ""}`;
     /**
      * Creates a new file.
      */
-    async createFile(path, content, sourceId) {
+    async createFile(path, content, sourceId, overwrite = false) {
         try {
             const resolvedPath = this._resolveAndValidatePath(path);
             if (!this.conduit.isConnected) {
                 return "Error: Conduit not connected.";
+            }
+
+            // Guard against accidental overwrite loops on existing files
+            if (!overwrite) {
+                const openTab = this._findOpenTab(resolvedPath);
+                let fileExists = !!openTab;
+                if (!fileExists && this.conduit.isConnected) {
+                    try {
+                        const check = await this.conduit.wsRead(resolvedPath);
+                        if (check && !check.error && check.data !== undefined) {
+                            fileExists = true;
+                        }
+                    } catch (e) {}
+                }
+                if (fileExists) {
+                    return `Error: File '${path}' already exists. 'create_file' is strictly for new files. To modify an existing file, use 'edit_file' with targeted search/replace blocks or an 'edits' array.`;
+                }
             }
 
             const isForgivenessMode = window.ui?.aiManager?.forgivenessMode === true;
@@ -2153,6 +2297,23 @@ Snippet: ${r.content || r.snippet || ""}`;
         const isWhitelisted = policy.whitelist.some(rule => cleanCmd === rule || cleanCmd.startsWith(rule + " "));
         let isApproved = isWhitelisted;
 
+        // Resolve target working directory across multi-root workspace
+        let targetCwd = cwdOverride;
+        if (targetCwd) {
+            try {
+                targetCwd = this._resolveAndValidatePath(targetCwd);
+            } catch (e) {
+                // If path resolution fails, leave as targetCwd
+            }
+        }
+        if (!targetCwd) {
+            const folders = window.workspace?.folders || [];
+            if (folders.length > 0) {
+                const item = folders[0];
+                targetCwd = typeof item === 'string' ? item : (item?.path || item?.name || "");
+            }
+        }
+
         // 3. User Approval Workflow if not whitelisted
         if (!isApproved) {
             const runningSub = aiManager?.runningSessions.get(targetSessionId);
@@ -2170,7 +2331,7 @@ Snippet: ${r.content || r.snippet || ""}`;
                 role: "system",
                 type: "agent_command_approval",
                 command: cleanCmd,
-                cwd: cwdOverride || "",
+                cwd: targetCwd || "",
                 timeoutMs: timeoutMs,
                 status: "pending",
                 subSessionId: targetSessionId,
@@ -2197,7 +2358,7 @@ Snippet: ${r.content || r.snippet || ""}`;
         }
 
         // 4. Streamed Terminal Execution via WebSocket (if auto-approved / whitelisted)
-        return await this.executeTerminalCommand(cleanCmd, cwdOverride, targetSessionId, timeoutMs);
+        return await this.executeTerminalCommand(cleanCmd, targetCwd, targetSessionId, timeoutMs);
     }
 
     /**
@@ -2215,17 +2376,18 @@ Snippet: ${r.content || r.snippet || ""}`;
             const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
             let wsUrl = `${wsProtocol}//${wsHost}/terminal?sessionId=agent_${Date.now()}`;
             
-            const folders = window.workspace?.folders || [];
-            let workspaceFolder = "";
-            if (folders.length > 0) {
-                const item = folders[0];
-                workspaceFolder = typeof item === 'string' ? item : (item?.path || item?.name || "");
-            }
-            let targetDir = cwdOverride || workspaceFolder;
-            if (targetDir && targetDir.startsWith('.')) {
+            let targetDir = cwdOverride;
+            if (targetDir) {
                 try {
                     targetDir = this._resolveAndValidatePath(targetDir);
                 } catch (e) {}
+            }
+            if (!targetDir) {
+                const folders = window.workspace?.folders || [];
+                if (folders.length > 0) {
+                    const item = folders[0];
+                    targetDir = typeof item === 'string' ? item : (item?.path || item?.name || "");
+                }
             }
             if (targetDir) {
                 wsUrl += `&dir=${encodeURIComponent(targetDir)}`;
@@ -2461,7 +2623,8 @@ Snippet: ${r.content || r.snippet || ""}`;
                     args.path,
                     args.search !== undefined && args.search !== null ? args.search : args.searchString,
                     args.replace !== undefined && args.replace !== null ? args.replace : args.replacementString,
-                    sourceId
+                    sourceId,
+                    args.edits
                 );
             case 'edit_remove_lines':
                 return await this.editRemoveLines(
@@ -2486,16 +2649,27 @@ Snippet: ${r.content || r.snippet || ""}`;
                     sourceId
                 );
             case 'create_file':
-                return await this.createFile(args.path, args.content, sourceId);
+                return await this.createFile(args.path, args.content, sourceId, args.overwrite);
             case 'validate_syntax': {
                 let contentToValidate = args.content;
-                if (!contentToValidate && args.search && args.replace !== undefined) {
+                if (!contentToValidate && (args.edits || (args.search && args.replace !== undefined))) {
                     try {
                         const resolvedPath = this._resolveAndValidatePath(args.path);
                         const targetTab = this._findOpenTab(resolvedPath);
-                        const originalContent = targetTab?.config?.session?.getValue() || (await this.readFile(args.path));
+                        let originalContent = targetTab?.config?.session?.getValue() || (await this.readFile(args.path));
                         if (typeof originalContent === 'string') {
-                            contentToValidate = originalContent.replace(args.search, args.replace);
+                            if (args.edits && Array.isArray(args.edits)) {
+                                for (const ed of args.edits) {
+                                    const s = ed.search !== undefined ? ed.search : ed.searchString;
+                                    const r = ed.replace !== undefined ? ed.replace : ed.replacementString;
+                                    if (s && r !== undefined) {
+                                        originalContent = originalContent.replace(s, r);
+                                    }
+                                }
+                                contentToValidate = originalContent;
+                            } else if (args.search && args.replace !== undefined) {
+                                contentToValidate = originalContent.replace(args.search, args.replace);
+                            }
                         }
                     } catch (e) {
                         // fallback to args.content

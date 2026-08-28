@@ -22,12 +22,12 @@ export const subAgentToolsList = [
 export const tools = [
     {
         name: "run_command",
-        description: "Executes a terminal shell command (run in the project directory). Execution requires explicit user approval unless whitelisted.",
+        description: "Executes a terminal shell command. In multi-root workspaces, use 'cwd' to specify which root folder to execute in (defaults to primary root). Execution requires explicit user approval unless whitelisted.",
         parameters: {
             type: "object",
             properties: {
                 command: { type: "string", description: "The exact shell command line to run." },
-                cwd: { type: "string", description: "Optional working directory for execution." },
+                cwd: { type: "string", description: "Optional working directory for execution. Can be a root folder name (e.g. 'dev.jakbox.docs'), relative path, or absolute path." },
                 timeoutMs: { type: "number", description: "Optional timeout in milliseconds before terminating the command process (default: 60000)." }
             },
             required: ["command"]
@@ -129,12 +129,13 @@ export const tools = [
     },
     {
         name: "create_file",
-        description: "Create a new file with the specified content. Parent folders in the path will automatically be created if they do not exist. CRITICAL: Do NOT use this tool if you are copying, moving, or refactoring existing code from another file; use 'refactor_copy_lines' instead.",
+        description: "Create a new file with the specified content. CRITICAL: Strictly for NEW files that do not exist yet. Fails with an error if the file already exists (use 'edit_file' to modify existing files).",
         parameters: {
             type: "object",
             properties: {
                 path: { type: "string", description: "The path where the new file should be created." },
-                content: { type: "string", description: "The content of the new file." }
+                content: { type: "string", description: "The initial content of the new file." },
+                overwrite: { type: "boolean", description: "Optional. Set to true ONLY if explicitly intending to overwrite an existing file." }
             },
             required: ["path", "content"]
         }
@@ -152,15 +153,27 @@ export const tools = [
     },
     {
         name: "edit_file",
-        description: "Replace exact text in a file. The search text MUST perfectly match existing file content character-for-character. Perform edits in smallest logical blocks.",
+        description: "Replace exact text in an existing file. Provide either a single (search, replace) pair OR an 'edits' array of [{ search, replace }] for multiple sequential changes across the file in a single operation. The search text MUST match existing file content character-for-character.",
         parameters: {
             type: "object",
             properties: {
                 path: { type: "string", description: "The path of the file to edit." },
-                search: { type: "string", description: "The exact lines of text to replace." },
-                replace: { type: "string", description: "The new lines of text to insert." }
+                search: { type: "string", description: "The exact lines of text to replace (for a single edit)." },
+                replace: { type: "string", description: "The new lines of text to insert (for a single edit)." },
+                edits: {
+                    type: "array",
+                    description: "An array of sequential search/replace edits to apply across the file in a single call.",
+                    items: {
+                        type: "object",
+                        properties: {
+                            search: { type: "string", description: "The exact text to replace." },
+                            replace: { type: "string", description: "The replacement text." }
+                        },
+                        required: ["search", "replace"]
+                    }
+                }
             },
-            required: ["path", "search", "replace"]
+            required: ["path"]
         }
     },
     // {

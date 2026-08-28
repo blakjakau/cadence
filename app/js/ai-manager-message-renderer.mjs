@@ -18,6 +18,87 @@ export default class AIManagerMessageRenderer {
             .replace(/'/g, "&#039;");
     }
 
+    formatByteSize(bytes, short = false) {
+        if (!bytes || bytes <= 0) return short ? "0B" : "0 bytes";
+        if (bytes > 1000) {
+            const kb = (bytes / 1024).toFixed(1);
+            return short ? `${kb}KB` : `${kb} KB`;
+        }
+        return short ? `${bytes}B` : `${bytes.toLocaleString()} bytes`;
+    }
+
+    parseToolArgs(toolArgs) {
+        if (!toolArgs) return {};
+        const args = {};
+        const tagRegex = /<([a-zA-Z0-9_-]+)>([\s\S]*?)<\/\1>/g;
+        let tagMatch;
+        while ((tagMatch = tagRegex.exec(toolArgs)) !== null) {
+            const key = tagMatch[1];
+            let val = tagMatch[2];
+            if (key !== 'search' && key !== 'replace' && key !== 'content' && key !== 'plan' && key !== 'tasks') {
+                val = val.trim();
+            }
+            args[key] = val;
+        }
+
+        // Parse nested <edit> tags inside <edits> or standalone <edit> tags
+        if (toolArgs.includes("<edit>") || toolArgs.includes("<edits>")) {
+            const edits = [];
+            const editRegex = /<edit>([\s\S]*?)<\/edit>/g;
+            let editMatch;
+            while ((editMatch = editRegex.exec(toolArgs)) !== null) {
+                const editBlock = editMatch[1];
+                const searchMatch = editBlock.match(/<search>([\s\S]*?)<\/search>/);
+                const replaceMatch = editBlock.match(/<replace>([\s\S]*?)<\/replace>/);
+                if (searchMatch || replaceMatch) {
+                    edits.push({
+                        search: searchMatch ? searchMatch[1] : "",
+                        replace: replaceMatch ? replaceMatch[1] : ""
+                    });
+                }
+            }
+            // Check unclosed streaming edit tag
+            const lastEditIdx = toolArgs.lastIndexOf("<edit>");
+            if (lastEditIdx !== -1) {
+                const afterLastEdit = toolArgs.substring(lastEditIdx + 6);
+                if (!afterLastEdit.includes("</edit>")) {
+                    const searchMatch = afterLastEdit.match(/<search>([\s\S]*?)(?:<\/search>|$)/);
+                    const replaceMatch = afterLastEdit.match(/<replace>([\s\S]*?)(?:<\/replace>|$)/);
+                    if (searchMatch || replaceMatch) {
+                        edits.push({
+                            search: searchMatch ? searchMatch[1] : "",
+                            replace: replaceMatch ? replaceMatch[1] : ""
+                        });
+                    }
+                }
+            }
+            if (edits.length > 0) {
+                args.edits = edits;
+            }
+        }
+
+        // Parse unclosed tags at the end of the streaming tool args
+        const openTags = ['path', 'query', 'search', 'replace', 'content', 'plan', 'tasks', 'taskName', 'startLine', 'lineCount', 'startline', 'linecount', 'result', 'command', 'cwd', 'dir', 'url'];
+        for (const tag of openTags) {
+            if (args[tag] === undefined) {
+                const tagStartStr = `<${tag}>`;
+                const idx = toolArgs.lastIndexOf(tagStartStr);
+                if (idx !== -1) {
+                    const tagEndStr = `</${tag}>`;
+                    const endIdx = toolArgs.indexOf(tagEndStr, idx + tagStartStr.length);
+                    if (endIdx === -1) {
+                        let val = toolArgs.substring(idx + tagStartStr.length);
+                        if (tag !== 'search' && tag !== 'replace' && tag !== 'content' && tag !== 'plan' && tag !== 'tasks') {
+                            val = val.trim();
+                        }
+                        args[tag] = val;
+                    }
+                }
+            }
+        }
+        return args;
+    }
+
     addCodeBlockButtons(responseBlock, messageObject = null) {
         const preElements = responseBlock.querySelectorAll("pre")
         preElements.forEach((pre, index) => {
@@ -342,6 +423,8 @@ export default class AIManagerMessageRenderer {
             const thinkContent = content.substring(parsed.thoughtBlock.contentStartIdx, parsed.thoughtBlock.contentEndIdx).trim();
             const isClosed = parsed.thoughtBlock.closed;
             const thinkLabel = isClosed ? (thoughtSeconds ? `Thought Process (${thoughtSeconds}s)` : "Thought Process") : "Thinking...";
+            const thinkSegments = this.segmentThoughtContent(thinkContent);
+            const thinkSegmentsHtml = thinkSegments.map(seg => `<div class="thought-segment">${this.aiManager.md.render(seg)}</div>`).join('');
             thinkHtml = `
                 <div class="thought-block" ${isClosed ? "" : "expanded"}>
                     <div class="thought-header" onclick="this.parentElement.hasAttribute('expanded') ? this.parentElement.removeAttribute('expanded') : this.parentElement.setAttribute('expanded', '')">
@@ -349,7 +432,7 @@ export default class AIManagerMessageRenderer {
                         <span>${thinkLabel}</span>
                     </div>
                     <div class="thought-content">
-                        ${this.aiManager.md.render(thinkContent)}
+                        ${thinkSegmentsHtml}
                     </div>
                 </div>
             `;
@@ -366,33 +449,7 @@ export default class AIManagerMessageRenderer {
             const toolArgs = mainContent.substring(tc.contentStartIdx, tc.contentEndIdx);
             const isClosed = tc.closed;
 
-            const args = {};
-            const tagRegex = /<([a-zA-Z0-9_-]+)>([\s\S]*?)<\/\1>/g;
-            let tagMatch;
-            while ((tagMatch = tagRegex.exec(toolArgs)) !== null) {
-                const key = tagMatch[1];
-                let val = tagMatch[2];
-                if (key !== 'search' && key !== 'replace' && key !== 'content' && key !== 'plan' && key !== 'tasks') {
-                    val = val.trim();
-                }
-                args[key] = val;
-            }
-
-            // Parse unclosed tags at the end of the streaming tool args
-            const openTags = ['path', 'query', 'search', 'replace', 'content', 'plan', 'tasks', 'taskName', 'startLine', 'lineCount', 'startline', 'linecount', 'result'];
-            for (const tag of openTags) {
-                if (args[tag] === undefined) {
-                    const tagStartStr = `<${tag}>`;
-                    const idx = toolArgs.lastIndexOf(tagStartStr);
-                    if (idx !== -1) {
-                        const tagEndStr = `</${tag}>`;
-                        const endIdx = toolArgs.indexOf(tagEndStr, idx + tagStartStr.length);
-                        if (endIdx === -1) {
-                            args[tag] = toolArgs.substring(idx + tagStartStr.length);
-                        }
-                    }
-                }
-            }
+            const args = this.parseToolArgs(toolArgs);
 
             // Handle Project Management Tools
             if (toolName === "create_implementation_plan" || toolName === "update_task_list" || toolName === "complete_task") {
@@ -564,16 +621,32 @@ export default class AIManagerMessageRenderer {
                             fileChipHtml += ` <span class="tool-call-query">"${this._escapeHtml(truncatedQuery)}"</span>`;
                         }
                     } else if (toolName === "edit_file") {
-                        const searchLines = (args.search && args.search.length > 0) ? args.search.split('\n').length : 0;
-                        const replaceLines = (args.replace && args.replace.length > 0) ? args.replace.split('\n').length : 0;
-                        const replaceBytes = (new TextEncoder().encode(args.replace || "")).length;
+                        let searchLines = 0;
+                        let replaceLines = 0;
+                        let replaceBytes = 0;
+                        if (Array.isArray(args.edits) && args.edits.length > 0) {
+                            for (const ed of args.edits) {
+                                const s = ed.search || "";
+                                const r = ed.replace || "";
+                                if (s) searchLines += s.split('\n').length;
+                                if (r) {
+                                    replaceLines += r.split('\n').length;
+                                    replaceBytes += (new TextEncoder().encode(r)).length;
+                                }
+                            }
+                        } else {
+                            searchLines = (args.search && args.search.length > 0) ? args.search.split('\n').length : 0;
+                            replaceLines = (args.replace && args.replace.length > 0) ? args.replace.split('\n').length : 0;
+                            replaceBytes = (new TextEncoder().encode(args.replace || "")).length;
+                        }
+                        const editsBadge = (Array.isArray(args.edits) && args.edits.length > 1) ? `<span class="tool-call-edits-count">${args.edits.length} edits</span> ` : "";
                         const badgeClass = isClosed ? "tool-call-lines-badge" : "tool-call-lines-badge streaming";
-                        fileChipHtml += ` <span class="tool-call-bytes">${replaceBytes.toLocaleString()} bytes</span> <span class="${badgeClass}">[<span style="color: var(--color-success, #2ea44f);">+${replaceLines}</span> <span style="color: var(--color-error, #cf222e);">${searchLines > 0 ? `-${searchLines}` : '-0'}</span>]</span>`;
+                        fileChipHtml += ` ${editsBadge}<span class="tool-call-bytes">${this.formatByteSize(replaceBytes)}</span> <span class="${badgeClass}">[<span style="color: var(--color-success, #2ea44f);">+${replaceLines}</span> <span style="color: var(--color-error, #cf222e);">${searchLines > 0 ? `-${searchLines}` : '-0'}</span>]</span>`;
                     } else if (toolName === "create_file") {
                         const contentLines = (args.content && args.content.length > 0) ? args.content.split('\n').length : 0;
                         const contentBytes = (new TextEncoder().encode(args.content || "")).length;
                         const badgeClass = isClosed ? "tool-call-lines-badge" : "tool-call-lines-badge streaming";
-                        fileChipHtml += ` <span class="tool-call-bytes">${contentBytes.toLocaleString()} bytes</span> <span class="${badgeClass}">[<span style="color: var(--color-success, #2ea44f);">+${contentLines}</span>]</span>`;
+                        fileChipHtml += ` <span class="tool-call-bytes">${this.formatByteSize(contentBytes)}</span> <span class="${badgeClass}">[<span style="color: var(--color-success, #2ea44f);">+${contentLines}</span>]</span>`;
                     }
                     
                     label = `<code>${toolName}:</code> ${fileChipHtml}`;
@@ -582,7 +655,9 @@ export default class AIManagerMessageRenderer {
                 }
             } else if (args.command) {
                 const truncatedCmd = args.command.length > 50 ? args.command.substring(0, 50) + "..." : args.command;
-                label = `<code>${toolName}:</code> <span class="tool-call-query"><code>$ ${this._escapeHtml(truncatedCmd)}</code></span>`;
+                const cwdVal = args.cwd || args.dir;
+                const cwdInfo = cwdVal ? ` <span class="tool-call-cwd" style="opacity:0.8; font-size:0.9em;">(in <code>${this._escapeHtml(cwdVal.split('/').filter(Boolean).pop() || cwdVal)}</code>)</span>` : '';
+                label = `<code>${toolName}:</code> <span class="tool-call-query"><code>$ ${this._escapeHtml(truncatedCmd)}</code></span>${cwdInfo}`;
             } else if (args.query) {
                 label = `<code>${toolName}:</code> <span class="tool-call-query">"${this._escapeHtml(args.query)}"</span>`;
             } else if (args.question) {
@@ -600,15 +675,23 @@ export default class AIManagerMessageRenderer {
 
             let expanderHtml = "";
             if (toolName === "create_file" || toolName === "edit_file") {
-                const newContent = toolName === "create_file" ? (args.content || "") : (args.replace || "");
+                let newContent = "";
+                if (toolName === "create_file") {
+                    newContent = args.content || "";
+                } else if (Array.isArray(args.edits) && args.edits.length > 0) {
+                    const lastEdit = args.edits[args.edits.length - 1];
+                    newContent = lastEdit.replace || "";
+                } else {
+                    newContent = args.replace || "";
+                }
                 if (newContent.length > 0) {
                     const allLines = newContent.split('\n');
                     const last5Lines = allLines.slice(-5);
                     const previewText = last5Lines.join('\n');
                     expanderHtml = `
-                        <details class="tool-call-preview-expander" ${isClosed ? '' : 'open'}>
+                        <details class="tool-call-preview-expander" open ontoggle="this.dataset.userToggled = 'true'">
                             <summary class="tool-call-preview-summary">
-                                <ui-icon>unfold_more</ui-icon>
+                                <ui-icon>expand_more</ui-icon>
                                 <span>Preview (last ${last5Lines.length} lines)</span>
                             </summary>
                             <pre class="tool-call-preview-code"><code>${this._escapeHtml(previewText)}</code></pre>
@@ -680,17 +763,7 @@ export default class AIManagerMessageRenderer {
             const toolName = tc.name;
             const toolArgs = content.substring(tc.contentStartIdx, tc.contentEndIdx);
             
-            const args = {};
-            const tagRegex = /<([a-zA-Z0-9_-]+)>([\s\S]*?)<\/\1>/g;
-            let tagMatch;
-            while ((tagMatch = tagRegex.exec(toolArgs)) !== null) {
-                const key = tagMatch[1];
-                let val = tagMatch[2];
-                if (key !== 'search' && key !== 'replace' && key !== 'content' && key !== 'plan' && key !== 'tasks') {
-                    val = val.trim();
-                }
-                args[key] = val;
-            }
+            const args = this.parseToolArgs(toolArgs);
 
             if (args.url) {
                 const rawUrl = args.url.trim();
@@ -698,19 +771,35 @@ export default class AIManagerMessageRenderer {
                 toolSummary = `called <code>${toolName}</code> <span style="opacity:0.85;">${this._escapeHtml(shortUrl)}</span>`;
             } else if (args.command) {
                 const shortCmd = args.command.length > 35 ? args.command.substring(0, 35) + "..." : args.command;
-                toolSummary = `called <code>${toolName}</code> <span style="opacity:0.85;">$ ${this._escapeHtml(shortCmd)}</span>`;
+                const cwdVal = args.cwd || args.dir;
+                const cwdInfo = cwdVal ? ` (in ${this._escapeHtml(cwdVal.split('/').filter(Boolean).pop() || cwdVal)})` : '';
+                toolSummary = `called <code>${toolName}</code> <span style="opacity:0.85;">$ ${this._escapeHtml(shortCmd)}${cwdInfo}</span>`;
             } else if (args.path) {
                 const shortFile = args.path.split('/').pop() || args.path;
                 let details = shortFile;
-                if (toolName === "edit_file" && args.search && args.replace) {
-                    const searchLines = args.search.split('\n').length;
-                    const replaceLines = args.replace.split('\n').length;
-                    const replaceBytes = (new TextEncoder().encode(args.replace || "")).length;
-                    details += ` (+${replaceLines} -${searchLines}, ${replaceBytes.toLocaleString()}B)`;
-                } else if (toolName === "create_file" && args.content) {
-                    const contentLines = args.content.split('\n').length;
+                if (toolName === "edit_file" && (args.edits || args.search !== undefined || args.replace !== undefined)) {
+                    let searchLines = 0;
+                    let replaceLines = 0;
+                    let replaceBytes = 0;
+                    if (Array.isArray(args.edits) && args.edits.length > 0) {
+                        for (const ed of args.edits) {
+                            if (ed.search) searchLines += ed.search.split('\n').length;
+                            if (ed.replace) {
+                                replaceLines += ed.replace.split('\n').length;
+                                replaceBytes += (new TextEncoder().encode(ed.replace)).length;
+                            }
+                        }
+                    } else {
+                        searchLines = (args.search && args.search.length > 0) ? args.search.split('\n').length : 0;
+                        replaceLines = (args.replace && args.replace.length > 0) ? args.replace.split('\n').length : 0;
+                        replaceBytes = (new TextEncoder().encode(args.replace || "")).length;
+                    }
+                    const editCountStr = (Array.isArray(args.edits) && args.edits.length > 1) ? ` (${args.edits.length} edits)` : "";
+                    details += `${editCountStr} (+${replaceLines} -${searchLines}, ${this.formatByteSize(replaceBytes, true)})`;
+                } else if (toolName === "create_file" && args.content !== undefined) {
+                    const contentLines = (args.content && args.content.length > 0) ? args.content.split('\n').length : 0;
                     const contentBytes = (new TextEncoder().encode(args.content || "")).length;
-                    details += ` (+${contentLines}, ${contentBytes.toLocaleString()}B)`;
+                    details += ` (+${contentLines}, ${this.formatByteSize(contentBytes, true)})`;
                 }
                 toolSummary = `called <code>${toolName}</code> <span style="opacity:0.85;">${this._escapeHtml(details)}</span>`;
             } else if (args.query) {
@@ -1051,6 +1140,150 @@ export default class AIManagerMessageRenderer {
         }
 
         return tasks;
+    }
+
+    /**
+     * Segments thought/reasoning text by code block boundaries and paragraph length limits
+     * to avoid massive markdown re-renders during long thinking output.
+     * @param {string} thinkContent 
+     * @param {number} maxChunkLen 
+     * @returns {string[]}
+     */
+    segmentThoughtContent(thinkContent, maxChunkLen = 3200) {
+        if (!thinkContent) return [""];
+        const segments = [];
+        let currentStart = 0;
+        let inCodeBlock = false;
+        let i = 0;
+        const len = thinkContent.length;
+
+        while (i < len) {
+            if (thinkContent.startsWith("```", i)) {
+                if (inCodeBlock) {
+                    i += 3;
+                    if (thinkContent.startsWith("\n", i)) i++;
+                    segments.push(thinkContent.substring(currentStart, i));
+                    currentStart = i;
+                    inCodeBlock = false;
+                    continue;
+                } else {
+                    if (i > currentStart) {
+                        segments.push(thinkContent.substring(currentStart, i));
+                        currentStart = i;
+                    }
+                    inCodeBlock = true;
+                    i += 3;
+                    continue;
+                }
+            }
+
+            if (!inCodeBlock) {
+                const currentSegmentLength = i - currentStart;
+                if (currentSegmentLength >= maxChunkLen && thinkContent[i] === '\n') {
+                    i++;
+                    segments.push(thinkContent.substring(currentStart, i));
+                    currentStart = i;
+                    continue;
+                }
+            }
+
+            i++;
+        }
+
+        if (currentStart < len) {
+            segments.push(thinkContent.substring(currentStart));
+        }
+        if (segments.length === 0) {
+            segments.push("");
+        }
+        return segments;
+    }
+
+    /**
+     * Renders a response segment incrementally into a container element,
+     * maintaining internal thought segmentation without full element rebuilds.
+     * @param {HTMLElement} containerDiv 
+     * @param {string} content 
+     * @param {Object} message 
+     * @param {boolean} isNew 
+     */
+    renderResponseSegment(containerDiv, content, message, isNew = false) {
+        if (!containerDiv) return;
+        const parsed = this.parseBlocks(content);
+
+        if (parsed.thoughtBlock) {
+            const thinkContent = content.substring(parsed.thoughtBlock.contentStartIdx, parsed.thoughtBlock.contentEndIdx).trim();
+            const isClosed = parsed.thoughtBlock.closed;
+            let thoughtSeconds = null;
+            if (message && message.thoughtDurationMs !== undefined) {
+                thoughtSeconds = (message.thoughtDurationMs / 1000).toFixed(1);
+            }
+            const thinkLabel = isClosed ? (thoughtSeconds ? `Thought Process (${thoughtSeconds}s)` : "Thought Process") : "Thinking...";
+            const thinkSegments = this.segmentThoughtContent(thinkContent);
+
+            let thoughtBlockEl = containerDiv.querySelector('.thought-block');
+            if (!thoughtBlockEl) {
+                containerDiv.innerHTML = this.renderResponseContent(content, message, isNew);
+                thoughtBlockEl = containerDiv.querySelector('.thought-block');
+                if (thoughtBlockEl) {
+                    const tc = thoughtBlockEl.querySelector('.thought-content');
+                    if (tc) {
+                        tc.finalizedCount = Math.max(0, thinkSegments.length - 1);
+                        tc.activeSegmentDiv = tc.lastElementChild;
+                    }
+                }
+                return;
+            }
+
+            // Update existing thought block incrementally
+            const headerSpan = thoughtBlockEl.querySelector('.thought-header span');
+            if (headerSpan && headerSpan.textContent !== thinkLabel) {
+                headerSpan.textContent = thinkLabel;
+            }
+
+            if (isClosed && !thoughtBlockEl.dataset.userToggled) {
+                thoughtBlockEl.removeAttribute('expanded');
+            }
+
+            const tc = thoughtBlockEl.querySelector('.thought-content');
+            if (tc) {
+                tc.finalizedCount = tc.finalizedCount || 0;
+                while (thinkSegments.length > tc.finalizedCount + 1) {
+                    const finalizedText = thinkSegments[tc.finalizedCount];
+                    if (tc.activeSegmentDiv) {
+                        tc.activeSegmentDiv.innerHTML = this.aiManager.md.render(finalizedText);
+                    } else {
+                        const newDiv = document.createElement("div");
+                        newDiv.className = "thought-segment";
+                        newDiv.innerHTML = this.aiManager.md.render(finalizedText);
+                        tc.append(newDiv);
+                    }
+                    tc.finalizedCount++;
+                    tc.activeSegmentDiv = document.createElement("div");
+                    tc.activeSegmentDiv.className = "thought-segment";
+                    tc.append(tc.activeSegmentDiv);
+                }
+
+                if (!tc.activeSegmentDiv) {
+                    tc.activeSegmentDiv = document.createElement("div");
+                    tc.activeSegmentDiv.className = "thought-segment";
+                    tc.append(tc.activeSegmentDiv);
+                }
+
+                const activeText = thinkSegments[thinkSegments.length - 1];
+                tc.activeSegmentDiv.innerHTML = this.aiManager.md.render(activeText);
+            }
+
+            // If thought block is closed and there is remaining content after it, re-render the whole container
+            if (isClosed) {
+                const afterThought = content.substring(parsed.thoughtBlock.endIdx).trim();
+                if (afterThought.length > 0) {
+                    containerDiv.innerHTML = this.renderResponseContent(content, message, isNew);
+                }
+            }
+        } else {
+            containerDiv.innerHTML = this.renderResponseContent(content, message, isNew);
+        }
     }
 
     segmentContent(content) {

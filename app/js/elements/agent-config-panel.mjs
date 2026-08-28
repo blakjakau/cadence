@@ -112,7 +112,7 @@ export class AgentConfigPanel extends Block {
 			const input = document.createElement("input");
 			input.type = "checkbox";
 			input.id = id;
-			if (key === "defaultAllowSubAgents" || key === "defaultAllowRunCommand") {
+			if (key === "defaultAllowSubAgents" || key === "defaultAllowRunCommand" || key === "defaultPlanningMode") {
 				input.checked = localStorage.getItem(key) !== "false";
 			} else {
 				input.checked = localStorage.getItem(key) === "true";
@@ -120,7 +120,10 @@ export class AgentConfigPanel extends Block {
 			input.onchange = () => {
 				localStorage.setItem(key, input.checked);
 				if (window.ui?.aiManager) {
-					if (key === "aiForgivenessMode") window.ui.aiManager.forgivenessMode = input.checked;
+					if (key === "aiForgivenessMode") {
+						window.ui.aiManager.config.defaultForgivenessMode = input.checked;
+						window.ui.aiManager.forgivenessMode = input.checked;
+					}
 					if (key === "defaultAgentMode") window.ui.aiManager.config.defaultAgentMode = input.checked;
 					if (key === "defaultPlanningMode") window.ui.aiManager.config.defaultPlanningMode = input.checked;
 					if (key === "defaultAllowSubAgents") window.ui.aiManager.config.defaultAllowSubAgents = input.checked;
@@ -1032,6 +1035,7 @@ export class AgentConfigPanel extends Block {
 					<th style="padding: 8px 4px; color: var(--text-secondary);">1-Min Volume</th>
 					<th style="padding: 8px 4px; color: var(--text-secondary);">Requests (RPM)</th>
 					<th style="padding: 8px 4px; color: var(--text-secondary);">Total (In / Out)</th>
+					<th style="padding: 8px 4px; color: var(--text-secondary); text-align: right; width: 36px;"></th>
 				</tr>
 			</thead>
 			<tbody></tbody>
@@ -1087,12 +1091,35 @@ export class AgentConfigPanel extends Block {
 			const totalOut = inst._totalTokensOut || 0;
 			totalTd.textContent = (totalIn || totalOut) ? `${totalIn.toLocaleString()} / ${totalOut.toLocaleString()}` : "-";
 
+			const actionTd = document.createElement("td");
+			actionTd.style.padding = "8px 4px";
+			actionTd.style.textAlign = "right";
+
+			const resetBtn = new Button("");
+			resetBtn.icon = "refresh";
+			resetBtn.className = "icon-button secondary";
+			resetBtn.title = `Reset telemetry for ${conn.name}`;
+			resetBtn.style.width = "24px";
+			resetBtn.style.height = "24px";
+			resetBtn.style.minWidth = "24px";
+			resetBtn.onclick = (e) => {
+				e.stopPropagation();
+				inst.resetTelemetry();
+				this.renderTelemetry();
+				this.renderConnectionsList();
+				if (window.modal && typeof window.modal.toast === "function") {
+					window.modal.toast(`Reset telemetry for "${conn.name}"`);
+				}
+			};
+			actionTd.appendChild(resetBtn);
+
 			tr.appendChild(nameTd);
 			tr.appendChild(speedTd);
 			tr.appendChild(avgSpeedTd);
 			tr.appendChild(volumeTd);
 			tr.appendChild(rpmTd);
 			tr.appendChild(totalTd);
+			tr.appendChild(actionTd);
 			tbody.appendChild(tr);
 		});
 
@@ -1104,22 +1131,21 @@ export class AgentConfigPanel extends Block {
 		btnContainer.style.justifyContent = "flex-end";
 		btnContainer.style.marginTop = "16px";
 
-		const clearBtn = new Button("Clear Telemetry");
+		const clearBtn = new Button("Clear All Telemetry");
 		clearBtn.className = "theme-button secondary";
 		clearBtn.style.fontSize = "11px";
 		clearBtn.onclick = () => {
 			connections.forEach(conn => {
 				const inst = AIConnections.getInstance(conn.id);
 				if (inst) {
-					inst._telemetryRequests = [];
-					inst._telemetryTokens = [];
-					inst._totalTokensIn = 0;
-					inst._totalTokensOut = 0;
-					inst._saveTelemetry();
+					inst.resetTelemetry();
 				}
 			});
 			this.renderTelemetry();
 			this.renderConnectionsList();
+			if (window.modal && typeof window.modal.toast === "function") {
+				window.modal.toast("Cleared all telemetry data");
+			}
 		};
 
 		btnContainer.appendChild(clearBtn);

@@ -423,9 +423,9 @@ export class SessionArtifactsPanel extends Block {
         this.backupsAccordion.applyState(session._accordionStates.backups !== false);
 
         // Update checkbox toggles
-        this.agentModeCheckbox.checked = ui.aiManager.agentMode || false;
-        this.planningModeCheckbox.checked = ui.aiManager.planningMode || false;
-        this.forgivenessModeCheckbox.checked = ui.aiManager.forgivenessMode || false;
+        this.agentModeCheckbox.checked = session.agentMode ?? (ui.aiManager.agentMode || false);
+        this.planningModeCheckbox.checked = session.planningMode ?? (ui.aiManager.planningMode || false);
+        this.forgivenessModeCheckbox.checked = session.forgivenessMode ?? (ui.aiManager.forgivenessMode || false);
         this.allowSubAgentsCheckbox.checked = session.allowSubAgents !== false;
         this.allowRunCommandCheckbox.checked = session.allowRunCommand !== false;
 

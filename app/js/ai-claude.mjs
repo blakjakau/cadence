@@ -292,6 +292,14 @@ class Claude extends AI {
                                     if (onUpdate) onUpdate(fullResponseAccumulator);
                                 } else if (delta?.type === 'input_json_delta' && currentToolCall) {
                                     currentToolCall.partial_json += delta.partial_json;
+                                    const liveArgs = parseRelaxedJson(currentToolCall.partial_json);
+                                    let liveXml = `\n<tool_call name="${currentToolCall.name}">\n`;
+                                    for (const [k, v] of Object.entries(liveArgs)) {
+                                        const stringValue = typeof v === 'object' ? JSON.stringify(v) : v;
+                                        liveXml += `  <${k}>${stringValue}</${k}>\n`;
+                                    }
+                                    liveXml += `</tool_call>\n`;
+                                    if (onUpdate) onUpdate(fullResponseAccumulator + liveXml);
                                 }
                             }
 
@@ -496,6 +504,62 @@ class Claude extends AI {
             this._settingsSchema.model.enum = freshModels;
         }
     }
+}
+
+function parseRelaxedJson(str) {
+    if (!str) return {};
+    let cleaned = str.replace(/<\|"\|>/g, '"');
+    try {
+        return JSON.parse(cleaned);
+    } catch (e) {}
+
+    try {
+        const fn = new Function(`return (${cleaned});`);
+        return fn();
+    } catch (e) {}
+
+    const obj = {};
+    const pairRegex = /"([a-zA-Z0-9_-]+)"\s*:\s*(?:"((?:\\.|[^"\\])*)"|([0-9\.-]+|true|false|null))/g;
+    let match;
+    const matchedKeys = new Set();
+    while ((match = pairRegex.exec(cleaned)) !== null) {
+        const key = match[1];
+        matchedKeys.add(key);
+        if (match[2] !== undefined) {
+            try {
+                obj[key] = JSON.parse(`"${match[2]}"`);
+            } catch (e) {
+                obj[key] = match[2];
+            }
+        } else if (match[3] !== undefined) {
+            try {
+                obj[key] = JSON.parse(match[3]);
+            } catch (e) {
+                obj[key] = match[3];
+            }
+        }
+    }
+
+    // Capture unclosed trailing string for realtime streaming
+    const unclosedKeyRegex = /"([a-zA-Z0-9_-]+)"\s*:\s*"((?:\\.|[^"\\])*)$/;
+    const unclosedMatch = cleaned.match(unclosedKeyRegex);
+    if (unclosedMatch && !matchedKeys.has(unclosedMatch[1])) {
+        const key = unclosedMatch[1];
+        let rawVal = unclosedMatch[2];
+        try {
+            rawVal = JSON.parse(`"${rawVal.replace(/\\$/,'')}"`);
+        } catch (e) {
+            rawVal = rawVal
+                .replace(/\\n/g, '\n')
+                .replace(/\\r/g, '\r')
+                .replace(/\\t/g, '\t')
+                .replace(/\\"/g, '"')
+                .replace(/\\\\/g, '\\');
+        }
+        obj[key] = rawVal;
+    }
+
+    return obj;
 }
 
 export default Claude;

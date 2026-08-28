@@ -526,8 +526,10 @@ class AIManagerHistory {
 			if (expandArrow) expandArrow.textContent = "expand_less";
 			element.classList.add("expanded");
 			
-			// Attach dynamic content updater
-			element.updateContent = (fullResponse) => {
+			let rawPendingResponse = null;
+			let rawRafId = null;
+
+			const applyRawUpdate = (fullResponse) => {
 				const pre = element.querySelector(".raw-content-block");
 				if (pre) pre.textContent = fullResponse;
 				
@@ -543,13 +545,40 @@ class AIManagerHistory {
 					const estTokens = this.ai.estimateTokens(fullResponse);
 					sizeSpan.textContent = `(${sizeInKB} KB | ${estTokens} tokens)`;
 				}
+
+				if (this.manager.isSessionViewed(targetSessionId) && this.manager._shouldAutoScroll() && this.manager.conversationArea) {
+					this.manager.conversationArea.scrollTop = this.manager.conversationArea.scrollHeight;
+				}
+			};
+
+			// Attach dynamic content updater with requestAnimationFrame throttling
+			element.updateContent = (fullResponse, immediate = false) => {
+				rawPendingResponse = fullResponse;
+				if (immediate) {
+					if (rawRafId) {
+						cancelAnimationFrame(rawRafId);
+						rawRafId = null;
+					}
+					applyRawUpdate(rawPendingResponse);
+					return;
+				}
+				if (!rawRafId) {
+					rawRafId = requestAnimationFrame(() => {
+						rawRafId = null;
+						applyRawUpdate(rawPendingResponse);
+					});
+				}
 			};
 			
 			element.finalize = (fullResponse, finalizedMessage) => {
+				if (rawRafId) {
+					cancelAnimationFrame(rawRafId);
+					rawRafId = null;
+				}
 				const running = this.manager.runningSessions.get(targetSessionId);
 				if (running) running.responseBlock = null;
 				this._localActiveStreamingBlock = null;
-				element.updateContent(fullResponse);
+				element.updateContent(fullResponse, true);
 				const deleteIcon = element.querySelector(".delete-raw-item");
 				if (deleteIcon) {
 					deleteIcon.onclick = (e) => {
@@ -606,7 +635,10 @@ class AIManagerHistory {
 			responseBlock.finalizedSegmentDivs = [];
 			responseBlock.activeSegmentDiv = null;
 			
-			responseBlock.updateContent = (fullResponse) => {
+			let pendingFullResponse = null;
+			let rafId = null;
+
+			const applyUpdate = (fullResponse) => {
 				if (fullResponse) {
 					const prefillContainer = responseBlock.querySelector('.prefill-progress-container');
 					if (prefillContainer) {
@@ -628,9 +660,21 @@ class AIManagerHistory {
 					const segmentIndex = responseBlock.finalizedSegmentDivs.length;
 					const finalizedText = segments[segmentIndex];
 					
-					responseBlock.activeSegmentDiv.innerHTML = this.manager.messageRenderer.renderResponseContent(finalizedText, null, true);
+					const existingExpander = responseBlock.activeSegmentDiv.querySelector('.tool-call-preview-expander');
+					const wasUserClosed = existingExpander && existingExpander.dataset.userToggled === 'true' && !existingExpander.open;
+
+					this.manager.messageRenderer.renderResponseSegment(responseBlock.activeSegmentDiv, finalizedText, null, true);
+					// Attach code block buttons once the segment is closed/finalized
 					this.manager.messageRenderer.addCodeBlockButtons(responseBlock.activeSegmentDiv);
 					
+					if (wasUserClosed) {
+						const newExpander = responseBlock.activeSegmentDiv.querySelector('.tool-call-preview-expander');
+						if (newExpander) {
+							newExpander.removeAttribute('open');
+							newExpander.dataset.userToggled = 'true';
+						}
+					}
+
 					responseBlock.finalizedSegmentDivs.push(responseBlock.activeSegmentDiv);
 					
 					responseBlock.activeSegmentDiv = document.createElement("div");
@@ -638,11 +682,48 @@ class AIManagerHistory {
 				}
 				
 				const activeText = segments[segments.length - 1];
-				responseBlock.activeSegmentDiv.innerHTML = this.manager.messageRenderer.renderResponseContent(activeText, null, true);
-				this.manager.messageRenderer.addCodeBlockButtons(responseBlock.activeSegmentDiv);
+				const existingExpander = responseBlock.activeSegmentDiv.querySelector('.tool-call-preview-expander');
+				const wasUserClosed = existingExpander && existingExpander.dataset.userToggled === 'true' && !existingExpander.open;
+
+				this.manager.messageRenderer.renderResponseSegment(responseBlock.activeSegmentDiv, activeText, null, true);
+				// NOTE: Action buttons are delayed until this block is closed by new segments or generation finishes
+
+				if (wasUserClosed) {
+					const newExpander = responseBlock.activeSegmentDiv.querySelector('.tool-call-preview-expander');
+					if (newExpander) {
+						newExpander.removeAttribute('open');
+						newExpander.dataset.userToggled = 'true';
+					}
+				}
+
+				if (this.manager.isSessionViewed(targetSessionId) && this.manager._shouldAutoScroll() && this.manager.conversationArea) {
+					this.manager.conversationArea.scrollTop = this.manager.conversationArea.scrollHeight;
+				}
+			};
+
+			responseBlock.updateContent = (fullResponse, immediate = false) => {
+				pendingFullResponse = fullResponse;
+				if (immediate) {
+					if (rafId) {
+						cancelAnimationFrame(rafId);
+						rafId = null;
+					}
+					applyUpdate(pendingFullResponse);
+					return;
+				}
+				if (!rafId) {
+					rafId = requestAnimationFrame(() => {
+						rafId = null;
+						applyUpdate(pendingFullResponse);
+					});
+				}
 			};
 			
 			responseBlock.finalize = (fullResponse, finalizedMessage) => {
+				if (rafId) {
+					cancelAnimationFrame(rafId);
+					rafId = null;
+				}
 				const running = this.manager.runningSessions.get(targetSessionId);
 				if (running) running.responseBlock = null;
 				this._localActiveStreamingBlock = null;
@@ -650,13 +731,15 @@ class AIManagerHistory {
 				responseBlock.classList.remove("streaming");
 				summarySpan.innerHTML = this.manager.messageRenderer.getModelTurnSummary(fullResponse, finalizedMessage);
 				contentDiv.innerHTML = this.manager.messageRenderer.renderResponseContent(fullResponse, finalizedMessage, true);
+				// Attach code block buttons to the complete finalized message
 				this.manager.messageRenderer.addCodeBlockButtons(contentDiv, finalizedMessage);
 				
 				const tokenCount = typeof finalizedMessage.tokenCount === 'number' ? finalizedMessage.tokenCount : this.ai.estimateTokens([finalizedMessage]);
 				responseBlock.setAttribute("title", `Tokens: ${tokenCount}`);
 			};
-			const running = this.manager.runningSessions.get(targetSessionId);
-			if (running) running.responseBlock = responseBlock;
+
+			const runningBlock = this.manager.runningSessions.get(targetSessionId);
+			if (runningBlock) runningBlock.responseBlock = responseBlock;
 			this._localActiveStreamingBlock = responseBlock;
 			return responseBlock;
 		}

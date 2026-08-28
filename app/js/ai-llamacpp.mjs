@@ -60,10 +60,16 @@ class LlamaCpp extends AI {
     }
 
     get supportsJSONTools() {
+        if (this.serverSupportsTools !== undefined) {
+            return this.serverSupportsTools;
+        }
         return true;
     }
 
     get supportsReasoning() {
+        if (this.serverSupportsReasoning !== undefined) {
+            return this.serverSupportsReasoning;
+        }
         const model = (this.config.model || "").toLowerCase();
         return model.includes('r1') 
         	|| model.includes('reasoning') 
@@ -71,6 +77,7 @@ class LlamaCpp extends AI {
         	|| model.includes('think') 
         	|| model.includes("gemma-4")
         	|| model.includes('qwen')
+        	|| model.includes('ornith');
     }
 
     async init() {
@@ -91,6 +98,38 @@ class LlamaCpp extends AI {
                 if (data.model_path) {
                     this.config.model = data.model_path.split('/').pop();
                 }
+
+                // Dynamically detect reasoning and tool calling capabilities from server props
+                const chatTemplate = (data.chat_template || data.default_generation_settings?.chat_template || "").toLowerCase();
+                const defaultGen = data.default_generation_settings || {};
+                
+                // Reasoning detection via template tags (<think>, thought, reasoning_content, [THINK]) or settings
+                const hasReasoningInTemplate = chatTemplate.includes('<think>') 
+                    || chatTemplate.includes('thought') 
+                    || chatTemplate.includes('reasoning_content') 
+                    || chatTemplate.includes('[think]')
+                    || chatTemplate.includes('<channel>');
+                const hasReasoningInSettings = defaultGen.reasoning_budget !== undefined 
+                    || defaultGen.thinking_budget !== undefined 
+                    || defaultGen.enable_thinking !== undefined
+                    || data.has_reasoning === true;
+                
+                if (hasReasoningInTemplate || hasReasoningInSettings) {
+                    this.serverSupportsReasoning = true;
+                }
+
+                // Tool calling detection via template or capabilities
+                const hasToolsInTemplate = chatTemplate.includes('tool_call') 
+                    || chatTemplate.includes('tools') 
+                    || chatTemplate.includes('[tool_calls]') 
+                    || chatTemplate.includes('call:');
+                const hasToolsInProps = data.tools === true || (Array.isArray(data.capabilities) && data.capabilities.includes('tools'));
+
+                if (hasToolsInTemplate || hasToolsInProps) {
+                    this.serverSupportsTools = true;
+                }
+
+                console.debug(`[Llama.cpp] Server model info queried: model=${this.config.model}, supportsReasoning=${this.serverSupportsReasoning}, supportsTools=${this.serverSupportsTools}`);
             }
         } catch (e) {
             console.warn("[Llama.cpp] Could not query model info:", e.message);
@@ -591,6 +630,7 @@ class LlamaCpp extends AI {
 }
 
 function parseRelaxedJson(str) {
+    if (!str) return {};
     let cleaned = str.replace(/<\|"\|>/g, '"');
     try {
         return JSON.parse(cleaned);
@@ -599,18 +639,49 @@ function parseRelaxedJson(str) {
     try {
         const fn = new Function(`return (${cleaned});`);
         return fn();
-    } catch (e) {
-        console.debug("[Llama.cpp] Relaxed JSON parsing failed:", e);
-    }
+    } catch (e) {}
 
     const obj = {};
-    const pairRegex = /(?:["']?([a-zA-Z0-9_-]+)["']?\s*:\s*(?:"([^"]*)"|'([^']*)'|([a-zA-Z0-9_\.-]+)))/g;
+    const pairRegex = /"([a-zA-Z0-9_-]+)"\s*:\s*(?:"((?:\\.|[^"\\])*)"|([0-9\.-]+|true|false|null))/g;
     let match;
+    const matchedKeys = new Set();
     while ((match = pairRegex.exec(cleaned)) !== null) {
         const key = match[1];
-        const val = match[2] !== undefined ? match[3] || match[2] : match[4];
-        obj[key] = val;
+        matchedKeys.add(key);
+        if (match[2] !== undefined) {
+            try {
+                obj[key] = JSON.parse(`"${match[2]}"`);
+            } catch (e) {
+                obj[key] = match[2];
+            }
+        } else if (match[3] !== undefined) {
+            try {
+                obj[key] = JSON.parse(match[3]);
+            } catch (e) {
+                obj[key] = match[3];
+            }
+        }
     }
+
+    // Capture unclosed trailing string for realtime streaming
+    const unclosedKeyRegex = /"([a-zA-Z0-9_-]+)"\s*:\s*"((?:\\.|[^"\\])*)$/;
+    const unclosedMatch = cleaned.match(unclosedKeyRegex);
+    if (unclosedMatch && !matchedKeys.has(unclosedMatch[1])) {
+        const key = unclosedMatch[1];
+        let rawVal = unclosedMatch[2];
+        try {
+            rawVal = JSON.parse(`"${rawVal.replace(/\\$/,'')}"`);
+        } catch (e) {
+            rawVal = rawVal
+                .replace(/\\n/g, '\n')
+                .replace(/\\r/g, '\r')
+                .replace(/\\t/g, '\t')
+                .replace(/\\"/g, '"')
+                .replace(/\\\\/g, '\\');
+        }
+        obj[key] = rawVal;
+    }
+
     return obj;
 }
 

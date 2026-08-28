@@ -43,8 +43,8 @@ export const syntaxValidator = {
 		} else if (cleanPath.endsWith(".html") || cleanPath.endsWith(".htm")) {
 			parser = "html";
 			plugins = [parserHtml];
-		} else if (cleanPath.endsWith(".css")) {
-			parser = "postcss";
+		} else if (cleanPath.endsWith(".css") || cleanPath.endsWith(".scss") || cleanPath.endsWith(".less")) {
+			parser = cleanPath.endsWith(".scss") ? "scss" : (cleanPath.endsWith(".less") ? "less" : "css");
 			plugins = [parserCss];
 		}
 

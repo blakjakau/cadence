@@ -45,9 +45,19 @@ class Ollama extends AI {
     	return this.config.server !== "" && this.config.model !== null && this.config.model !== "";
     }
 
+    get supportsJSONTools() {
+        if (this.serverSupportsTools !== undefined) {
+            return this.serverSupportsTools;
+        }
+        return true;
+    }
+
     get supportsReasoning() {
+        if (this.serverSupportsReasoning !== undefined) {
+            return this.serverSupportsReasoning;
+        }
         const model = (this.config.model || "").toLowerCase();
-        return model.includes('r1') || model.includes('reasoning') || model.includes('deepseek') || model.includes('think');
+        return model.includes('r1') || model.includes('reasoning') || model.includes('deepseek') || model.includes('think') || model.includes('ornith') || model.includes('qwen');
     }
 
 
@@ -117,6 +127,9 @@ class Ollama extends AI {
 		await this._checkApiVersion();
 	}
 
+	/**
+	 * Query the Ollama server for context length and capabilities of the configured model.
+	 */
 	async _queryModelCapability() {
         // If no model is selected/configured, we can't query its capability.
         // Set a default and indicate failure.
@@ -152,11 +165,33 @@ class Ollama extends AI {
 			}
             this._modelCaps = modelCaps; // Store it for other potential uses
 
+            // Dynamically detect reasoning and tool calling capabilities from model metadata and template
+            const capabilities = Array.isArray(modelCaps.capabilities) ? modelCaps.capabilities : [];
+            const template = (modelCaps.template || "").toLowerCase();
+            const families = Array.isArray(modelCaps.details?.families) ? modelCaps.details.families : [];
+            const family = (modelCaps.details?.family || "").toLowerCase();
+
+            const hasReasoningInTemplate = template.includes('<think>') 
+                || template.includes('thought') 
+                || template.includes('reasoning_content')
+                || template.includes('[think]');
+            const hasReasoningInCap = capabilities.includes('thinking') || capabilities.includes('reasoning');
+            const hasReasoningInFamily = families.some(f => f.includes('deepseek') || f.includes('qwen3')) || family.includes('deepseek');
+            this.serverSupportsReasoning = hasReasoningInTemplate || hasReasoningInCap || hasReasoningInFamily;
+
+            const hasToolsInTemplate = template.includes('.tools') 
+                || template.includes('tools') 
+                || template.includes('[tool_calls]') 
+                || template.includes('tool_call')
+                || template.includes('call:');
+            const hasToolsInCap = capabilities.includes('tools');
+            this.serverSupportsTools = hasToolsInTemplate || hasToolsInCap;
+
 			// Ollama context length is typically found in model_info
 			if (modelCaps?.details?.families?.[0] && modelCaps?.model_info) {
-				const family = modelCaps.details.families[0]; 
-				if (modelCaps.model_info[`${family}.context_length`]) {
-					this.MAX_CONTEXT_TOKENS = modelCaps.model_info[`${family}.context_length`];
+				const fam = modelCaps.details.families[0]; 
+				if (modelCaps.model_info[`${fam}.context_length`]) {
+					this.MAX_CONTEXT_TOKENS = modelCaps.model_info[`${fam}.context_length`];
 				} else {
                     this.MAX_CONTEXT_TOKENS = 8192; // Fallback to a default if context_length isn't explicitly found
                     console.warn(`Could not find context_length for model ${this.config.model}. Using default ${this.MAX_CONTEXT_TOKENS}.`);
@@ -166,7 +201,7 @@ class Ollama extends AI {
                  console.warn(`Unexpected model capability structure for ${this.config.model}. Using default ${this.MAX_CONTEXT_TOKENS}.`);
             }
 
-			console.debug("Model Capabilities:", modelCaps, `MAX_CONTEXT_TOKENS: ${this.MAX_CONTEXT_TOKENS}`);
+			console.debug("Model Capabilities:", modelCaps, `MAX_CONTEXT_TOKENS: ${this.MAX_CONTEXT_TOKENS}, supportsReasoning: ${this.serverSupportsReasoning}, supportsTools: ${this.serverSupportsTools}`);
             return true;
 		} catch (error) {
 			console.error("Error querying Ollama model capabilities:", error);

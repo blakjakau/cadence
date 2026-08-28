@@ -71,6 +71,19 @@ export default class AI {
 		this._saveTelemetry();
 	}
 
+	resetTelemetry() {
+		this._telemetryRequests = [];
+		this._telemetryTokens = [];
+		this._totalTokensIn = 0;
+		this._totalTokensOut = 0;
+		try {
+			const keyId = this.connectionId || this.providerId;
+			localStorage.removeItem(`telemetry_${keyId}`);
+		} catch (e) {
+			console.warn("Failed to reset telemetry data", e);
+		}
+	}
+
 	get tokensPerSec() {
 		if (this._telemetryTokens.length > 0) {
 			const last = this._telemetryTokens[this._telemetryTokens.length - 1];

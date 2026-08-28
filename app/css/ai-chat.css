@@ -636,6 +636,14 @@
     display: block;
 }
 
+.thought-segment {
+    margin-bottom: 6px;
+}
+
+.thought-segment:last-child {
+    margin-bottom: 0;
+}
+
 .thought-header ui-icon {
     font-size: 14px;
     transition: transform 0.2s ease;

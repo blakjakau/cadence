@@ -78,12 +78,14 @@ class AIManager {
 
 		// Load summarization and mode settings defaults
 		this.config = {
-			summarizeThreshold: 85,
-			summarizeTargetPercentage: 50,
-			defaultAgentMode: false,
-			defaultPlanningMode: true,
+			summarizeThreshold: parseInt(localStorage.getItem("summarizeThreshold") || "85"),
+			summarizeTargetPercentage: parseInt(localStorage.getItem("summarizeTargetPercentage") || "50"),
+			defaultAgentMode: localStorage.getItem("defaultAgentMode") === "true",
+			defaultPlanningMode: localStorage.getItem("defaultPlanningMode") !== "false",
+			defaultForgivenessMode: localStorage.getItem("aiForgivenessMode") === "true",
 			maxSubAgents: parseInt(localStorage.getItem("maxSubAgents") || "3"),
 			defaultAllowSubAgents: localStorage.getItem("defaultAllowSubAgents") !== "false",
+			defaultAllowRunCommand: localStorage.getItem("defaultAllowRunCommand") !== "false",
 		};
 
 		// NEW: Session Management Properties
@@ -204,7 +206,8 @@ class AIManager {
 				hasAcceptedPlan,
 				hasCompletedAllTasks,
 				planningMode: targetPlanningMode,
-				isNativeReasoning
+				isNativeReasoning,
+				workspaceFolders: window.workspace?.folders || []
 			});
 		} else {
 			basePrompt = systemPromptBuilder(this.getSystemPromptConfig());
@@ -2570,18 +2573,7 @@ class AIManager {
 		return closedTcs.map(tc => {
 			const toolName = tc.name;
 			const toolArgsContent = content.substring(tc.contentStartIdx, tc.contentEndIdx);
-			const args = {};
-
-			const tagRegex = /<([a-zA-Z0-9_-]+)>([\s\S]*?)<\/\1>/g;
-			let tagMatch;
-			while ((tagMatch = tagRegex.exec(toolArgsContent)) !== null) {
-				const key = tagMatch[1];
-				let val = tagMatch[2];
-				if (key !== 'search' && key !== 'replace' && key !== 'content') {
-					val = val.trim();
-				}
-				args[key] = val;
-			}
+			const args = this.messageRenderer.parseToolArgs(toolArgsContent);
 
 			return {
 				name: toolName,
@@ -2595,6 +2587,18 @@ class AIManager {
 		if (!toolCall) return null;
 		if (this.planningMode && (toolCall.name === "create_file" || toolCall.name === "edit_file")) {
 			return `Tool Error: Tool "${toolCall.name}" is not allowed while in planning mode.`;
+		}
+		if (toolCall.name === "edit_file") {
+			const args = toolCall.arguments || {};
+			if (!args.path) {
+				return `Tool Error: edit_file requires "path" parameter.`;
+			}
+			const hasSingleEdit = args.search !== undefined && args.replace !== undefined;
+			const hasEditsArray = Array.isArray(args.edits) && args.edits.length > 0;
+			if (!hasSingleEdit && !hasEditsArray) {
+				return `Tool Error: edit_file requires either (search, replace) parameters or an "edits" array of [{ search, replace }].`;
+			}
+			return null;
 		}
 		const toolDef = tools.find(t => t.name === toolCall.name);
 		if (toolDef && toolDef.parameters && Array.isArray(toolDef.parameters.required)) {
@@ -3613,38 +3617,51 @@ ${contextText}`;
 			this.config.summarizeTargetPercentage = parseInt(storedSummarizeTargetPercentage)
 		}
 
-		const storedDefaultAgentMode = localStorage.getItem("defaultAgentMode")
+		const storedDefaultAgentMode = localStorage.getItem("defaultAgentMode");
 		if (storedDefaultAgentMode !== null) {
-			this.config.defaultAgentMode = storedDefaultAgentMode === "true"
+			this.config.defaultAgentMode = storedDefaultAgentMode === "true";
+		} else {
+			this.config.defaultAgentMode = false;
 		}
-		const storedDefaultPlanningMode = localStorage.getItem("defaultPlanningMode")
+
+		const storedDefaultPlanningMode = localStorage.getItem("defaultPlanningMode");
 		if (storedDefaultPlanningMode !== null) {
-			this.config.defaultPlanningMode = storedDefaultPlanningMode === "true"
+			this.config.defaultPlanningMode = storedDefaultPlanningMode === "true";
+		} else {
+			this.config.defaultPlanningMode = true;
 		}
 
-		const storedAgentMode = localStorage.getItem("aiAgentMode")
+		const storedAgentMode = localStorage.getItem("aiAgentMode");
 		if (storedAgentMode !== null) {
-			this.agentMode = storedAgentMode === "true"
+			this.agentMode = storedAgentMode === "true";
 		}
 
-		const storedForgivenessMode = localStorage.getItem("aiForgivenessMode")
+		const storedForgivenessMode = localStorage.getItem("aiForgivenessMode");
 		if (storedForgivenessMode !== null) {
-			this.forgivenessMode = storedForgivenessMode === "true"
+			this.config.defaultForgivenessMode = storedForgivenessMode === "true";
+			this.forgivenessMode = storedForgivenessMode === "true";
+		} else {
+			this.config.defaultForgivenessMode = false;
+			this.forgivenessMode = false;
 		}
 
-		const storedMaxSubAgents = localStorage.getItem("maxSubAgents")
+		const storedMaxSubAgents = localStorage.getItem("maxSubAgents");
 		if (storedMaxSubAgents !== null) {
-			this.config.maxSubAgents = parseInt(storedMaxSubAgents)
+			this.config.maxSubAgents = parseInt(storedMaxSubAgents);
 		}
 
-		const storedDefaultAllowSubAgents = localStorage.getItem("defaultAllowSubAgents")
+		const storedDefaultAllowSubAgents = localStorage.getItem("defaultAllowSubAgents");
 		if (storedDefaultAllowSubAgents !== null) {
-			this.config.defaultAllowSubAgents = storedDefaultAllowSubAgents === "true"
+			this.config.defaultAllowSubAgents = storedDefaultAllowSubAgents === "true";
+		} else {
+			this.config.defaultAllowSubAgents = true;
 		}
 
-		const storedDefaultAllowRunCommand = localStorage.getItem("defaultAllowRunCommand")
+		const storedDefaultAllowRunCommand = localStorage.getItem("defaultAllowRunCommand");
 		if (storedDefaultAllowRunCommand !== null) {
-			this.config.defaultAllowRunCommand = storedDefaultAllowRunCommand === "true"
+			this.config.defaultAllowRunCommand = storedDefaultAllowRunCommand === "true";
+		} else {
+			this.config.defaultAllowRunCommand = true;
 		}
 	}
 }
