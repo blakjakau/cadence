@@ -113,6 +113,7 @@ class AIManagerSessions {
 			allowSubAgents: defaultSubAgents,
 			allowRunCommand: defaultRunCommand,
 			pinnedSkills: [],
+			pinnedRoots: [],
 		};
 
 		await workspaceClient.setSession(newId, newSessionData);

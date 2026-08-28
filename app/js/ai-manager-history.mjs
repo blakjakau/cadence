@@ -115,16 +115,25 @@ class AIManagerHistory {
 	populateFileBar() {
 		if (!this.manager.fileBar) return;
 		this.manager.fileBar.clear();
-		// Add file context chips
+		// 1. Add pinned root chips
+		const pinnedRoots = this.manager.activeSession?.pinnedRoots || [];
+		const workspaceFolders = window.workspace?.folders || [];
+		for (const rootPath of pinnedRoots) {
+			const matchingFolder = workspaceFolders.find(f => f === rootPath) || rootPath;
+			const norm = matchingFolder.replace(/\\/g, '/').replace(/\/+$/, '');
+			const rootName = norm.split('/').filter(Boolean).pop() || matchingFolder;
+			this.manager.fileBar.addRoot({ name: rootName, path: matchingFolder, id: `rootchip-${rootPath}` });
+		}
+		// 2. Add pinned skill chips
+		const pinnedSkills = this.manager.activeSession?.pinnedSkills || [];
+		for (const skillName of pinnedSkills) {
+			this.manager.fileBar.addSkill({ name: skillName, id: `skillchip-${skillName}` });
+		}
+		// 3. Add file context chips
 		for (const message of this.chatHistory) {
 			if (message.type === 'file_context') {
 				this.manager.fileBar.add(message);
 			}
-		}
-		// Add pinned skill chips
-		const pinnedSkills = this.manager.activeSession?.pinnedSkills || [];
-		for (const skillName of pinnedSkills) {
-			this.manager.fileBar.addSkill({ name: skillName, id: `skillchip-${skillName}` });
 		}
 	}
 

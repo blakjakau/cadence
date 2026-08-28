@@ -2,6 +2,7 @@
 import { Block } from './element.mjs';
 import { FileChip } from './filechip.mjs';
 import { SkillChip } from './skillchip.mjs';
+import { RootChip } from './rootchip.mjs';
 import { Button } from './button.mjs';
 
 export class FileBar extends Block {
@@ -9,6 +10,7 @@ export class FileBar extends Block {
         super();
         this._chips = new Map();
         this._hasLibraryButton = false;
+        this._hasRootsButton = false;
         this.style.display = 'none'; // Initially hidden
     }
 
@@ -49,6 +51,42 @@ export class FileBar extends Block {
         return chip;
     }
 
+    addRoot(config) {
+        if (this._chips.has(config.id)) {
+            // Root chip already exists
+            return this._chips.get(config.id);
+        }
+
+        const chip = new RootChip(config);
+        chip.on('root-remove-request', (e) => {
+            this.dispatch('root-remove-request', { rootPath: e.detail.rootPath });
+        });
+
+        this._chips.set(config.id, chip);
+        this.append(chip);
+
+        this.style.display = 'flex';
+        return chip;
+    }
+
+    addRootsButton(onRootsClick="") {
+        if(onRootsClick) {
+            this._onRootsClick = onRootsClick;
+        } else {
+            if(this._onRootsClick) {
+                onRootsClick = this._onRootsClick;
+            }
+        }
+        const btn = new Button("");
+        btn.icon = "folder_special";
+        btn.title = "Workspace Roots Filter";
+        btn.className = "library-button";
+        btn.onclick = onRootsClick;
+        this.append(btn);
+        this._hasRootsButton = true;
+        this.style.display = 'flex';
+    }
+
     addLibraryButton(onLibraryClick="") {
     	if(onLibraryClick) {
     		this._onLibraryClick = onLibraryClick
@@ -68,7 +106,7 @@ export class FileBar extends Block {
     }
 
     remove(chipOrId) {
-        const chipId = (chipOrId instanceof FileChip || chipOrId instanceof SkillChip) 
+        const chipId = (chipOrId instanceof FileChip || chipOrId instanceof SkillChip || chipOrId instanceof RootChip) 
             ? (chipOrId.config.id || chipOrId.config.name) 
             : chipOrId;
         
@@ -78,8 +116,8 @@ export class FileBar extends Block {
             this._chips.delete(chipId);
         }
 
-        if (this._chips.size === 0 && !this._hasLibraryButton) {
-            this.style.display = 'none'; // Hide if no chips are left and no library button
+        if (this._chips.size === 0 && !this._hasLibraryButton && !this._hasRootsButton) {
+            this.style.display = 'none'; // Hide if no chips are left and no buttons
         }
     }
 
@@ -87,8 +125,9 @@ export class FileBar extends Block {
         this.innerHTML = '';
         this._chips.clear();
         this._hasLibraryButton = false;
-        //this.style.display = 'none'; // Hide after clearing
-        this.addLibraryButton()
+        this._hasRootsButton = false;
+        this.addRootsButton();
+        this.addLibraryButton();
     }
 }
 

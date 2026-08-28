@@ -1,6 +1,6 @@
 // ai-manager.mjs
 // Styles for this module are located in css/ai-manager.css
-import { Block, Button, Icon, TabBar, TabItem, FileBar, SkillPicker } from "./elements.mjs"
+import { Block, Button, Icon, TabBar, TabItem, FileBar, SkillPicker, RootPicker } from "./elements.mjs"
 import AIManagerHistory, { MAX_RECENT_MESSAGES_TO_PRESERVE } from "./ai-manager-history.mjs"
 import AIManagerMessageRenderer from "./ai-manager-message-renderer.mjs" // NEW: Settings manager
 import AIManagerSessions from "./ai-manager-sessions.mjs" // NEW: Sessions manager
@@ -199,6 +199,12 @@ class AIManager {
 				: (activeAi?.config?.thinkingLevel || "medium");
 			const isNativeReasoning = !!(activeAi && activeAi.supportsReasoning && effectiveThinkingLevel !== "off" && !targetSession?.disableReasoning);
 
+			const allFolders = window.workspace?.folders || [];
+			const pinnedRoots = targetSession?.pinnedRoots || [];
+			const effectiveFolders = pinnedRoots.length > 0
+				? allFolders.filter(f => pinnedRoots.some(p => f === p || f.endsWith('/' + p) || f.split(/[\\/]/).filter(Boolean).pop() === p))
+				: allFolders;
+
 			basePrompt = getAgentSystemPrompt(modelName, {
 				supportsJSONTools,
 				hasPlan,
@@ -207,14 +213,18 @@ class AIManager {
 				hasCompletedAllTasks,
 				planningMode: targetPlanningMode,
 				isNativeReasoning,
-				workspaceFolders: window.workspace?.folders || []
+				workspaceFolders: effectiveFolders
 			});
 		} else {
 			basePrompt = systemPromptBuilder(this.getSystemPromptConfig());
 		}
 
 		// Persistent memory scratch-pad: read .agents/AGENTS.md from active workspace roots
-		const folders = window.workspace?.folders || [];
+		const allFolders = window.workspace?.folders || [];
+		const pinnedRoots = targetSession?.pinnedRoots || [];
+		const folders = pinnedRoots.length > 0
+			? allFolders.filter(f => pinnedRoots.some(p => f === p || f.endsWith('/' + p) || f.split(/[\\/]/).filter(Boolean).pop() === p))
+			: allFolders;
 		const hints = [];
 		for (const folder of folders) {
 			try {
@@ -526,6 +536,19 @@ class AIManager {
 
 		this.fileBar = new FileBar();
 		this.fileBar.classList.add('ai-file-context-bar');
+		this.fileBar.addRootsButton(async () => {
+			const picker = new RootPicker(this);
+			window.modal.inner.innerHTML = '';
+			window.modal.inner.append(picker);
+			window.modal.actionBar.empty();
+
+			const closeBtn = new Button('Close');
+			closeBtn.icon = 'close';
+			closeBtn.className = 'theme-button';
+			closeBtn.onclick = () => window.modal.hide(false);
+			window.modal.actionBar.append(closeBtn);
+			await window.modal.show();
+		});
 		this.fileBar.addLibraryButton(async () => {
 			const picker = new SkillPicker(this);
 			window.modal.inner.innerHTML = '';
@@ -545,7 +568,6 @@ class AIManager {
 			window.modal.actionBar.append(closeBtn);
 			await window.modal.show();
 		});
-		// Listen for requests to remove a file, originating from a chip's close button
 		// Listen for requests to remove a file, originating from a chip's close button
 		this.fileBar.on('file-remove-request', (e) => {
 			const fileId = e.detail.fileId;
@@ -577,6 +599,29 @@ class AIManager {
 				this.historyManager.addMessage({
 					type: 'system_message',
 					content: `**${skillName}** skill removed from context.`,
+					timestamp: Date.now()
+				}, false);
+			}
+		});
+
+		this.fileBar.on('root-remove-request', async (e) => {
+			const rootPath = e.detail.rootPath;
+			if (this.activeSession) {
+				const matchingFolder = (window.workspace?.folders || []).find(f => f === rootPath) || rootPath;
+				const norm = matchingFolder.replace(/\\/g, '/').replace(/\/+$/, '');
+				const rootName = norm.split('/').filter(Boolean).pop() || matchingFolder;
+
+				if (this.activeSession.pinnedRoots) {
+					this.activeSession.pinnedRoots = this.activeSession.pinnedRoots.filter(r => r !== rootPath && r !== rootName);
+					await workspaceClient.setSession(this.activeSession.id, this.activeSession);
+				}
+				// Always remove the chip from the bar
+				this.fileBar.remove(`rootchip-${rootPath}`);
+
+				// Provide feedback
+				this.historyManager.addMessage({
+					type: 'system_message',
+					content: `**${rootName}** root unpinned from context.`,
 					timestamp: Date.now()
 				}, false);
 			}

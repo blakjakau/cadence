@@ -17,11 +17,33 @@ class AgentTools {
         this.syntaxErrors = {}; // Tracks pending syntax errors: { [resolvedPath]: errorString }
     }
 
-    _resolveAndValidatePath(targetPath) {
+    _getEffectiveWorkspaceFolders(sourceId = null) {
+        const allFolders = window.workspace?.folders || [];
+        if (allFolders.length === 0) return [];
+
+        try {
+            const aiManager = window.ui?.aiManager;
+            const targetSessionId = sourceId || aiManager?.activeSessionId;
+            const session = (targetSessionId && aiManager?.runningSessions?.get(targetSessionId)?.instance?.session)
+                || (targetSessionId === aiManager?.activeSessionId ? aiManager?.activeSession : null);
+
+            const pinnedRoots = session?.pinnedRoots || [];
+            if (pinnedRoots.length > 0) {
+                const filtered = allFolders.filter(f => pinnedRoots.some(p => f === p || f.endsWith('/' + p) || f.split(/[\\/]/).filter(Boolean).pop() === p));
+                if (filtered.length > 0) return filtered;
+            }
+        } catch (e) {
+            console.warn("[AgentTools] Error resolving pinned roots:", e);
+        }
+
+        return allFolders;
+    }
+
+    _resolveAndValidatePath(targetPath, sourceId = null) {
         if (typeof targetPath !== 'string') {
             throw new Error("Path must be a string");
         }
-        const folders = window.workspace?.folders || [];
+        const folders = this._getEffectiveWorkspaceFolders(sourceId);
         if (folders.length === 0) {
             throw new Error("No workspace folders are open. Cannot validate paths.");
         }
@@ -33,7 +55,7 @@ class AgentTools {
         for (const folder of folders) {
             const normFolder = folder.replace(/\\/g, '/').replace(/\/+$/, '');
             if (targetPath === normFolder || targetPath.startsWith(normFolder + '/')) {
-                return this._cleanNormalizedPath(targetPath);
+                return this._cleanNormalizedPath(targetPath, sourceId);
             }
         }
 
@@ -44,11 +66,11 @@ class AgentTools {
             const folderName = normFolder.split('/').filter(Boolean).pop();
             if (folderName) {
                 if (targetPath === folderName) {
-                    return this._cleanNormalizedPath(normFolder);
+                    return this._cleanNormalizedPath(normFolder, sourceId);
                 }
                 if (targetPath.startsWith(folderName + '/')) {
                     const subPath = targetPath.substring(folderName.length + 1);
-                    return this._cleanNormalizedPath(`${normFolder}/${subPath}`);
+                    return this._cleanNormalizedPath(`${normFolder}/${subPath}`, sourceId);
                 }
             }
         }
@@ -84,7 +106,7 @@ class AgentTools {
         if (bestOverlapFolder && bestOverlapCount > 0) {
             const cleanRelative = bestTargetSegments.join('/');
             const resolved = cleanRelative ? `${bestOverlapFolder}/${cleanRelative}` : bestOverlapFolder;
-            return this._cleanNormalizedPath(resolved);
+            return this._cleanNormalizedPath(resolved, sourceId);
         }
 
         // 4. Check if targetPath matches a known file path in the workspace file index
@@ -92,28 +114,34 @@ class AgentTools {
             const cleanTarget = targetPath.replace(/^\/+/, '').toLowerCase();
             const indexedFile = window.ui.fileList.index.files.find(f => {
                 const fPath = f.path.replace(/\\/g, '/').replace(/^\/+/, '').toLowerCase();
-                return fPath === cleanTarget || fPath.endsWith('/' + cleanTarget);
+                if (fPath !== cleanTarget && !fPath.endsWith('/' + cleanTarget)) return false;
+                const normIndexMatch = f.path.replace(/\\/g, '/');
+                const fullIndexMatch = normIndexMatch.startsWith('/') ? normIndexMatch : `/${normIndexMatch}`;
+                return folders.some(folder => {
+                    const normFolder = folder.replace(/\\/g, '/').replace(/\/+/g, '/').replace(/\/+$/, '');
+                    return fullIndexMatch === normFolder || fullIndexMatch.startsWith(normFolder + '/');
+                });
             });
             if (indexedFile) {
                 const normIndexMatch = indexedFile.path.replace(/\\/g, '/');
-                return this._cleanNormalizedPath(normIndexMatch.startsWith('/') ? normIndexMatch : `/${normIndexMatch}`);
+                return this._cleanNormalizedPath(normIndexMatch.startsWith('/') ? normIndexMatch : `/${normIndexMatch}`, sourceId);
             }
         }
 
         // 5. If targetPath is '.' or empty and there's 1 root folder
         if ((targetPath === '.' || targetPath === '' || targetPath === '/') && folders.length === 1) {
-            return this._cleanNormalizedPath(folders[0]);
+            return this._cleanNormalizedPath(folders[0], sourceId);
         }
 
         // 6. Default to first workspace folder for relative paths
         const baseFolder = folders[0].replace(/\\/g, '/').replace(/\/+$/, '');
         const cleanRelative = targetSegments.join('/');
         const resolvedPath = cleanRelative ? `${baseFolder}/${cleanRelative}` : baseFolder;
-        return this._cleanNormalizedPath(resolvedPath);
+        return this._cleanNormalizedPath(resolvedPath, sourceId);
     }
 
-    _cleanNormalizedPath(rawPath) {
-        const folders = window.workspace?.folders || [];
+    _cleanNormalizedPath(rawPath, sourceId = null) {
+        const folders = this._getEffectiveWorkspaceFolders(sourceId);
         rawPath = rawPath.replace(/\\/g, '/');
 
         // Resolve traversal sequences
@@ -142,7 +170,11 @@ class AgentTools {
             return cleanFinalPath === normalizedFolder || cleanFinalPath.startsWith(normalizedFolder + '/');
         }) || (window.ui?.fileList?.index?.files || []).some(file => {
             const normalizedFilePath = file.path.replace(/\\/g, '/').replace(/\/+/g, '/');
-            return cleanFinalPath === normalizedFilePath;
+            if (cleanFinalPath !== normalizedFilePath) return false;
+            return folders.some(folder => {
+                const normFolder = folder.replace(/\\/g, '/').replace(/\/+/g, '/').replace(/\/+$/, '');
+                return cleanFinalPath === normFolder || cleanFinalPath.startsWith(normFolder + '/');
+            });
         });
 
         if (!isSafe) {
@@ -182,9 +214,9 @@ class AgentTools {
      * @param {string} path 
      * @returns {Promise<string>}
      */
-    async listFiles(path = '.') {
+    async listFiles(path = '.', sourceId = null) {
         try {
-            const folders = window.workspace?.folders || [];
+            const folders = this._getEffectiveWorkspaceFolders(sourceId);
             
             // If in a multi-root workspace and path is root/unspecified, list all workspace root folders
             if ((!path || path === '.' || path === '' || path === '/') && folders.length > 1) {
@@ -200,7 +232,7 @@ class AgentTools {
                 return rootLines.join('\n');
             }
 
-            const resolvedPath = this._resolveAndValidatePath(path);
+            const resolvedPath = this._resolveAndValidatePath(path, sourceId);
             if (this.conduit.isConnected) {
                 const result = await this.conduit.wsList(resolvedPath);
                 if (result.error) throw new Error(result.error);
@@ -228,9 +260,9 @@ class AgentTools {
      * @param {string} path 
      * @returns {Promise<string>}
      */
-    async fileInfo(path) {
+    async fileInfo(path, sourceId = null) {
         try {
-            const resolvedPath = this._resolveAndValidatePath(path);
+            const resolvedPath = this._resolveAndValidatePath(path, sourceId);
             if (this.conduit.isConnected) {
                 const result = await this.conduit.wsFileInfo(resolvedPath);
                 if (result.error) throw new Error(result.error);
@@ -672,13 +704,23 @@ Snippet: ${r.content || r.snippet || ""}`;
      * Searches for a symbol in the workspace index.
      * @param {string} query 
      */
-    async readSymbol(query) {
+    async readSymbol(query, sourceId = null) {
         try {
             if (this.conduit.isConnected) {
                 const result = await this.conduit.wsSearchSymbols(query);
                 if (result.error) throw new Error(result.error);
                 if (!result.data || result.data.length === 0) return "No matches found.";
-                return result.data.map(sym => `${sym.filePath}:${sym.line} - ${sym.signature}`).join('\n');
+                const folders = this._getEffectiveWorkspaceFolders(sourceId);
+                const filtered = result.data.filter(sym => {
+                    const norm = (sym.filePath || '').replace(/\\/g, '/');
+                    const full = norm.startsWith('/') ? norm : `/${norm}`;
+                    return folders.some(folder => {
+                        const normFolder = folder.replace(/\\/g, '/').replace(/\/+/g, '/').replace(/\/+$/, '');
+                        return full === normFolder || full.startsWith(normFolder + '/');
+                    });
+                });
+                if (filtered.length === 0) return "No matches found.";
+                return filtered.map(sym => `${sym.filePath}:${sym.line} - ${sym.signature}`).join('\n');
             } else {
                 return "Error: Conduit not connected.";
             }
@@ -733,7 +775,7 @@ Snippet: ${r.content || r.snippet || ""}`;
             if (this.conduit.isConnected) {
                 console.debug(`[AgentTools] Running backend Go search for query: "${query}"`);
                 try {
-                    const folders = window.workspace?.folders || [];
+                    const folders = this._getEffectiveWorkspaceFolders(sourceId);
                     const searchRoots = folders.length > 0 ? folders : ["."];
                     for (const rootFolder of searchRoots) {
                         try {
@@ -741,7 +783,7 @@ Snippet: ${r.content || r.snippet || ""}`;
                             if (res && !res.error && Array.isArray(res.data)) {
                                 for (const match of res.data) {
                                     try {
-                                        const resolved = this._resolveAndValidatePath(match.path);
+                                        const resolved = this._resolveAndValidatePath(match.path, sourceId);
                                         if (searchedPaths.has(resolved)) continue; // Already searched
                                         searchedPaths.add(resolved);
                                         matches.push({
@@ -772,7 +814,7 @@ Snippet: ${r.content || r.snippet || ""}`;
                     if (file.isDir) continue;
                     
                     try {
-                        const resolvedPath = this._resolveAndValidatePath(file.path);
+                        const resolvedPath = this._resolveAndValidatePath(file.path, sourceId);
                         if (searchedPaths.has(resolvedPath)) continue;
                         
                         searchedCount++;
@@ -2301,13 +2343,13 @@ Snippet: ${r.content || r.snippet || ""}`;
         let targetCwd = cwdOverride;
         if (targetCwd) {
             try {
-                targetCwd = this._resolveAndValidatePath(targetCwd);
+                targetCwd = this._resolveAndValidatePath(targetCwd, targetSessionId);
             } catch (e) {
                 // If path resolution fails, leave as targetCwd
             }
         }
         if (!targetCwd) {
-            const folders = window.workspace?.folders || [];
+            const folders = this._getEffectiveWorkspaceFolders(targetSessionId);
             if (folders.length > 0) {
                 const item = folders[0];
                 targetCwd = typeof item === 'string' ? item : (item?.path || item?.name || "");
@@ -2379,11 +2421,11 @@ Snippet: ${r.content || r.snippet || ""}`;
             let targetDir = cwdOverride;
             if (targetDir) {
                 try {
-                    targetDir = this._resolveAndValidatePath(targetDir);
+                    targetDir = this._resolveAndValidatePath(targetDir, targetSessionId);
                 } catch (e) {}
             }
             if (!targetDir) {
-                const folders = window.workspace?.folders || [];
+                const folders = this._getEffectiveWorkspaceFolders(targetSessionId);
                 if (folders.length > 0) {
                     const item = folders[0];
                     targetDir = typeof item === 'string' ? item : (item?.path || item?.name || "");
@@ -2599,9 +2641,9 @@ Snippet: ${r.content || r.snippet || ""}`;
 
         switch (name) {
             case 'list_files':
-                return await this.listFiles(args.path);
+                return await this.listFiles(args.path, sourceId);
             case 'file_info':
-                return await this.fileInfo(args.path);
+                return await this.fileInfo(args.path, sourceId);
             case 'web_search':
                 return await this.webSearch(args.query);
             case 'research':
@@ -2613,9 +2655,9 @@ Snippet: ${r.content || r.snippet || ""}`;
             case 'read_file_outline':
                 return await this.readFileOutline(args.path);
             case 'read_symbol':
-                return await this.readSymbol(args.query || args.symbol);
+                return await this.readSymbol(args.query || args.symbol, sourceId);
             case 'search_files':
-                return await this.searchFiles(args.query);
+                return await this.searchFiles(args.query, sourceId);
             case 'search_in_file':
                 return await this.searchInFile(args.path, args.query);
             case 'edit_file':
@@ -2654,7 +2696,7 @@ Snippet: ${r.content || r.snippet || ""}`;
                 let contentToValidate = args.content;
                 if (!contentToValidate && (args.edits || (args.search && args.replace !== undefined))) {
                     try {
-                        const resolvedPath = this._resolveAndValidatePath(args.path);
+                        const resolvedPath = this._resolveAndValidatePath(args.path, sourceId);
                         const targetTab = this._findOpenTab(resolvedPath);
                         let originalContent = targetTab?.config?.session?.getValue() || (await this.readFile(args.path));
                         if (typeof originalContent === 'string') {
@@ -2684,7 +2726,7 @@ Snippet: ${r.content || r.snippet || ""}`;
             case 'open_file':
                 return await this.openFile(args.path);
             case 'find_file':
-                return await this.findFile(args.path);
+                return await this.findFile(args.path, sourceId);
             case 'run_command':
             case 'exec_command':
                 return await this.runCommand(args.command || args.cmd, args.cwd, sourceId, args.timeoutMs || args.timeout);
@@ -2855,7 +2897,7 @@ Snippet: ${r.content || r.snippet || ""}`;
      * @param {string} searchPath 
      * @returns {Promise<string>}
      */
-    async findFile(searchPath) {
+    async findFile(searchPath, sourceId = null) {
         try {
             if (typeof searchPath !== 'string') {
                 return "Error: Path must be a string.";
@@ -2863,7 +2905,16 @@ Snippet: ${r.content || r.snippet || ""}`;
             if (!window.ui?.fileList?.index?.files) {
                 return "Error: File list index is not loaded.";
             }
-            const files = window.ui.fileList.index.files;
+            const folders = this._getEffectiveWorkspaceFolders(sourceId);
+            const allFiles = window.ui.fileList.index.files;
+            const files = allFiles.filter(f => {
+                const normPath = f.path.replace(/\\/g, '/');
+                const fullPath = normPath.startsWith('/') ? normPath : `/${normPath}`;
+                return folders.some(folder => {
+                    const normFolder = folder.replace(/\\/g, '/').replace(/\/+/g, '/').replace(/\/+$/, '');
+                    return fullPath === normFolder || fullPath.startsWith(normFolder + '/');
+                });
+            });
             
             // Normalize slashes
             const cleanSearch = searchPath.replace(/\\/g, '/').replace(/\/+/g, '/').toLowerCase();
@@ -3061,7 +3112,8 @@ You operate with a limited toolset. Do not try to perform tasks outside this sco
             planningMode: false,
             forgivenessMode: parentSession.forgivenessMode ?? false,
             connectionId: selectedConnectionId,
-            systemPromptOverride: subSystemPrompt
+            systemPromptOverride: subSystemPrompt,
+            pinnedRoots: parentSession.pinnedRoots || []
         };
 
         // Save session files to IndexedDB
