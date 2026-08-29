@@ -7,6 +7,7 @@ import { getAgentDirectives } from "./ai-manager-agent-prompt.mjs"
 import agentTools from "./agent/agent-tools.mjs"
 import { Agent } from "./agent/agent.mjs"
 export const MAX_RECENT_MESSAGES_TO_PRESERVE = 5
+export const MAX_DIRECT_CYCLE_SUMMARIES = 3
 
 class AIManagerHistory {
 	constructor(aiManager) {
@@ -601,6 +602,16 @@ class AIManagerHistory {
 			this._localActiveStreamingBlock = element;
 			return element;
 		} else {
+			// If there are existing model turn blocks in the DOM, auto-collapse them unless manually expanded by the user
+			if (this.conversationArea) {
+				const existingTurnBlocks = this.conversationArea.querySelectorAll(".model-turn-block");
+				existingTurnBlocks.forEach(b => {
+					if (!b.dataset.manuallyExpanded) {
+						b.removeAttribute("expanded");
+					}
+				});
+			}
+
 			const responseBlock = new Block();
 			responseBlock.sessionId = targetSessionId;
 			responseBlock.classList.add("response-block", "model-turn-block", "streaming");
@@ -620,10 +631,13 @@ class AIManagerHistory {
 			summarySpan.className = "model-turn-summary";
 			summarySpan.innerHTML = `Generating response...`;
 
+			const tokensSpan = new Inline();
+			tokensSpan.className = "turn-tokens-container";
+
 			const deleteButton = this._createSingleDeleteButton(messageId);
 			deleteButton.classList.add("delete-turn-btn");
 
-			header.append(expandIcon, summarySpan, deleteButton);
+			header.append(expandIcon, summarySpan, tokensSpan, deleteButton);
 
 			// Content Body
 			const contentDiv = new Block();
@@ -657,6 +671,7 @@ class AIManagerHistory {
 				
 				// Update live summary
 				summarySpan.innerHTML = this.manager.messageRenderer.getModelTurnSummary(fullResponse, { id: messageId });
+				tokensSpan.innerHTML = this.manager.messageRenderer.getModelTurnTokens(fullResponse, { id: messageId });
 
 				const segments = this.manager.messageRenderer.segmentContent(fullResponse);
 				
@@ -706,7 +721,7 @@ class AIManagerHistory {
 				}
 
 				if (this.manager.isSessionViewed(targetSessionId) && this.manager._shouldAutoScroll() && this.manager.conversationArea) {
-					this.manager.conversationArea.scrollTop = this.manager.conversationArea.scrollHeight;
+					this.manager.scrollToBottom(true);
 				}
 			};
 
@@ -927,10 +942,14 @@ class AIManagerHistory {
 			summarySpan.className = "model-turn-summary";
 			summarySpan.innerHTML = message.type === "error" ? `Error: ${this._escapeHtml(message.content || "")}` : this.manager.messageRenderer.getModelTurnSummary(message.content, message);
 
+			const tokensSpan = new Inline();
+			tokensSpan.className = "turn-tokens-container";
+			tokensSpan.innerHTML = message.type === "error" ? "" : this.manager.messageRenderer.getModelTurnTokens(message.content, message);
+
 			const deleteButton = this._createSingleDeleteButton(message.id);
 			deleteButton.classList.add("delete-turn-btn");
 
-			header.append(expandIcon, summarySpan, deleteButton);
+			header.append(expandIcon, summarySpan, tokensSpan, deleteButton);
 
 			// Content Body
 			const contentDiv = new Block();
@@ -1078,8 +1097,13 @@ class AIManagerHistory {
 			const header = new Block();
 			header.className = "cycle-summary-header";
 			
-			const icon = new Icon();
-			icon.textContent = "compress";
+			const expandIcon = new Icon();
+			expandIcon.className = "cycle-expand-icon";
+			expandIcon.textContent = "chevron_right";
+			
+			const compressIcon = new Icon();
+			compressIcon.className = "cycle-type-icon";
+			compressIcon.textContent = "compress";
 			
 			const titleSpan = new Inline();
 			titleSpan.className = "cycle-summary-title";
@@ -1095,7 +1119,6 @@ class AIManagerHistory {
 			editBtn.onclick = async (e) => {
 				e.stopPropagation();
 				const currentTitle = message.title || summaryTitleText;
-				const currentContent = message.content || "";
 				
 				const newTitle = await window.modal.prompt("Edit Cycle Title (max 10 words):", "Edit Cycle Title", currentTitle);
 				if (newTitle === null) return;
@@ -1174,25 +1197,37 @@ class AIManagerHistory {
 				}
 			};
 
-			const toggleBtn = new Button("Show Detail");
-			toggleBtn.className = "toggle-history-btn theme-button secondary hidden";
+			actionsContainer.append(editBtn, regenBtn);
+			header.append(expandIcon, compressIcon, titleSpan, actionsContainer);
+			
+			const bodyContainer = new Block();
+			bodyContainer.className = "cycle-summary-body";
 
-			actionsContainer.append(editBtn, regenBtn, toggleBtn);
-			header.append(icon, titleSpan, actionsContainer);
-			
 			const contentDiv = new Block();
-			contentDiv.className = "cycle-summary-content hidden";
+			contentDiv.className = "cycle-summary-content";
 			contentDiv.innerHTML = this.md.render(message.content);
-			
+
+			const detailsExpander = new Block();
+			detailsExpander.className = "cycle-details-expander";
+
+			const detailsHeader = new Block();
+			detailsHeader.className = "cycle-details-header";
+			const detailsCaret = new Icon();
+			detailsCaret.className = "cycle-details-caret";
+			detailsCaret.textContent = "chevron_right";
+			const detailsLabel = new Inline();
+			detailsLabel.className = "cycle-details-label";
+			detailsLabel.textContent = "Detailed Conversation History";
+			detailsHeader.append(detailsCaret, detailsLabel);
+
 			const detailContainer = new Block();
-			detailContainer.className = "cycle-summary-detail-container hidden";
+			detailContainer.className = "cycle-summary-detail-container";
 			
-			toggleBtn.onclick = (e) => {
+			detailsHeader.onclick = (e) => {
 				e.stopPropagation();
-				const isExpanded = !detailContainer.classList.contains("hidden");
+				const isExpanded = detailsExpander.hasAttribute("expanded");
 				if (isExpanded) {
-					detailContainer.classList.add("hidden");
-					toggleBtn.text = "Show Detail";
+					detailsExpander.removeAttribute("expanded");
 				} else {
 					if (detailContainer.children.length === 0) {
 						const startId = message.cycleStartMsgId;
@@ -1222,35 +1257,22 @@ class AIManagerHistory {
 							detailContainer.append(emptyDetail);
 						}
 					}
-					detailContainer.classList.remove("hidden");
-					toggleBtn.text = "Hide Detail";
+					detailsExpander.setAttribute("expanded", "");
 				}
 			};
- 
-			const showMoreLink = new Block();
-			showMoreLink.className = "show-more-link";
-			showMoreLink.textContent = "Show Summary";
-			
-			showMoreLink.onclick = (e) => {
-				e.stopPropagation();
-				const isCollapsed = contentDiv.classList.contains("hidden");
-				if (isCollapsed) {
-					contentDiv.classList.remove("hidden");
-					showMoreLink.textContent = "Hide Summary";
-					toggleBtn.classList.remove("hidden");
+
+			detailsExpander.append(detailsHeader, detailContainer);
+			bodyContainer.append(contentDiv, detailsExpander);
+
+			header.onclick = () => {
+				if (element.hasAttribute("expanded")) {
+					element.removeAttribute("expanded");
 				} else {
-					contentDiv.classList.add("hidden");
-					showMoreLink.textContent = "Show Summary";
-					toggleBtn.classList.add("hidden");
-					detailContainer.classList.add("hidden");
-					toggleBtn.text = "Show Detail";
+					element.setAttribute("expanded", "");
 				}
 			};
- 
-			element.append(header, contentDiv, showMoreLink, detailContainer);
-			
-			const deleteButton = this._createSingleDeleteButton(message.id);
-			element.append(deleteButton);
+
+			element.append(header, bodyContainer);
 		} else if (message.type === "agent_query") {
 			element = new Block();
 			element.classList.add("agent-query-block");
@@ -2233,28 +2255,61 @@ class AIManagerHistory {
 			(msg) => msg.type !== "task_state" && msg.type !== "system_message" && msg.type !== "agent_query" && msg.type !== "agent_command_approval" && msg.type !== "agent_command_output" && msg.role !== "temp_ai_response"
 		);
 
-		// Pruning gate: Substitute all completed cycles with their summaries.
+		// Pruning gate: Substitute completed cycles with summaries.
+		// Recency windowing: Provide full <compacted_cycle> details for the last MAX_DIRECT_CYCLE_SUMMARIES (e.g. 3).
+		// Any older completed cycles are condensed into a single high-level <historical_milestones> bullet index.
 		const summaries = chatHistory.filter(msg => msg.type === "cycle_summary");
 		if (summaries.length > 0) {
+			const directSummariesThreshold = Math.max(0, summaries.length - MAX_DIRECT_CYCLE_SUMMARIES);
+			const olderSummaries = summaries.slice(0, directSummariesThreshold);
+			const recentSummariesSet = new Set(summaries.slice(directSummariesThreshold).map(s => s.id));
+
+			let milestonesBlock = "";
+			if (olderSummaries.length > 0) {
+				const milestoneLines = olderSummaries.map((s, idx) => {
+					const title = s.title || (s.content ? s.content.split(/[.\n]/)[0].trim() : "Completed Task");
+					return `- Milestone ${idx + 1}: ${title}`;
+				}).join('\n');
+				milestonesBlock = `<historical_milestones>\n${milestoneLines}\n</historical_milestones>`;
+			}
+
 			let newChatHistory = [];
+			let milestonesInjected = false;
 			let i = 0;
 			while (i < chatHistory.length) {
 				const msg = chatHistory[i];
 				if (msg.type === "cycle_summary") {
-					// Substitute the summary in place of the cycle messages.
 					const startId = msg.cycleStartMsgId;
 					const endId = msg.cycleEndMsgId;
 					if (startId && endId) {
 						const startIdx = newChatHistory.findIndex(m => m.id === startId);
 						const replaceStartIdx = startIdx !== -1 ? startIdx : 0;
-						const cycleTitle = msg.title || "Completed Task";
-						newChatHistory.splice(replaceStartIdx, newChatHistory.length - replaceStartIdx, {
-							id: msg.id,
-							role: "user",
-							type: "cycle_summary",
-							content: `<compacted_cycle title="${cycleTitle}">\n${msg.content}\n</compacted_cycle>`,
-							timestamp: msg.timestamp
-						});
+						
+						if (recentSummariesSet.has(msg.id)) {
+							// Recent summary: provide full detailed <compacted_cycle>
+							const cycleTitle = msg.title || "Completed Task";
+							newChatHistory.splice(replaceStartIdx, newChatHistory.length - replaceStartIdx, {
+								id: msg.id,
+								role: "user",
+								type: "cycle_summary",
+								content: `<compacted_cycle title="${cycleTitle}">\n${msg.content}\n</compacted_cycle>`,
+								timestamp: msg.timestamp
+							});
+						} else {
+							// Older summary: remove raw turns from history, and inject the condensed milestones block once at the head
+							if (!milestonesInjected && milestonesBlock) {
+								newChatHistory.splice(replaceStartIdx, newChatHistory.length - replaceStartIdx, {
+									id: "historical-milestones-summary",
+									role: "user",
+									type: "cycle_summary",
+									content: milestonesBlock,
+									timestamp: msg.timestamp
+								});
+								milestonesInjected = true;
+							} else {
+								newChatHistory.splice(replaceStartIdx, newChatHistory.length - replaceStartIdx);
+							}
+						}
 						i++;
 						continue;
 					}

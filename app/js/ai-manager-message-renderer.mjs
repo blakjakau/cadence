@@ -401,14 +401,18 @@ export default class AIManagerMessageRenderer {
 
         if (thinkContent) {
             const isClosed = parsed.thoughtBlock ? parsed.thoughtBlock.closed : true;
-            const thinkLabel = isClosed ? (thoughtSeconds ? `Thought Process (${thoughtSeconds}s)` : "Thought Process") : "Thinking...";
+            let thinkLabel = "Thinking...";
+            if (isClosed) {
+                const firstLine = thinkContent.split('\n').map(l => l.trim()).find(l => l.length > 0) || "Thought Process";
+                thinkLabel = this._escapeHtml(firstLine);
+            }
             const thinkSegments = this.segmentThoughtContent(thinkContent);
             const thinkSegmentsHtml = thinkSegments.map(seg => `<div class="thought-segment">${this.aiManager.md.render(seg)}</div>`).join('');
             thinkHtml = `
                 <div class="thought-block" ${isClosed ? "" : "expanded"}>
-                    <div class="thought-header" onclick="this.parentElement.hasAttribute('expanded') ? this.parentElement.removeAttribute('expanded') : this.parentElement.setAttribute('expanded', '')">
+                    <div class="thought-header" onclick="this.parentElement.dataset.userToggled = 'true'; this.parentElement.hasAttribute('expanded') ? this.parentElement.removeAttribute('expanded') : this.parentElement.setAttribute('expanded', '')">
                         <ui-icon>chevron_right</ui-icon>
-                        <span>${thinkLabel}</span>
+                        <span class="thought-label" title="${thinkLabel}">${thinkLabel}</span>
                     </div>
                     <div class="thought-content">
                         ${thinkSegmentsHtml}
@@ -435,12 +439,33 @@ export default class AIManagerMessageRenderer {
             if (cleanContent) {
                 finalHtml += this.aiManager.md.render(cleanContent);
             }
-            for (const tc of message.toolCalls) {
+            for (let tcIdx = 0; tcIdx < message.toolCalls.length; tcIdx++) {
+                const tc = message.toolCalls[tcIdx];
                 const callObj = tc.functionCall || tc;
                 const toolName = callObj.name || tc.name || "";
                 let args = callObj.args || callObj.arguments || {};
                 if (typeof args === 'string') {
                     try { args = JSON.parse(args); } catch(e) { args = {}; }
+                }
+
+                let tcFailed = tc.status === "failed";
+                let toolResultDetail = "";
+                if (this.aiManager.activeSession && this.aiManager.activeSession.messages) {
+                    const index = this.aiManager.activeSession.messages.findIndex(m => m.id === message.id);
+                    if (index !== -1 && index + 1 < this.aiManager.activeSession.messages.length) {
+                        const nextMessage = this.aiManager.activeSession.messages[index + 1];
+                        if (nextMessage && nextMessage.type === "tool_response") {
+                            const responseContent = nextMessage.content || "";
+                            const sections = responseContent.split(/\n\n---\n\n/);
+                            const section = sections[tcIdx] !== undefined ? sections[tcIdx] : responseContent;
+                            const prefixMatch = section.match(/^\[Tool Response: [^\]]+\]\s*\n\s*/i);
+                            const resultText = prefixMatch ? section.substring(prefixMatch[0].length).trim() : section.trim();
+                            toolResultDetail = resultText;
+                            if (!tc.status && (resultText.toLowerCase().startsWith("error") || resultText.toLowerCase().includes("user rejected") || resultText.toLowerCase().includes("failed validation"))) {
+                                tcFailed = true;
+                            }
+                        }
+                    }
                 }
 
                 // Project management tools
@@ -568,16 +593,26 @@ export default class AIManagerMessageRenderer {
                     label = `<code>${toolName}:</code> <span class="tool-call-query">"${this._escapeHtml(truncated)}"</span>`;
                 }
 
-                let badgeClass = isFailed ? 'failed' : 'invoked';
-                let badgeText = isFailed ? 'Failed' : 'Invoked';
+                let badgeClass = tcFailed ? 'failed' : 'invoked';
+                let badgeText = tcFailed ? 'Failed' : 'Invoked';
                 if (toolName === "sub_agent_complete") {
-                    badgeText = isFailed ? 'Failed' : 'Completed';
+                    badgeText = tcFailed ? 'Failed' : 'Completed';
                 } else if (toolName === "query") {
-                    badgeText = isFailed ? 'Failed' : 'Answered';
+                    badgeText = tcFailed ? 'Failed' : 'Answered';
                 }
 
                 let expanderHtml = "";
-                if (toolName === "create_file" || toolName === "edit_file") {
+                if (tcFailed && toolResultDetail) {
+                    expanderHtml = `
+                        <details class="tool-call-preview-expander" ontoggle="this.dataset.userToggled = 'true'">
+                            <summary class="tool-call-preview-summary">
+                                <ui-icon>expand_more</ui-icon>
+                                <span>Error Details</span>
+                            </summary>
+                            <pre class="tool-call-preview-code"><code>${this._escapeHtml(toolResultDetail)}</code></pre>
+                        </details>
+                    `;
+                } else if (toolName === "create_file" || toolName === "edit_file") {
                     let newContent = "";
                     if (toolName === "create_file") {
                         newContent = args.content || "";
@@ -713,40 +748,66 @@ export default class AIManagerMessageRenderer {
 
         const parsed = this.parseBlocks(content || "");
         
-        let toolSummary = "";
-        let toolName = "";
-        let args = {};
-
-        if (parsed.toolCallBlocks && parsed.toolCallBlocks.length > 0) {
-            const tc = parsed.toolCallBlocks[0];
-            toolName = tc.name;
-            const toolArgs = content.substring(tc.contentStartIdx, tc.contentEndIdx);
-            args = this.parseToolArgs(toolArgs);
-        } else if (message && message.toolCalls && message.toolCalls.length > 0) {
-            const tc = message.toolCalls[0];
-            const callObj = tc.functionCall || tc;
-            toolName = callObj.name || tc.name || "";
-            const rawArgs = callObj.args || callObj.arguments || {};
-            args = typeof rawArgs === 'string' ? (JSON.parse(rawArgs) || {}) : rawArgs;
+        // 1. Gather all tool calls (from message.toolCalls or parsed.toolCallBlocks)
+        const toolCallsList = [];
+        if (message && message.toolCalls && message.toolCalls.length > 0) {
+            for (const tc of message.toolCalls) {
+                const callObj = tc.functionCall || tc;
+                const name = callObj.name || tc.name || "";
+                let rawArgs = callObj.args || callObj.arguments || {};
+                let args = typeof rawArgs === 'string' ? (JSON.parse(rawArgs) || {}) : rawArgs;
+                toolCallsList.push({ name, args, status: tc.status });
+            }
+        } else if (parsed.toolCallBlocks && parsed.toolCallBlocks.length > 0) {
+            for (const tc of parsed.toolCallBlocks) {
+                const name = tc.name;
+                const toolArgs = content.substring(tc.contentStartIdx, tc.contentEndIdx);
+                const args = this.parseToolArgs(toolArgs);
+                toolCallsList.push({ name, args, closed: tc.closed });
+            }
         }
 
-        if (toolName) {
+        // 2. Resolve status for each tool call from following tool_response messages if not already on the tool call
+        if (toolCallsList.length > 0 && message && this.aiManager.activeSession && this.aiManager.activeSession.messages) {
+            const index = this.aiManager.activeSession.messages.findIndex(m => m.id === message.id);
+            if (index !== -1 && index + 1 < this.aiManager.activeSession.messages.length) {
+                const nextMessage = this.aiManager.activeSession.messages[index + 1];
+                if (nextMessage && nextMessage.type === "tool_response") {
+                    const responseContent = nextMessage.content || "";
+                    // Check individual tool response sections if accumulated
+                    const sections = responseContent.split(/\n\n---\n\n/);
+                    for (let i = 0; i < toolCallsList.length; i++) {
+                        if (!toolCallsList[i].status) {
+                            const section = sections[i] !== undefined ? sections[i] : responseContent;
+                            const prefixMatch = section.match(/^\[Tool Response: [^\]]+\]\s*\n\s*/i);
+                            const resultText = prefixMatch ? section.substring(prefixMatch[0].length).trim() : section.trim();
+                            if (resultText.toLowerCase().startsWith("error") || resultText.toLowerCase().includes("user rejected") || resultText.toLowerCase().includes("failed validation")) {
+                                toolCallsList[i].status = "failed";
+                            } else {
+                                toolCallsList[i].status = "success";
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Helper to format concise details for a tool call
+        const getToolDetails = (toolName, args) => {
+            if (!args) return "";
             if (args.url) {
                 const rawUrl = (args.url || '').trim();
-                const shortUrl = rawUrl.length > 35 ? rawUrl.substring(0, 35) + "..." : rawUrl;
-                toolSummary = `called <code>${toolName}</code> <span style="opacity:0.85;">${this._escapeHtml(shortUrl)}</span>`;
+                return rawUrl.length > 30 ? rawUrl.substring(0, 30) + "..." : rawUrl;
             } else if (args.command) {
-                const shortCmd = args.command.length > 35 ? args.command.substring(0, 35) + "..." : args.command;
+                const shortCmd = args.command.length > 30 ? args.command.substring(0, 30) + "..." : args.command;
                 const cwdVal = args.cwd || args.dir;
                 const cwdInfo = cwdVal ? ` (in ${this._escapeHtml(cwdVal.split('/').filter(Boolean).pop() || cwdVal)})` : '';
-                toolSummary = `called <code>${toolName}</code> <span style="opacity:0.85;">$ ${this._escapeHtml(shortCmd)}${cwdInfo}</span>`;
+                return `$ ${this._escapeHtml(shortCmd)}${cwdInfo}`;
             } else if (args.path) {
                 const shortFile = args.path.split('/').pop() || args.path;
                 let details = shortFile;
                 if (toolName === "edit_file" && (args.edits || args.search !== undefined || args.replace !== undefined)) {
-                    let searchLines = 0;
-                    let replaceLines = 0;
-                    let replaceBytes = 0;
+                    let searchLines = 0, replaceLines = 0, replaceBytes = 0;
                     if (Array.isArray(args.edits) && args.edits.length > 0) {
                         for (const ed of args.edits) {
                             if (ed.search) searchLines += ed.search.split('\n').length;
@@ -767,13 +828,23 @@ export default class AIManagerMessageRenderer {
                     const contentBytes = (new TextEncoder().encode(args.content || "")).length;
                     details += ` (+${contentLines}, ${this.formatByteSize(contentBytes, true)})`;
                 }
-                toolSummary = `called <code>${toolName}</code> <span style="opacity:0.85;">${this._escapeHtml(details)}</span>`;
+                return details;
             } else if (args.query) {
-                const shortQuery = args.query.length > 30 ? args.query.substring(0, 30) + "..." : args.query;
-                toolSummary = `called <code>${toolName}</code> <span style="opacity:0.85;">"${this._escapeHtml(shortQuery)}"</span>`;
-            } else {
-                toolSummary = `called <code>${toolName}</code>`;
+                const shortQuery = args.query.length > 25 ? args.query.substring(0, 25) + "..." : args.query;
+                return `"${this._escapeHtml(shortQuery)}"`;
             }
+            return "";
+        };
+
+        let toolSummary = "";
+        if (toolCallsList.length > 0) {
+            const formattedCalls = toolCallsList.map(tc => {
+                const statusClass = tc.status === "success" ? "success" : (tc.status === "failed" ? "failed" : "pending");
+                const details = getToolDetails(tc.name, tc.args);
+                const detailsHtml = details ? ` <span style="opacity:0.85;">${details}</span>` : "";
+                return `<code class="turn-tool-chip ${statusClass}">${tc.name}</code>${detailsHtml}`;
+            });
+            toolSummary = formattedCalls.join(", ");
         }
 
         // Calculate text words if no tool call, or in addition
@@ -787,19 +858,72 @@ export default class AIManagerMessageRenderer {
         const textOnly = this.removeRanges(content || "", rangesToRemove).trim();
         const wordCount = textOnly ? textOnly.split(/\s+/).filter(Boolean).length : 0;
 
-        let parts = [];
-        if (thoughtSeconds) {
-            parts.push(`Thought ${thoughtSeconds}s`);
-        }
+        let prefix = thoughtSeconds ? `${thoughtSeconds}s: ` : "";
         if (toolSummary) {
-            parts.push(toolSummary);
+            return `${prefix}${toolSummary}`;
         } else if (wordCount > 0) {
-            parts.push(`responded ${wordCount} words`);
-        } else if (!thoughtSeconds) {
-            parts.push(`Model Response`);
+            return `${prefix}responded ${wordCount} words`;
+        } else if (thoughtSeconds) {
+            return `Thought ${thoughtSeconds}s`;
+        }
+        return `Model Response`;
+    }
+
+    getModelTurnTokens(content, message = null) {
+        if (!message) return "";
+
+        let outputTokens = 0;
+        if (this.aiManager.activeAI) {
+            let fullOutputText = content || message.content || "";
+            if (message.thought && !fullOutputText.includes(message.thought)) {
+                fullOutputText += "\n" + message.thought;
+            }
+            if (message.toolCalls && message.toolCalls.length > 0) {
+                for (const tc of message.toolCalls) {
+                    const callObj = tc.functionCall || tc;
+                    const tcText = `${callObj.name || ""}: ${JSON.stringify(callObj.args || callObj.arguments || {})}`;
+                    if (!fullOutputText.includes(tcText)) {
+                        fullOutputText += "\n" + tcText;
+                    }
+                }
+            }
+            outputTokens = this.aiManager.activeAI.estimateTokens([{ role: 'assistant', content: fullOutputText }]);
+        } else if (typeof message.tokenCount === 'number') {
+            outputTokens = message.tokenCount;
         }
 
-        return parts.join(", ");
+        let inputTokens = null;
+        if (this.aiManager.activeSession && this.aiManager.activeSession.messages) {
+            const index = this.aiManager.activeSession.messages.findIndex(m => m.id === message.id);
+            if (index !== -1 && index + 1 < this.aiManager.activeSession.messages.length) {
+                const nextMessage = this.aiManager.activeSession.messages[index + 1];
+                if (nextMessage && nextMessage.type === "tool_response") {
+                    if (typeof nextMessage.tokenCount === 'number') {
+                        inputTokens = nextMessage.tokenCount;
+                    } else if (this.aiManager.activeAI) {
+                        inputTokens = this.aiManager.activeAI.estimateTokens([nextMessage]);
+                    }
+                }
+            }
+        }
+
+        const getTokenColorClass = (tokens) => {
+            if (tokens >= 3000) return "tag-red";
+            if (tokens >= 2000) return "tag-orange";
+            if (tokens >= 1000) return "tag-yellow";
+            return "tag-blue";
+        };
+
+        const outClass = getTokenColorClass(outputTokens);
+        const outTag = `<span class="token-count-tag ${outClass}" title="Output tokens: ${outputTokens}">${outputTokens}</span>`;
+
+        if (inputTokens !== null) {
+            const inClass = getTokenColorClass(inputTokens);
+            const inTag = `<span class="token-count-tag ${inClass}" title="Tool result input tokens: ${inputTokens}">${inputTokens}</span>`;
+            return `${inTag}<span class="turn-tokens-sep">|</span>${outTag}`;
+        }
+
+        return outTag;
     }
 
     inferLanguageFromDiff(diffContent) {
@@ -866,7 +990,7 @@ export default class AIManagerMessageRenderer {
                         i += 8;
                         continue;
                     }
-                    if (activeBlock.subType === 'channel' && content.startsWith("<channel|>", i)) {
+                    if (activeBlock.subType === 'channel' && content.startsWith("<|channel>", i)) {
                         activeBlock.endIdx = i + 10;
                         activeBlock.contentEndIdx = i;
                         activeBlock.closed = true;
@@ -1293,7 +1417,7 @@ export default class AIManagerMessageRenderer {
                     let endTagLen = 0;
                     if (content.startsWith("</thought>", i)) endTagLen = 10;
                     else if (content.startsWith("</think>", i)) endTagLen = 8;
-                    else if (content.startsWith("<channel|>", i)) endTagLen = 10;
+                    else if (content.startsWith("<|channel>", i)) endTagLen = 10;
                     
                     if (endTagLen > 0) {
                         i += endTagLen;

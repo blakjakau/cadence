@@ -140,12 +140,16 @@ class AIManagerSessions {
 		}
 
 		// Find the model message that contains this plan and tag it
-		const planMessage = [...sourceSession.messages].reverse().find(m => 
-			m.type === "model" && 
-			m.content && 
-			(m.content.includes("create_implementation_plan") || m.content.includes("create_implementation_plan")) &&
-			(!m.planStatus || m.planStatus === "pending")
-		);
+		const planMessage = [...sourceSession.messages].reverse().find(m => {
+			if (m.type !== "model" && m.role !== "model") return false;
+			if (m.planStatus && m.planStatus !== "pending") return false;
+			const hasStructuredPlanCall = Array.isArray(m.toolCalls) && m.toolCalls.some(tc => {
+				const callObj = tc.functionCall || tc;
+				return (callObj.name || tc.name) === "create_implementation_plan";
+			});
+			const hasLegacyPlanContent = m.content && m.content.includes("create_implementation_plan");
+			return hasStructuredPlanCall || hasLegacyPlanContent;
+		});
 		if (planMessage) {
 			planMessage.planStatus = isAccepted ? "accepted" : "rejected";
 		}

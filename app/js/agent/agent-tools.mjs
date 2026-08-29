@@ -2730,18 +2730,90 @@ Snippet: ${r.content || r.snippet || ""}`;
             case 'run_command':
             case 'exec_command':
                 return await this.runCommand(args.command || args.cmd, args.cwd, sourceId, args.timeoutMs || args.timeout);
-            case 'create_implementation_plan':
+            case 'create_implementation_plan': {
+                const targetSessionId = sourceId || window.ui?.aiManager?.activeSessionId;
+                const aiManager = window.ui?.aiManager;
+                const session = (targetSessionId && aiManager?.runningSessions?.get(targetSessionId)?.instance?.session)
+                    || (targetSessionId === aiManager?.activeSessionId ? aiManager?.activeSession : null);
+
+                if (session && args.plan) {
+                    session.implementationPlan = args.plan.trim();
+                    if (args.tasks) {
+                        const formatted = aiManager?.messageRenderer?.formatTaskList ? aiManager.messageRenderer.formatTaskList(args.tasks.trim()) : args.tasks.trim();
+                        session.taskList = formatted;
+                    }
+                    session.lastModified = Date.now();
+                    workspaceClient.setSession(session.id, session);
+                    aiManager?._updateAgentProgressPanel?.();
+
+                    if (window.ui?.openPlanAndTaskList) {
+                        const isOpen = (window.ui.leftTabs?.tabs?.some(t => t.config?.path === "plan_tasks")) ||
+                            (window.ui.rightTabs?.tabs?.some(t => t.config?.path === "plan_tasks"));
+                        if (!isOpen) {
+                            window.ui.openPlanAndTaskList();
+                        }
+                    }
+                }
                 return "Implementation plan created. The user is reviewing it.";
+            }
             case 'create_task_list':
-            	return "Task list created.";
-            case 'update_task_list':
+            case 'update_task_list': {
+                const targetSessionId = sourceId || window.ui?.aiManager?.activeSessionId;
+                const aiManager = window.ui?.aiManager;
+                const session = (targetSessionId && aiManager?.runningSessions?.get(targetSessionId)?.instance?.session)
+                    || (targetSessionId === aiManager?.activeSessionId ? aiManager?.activeSession : null);
+
+                const tasksInput = args.tasks || args.taskList || "";
+                if (session && tasksInput) {
+                    const formatted = aiManager?.messageRenderer?.formatTaskList ? aiManager.messageRenderer.formatTaskList(tasksInput.trim()) : tasksInput.trim();
+                    session.taskList = formatted;
+                    session.lastModified = Date.now();
+                    workspaceClient.setSession(session.id, session);
+                    aiManager?._updateAgentProgressPanel?.();
+                }
                 return "Task list updated.";
+            }
             case 'complete_task': {
                 const syntaxIssue = await this._checkPendingSyntaxErrors();
                 if (syntaxIssue) {
                     return `Cannot mark task complete: ${syntaxIssue}\nPlease resolve the syntax error before completing the task.`;
                 }
-                return `Task marked complete: ${args.taskName}`;
+
+                const taskName = (args.taskName || args.task || args.name || "").trim();
+                const targetSessionId = sourceId || window.ui?.aiManager?.activeSessionId;
+                const aiManager = window.ui?.aiManager;
+                const session = (targetSessionId && aiManager?.runningSessions?.get(targetSessionId)?.instance?.session)
+                    || (targetSessionId === aiManager?.activeSessionId ? aiManager?.activeSession : null);
+
+                if (session && session.taskList && taskName) {
+                    const escapedTaskText = taskName.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
+                    const checkboxRegex = new RegExp(`([\\-*]\\s*\\[\\s*\\]\\s*)${escapedTaskText}`, 'i');
+                    if (checkboxRegex.test(session.taskList)) {
+                        session.taskList = session.taskList.replace(checkboxRegex, (match, bulletGroup) => {
+                            return bulletGroup.replace(/\[\s*\]/, '[x]') + taskName;
+                        });
+                    } else {
+                        // Fallback partial match if exact string didn't match whole line
+                        const lines = session.taskList.split('\n');
+                        let matched = false;
+                        const lowerTaskName = taskName.toLowerCase();
+                        const updatedLines = lines.map(line => {
+                            if (!matched && (line.includes('- [ ]') || line.includes('* [ ]')) && line.toLowerCase().includes(lowerTaskName)) {
+                                matched = true;
+                                return line.replace(/\[\s*\]/, '[x]');
+                            }
+                            return line;
+                        });
+                        if (matched) {
+                            session.taskList = updatedLines.join('\n');
+                        }
+                    }
+                    session.lastModified = Date.now();
+                    workspaceClient.setSession(session.id, session);
+                    aiManager?._updateAgentProgressPanel?.();
+                }
+
+                return `Task marked complete: ${taskName}`;
             }
             case 'query':
                 return await this.queryUser(args, sourceId);

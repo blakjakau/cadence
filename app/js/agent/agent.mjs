@@ -157,7 +157,7 @@ export class Agent {
 				aiManager.conversationArea.append(responseBlock);
 				const shouldScrollAtStart = aiManager._shouldAutoScroll();
 				if (shouldScrollAtStart && aiManager.conversationArea) {
-					aiManager.conversationArea.scrollTop = aiManager.conversationArea.scrollHeight;
+					aiManager.scrollToBottom(true);
 				}
 			}
 
@@ -182,7 +182,7 @@ export class Agent {
 						const shouldScroll = aiManager._shouldAutoScroll();
 						responseBlock.updateContent(fullResponse);
 						if (aiManager.isSessionViewed(session.id) && shouldScroll && aiManager.conversationArea) {
-							aiManager.conversationArea.scrollTop = aiManager.conversationArea.scrollHeight;
+							aiManager.scrollToBottom(true);
 						}
 
 						// Scan streaming tokens for early truncation
@@ -565,11 +565,9 @@ export class Agent {
 						return;
 					}
 
-					// No more tool calls: agent is done!
-
-					if (!responseContent.includes("<complete_task>")) {
-						// Auto-continue logic
-						if (aiManager.autoContinue && this.consecutiveHaltCount < 3) {
+					// No more tool calls: agent is done or halted!
+					// Auto-continue logic
+					if (aiManager.autoContinue && this.consecutiveHaltCount < 3) {
 							this.consecutiveHaltCount++;
 							console.warn(`⚠️ [Agent Loop Halted] Auto-continuing (Attempt ${this.consecutiveHaltCount} of 3)...`);
 
@@ -598,49 +596,48 @@ export class Agent {
 
 							loopCount--; // Decrement since we stripped this turn and want to retry
 							continue; // Go to next loop iteration
-						}
-
-						// Manual Continue and Halt Bar logic
-						const warnBlock = document.createElement("div");
-						warnBlock.className = "response-block warning-block";
-						warnBlock.style.border = "1px solid var(--color-warning, #b58900)";
-						warnBlock.style.background = "var(--bg-secondary)";
-						warnBlock.style.padding = "12px 16px";
-						warnBlock.style.borderRadius = "var(--borderRadius)";
-						warnBlock.style.margin = "8px 0 16px 0";
-						warnBlock.innerHTML = `
-							<div style="font-weight: 500; display: flex; align-items: center; gap: 8px;">
-								<ui-icon style="color: var(--color-warning, #b58900);">warning</ui-icon>
-								<span><b>Agent Loop Halted:</b> The model stopped generating without producing a tool call or completing a task.</span>
-							</div>
-							<div style="margin-top: 8px; display: flex; gap: 12px; align-items: center; margin-left: 24px;">
-								<button class="warn-continue-btn theme-button" style="padding: 4px 10px; font-size: 11px; font-weight: 600; min-width: 80px; cursor: pointer; border-radius: var(--borderRadius); border: none;">Continue</button>
-								<label style="font-size: 11px; font-weight: 500; display: flex; align-items: center; gap: 6px; cursor: pointer; user-select: none; color: var(--text-secondary);">
-									<input type="checkbox" class="warn-auto-toggle" ${aiManager.autoContinue ? 'checked' : ''} style="cursor: pointer; width: 13px; height: 13px;">
-									Auto-Continue
-								</label>
-							</div>
-						`;
+						} else {
+							// Manual Continue and Halt Bar logic
+							const warnBlock = document.createElement("div");
+							warnBlock.className = "response-block warning-block";
+							warnBlock.style.border = "1px solid var(--color-warning, #b58900)";
+							warnBlock.style.background = "var(--bg-secondary)";
+							warnBlock.style.padding = "12px 16px";
+							warnBlock.style.borderRadius = "var(--borderRadius)";
+							warnBlock.style.margin = "8px 0 16px 0";
+							warnBlock.innerHTML = `
+								<div style="font-weight: 500; display: flex; align-items: center; gap: 8px;">
+									<ui-icon style="color: var(--color-warning, #b58900);">warning</ui-icon>
+									<span><b>Agent Loop Halted:</b> The model stopped generating without producing a tool call or completing a task.</span>
+								</div>
+								<div style="margin-top: 8px; display: flex; gap: 12px; align-items: center; margin-left: 24px;">
+									<button class="warn-continue-btn theme-button" style="padding: 4px 10px; font-size: 11px; font-weight: 600; min-width: 80px; cursor: pointer; border-radius: var(--borderRadius); border: none;">Continue</button>
+									<label style="font-size: 11px; font-weight: 500; display: flex; align-items: center; gap: 6px; cursor: pointer; user-select: none; color: var(--text-secondary);">
+										<input type="checkbox" class="warn-auto-toggle" ${aiManager.autoContinue ? 'checked' : ''} style="cursor: pointer; width: 13px; height: 13px;">
+										Auto-Continue
+									</label>
+								</div>
+							`;
 							if (aiManager.isSessionViewed(session.id)) {
 								aiManager.conversationArea.append(warnBlock);
 							}
 
-						// LOG the last request to console.warn() for troubleshooting
-						console.warn("⚠️ [Agent Loop Halted] The model stopped generating without producing a tool call or completing a task. Last Request Details:", {
-							systemPrompt,
-							messages: messagesForAI,
-							modelResponse: responseContent
-						});
+							// LOG the last request to console.warn() for troubleshooting
+							console.warn("⚠️ [Agent Loop Halted] The model stopped generating without producing a tool call or completing a task. Last Request Details:", {
+								systemPrompt,
+								messages: messagesForAI,
+								modelResponse: responseContent
+							});
 
-						const shouldScroll = aiManager._shouldAutoScroll();
-						if (aiManager.isSessionViewed(session.id)) {
-							// Show the persistent bottom halt bar
-							aiManager._showHaltBar(modelMessageId, responseBlock, warnBlock);
-							if (shouldScroll && aiManager.conversationArea) {
-								aiManager.conversationArea.scrollTop = aiManager.conversationArea.scrollHeight;
+							const shouldScroll = aiManager._shouldAutoScroll();
+							if (aiManager.isSessionViewed(session.id)) {
+								// Show the persistent bottom halt bar
+								aiManager._showHaltBar(modelMessageId, responseBlock, warnBlock);
+								if (shouldScroll && aiManager.conversationArea) {
+									aiManager.conversationArea.scrollTop = aiManager.conversationArea.scrollHeight;
+								}
 							}
 						}
-					}
 
 					aiManager.setSessionProcessing(session.id, false);
 					aiManager._updateTabStatus(session.id, "halted");
@@ -689,21 +686,6 @@ export class Agent {
 					const validationError = aiManager._validateToolArguments(toolCall);
 					if (validationError) {
 						accumulatedResponses.push(`[Tool Response: ${toolCall.name}]\n\n${validationError}`);
-
-						// Render tool finished/failed block in the chat
-						const toolConfBlock = document.createElement("div");
-						toolConfBlock.className = "agent-tool-finished";
-						toolConfBlock.innerHTML = `
-							<ui-icon style="color: var(--color-error, #dc3545);">close</ui-icon>
-							<span>Tool <code>${toolCall.name}</code> failed validation.</span>
-						`;
-						const shouldScroll = aiManager._shouldAutoScroll();
-						if (aiManager.isSessionViewed(session.id)) {
-							aiManager.conversationArea.append(toolConfBlock);
-							if (shouldScroll && aiManager.conversationArea) {
-								aiManager.conversationArea.scrollTop = aiManager.conversationArea.scrollHeight;
-							}
-						}
 						continue;
 					}
 
@@ -721,8 +703,8 @@ export class Agent {
 						const shouldScroll = aiManager._shouldAutoScroll();
 						if (aiManager.isSessionViewed(session.id)) {
 							aiManager.conversationArea.append(progressMsg);
-							if (shouldScroll && aiManager.conversationArea) {
-								aiManager.conversationArea.scrollTop = aiManager.conversationArea.scrollHeight;
+							if (shouldScroll) {
+								aiManager.scrollToBottom(true);
 							}
 						}
 
@@ -801,21 +783,6 @@ export class Agent {
 					if (toolCall.name === "done") {
 						hasDone = true;
 					}
-
-					// Render simple system or message confirmation of tool run in the chat
-					const toolConfBlock = document.createElement("div");
-					toolConfBlock.className = "agent-tool-finished";
-					toolConfBlock.innerHTML = `
-						<ui-icon style="vertical-align: middle;">${approved ? 'done' : 'close'}</ui-icon>
-						<span>Tool <code>${toolCall.name}</code> finished.</span>
-					`;
-					const shouldScroll = aiManager._shouldAutoScroll();
-					if (aiManager.isSessionViewed(session.id)) {
-						aiManager.conversationArea.append(toolConfBlock);
-						if (shouldScroll && aiManager.conversationArea) {
-							aiManager.conversationArea.scrollTop = aiManager.conversationArea.scrollHeight;
-						}
-					}
 				}
 
 				if (mustWait) {
@@ -825,8 +792,8 @@ export class Agent {
 					const shouldScroll = aiManager._shouldAutoScroll();
 					if (aiManager.isSessionViewed(session.id)) {
 						aiManager.conversationArea.append(waitMsg);
-						if (shouldScroll && aiManager.conversationArea) {
-							aiManager.conversationArea.scrollTop = aiManager.conversationArea.scrollHeight;
+						if (shouldScroll) {
+							aiManager.scrollToBottom(true);
 						}
 					}
 
@@ -961,7 +928,7 @@ export class Agent {
 									if (aiManager.isSessionViewed(session.id)) {
 										aiManager.historyManager.render();
 										if (aiManager.conversationArea) {
-											aiManager.conversationArea.scrollTop = aiManager.conversationArea.scrollHeight;
+											aiManager.scrollToBottom(true);
 										}
 									}
 								}
@@ -983,9 +950,19 @@ export class Agent {
 
 				// Update the model message block in the DOM
 				const modelMessage = session.messages.find(m => m.id === modelMessageId);
-				if (modelMessage) {
-					responseBlock.innerHTML = aiManager.messageRenderer.renderResponseContent(responseContent, modelMessage, true);
-					aiManager.messageRenderer.addCodeBlockButtons(responseBlock, modelMessage);
+				if (modelMessage && responseBlock) {
+					const contentDiv = responseBlock.querySelector('.model-turn-content');
+					const targetContainer = contentDiv || responseBlock;
+					targetContainer.innerHTML = aiManager.messageRenderer.renderResponseContent(responseContent, modelMessage, true);
+					aiManager.messageRenderer.addCodeBlockButtons(targetContainer, modelMessage);
+					const summarySpan = responseBlock.querySelector('.model-turn-summary');
+					if (summarySpan) {
+						summarySpan.innerHTML = aiManager.messageRenderer.getModelTurnSummary(responseContent, modelMessage);
+					}
+					const tokensSpan = responseBlock.querySelector('.turn-tokens-container');
+					if (tokensSpan) {
+						tokensSpan.innerHTML = aiManager.messageRenderer.getModelTurnTokens(responseContent, modelMessage);
+					}
 				}
 
 				if (hasPlan || hasDone) {
