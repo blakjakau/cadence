@@ -314,31 +314,7 @@ export default class AIManagerMessageRenderer {
     }
 
     renderResponseContent(content, message = null, isNew = false) {
-        if (!content) return "";
-
-        if (message && message.toolCalls && message.toolCalls.length > 0) {
-            if (!content.includes("<tool_call")) {
-                let xmlAppend = "";
-                for (const tc of message.toolCalls) {
-                    const callObj = tc.functionCall || tc;
-                    xmlAppend += `\n<tool_call name="${callObj.name}">\n`;
-                    const args = callObj.args || callObj.arguments || {};
-                    let argsObj = {};
-                    try {
-                        argsObj = typeof args === 'string' ? JSON.parse(args) : args;
-                    } catch (e) {
-                        console.error("[Renderer] Failed to parse tool call args:", args, e);
-                        argsObj = {};
-                    }
-                    for (const [k, v] of Object.entries(argsObj)) {
-                        const stringValue = typeof v === 'object' ? JSON.stringify(v) : v;
-                        xmlAppend += `  <${k}>${stringValue}</${k}>\n`;
-                    }
-                    xmlAppend += `</tool_call>\n`;
-                }
-                content += xmlAppend;
-            }
-        }
+        if (!content && (!message || (!message.toolCalls && !message.thought))) return "";
 
         let isFailed = false;
         if (message && this.aiManager.activeSession && this.aiManager.activeSession.messages) {
@@ -358,13 +334,12 @@ export default class AIManagerMessageRenderer {
             }
         }
 
-        const parsed = this.parseBlocks(content);
+        const rawContent = content || "";
+        const parsed = this.parseBlocks(rawContent);
         const rangesToRemove = [];
 
-
-
         if (parsed.planBlock) {
-            const planText = content.substring(parsed.planBlock.contentStartIdx, parsed.planBlock.contentEndIdx).trim();
+            const planText = rawContent.substring(parsed.planBlock.contentStartIdx, parsed.planBlock.contentEndIdx).trim();
             if (isNew && planText && this.aiManager.activeSession && this.aiManager.activeSession.implementationPlan !== planText) {
                 this.aiManager.activeSession.implementationPlan = planText;
 
@@ -382,7 +357,7 @@ export default class AIManagerMessageRenderer {
         }
 
         if (parsed.taskListBlock) {
-            const tasksText = content.substring(parsed.taskListBlock.contentStartIdx, parsed.taskListBlock.contentEndIdx).trim();
+            const tasksText = rawContent.substring(parsed.taskListBlock.contentStartIdx, parsed.taskListBlock.contentEndIdx).trim();
             const formattedTasks = this.formatTaskList(tasksText);
             if (isNew && formattedTasks && this.aiManager.activeSession && this.aiManager.activeSession.taskList !== formattedTasks) {
                 this.aiManager.activeSession.taskList = formattedTasks;
@@ -394,7 +369,7 @@ export default class AIManagerMessageRenderer {
 
         let taskListUpdated = false;
         for (const block of parsed.completeTaskBlocks) {
-            const taskText = content.substring(block.contentStartIdx, block.contentEndIdx).trim();
+            const taskText = rawContent.substring(block.contentStartIdx, block.contentEndIdx).trim();
             if (isNew && taskText && this.aiManager.activeSession && this.aiManager.activeSession.taskList) {
                 const escapedTaskText = taskText.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
                 const checkboxRegex = new RegExp(`([\\-*]\\s*\\[\\s*\\]\\s*)${escapedTaskText}`, 'i');
@@ -419,9 +394,13 @@ export default class AIManagerMessageRenderer {
             thoughtSeconds = (message.thoughtDurationMs / 1000).toFixed(1);
         }
 
-        if (parsed.thoughtBlock) {
-            const thinkContent = content.substring(parsed.thoughtBlock.contentStartIdx, parsed.thoughtBlock.contentEndIdx).trim();
-            const isClosed = parsed.thoughtBlock.closed;
+        // Check either parsed XML thoughtBlock or structured message.thought
+        const thinkContent = parsed.thoughtBlock 
+            ? rawContent.substring(parsed.thoughtBlock.contentStartIdx, parsed.thoughtBlock.contentEndIdx).trim()
+            : (message?.thought || "").trim();
+
+        if (thinkContent) {
+            const isClosed = parsed.thoughtBlock ? parsed.thoughtBlock.closed : true;
             const thinkLabel = isClosed ? (thoughtSeconds ? `Thought Process (${thoughtSeconds}s)` : "Thought Process") : "Thinking...";
             const thinkSegments = this.segmentThoughtContent(thinkContent);
             const thinkSegmentsHtml = thinkSegments.map(seg => `<div class="thought-segment">${this.aiManager.md.render(seg)}</div>`).join('');
@@ -436,309 +415,286 @@ export default class AIManagerMessageRenderer {
                     </div>
                 </div>
             `;
-            rangesToRemove.push({ startIdx: parsed.thoughtBlock.startIdx, endIdx: parsed.thoughtBlock.endIdx });
+            if (parsed.thoughtBlock) {
+                rangesToRemove.push({ startIdx: parsed.thoughtBlock.startIdx, endIdx: parsed.thoughtBlock.endIdx });
+            }
         }
 
-        const mainContent = this.removeRanges(content, rangesToRemove);
+        const mainContent = this.removeRanges(rawContent, rangesToRemove);
         let finalHtml = thinkHtml;
-
         const finalParsed = this.parseBlocks(mainContent);
-        if (finalParsed.toolCallBlocks.length > 0) {
-            const tc = finalParsed.toolCallBlocks[0];
-            const toolName = tc.name;
-            const toolArgs = mainContent.substring(tc.contentStartIdx, tc.contentEndIdx);
-            const isClosed = tc.closed;
 
-            const args = this.parseToolArgs(toolArgs);
+        // 1. If message has structured JSON toolCalls, prioritize rendering them and strip any XML blocks from content
+        if (message && message.toolCalls && message.toolCalls.length > 0) {
+            // Strip any leftover XML tool tags from mainContent
+            const cleanContent = mainContent
+                .replace(/<tool_call\s+name=["']([^"']+)["']\s*>[\s\S]*?<\/tool_call>/gi, '')
+                .replace(/<tool_call[\s\S]*?>/gi, '')
+                .replace(/<\/tool_call>/gi, '')
+                .trim();
+            if (cleanContent) {
+                finalHtml += this.aiManager.md.render(cleanContent);
+            }
+            for (const tc of message.toolCalls) {
+                const callObj = tc.functionCall || tc;
+                const toolName = callObj.name || tc.name || "";
+                let args = callObj.args || callObj.arguments || {};
+                if (typeof args === 'string') {
+                    try { args = JSON.parse(args); } catch(e) { args = {}; }
+                }
 
-            // Handle Project Management Tools
-            if (toolName === "create_implementation_plan" || toolName === "update_task_list" || toolName === "complete_task") {
-                if (toolName === "create_implementation_plan" && args.plan) {
-                    let planChanged = false;
-                    let tasksChanged = false;
+                // Project management tools
+                if (toolName === "create_implementation_plan" || toolName === "update_task_list" || toolName === "complete_task") {
+                    if (toolName === "create_implementation_plan") {
+                        const messages = this.aiManager.activeSession?.messages || [];
+                        const status = message ? message.planStatus : (messages.find(m => m.id === message.id)?.planStatus);
+                        let isPending = !status || status === "pending";
+                        let cardBg = "color-mix(in srgb, var(--theme) 8%, transparent)";
+                        let cardBorder = "1px solid color-mix(in srgb, var(--theme) 25%, transparent)";
+                        let cardColor = "var(--theme)";
+                        let iconName = "assignment";
+                        let titleText = "Implementation Plan Proposed";
 
-                    if (isNew && this.aiManager.activeSession && this.aiManager.activeSession.implementationPlan !== args.plan) {
-                        this.aiManager.activeSession.implementationPlan = args.plan;
-                        planChanged = true;
-                    }
-
-                    const formattedTasks = this.formatTaskList(args.tasks);
-                    if (isNew && formattedTasks && this.aiManager.activeSession && this.aiManager.activeSession.taskList !== formattedTasks) {
-                        this.aiManager.activeSession.taskList = formattedTasks;
-                        tasksChanged = true;
-                    }
-
-                    if (planChanged || tasksChanged) {
-                        this.aiManager._updateAgentProgressPanel();
-                        workspaceClient.setSession(this.aiManager.activeSession.id, this.aiManager.activeSession);
-        
-                        if (window.ui.openPlanAndTaskList) {
-                            const isOpen = (window.ui.leftTabs?.tabs?.some(t => t.config?.path === "plan_tasks")) ||
-                                (window.ui.rightTabs?.tabs?.some(t => t.config?.path === "plan_tasks"));
-                            if (!isOpen) {
-                                window.ui.openPlanAndTaskList();
-                            }
+                        if (status === "accepted") {
+                            cardBg = "rgba(45, 164, 78, 0.1)";
+                            cardBorder = "1px solid rgba(45, 164, 78, 0.25)";
+                            cardColor = "#2da44e";
+                            iconName = "check_circle";
+                            titleText = "Implementation Plan Accepted";
+                        } else if (status === "rejected") {
+                            cardBg = "rgba(244, 67, 54, 0.08)";
+                            cardBorder = "1px solid rgba(244, 67, 54, 0.25)";
+                            cardColor = "var(--error-color, #f44336)";
+                            iconName = "cancel";
+                            titleText = "Implementation Plan Refined / Rejected";
                         }
-                    }
-                } else if (toolName === "update_task_list" && args.tasks) {
-                    const formattedTasks = this.formatTaskList(args.tasks);
-                    if (isNew && this.aiManager.activeSession && this.aiManager.activeSession.taskList !== formattedTasks) {
-                        this.aiManager.activeSession.taskList = formattedTasks;
-                        this.aiManager._updateAgentProgressPanel();
-                        workspaceClient.setSession(this.aiManager.activeSession.id, this.aiManager.activeSession);
-                    }
-                } else if (toolName === "complete_task" && args.taskName) {
-                    if (isNew && this.aiManager.activeSession && this.aiManager.activeSession.taskList) {
-                        const escapedTaskText = args.taskName.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
-                        const checkboxRegex = new RegExp(`([\\-*]\\s*\\[\\s*\\]\\s*)${escapedTaskText}`, 'i');
-                        if (checkboxRegex.test(this.aiManager.activeSession.taskList)) {
-                            this.aiManager.activeSession.taskList = this.aiManager.activeSession.taskList.replace(checkboxRegex, (match, bulletGroup) => {
-                                return bulletGroup.replace(/\[\s*\]/, '[x]') + args.taskName;
-                            });
-                            this.aiManager._updateAgentProgressPanel();
-                            workspaceClient.setSession(this.aiManager.activeSession.id, this.aiManager.activeSession);
+
+                        let planHtml = `
+                        <div class="inline-implementation-plan-card" style="display: flex; flex-direction: column; gap: 8px; margin: 10px 0; background: ${cardBg}; border: ${cardBorder}; border-radius: var(--radius); padding: 12px; transition: all 0.2s ease;">
+                            <div style="display: flex; justify-content: space-between; align-items: center;">
+                                <div class="banner-left" style="display: flex; align-items: center; gap: 8px; color: ${cardColor};">
+                                    <ui-icon style="color: ${cardColor}; font-size: 20px;">${iconName}</ui-icon>
+                                    <span style="font-weight: 600; font-size: 13px;">${titleText}</span>
+                                </div>
+                                <button class="open-plan-btn" style="display: flex; align-items: center; gap: 4px; background: transparent; border: 1px solid ${cardColor}; padding: 4px 8px; border-radius: 4px; cursor: pointer; color: ${cardColor}; font-weight: 600; font-size: 11px; transition: all 0.2s;" onclick="if(window.ui && window.ui.openPlanAndTaskList) window.ui.openPlanAndTaskList();" onmouseover="this.style.background='color-mix(in srgb, ${cardColor} 8%, transparent)'" onmouseout="this.style.background='transparent'">
+                                    <span>View Plan</span><ui-icon style="font-size: 14px;">open_in_new</ui-icon>
+                                </button>
+                            </div>
+                        `;
+                        if (isPending) {
+                            planHtml += `
+                            <div style="display: flex; flex-direction: column; gap: 8px; margin-top: 8px;">
+                                <textarea placeholder="Optional prompt/clarification for the agent..." style="width: 100%; min-height: 60px; padding: 8px; resize: vertical; background-color: var(--bg-body); color: var(--text-primary); border: 1px solid var(--border-color); border-radius: var(--radius); font-family: inherit; box-sizing: border-box;"></textarea>
+                                <div class="banner-actions" style="display: flex; justify-content: flex-end; gap: 8px;">
+                                    <button class="reject-plan-btn" style="display: flex; align-items: center; gap: 4px; background: transparent; color: var(--error-color, #f44336); border: 1px solid color-mix(in srgb, var(--error-color, #f44336) 50%, transparent); padding: 6px 12px; border-radius: 4px; cursor: pointer;" onclick="const comment = this.parentElement.previousElementSibling.value.trim(); if(window.ui && window.ui.aiManager) window.ui.aiManager.proceedWithImplementationPlan(comment, false);">
+                                        <ui-icon style="font-size: 16px;">close</ui-icon><span>Reject / Refine</span>
+                                    </button>
+                                    <button class="proceed-plan-btn" style="display: flex; align-items: center; gap: 4px; background: color-mix(in srgb, var(--theme) 15%, transparent); color: var(--text-primary); border: 1px solid var(--theme); padding: 6px 12px; border-radius: 4px; cursor: pointer;" onclick="const comment = this.parentElement.previousElementSibling.value.trim(); if(window.ui && window.ui.aiManager) window.ui.aiManager.proceedWithImplementationPlan(comment, true);">
+                                        <ui-icon style="font-size: 16px;">check</ui-icon><span>Accept Plan</span>
+                                    </button>
+                                </div>
+                            </div>
+                            `;
                         }
+                        planHtml += `</div>`;
+                        finalHtml += planHtml;
+                        continue;
                     }
                 }
 
-                const beforeText = mainContent.substring(0, tc.startIdx) || "";
-                const afterText = mainContent.substring(tc.endIdx) || "";
-                if (beforeText.trim()) finalHtml += this.aiManager.md.render(beforeText);
-                
-                if (toolName === "create_implementation_plan") {
-                    const messages = this.aiManager.activeSession?.messages || [];
-                    let isPending = false;
-                    
-                    if (message) {
-                        isPending = !message.planStatus || message.planStatus === "pending";
-                    } else {
-                        // Fallback: find the message in activeSession by content match
-                        const matchingMsg = messages.find(m => m.type === "model" && m.content === content);
-                        if (matchingMsg) {
-                            isPending = !matchingMsg.planStatus || matchingMsg.planStatus === "pending";
-                        } else {
-                            // During active streaming before finalizing
-                            isPending = false;
+                let icon = "extension";
+                if (toolName.includes("read")) icon = "find_in_page";
+                else if (toolName.includes("list")) icon = "folder_open";
+                else if (toolName.includes("search")) icon = "search";
+                else if (toolName.includes("edit")) icon = "edit";
+                else if (toolName.includes("create")) icon = "create_new_folder";
+                else if (toolName.includes("open")) icon = "launch";
+                else if (toolName.includes("fetch") || toolName.includes("web")) icon = "language";
+                else if (toolName === "query") icon = "help";
+
+                let label = `<code>${toolName}</code>`;
+                const fileActions = ["edit_file", "read_file", "create_file", "find_file", "open_file", "search_in_file"];
+                if (args.url) {
+                    const rawUrl = args.url.trim();
+                    const displayUrl = rawUrl.length > 55 ? rawUrl.substring(0, 55) + "..." : rawUrl;
+                    label = `<code>${toolName}:</code> <a href="${this._escapeHtml(rawUrl)}" target="_blank" rel="noopener noreferrer" class="tool-call-link" title="${this._escapeHtml(rawUrl)}">${this._escapeHtml(displayUrl)}</a>`;
+                } else if (args.path) {
+                    if (fileActions.includes(toolName)) {
+                        const shortFile = args.path.split('/').pop() || args.path;
+                        let fileChipHtml = `<ui-filechip filename="${this._escapeHtml(shortFile)}" path="${this._escapeHtml(args.path)}"></ui-filechip>`;
+                        if (toolName === "read_file") {
+                            const start = parseInt(args.startLine || args.startline, 10);
+                            const count = parseInt(args.lineCount || args.linecount, 10);
+                            if (!isNaN(start) && !isNaN(count)) fileChipHtml += ` #L${start}-${start + count}`;
+                        } else if (toolName === "search_in_file") {
+                            const queryText = args.query || "";
+                            const truncatedQuery = queryText.length > 20 ? queryText.substring(0, 20) + "..." : queryText;
+                            if (truncatedQuery) fileChipHtml += ` <span class="tool-call-query">"${this._escapeHtml(truncatedQuery)}"</span>`;
+                        } else if (toolName === "edit_file") {
+                            let searchLines = 0, replaceLines = 0, replaceBytes = 0;
+                            if (Array.isArray(args.edits) && args.edits.length > 0) {
+                                for (const ed of args.edits) {
+                                    if (ed.search) searchLines += ed.search.split('\n').length;
+                                    if (ed.replace) {
+                                        replaceLines += ed.replace.split('\n').length;
+                                        replaceBytes += (new TextEncoder().encode(ed.replace)).length;
+                                    }
+                                }
+                            } else {
+                                searchLines = (args.search && args.search.length > 0) ? args.search.split('\n').length : 0;
+                                replaceLines = (args.replace && args.replace.length > 0) ? args.replace.split('\n').length : 0;
+                                replaceBytes = (new TextEncoder().encode(args.replace || "")).length;
+                            }
+                            const editsBadge = (Array.isArray(args.edits) && args.edits.length > 1) ? `<span class="tool-call-edits-count">${args.edits.length} edits</span> ` : "";
+                            fileChipHtml += ` ${editsBadge}<span class="tool-call-bytes">${this.formatByteSize(replaceBytes)}</span> <span class="tool-call-lines-badge">[<span style="color: var(--color-success, #2ea44f);">+${replaceLines}</span> <span style="color: var(--color-error, #cf222e);">${searchLines > 0 ? `-${searchLines}` : '-0'}</span>]</span>`;
+                        } else if (toolName === "create_file") {
+                            const contentLines = (args.content && args.content.length > 0) ? args.content.split('\n').length : 0;
+                            const contentBytes = (new TextEncoder().encode(args.content || "")).length;
+                            fileChipHtml += ` <span class="tool-call-bytes">${this.formatByteSize(contentBytes)}</span> <span class="tool-call-lines-badge">[<span style="color: var(--color-success, #2ea44f);">+${contentLines}</span>]</span>`;
                         }
+                        label = `<code>${toolName}:</code> ${fileChipHtml}`;
+                    } else {
+                        label = `<code>${toolName}:</code> <span class="tool-call-path" title="${this._escapeHtml(args.path)}">${this._escapeHtml(args.path)}</span>`;
                     }
+                } else if (args.command) {
+                    const truncatedCmd = args.command.length > 50 ? args.command.substring(0, 50) + "..." : args.command;
+                    const cwdVal = args.cwd || args.dir;
+                    const cwdInfo = cwdVal ? ` <span class="tool-call-cwd" style="opacity:0.8; font-size:0.9em;">(in <code>${this._escapeHtml(cwdVal.split('/').filter(Boolean).pop() || cwdVal)}</code>)</span>` : '';
+                    label = `<code>${toolName}:</code> <span class="tool-call-query"><code>$ ${this._escapeHtml(truncatedCmd)}</code></span>${cwdInfo}`;
+                } else if (args.query) {
+                    label = `<code>${toolName}:</code> <span class="tool-call-query">"${this._escapeHtml(args.query)}"</span>`;
+                } else if (args.question) {
+                    const truncated = args.question.length > 60 ? args.question.substring(0, 60) + "..." : args.question;
+                    label = `<code>${toolName}:</code> <span class="tool-call-query">"${this._escapeHtml(truncated)}"</span>`;
+                }
 
-                    console.log("[Plan Render Debug] isPending calculation:", {
-                        isProcessing: this.aiManager._isProcessing,
-                        messageId: message?.id,
-                        planStatus: message ? message.planStatus : (messages.find(m => m.type === "model" && m.content === content)?.planStatus),
-                        isPending,
-                        messagesCount: messages.length
-                    });
+                let badgeClass = isFailed ? 'failed' : 'invoked';
+                let badgeText = isFailed ? 'Failed' : 'Invoked';
+                if (toolName === "sub_agent_complete") {
+                    badgeText = isFailed ? 'Failed' : 'Completed';
+                } else if (toolName === "query") {
+                    badgeText = isFailed ? 'Failed' : 'Answered';
+                }
 
-                    const status = message ? message.planStatus : (messages.find(m => m.type === "model" && m.content === content)?.planStatus);
-                    let cardBg = "color-mix(in srgb, var(--theme) 8%, transparent)";
-                    let cardBorder = "1px solid color-mix(in srgb, var(--theme) 25%, transparent)";
-                    let cardColor = "var(--theme)";
-                    let iconName = "assignment";
-                    let titleText = "Implementation Plan Proposed";
-
-                    if (status === "accepted") {
-                        cardBg = "rgba(45, 164, 78, 0.1)"; // translucent green (the current implementation green)
-                        cardBorder = "1px solid rgba(45, 164, 78, 0.25)";
-                        cardColor = "#2da44e";
-                        iconName = "check_circle";
-                        titleText = "Implementation Plan Accepted";
-                    } else if (status === "rejected") {
-                        cardBg = "rgba(244, 67, 54, 0.08)"; // translucent red/orange
-                        cardBorder = "1px solid rgba(244, 67, 54, 0.25)";
-                        cardColor = "var(--error-color, #f44336)";
-                        iconName = "cancel";
-                        titleText = "Implementation Plan Refined / Rejected";
+                let expanderHtml = "";
+                if (toolName === "create_file" || toolName === "edit_file") {
+                    let newContent = "";
+                    if (toolName === "create_file") {
+                        newContent = args.content || "";
+                    } else if (Array.isArray(args.edits) && args.edits.length > 0) {
+                        const lastEdit = args.edits[args.edits.length - 1];
+                        newContent = lastEdit.replace || "";
+                    } else {
+                        newContent = args.replace || "";
                     }
-
-                    let planHtml = `
-                    <div class="inline-implementation-plan-card" style="display: flex; flex-direction: column; gap: 8px; margin: 10px 0; background: ${cardBg}; border: ${cardBorder}; border-radius: var(--radius); padding: 12px; transition: all 0.2s ease;">
-                        <div style="display: flex; justify-content: space-between; align-items: center;">
-                            <div class="banner-left" style="display: flex; align-items: center; gap: 8px; color: ${cardColor};">
-                                <ui-icon style="color: ${cardColor}; font-size: 20px;">${iconName}</ui-icon>
-                                <span style="font-weight: 600; font-size: 13px;">${titleText}</span>
-                            </div>
-                            <button class="open-plan-btn" style="display: flex; align-items: center; gap: 4px; background: transparent; border: 1px solid ${cardColor}; padding: 4px 8px; border-radius: 4px; cursor: pointer; color: ${cardColor}; font-weight: 600; font-size: 11px; transition: all 0.2s;" onclick="if(window.ui && window.ui.openPlanAndTaskList) window.ui.openPlanAndTaskList();" onmouseover="this.style.background='color-mix(in srgb, ${cardColor} 8%, transparent)'" onmouseout="this.style.background='transparent'">
-                                <span>View Plan</span><ui-icon style="font-size: 14px;">open_in_new</ui-icon>
-                            </button>
-                        </div>
-                    `;
-
-                    if (isPending) {
-                        planHtml += `
-                        <div style="display: flex; flex-direction: column; gap: 8px; margin-top: 8px;">
-                            <textarea placeholder="Optional prompt/clarification for the agent..." style="width: 100%; min-height: 60px; padding: 8px; resize: vertical; background-color: var(--bg-body); color: var(--text-primary); border: 1px solid var(--border-color); border-radius: var(--radius); font-family: inherit; box-sizing: border-box;"></textarea>
-                            <div class="banner-actions" style="display: flex; justify-content: flex-end; gap: 8px;">
-                                <button class="reject-plan-btn" style="display: flex; align-items: center; gap: 4px; background: transparent; color: var(--error-color, #f44336); border: 1px solid color-mix(in srgb, var(--error-color, #f44336) 50%, transparent); padding: 6px 12px; border-radius: 4px; cursor: pointer;" onclick="const comment = this.parentElement.previousElementSibling.value.trim(); if(window.ui && window.ui.aiManager) window.ui.aiManager.proceedWithImplementationPlan(comment, false);">
-                                    <ui-icon style="font-size: 16px;">close</ui-icon><span>Reject / Refine</span>
-                                </button>
-                                <button class="proceed-plan-btn" style="display: flex; align-items: center; gap: 4px; background: color-mix(in srgb, var(--theme) 15%, transparent); color: var(--text-primary); border: 1px solid var(--theme); padding: 6px 12px; border-radius: 4px; cursor: pointer;" onclick="const comment = this.parentElement.previousElementSibling.value.trim(); if(window.ui && window.ui.aiManager) window.ui.aiManager.proceedWithImplementationPlan(comment, true);">
-                                    <ui-icon style="font-size: 16px;">check</ui-icon><span>Accept Plan</span>
-                                </button>
-                            </div>
-                        </div>
+                    if (newContent.length > 0) {
+                        const allLines = newContent.split('\n');
+                        const last5Lines = allLines.slice(-5);
+                        const previewText = last5Lines.join('\n');
+                        expanderHtml = `
+                            <details class="tool-call-preview-expander" open ontoggle="this.dataset.userToggled = 'true'">
+                                <summary class="tool-call-preview-summary">
+                                    <ui-icon>expand_more</ui-icon>
+                                    <span>Preview (last ${last5Lines.length} lines)</span>
+                                </summary>
+                                <pre class="tool-call-preview-code"><code>${this._escapeHtml(previewText)}</code></pre>
+                            </details>
                         `;
                     }
-                    planHtml += `</div>`;
-                    finalHtml += planHtml;
                 }
 
-                if (afterText.trim()) finalHtml += this.aiManager.md.render(afterText);
-                return finalHtml;
-            }
-
-            let icon = "extension";
-            if (toolName.includes("read")) icon = "find_in_page";
-            else if (toolName.includes("list")) icon = "folder_open";
-            else if (toolName.includes("search")) icon = "search";
-            else if (toolName.includes("edit")) icon = "edit";
-            else if (toolName.includes("create")) icon = "create_new_folder";
-            else if (toolName.includes("open")) icon = "launch";
-            else if (toolName.includes("fetch") || toolName.includes("web")) icon = "language";
-            else if (toolName === "query") icon = "help";
-
-            let label = `<code>${toolName}</code>`;
-            const fileActions = ["edit_file", "read_file", "create_file", "find_file", "open_file", "search_in_file"];
-            if (args.url) {
-                const rawUrl = args.url.trim();
-                const displayUrl = rawUrl.length > 55 ? rawUrl.substring(0, 55) + "..." : rawUrl;
-                label = `<code>${toolName}:</code> <a href="${this._escapeHtml(rawUrl)}" target="_blank" rel="noopener noreferrer" class="tool-call-link" title="${this._escapeHtml(rawUrl)}">${this._escapeHtml(displayUrl)}</a>`;
-            } else if (args.path) {
-                if (fileActions.includes(toolName)) {
-                    const shortFile = args.path.split('/').pop() || args.path;
-                    let fileChipHtml = `<ui-filechip filename="${this._escapeHtml(shortFile)}" path="${this._escapeHtml(args.path)}"></ui-filechip>`;
-                    
-                    if (toolName === "read_file") {
-                        const start = parseInt(args.startLine || args.startline, 10);
-                        const count = parseInt(args.lineCount || args.linecount, 10);
-                        if (!isNaN(start) && !isNaN(count)) {
-                            fileChipHtml += ` #L${start}-${start + count}`;
-                        }
-                    } else if (toolName === "search_in_file") {
-                        const queryText = args.query || "";
-                        const truncatedQuery = queryText.length > 20 ? queryText.substring(0, 20) + "..." : queryText;
-                        if (truncatedQuery) {
-                            fileChipHtml += ` <span class="tool-call-query">"${this._escapeHtml(truncatedQuery)}"</span>`;
-                        }
-                    } else if (toolName === "edit_file") {
-                        let searchLines = 0;
-                        let replaceLines = 0;
-                        let replaceBytes = 0;
-                        if (Array.isArray(args.edits) && args.edits.length > 0) {
-                            for (const ed of args.edits) {
-                                const s = ed.search || "";
-                                const r = ed.replace || "";
-                                if (s) searchLines += s.split('\n').length;
-                                if (r) {
-                                    replaceLines += r.split('\n').length;
-                                    replaceBytes += (new TextEncoder().encode(r)).length;
-                                }
-                            }
-                        } else {
-                            searchLines = (args.search && args.search.length > 0) ? args.search.split('\n').length : 0;
-                            replaceLines = (args.replace && args.replace.length > 0) ? args.replace.split('\n').length : 0;
-                            replaceBytes = (new TextEncoder().encode(args.replace || "")).length;
-                        }
-                        const editsBadge = (Array.isArray(args.edits) && args.edits.length > 1) ? `<span class="tool-call-edits-count">${args.edits.length} edits</span> ` : "";
-                        const badgeClass = isClosed ? "tool-call-lines-badge" : "tool-call-lines-badge streaming";
-                        fileChipHtml += ` ${editsBadge}<span class="tool-call-bytes">${this.formatByteSize(replaceBytes)}</span> <span class="${badgeClass}">[<span style="color: var(--color-success, #2ea44f);">+${replaceLines}</span> <span style="color: var(--color-error, #cf222e);">${searchLines > 0 ? `-${searchLines}` : '-0'}</span>]</span>`;
-                    } else if (toolName === "create_file") {
-                        const contentLines = (args.content && args.content.length > 0) ? args.content.split('\n').length : 0;
-                        const contentBytes = (new TextEncoder().encode(args.content || "")).length;
-                        const badgeClass = isClosed ? "tool-call-lines-badge" : "tool-call-lines-badge streaming";
-                        fileChipHtml += ` <span class="tool-call-bytes">${this.formatByteSize(contentBytes)}</span> <span class="${badgeClass}">[<span style="color: var(--color-success, #2ea44f);">+${contentLines}</span>]</span>`;
-                    }
-                    
-                    label = `<code>${toolName}:</code> ${fileChipHtml}`;
+                let toolCardHtml;
+                if (toolName === "sub_agent_complete") {
+                    const resultText = args.result || "";
+                    const renderedResult = resultText.trim() ? this.aiManager.md.render(resultText) : "";
+                    toolCardHtml = `
+                        <div class="tool-call-block sub-agent-complete-card">
+                            <div class="tool-call-header">
+                                <ui-icon>check_circle</ui-icon>
+                                <span class="tool-call-title">Sub-Agent Task Completed</span>
+                                <span class="tool-call-status-badge ${badgeClass}">${badgeText}</span>
+                            </div>
+                            <div class="tool-call-body">
+                                <div class="sub-agent-result-label">Result:</div>
+                                <div class="sub-agent-result-text">${renderedResult}</div>
+                            </div>
+                        </div>
+                    `;
                 } else {
-                    label = `<code>${toolName}:</code> <span class="tool-call-path" title="${this._escapeHtml(args.path)}">${this._escapeHtml(args.path)}</span>`;
-                }
-            } else if (args.command) {
-                const truncatedCmd = args.command.length > 50 ? args.command.substring(0, 50) + "..." : args.command;
-                const cwdVal = args.cwd || args.dir;
-                const cwdInfo = cwdVal ? ` <span class="tool-call-cwd" style="opacity:0.8; font-size:0.9em;">(in <code>${this._escapeHtml(cwdVal.split('/').filter(Boolean).pop() || cwdVal)}</code>)</span>` : '';
-                label = `<code>${toolName}:</code> <span class="tool-call-query"><code>$ ${this._escapeHtml(truncatedCmd)}</code></span>${cwdInfo}`;
-            } else if (args.query) {
-                label = `<code>${toolName}:</code> <span class="tool-call-query">"${this._escapeHtml(args.query)}"</span>`;
-            } else if (args.question) {
-                const truncated = args.question.length > 60 ? args.question.substring(0, 60) + "..." : args.question;
-                label = `<code>${toolName}:</code> <span class="tool-call-query">"${this._escapeHtml(truncated)}"</span>`;
-            }
-
-            let badgeClass = isClosed ? (isFailed ? 'failed' : 'invoked') : 'preparing';
-            let badgeText = isClosed ? (isFailed ? 'Failed' : 'Invoked') : 'Preparing...';
-            if (toolName === "sub_agent_complete") {
-                badgeText = isClosed ? (isFailed ? 'Failed' : 'Completed') : 'Reporting...';
-            } else if (toolName === "query") {
-                badgeText = isClosed ? (isFailed ? 'Failed' : 'Answered') : 'Waiting...';
-            }
-
-            let expanderHtml = "";
-            if (toolName === "create_file" || toolName === "edit_file") {
-                let newContent = "";
-                if (toolName === "create_file") {
-                    newContent = args.content || "";
-                } else if (Array.isArray(args.edits) && args.edits.length > 0) {
-                    const lastEdit = args.edits[args.edits.length - 1];
-                    newContent = lastEdit.replace || "";
-                } else {
-                    newContent = args.replace || "";
-                }
-                if (newContent.length > 0) {
-                    const allLines = newContent.split('\n');
-                    const last5Lines = allLines.slice(-5);
-                    const previewText = last5Lines.join('\n');
-                    expanderHtml = `
-                        <details class="tool-call-preview-expander" open ontoggle="this.dataset.userToggled = 'true'">
-                            <summary class="tool-call-preview-summary">
-                                <ui-icon>expand_more</ui-icon>
-                                <span>Preview (last ${last5Lines.length} lines)</span>
-                            </summary>
-                            <pre class="tool-call-preview-code"><code>${this._escapeHtml(previewText)}</code></pre>
-                        </details>
+                    toolCardHtml = `
+                        <div class="tool-call-block compact">
+                            <div class="tool-call-header compact">
+                                <ui-icon>${icon}</ui-icon>
+                                <span class="tool-call-title compact">${label}</span>
+                                <span class="tool-call-status-badge compact ${badgeClass}">${badgeText}</span>
+                            </div>
+                            ${expanderHtml}
+                        </div>
                     `;
                 }
+                finalHtml += toolCardHtml;
             }
+        } else if (finalParsed.toolCallBlocks.length > 0) {
+            // 2. Fallback for legacy XML tool call blocks in content (e.g. during streaming or unmigrated turns)
+            let lastIdx = 0;
+            for (const tc of finalParsed.toolCallBlocks) {
+                const toolName = tc.name;
+                const toolArgs = mainContent.substring(tc.contentStartIdx, tc.contentEndIdx);
+                const isClosed = tc.closed;
+                const args = this.parseToolArgs(toolArgs);
 
-            let toolCardHtml;
-            if (toolName === "sub_agent_complete") {
-                const resultText = args.result || "";
-                const renderedResult = resultText.trim() ? this.aiManager.md.render(resultText) : "";
-                toolCardHtml = `
-                    <div class="tool-call-block sub-agent-complete-card">
-                        <div class="tool-call-header">
-                            <ui-icon>check_circle</ui-icon>
-                            <span class="tool-call-title">Sub-Agent Task Completed</span>
-                            <span class="tool-call-status-badge ${badgeClass}">${badgeText}</span>
-                        </div>
-                        <div class="tool-call-body">
-                            <div class="sub-agent-result-label">Result:</div>
-                            <div class="sub-agent-result-text">${renderedResult}</div>
-                        </div>
-                    </div>
-                `;
-            } else {
-                toolCardHtml = `
+                const beforeText = mainContent.substring(lastIdx, tc.startIdx);
+                if (beforeText.trim()) {
+                    finalHtml += this.aiManager.md.render(beforeText);
+                }
+                lastIdx = tc.endIdx;
+
+                if (toolName === "create_implementation_plan" || toolName === "update_task_list" || toolName === "complete_task") {
+                    continue;
+                }
+
+                let icon = "extension";
+                if (toolName.includes("read")) icon = "find_in_page";
+                else if (toolName.includes("list")) icon = "folder_open";
+                else if (toolName.includes("search")) icon = "search";
+                else if (toolName.includes("edit")) icon = "edit";
+                else if (toolName.includes("create")) icon = "create_new_folder";
+                else if (toolName.includes("open")) icon = "launch";
+                else if (toolName.includes("fetch") || toolName.includes("web")) icon = "language";
+                else if (toolName === "query") icon = "help";
+
+                let label = `<code>${toolName}</code>`;
+                const fileActions = ["edit_file", "read_file", "create_file", "find_file", "open_file", "search_in_file"];
+                if (args.url) {
+                    const rawUrl = args.url.trim();
+                    const displayUrl = rawUrl.length > 55 ? rawUrl.substring(0, 55) + "..." : rawUrl;
+                    label = `<code>${toolName}:</code> <a href="${this._escapeHtml(rawUrl)}" target="_blank" rel="noopener noreferrer" class="tool-call-link" title="${this._escapeHtml(rawUrl)}">${this._escapeHtml(displayUrl)}</a>`;
+                } else if (args.path) {
+                    if (fileActions.includes(toolName)) {
+                        const shortFile = args.path.split('/').pop() || args.path;
+                        let fileChipHtml = `<ui-filechip filename="${this._escapeHtml(shortFile)}" path="${this._escapeHtml(args.path)}"></ui-filechip>`;
+                        label = `<code>${toolName}:</code> ${fileChipHtml}`;
+                    } else {
+                        label = `<code>${toolName}:</code> <span class="tool-call-path" title="${this._escapeHtml(args.path)}">${this._escapeHtml(args.path)}</span>`;
+                    }
+                }
+
+                let badgeClass = isClosed ? (isFailed ? 'failed' : 'invoked') : 'preparing';
+                let badgeText = isClosed ? (isFailed ? 'Failed' : 'Invoked') : 'Preparing...';
+
+                finalHtml += `
                     <div class="tool-call-block compact">
                         <div class="tool-call-header compact">
                             <ui-icon>${icon}</ui-icon>
                             <span class="tool-call-title compact">${label}</span>
                             <span class="tool-call-status-badge compact ${badgeClass}">${badgeText}</span>
                         </div>
-                        ${expanderHtml}
                     </div>
                 `;
             }
-
-            const beforeText = mainContent.substring(0, tc.startIdx) || "";
-            const afterText = mainContent.substring(tc.endIdx) || "";
-
-            if (beforeText.trim()) {
-                finalHtml += this.aiManager.md.render(beforeText);
-            }
-            finalHtml += toolCardHtml;
-            if (afterText.trim()) {
-                finalHtml += this.aiManager.md.render(afterText);
+            const remainingText = mainContent.substring(lastIdx);
+            if (remainingText.trim()) {
+                finalHtml += this.aiManager.md.render(remainingText);
             }
         } else {
             if (mainContent.trim()) {
@@ -758,15 +714,25 @@ export default class AIManagerMessageRenderer {
         const parsed = this.parseBlocks(content || "");
         
         let toolSummary = "";
+        let toolName = "";
+        let args = {};
+
         if (parsed.toolCallBlocks && parsed.toolCallBlocks.length > 0) {
             const tc = parsed.toolCallBlocks[0];
-            const toolName = tc.name;
+            toolName = tc.name;
             const toolArgs = content.substring(tc.contentStartIdx, tc.contentEndIdx);
-            
-            const args = this.parseToolArgs(toolArgs);
+            args = this.parseToolArgs(toolArgs);
+        } else if (message && message.toolCalls && message.toolCalls.length > 0) {
+            const tc = message.toolCalls[0];
+            const callObj = tc.functionCall || tc;
+            toolName = callObj.name || tc.name || "";
+            const rawArgs = callObj.args || callObj.arguments || {};
+            args = typeof rawArgs === 'string' ? (JSON.parse(rawArgs) || {}) : rawArgs;
+        }
 
+        if (toolName) {
             if (args.url) {
-                const rawUrl = args.url.trim();
+                const rawUrl = (args.url || '').trim();
                 const shortUrl = rawUrl.length > 35 ? rawUrl.substring(0, 35) + "..." : rawUrl;
                 toolSummary = `called <code>${toolName}</code> <span style="opacity:0.85;">${this._escapeHtml(shortUrl)}</span>`;
             } else if (args.command) {

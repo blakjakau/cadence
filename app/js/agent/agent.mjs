@@ -167,9 +167,10 @@ export class Agent {
 
 			let messagesForAI = null;
 			let systemPrompt = null;
+			let callbacks = null;
 
 			const runPromise = new Promise((resolve, reject) => {
-				const callbacks = {
+				callbacks = {
 					onUpdate: (fullResponse) => {
 						if (streamForciblyEnded) return;
 						currentFullResponse = fullResponse;
@@ -474,8 +475,26 @@ export class Agent {
 					}
 				}
 
-				// Parse tool calls
-				const toolCalls = aiManager._parseAllToolCalls(responseContent);
+				// Retrieve structured tool calls directly from callbacks or model message in session
+				let toolCalls = [];
+				const lastModelMsg = session?.messages ? session.messages.find(m => m.id === modelMessageId) : null;
+				const sourceToolCalls = (callbacks && callbacks.toolCalls && callbacks.toolCalls.length > 0)
+					? callbacks.toolCalls
+					: (lastModelMsg?.toolCalls || []);
+
+				if (sourceToolCalls && sourceToolCalls.length > 0) {
+					toolCalls = sourceToolCalls.map(tc => {
+						const callObj = tc.functionCall || tc;
+						return {
+							id: tc.id || `call_${crypto.randomUUID()}`,
+							name: callObj.name || tc.name,
+							arguments: callObj.args || callObj.arguments || {}
+						};
+					});
+				} else {
+					toolCalls = aiManager._parseAllToolCalls(responseContent);
+				}
+
 				const regex = /<[^>]*>/g;
 				
 				if (toolCalls.length === 0 || !aiManager.agentMode) {

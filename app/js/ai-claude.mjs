@@ -292,14 +292,6 @@ class Claude extends AI {
                                     if (onUpdate) onUpdate(fullResponseAccumulator);
                                 } else if (delta?.type === 'input_json_delta' && currentToolCall) {
                                     currentToolCall.partial_json += delta.partial_json;
-                                    const liveArgs = parseRelaxedJson(currentToolCall.partial_json);
-                                    let liveXml = `\n<tool_call name="${currentToolCall.name}">\n`;
-                                    for (const [k, v] of Object.entries(liveArgs)) {
-                                        const stringValue = typeof v === 'object' ? JSON.stringify(v) : v;
-                                        liveXml += `  <${k}>${stringValue}</${k}>\n`;
-                                    }
-                                    liveXml += `</tool_call>\n`;
-                                    if (onUpdate) onUpdate(fullResponseAccumulator + liveXml);
                                 }
                             }
 
@@ -331,16 +323,6 @@ class Claude extends AI {
                                         }
                                     });
 
-                                    // Format XML representation into text accumulator for uniform UI rendering
-                                    let xml = `\n<tool_call name="${currentToolCall.name}">\n`;
-                                    for (const [k, v] of Object.entries(argsObj)) {
-                                        const stringValue = typeof v === 'object' ? JSON.stringify(v) : v;
-                                        xml += `  <${k}>${stringValue}</${k}>\n`;
-                                    }
-                                    xml += `</tool_call>\n`;
-                                    fullResponseAccumulator += xml;
-
-                                    if (onUpdate) onUpdate(fullResponseAccumulator);
                                     currentToolCall = null;
                                 }
                             }

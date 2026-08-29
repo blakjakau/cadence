@@ -2,6 +2,7 @@
 // Handles AI session database interaction, switching, creation, and tab rendering.
 import workspaceClient from "./workspace-client.mjs"
 import AIConnections from "./ai-connections.mjs";
+import { SessionMigrator, CURRENT_SESSION_VERSION } from "./sessions/session-migrator.mjs";
 
 class AIManagerSessions {
 	constructor(aiManager) {
@@ -103,6 +104,7 @@ class AIManagerSessions {
 
 		const newSessionData = {
 			id: newId, name: newName, createdAt: Date.now(), lastModified: Date.now(),
+			version: CURRENT_SESSION_VERSION,
 			messages: [], promptInput: "", promptHistory: [], scrollTop: 0,
 			evergreenFiles: [], modifiedFiles: {}, pendingEdits: {},
 			agentMode: defaultAgent,
@@ -256,7 +258,7 @@ class AIManagerSessions {
 
 		// Load the new session's data: reuse running session object if it exists to maintain reference identity
 		const running = this.manager.runningSessions.get(sessionId);
-		const newSessionData = (running && running.instance && running.instance.session)
+		let newSessionData = (running && running.instance && running.instance.session)
 			? running.instance.session
 			: await workspaceClient.getSession(sessionId);
 		if (!newSessionData) {
@@ -265,6 +267,15 @@ class AIManagerSessions {
 			const staleTab = this.manager.sessionTabBar.tabs.find(t => t.config.id === sessionId);
 			if (staleTab) this.deleteSession(sessionId, staleTab); // Trigger a proper delete.
 			return; // Abort this switch.
+		}
+
+		// JIT Migration: Upgrade legacy sessions to latest structured JSON schema
+		const { session: migratedSession, modified } = SessionMigrator.migrate(newSessionData);
+		newSessionData = migratedSession;
+		if (modified) {
+			workspaceClient.setSession(sessionId, newSessionData).catch(err => {
+				console.warn("[AIManagerSessions] Failed to persist migrated session:", err);
+			});
 		}
 
 		// Self-healing: Automatically scan and re-link any disconnected sub-agents for this session

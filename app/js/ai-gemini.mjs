@@ -621,21 +621,16 @@ class Gemini extends AI {
                                         }
 
                                         if (!callbacks.toolCalls) callbacks.toolCalls = [];
-                                        const rawCall = { functionCall: part.functionCall };
+                                        const rawCall = { 
+                                            id: `call_${crypto.randomUUID()}`,
+                                            name: part.functionCall.name,
+                                            args: part.functionCall.args || {},
+                                            functionCall: part.functionCall 
+                                        };
                                         if (part.thoughtSignature) {
                                             rawCall.thoughtSignature = part.thoughtSignature;
                                         }
                                         callbacks.toolCalls.push(rawCall);
-
-                                        const toolName = part.functionCall.name;
-                                        const args = part.functionCall.args || {};
-                                        let xmlToolCall = `\n<tool_call name="${toolName}">\n`;
-                                        for (const [key, value] of Object.entries(args)) {
-                                            const stringValue = typeof value === 'object' ? JSON.stringify(value) : value;
-                                            xmlToolCall += `  <${key}>${stringValue}</${key}>\n`;
-                                        }
-                                        xmlToolCall += `</tool_call>\n`;
-                                        fullResponseAccumulator += xmlToolCall;
                                     }
                                 }
                                 callbacks.totalThinkingMs = totalThinkingMs;

@@ -87,14 +87,6 @@ class AIManager {
 			defaultAllowSubAgents: localStorage.getItem("defaultAllowSubAgents") !== "false",
 			defaultAllowRunCommand: localStorage.getItem("defaultAllowRunCommand") !== "false",
 		};
-
-		// NEW: Session Management Properties
-		this.allSessionMetadata = []; // Array of {id, name, createdAt, lastModified} - used for UI list
-		this.activeSessionId = null; // ID of the currently active session
-		this.activeSession = null; // The full active session object {id, name, messages, promptInput, promptHistory}
-		this.promptIndex = -1; // Index for the current session's prompt history (Ctrl+Up/Down)
-		this._unsentPromptBuffer = null; // NEW: To store unsubmitted prompt during history navigation
-
 		// NEW: Session TabBar properties
 		this.sessionTabBar = null;
 		this.newSessionButton = null;
@@ -3029,29 +3021,34 @@ ${contextText}`;
 			}
 		}
 
-		// Check and prune duplicate raw toolCalls in callbacks
-		if (callbacks.toolCalls && callbacks.toolCalls.length > 0) {
-			const parsedToolCalls = this._parseAllToolCalls(finalizedResponse);
-			if (parsedToolCalls.length > 0) {
-				const parsedNames = new Set(parsedToolCalls.map(ptc => ptc.name));
-				callbacks.toolCalls = callbacks.toolCalls.filter(call => {
-					// Keep any raw calls whose names exist in our set of parsed parallel tool calls
-					return call.functionCall && parsedNames.has(call.functionCall.name);
-				});
-			} else {
-				// No parsed tool call remains in the finalized text, meaning it was fully truncated.
-				callbacks.toolCalls = undefined;
-			}
+		// Extract thought if present in finalizedResponse
+		let thoughtText = "";
+		const thoughtMatch = finalizedResponse.match(/<(?:thought|think)>([\s\S]*?)<\/(?:thought|think)>/i)
+			|| finalizedResponse.match(/<\|channel\>thought\n([\s\S]*?)(?:<\|channel\>|$)/i);
+		if (thoughtMatch) {
+			thoughtText = thoughtMatch[1].trim();
 		}
+
+		// Clean up XML tags from finalized text content
+		let cleanText = finalizedResponse
+			.replace(/<(?:thought|think)>[\s\S]*?<\/(?:thought|think)>/gi, '')
+			.replace(/<\|channel\>thought\n[\s\S]*?(?:<\|channel\>|$)/gi, '')
+			.replace(/<tool_call\s+name=["']([^"']+)["']\s*>[\s\S]*?<\/tool_call>/gi, '')
+			.replace(/<tool_call[\s\S]*?>/gi, '')
+			.replace(/<\/tool_call>/gi, '')
+			.trim();
 
 		const modelMessage = {
 			id: modelMessageId,
 			role: "model",
 			type: "model",
-			content: finalizedResponse,
+			content: cleanText,
 			diffStatuses: [],
 			timestamp: Date.now()
 		};
+		if (thoughtText) {
+			modelMessage.thought = thoughtText;
+		}
 		if (callbacks.totalThinkingMs !== undefined) {
 			modelMessage.thoughtDurationMs = callbacks.totalThinkingMs;
 		}

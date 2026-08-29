@@ -963,14 +963,14 @@ class AIManagerHistory {
 						if (isDoneResponse) {
 							const hasSummary = allMsgs.some(m => m.type === "cycle_summary" && m.cycleEndMsgId === nextMsg.id);
 							if (!hasSummary) {
-								const summarizeBtn = new Button("Summarize Cycle");
+								const summarizeBtn = new Button("Compact Cycle");
 								summarizeBtn.className = "summarize-cycle-trigger-btn theme-button primary";
-								summarizeBtn.icon = "summarize";
+								summarizeBtn.icon = "compress";
 								
 								summarizeBtn.onclick = async (e) => {
 									e.stopPropagation();
 									summarizeBtn.disabled = true;
-									summarizeBtn.text = "Summarizing...";
+									summarizeBtn.text = "Compacting...";
 									
 									try {
 										let cycleStartIdx = -1;
@@ -1010,7 +1010,7 @@ class AIManagerHistory {
 									} catch (err) {
 										console.error("Failed to generate summary manually:", err);
 										summarizeBtn.disabled = false;
-										summarizeBtn.text = "Summarize Cycle";
+										summarizeBtn.text = "Compact Cycle";
 									}
 								};
  
@@ -1073,13 +1073,13 @@ class AIManagerHistory {
 			element.dataset.messageId = message.id;
 			element.setAttribute("title", `Tokens: ${tokenCount}`);
 			
-			const summaryTitleText = message.title || (message.content ? (message.content.split(/[.\n]/)[0].trim().substring(0, 75) + "...") : "Cycle Completed & Summarized");
+			const summaryTitleText = message.title || (message.content ? (message.content.split(/[.\n]/)[0].trim().substring(0, 75) + "...") : "Task Cycle Compacted");
 			
 			const header = new Block();
 			header.className = "cycle-summary-header";
 			
 			const icon = new Icon();
-			icon.textContent = "summarize";
+			icon.textContent = "compress";
 			
 			const titleSpan = new Inline();
 			titleSpan.className = "cycle-summary-title";
@@ -2247,11 +2247,12 @@ class AIManagerHistory {
 					if (startId && endId) {
 						const startIdx = newChatHistory.findIndex(m => m.id === startId);
 						const replaceStartIdx = startIdx !== -1 ? startIdx : 0;
+						const cycleTitle = msg.title || "Completed Task";
 						newChatHistory.splice(replaceStartIdx, newChatHistory.length - replaceStartIdx, {
 							id: msg.id,
 							role: "user",
 							type: "cycle_summary",
-							content: `**Cycle: ${msg.title || "Completed Task"}**\n\n${msg.content}`,
+							content: `<compacted_cycle title="${cycleTitle}">\n${msg.content}\n</compacted_cycle>`,
 							timestamp: msg.timestamp
 						});
 						i++;
@@ -2652,47 +2653,13 @@ class AIManagerHistory {
 						return; // Hide/omit this empty model message from context
 					}
 				}
-				
-				if (this.ai.supportsJSONTools) {
-					// Self-healing: if no toolCalls are present on the message, but content has XML, parse them!
-					if ((!toolCalls || toolCalls.length === 0) && content && content.includes('<tool_call')) {
-						const parsed = this.manager._parseAllToolCalls(content);
-						if (parsed && parsed.length > 0) {
-							toolCalls = parsed.map(ptc => ({
-								functionCall: {
-									name: ptc.name,
-									args: ptc.arguments
-								}
-							}));
-						}
-					}
-					
-					// Strip XML from content for JSON-native models
-					if (content) {
-						content = content.replace(/<tool_call\s+name=["']([^"']+)["']\s*>[\s\S]*?<\/tool_call>/gi, '').trim();
-					}
-				} else {
-					// For non-JSON-native models, if they have JSON toolCalls but no XML in content, append it
-					if (toolCalls && toolCalls.length > 0 && (!content || !content.includes("<tool_call"))) {
-						for (const tc of toolCalls) {
-							const callObj = tc.functionCall || tc;
-							let xml = `\n<tool_call name="${callObj.name}">\n`;
-							const args = callObj.args || callObj.arguments || {};
-							let argsObj = {};
-							try {
-								argsObj = typeof args === 'string' ? JSON.parse(args) : args;
-							} catch (e) {
-								console.error("[History] Failed to parse tool call args:", args, e);
-								argsObj = {};
-							}
-							for (const [k, v] of Object.entries(argsObj)) {
-								const stringValue = typeof v === 'object' ? JSON.stringify(v) : v;
-								xml += `  <${k}>${stringValue}</${k}>\n`;
-							}
-							xml += `</tool_call>\n`;
-							content += xml;
-						}
-					}
+				// Strip any stray XML tags from content
+				if (content) {
+					content = content
+						.replace(/<tool_call\s+name=["']([^"']+)["']\s*>[\s\S]*?<\/tool_call>/gi, '')
+						.replace(/<tool_call[\s\S]*?>/gi, '')
+						.replace(/<\/tool_call>/gi, '')
+						.trim();
 				}
 
 				const contextItem = {
@@ -2702,6 +2669,9 @@ class AIManagerHistory {
 				
 				if (this.ai.supportsJSONTools && toolCalls && toolCalls.length > 0) {
 					contextItem.toolCalls = toolCalls;
+				}
+				if (msg.thought) {
+					contextItem.thought = msg.thought;
 				}
 				if (msg.thoughtSignature) {
 					contextItem.thoughtSignature = msg.thoughtSignature;

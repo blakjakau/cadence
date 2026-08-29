@@ -1,32 +1,3 @@
-import { tools } from './ai-manager-tools-schema.mjs';
-
-function generateXmlToolDocs(planningMode = false, compact = false) {
-    let xml = "";
-    for (const tool of tools) {
-        if (planningMode && (tool.name === "create_file" || tool.name === "edit_file")) {
-            continue;
-        }
-        if (compact) {
-            const params = Object.keys(tool.parameters.properties || {}).map(p => {
-                const req = tool.parameters.required?.includes(p);
-                return `${p}${req ? '' : '?'}`;
-            }).join(", ");
-            xml += `<tool_call name="${tool.name}">[${params}]</tool_call>\n`;
-        } else {
-            xml += `<tool_call name="${tool.name}">\n`;
-            for (const [propName, propDetails] of Object.entries(tool.parameters.properties)) {
-                const isOptional = !tool.parameters.required.includes(propName);
-                const optionalStr = isOptional ? " <!-- Optional -->" : "";
-                xml += `  <${propName}>...</${propName}>${optionalStr}\n`;
-            }
-            xml += `</tool_call>\n`;
-        }
-    }
-    if (!planningMode && !compact) {
-        xml += `* Note: For edit_file, <search> MUST perfectly match existing file content character-for-character.\n`;
-    }
-    return xml.trim();
-}
 
 export function getAgentDirectives(features = {}) {
     const planningMode = !!features.planningMode;
@@ -81,42 +52,19 @@ export default function getAgentSystemPrompt(modelName = '', features = {}) {
     const hasCompletedAllTasks = !!features.hasCompletedAllTasks;
 
     let exampleTurn = "";
-    if (supportsNativeTools) {
-        if (isNativeReasoning) {
-            exampleTurn = `
+    if (isNativeReasoning) {
+        exampleTurn = `
 # Example Turn
 I am reading app.js to locate the issue.
 `;
-        } else {
-            exampleTurn = `
-# Example Turn
-<thought>
-I need to check app.js to understand the bug before editing.
-</thought>
-I am reading app.js to locate the issue.
-`;
-        }
     } else {
-        if (isNativeReasoning) {
-            exampleTurn = `
-# Example Turn
-I am reading app.js to locate the issue.
-<tool_call name="read_file">
-  <path>app.js</path>
-</tool_call>
-`;
-        } else {
-            exampleTurn = `
+        exampleTurn = `
 # Example Turn
 <thought>
 I need to check app.js to understand the bug before editing.
 </thought>
 I am reading app.js to locate the issue.
-<tool_call name="read_file">
-  <path>app.js</path>
-</tool_call>
 `;
-        }
     }
 
     let thinkingRule = "";
@@ -141,32 +89,14 @@ I am reading app.js to locate the issue.
     }
 
     let toolsSection = "";
-    const isSmallContext = (features.maxContextTokens && features.maxContextTokens <= 16384) || features.isLocalModel;
     if (!supportsNativeTools) {
         toolsSection = `
-# Available Tools
-Choose AT MOST ONE tool per turn and use its exact format, the host will return results for your next step.
-${generateXmlToolDocs(planningMode, isSmallContext)}
+# Tools Disabled
+Note: The active model does not support native function calling/tools. Tools are unavailable for this session.
 `;
     }
 
-    let coreRules = "";
-    if (!supportsNativeTools) {
-        coreRules = `
-- Tools: Use ONE tool call block per turn. Wait for the host to provide the result.
-- ALWAYS choose the least impactful tool (don't read the whole file if you only need a specific section)
-- File Modifications:
-  - NEVER use \`create_file\` on existing files. \`create_file\` is strictly for creating new files\.
-  - ALWAYS use \`edit_file\` to modify existing files. For multiple changes across a file, use the \`edits\` array: \`[{ search, replace }, ...]\`.
-  - If an edit fails to match, do NOT attempt to rewrite the file with \`create_file\`. Use \`read_file\` to check the exact lines and indentation, then call \`edit_file\` with corrected search text.
-  - ALWAYS make the smallest viable atomic edits when using \`edit_file\`.
-- Context Limits: ALWAYS explore files by reading their outlines first using read_file_outline. Outlines provide symbol line numbers and lengths. NEVER read a full file if you can extract just the function you need using the <startLine> and <lineCount> parameters of read_file. If you need to find exact text inside a file, use search_in_file to locate the exact line numbers and surrounding context. This saves context tokens.
-- Line Numbers & Counts: When specifying line numbers (e.g. in \`read_file\`), remember that files are strictly 1-indexed. The first line of a file is line 1. Be extremely careful to calculate line offsets accurately to avoid off-by-one errors.
-- Strict XML: Use only the exact tags provided. Do not invent new tools.
-- NEVER include code in your conversational output or reasoning
-- NEVER use control or tool tags to discuss or think about your actions, only to perform them.`;
-    } else {
-        coreRules = `
+    let coreRules = `
 - ALWAYS call EXACTLY ONE tool per turn
 - ALWAYS consider the most appropriate / efficient tool choices for the task
 - File Modifications:
@@ -182,7 +112,6 @@ ${generateXmlToolDocs(planningMode, isSmallContext)}
 	- Using \`edit_file\` for code changes in small, atomic blocks
 	- NEVER reading a whole file if you only need a specific section
 `;
-    }
 
     let projectManagementSection = "";
     if (planningMode) {

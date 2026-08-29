@@ -527,10 +527,7 @@ class LlamaCpp extends AI {
                                     }
                                 }
  
-                                let processedResponse = translateGemmaToolCalls(fullResponse);
-                                processedResponse = translateQwenToolCalls(processedResponse);
-                                processedResponse = getResponseWithToolCalls(processedResponse, streamedToolCalls);
-                                if (onUpdate) onUpdate(processedResponse);
+                                if (onUpdate) onUpdate(fullResponse);
                             }
                         }
                     } catch (e) {
@@ -550,9 +547,7 @@ class LlamaCpp extends AI {
             }
  
             const requestEndTime = Date.now();
-            let finalResponse = translateGemmaToolCalls(fullResponse);
-            finalResponse = translateQwenToolCalls(finalResponse);
-            finalResponse = getResponseWithToolCalls(finalResponse, streamedToolCalls);
+            let finalResponse = fullResponse;
 
             const finalTokens = this.estimateTokens([...messages, { role: 'model', content: finalResponse }]);
             const outputTokens = Math.max(0, finalTokens - currentTokens);
@@ -683,59 +678,6 @@ function parseRelaxedJson(str) {
     }
 
     return obj;
-}
-
-function getResponseWithToolCalls(baseContent, streamedToolCalls) {
-    let result = baseContent;
-    for (const tc of streamedToolCalls) {
-        if (!tc || !tc.name) continue;
-        let parsedArgs = {};
-        try {
-            parsedArgs = JSON.parse(tc.arguments);
-        } catch (e) {
-            parsedArgs = parseRelaxedJson(tc.arguments);
-        }
-        
-        let xmlToolCall = `\n<tool_call name="${tc.name}">\n`;
-        for (const [key, value] of Object.entries(parsedArgs)) {
-            const stringValue = typeof value === 'object' ? JSON.stringify(value) : value;
-            xmlToolCall += `  <${key}>${stringValue}</${key}>\n`;
-        }
-        xmlToolCall += `</tool_call>\n`;
-        result += xmlToolCall;
-    }
-    return result;
-}
-
-function translateGemmaToolCalls(text) {
-    if (!text) return text;
-    const gemmaRegex = /<\|tool>(?:declaration|call):([a-zA-Z0-9_-]+)\s*(\{[\s\S]*?\})(?:<\|?tool_call\|?>)?/g;
-    return text.replace(gemmaRegex, (match, toolName, argsStr) => {
-        const args = parseRelaxedJson(argsStr);
-        let xml = `<tool_call name="${toolName}">\n`;
-        for (const [key, value] of Object.entries(args)) {
-            const stringValue = typeof value === 'object' ? JSON.stringify(value) : value;
-            xml += `  <${key}>${stringValue}</${key}>\n`;
-        }
-        xml += `</tool_call>`;
-        return xml;
-    });
-}
-
-function translateQwenToolCalls(text) {
-    if (!text) return text;
-    // Qwen tool call format: <|im_start|>call:tool_name {"arg": "val"}<|im_end|>
-    const qwenRegex = /<\|im_start\|>call:([a-zA-Z0-9_-]+)\s*(\{[\s\S]*?\})(?:<\|im_end\|>)?/g;
-    return text.replace(qwenRegex, (match, toolName, argsStr) => {
-        const args = parseRelaxedJson(argsStr);
-        let xml = `<tool_call name="${toolName}">\n`;
-        for (const [key, value] of Object.entries(args)) {
-            const stringValue = typeof value === 'object' ? JSON.stringify(value) : value;
-            xml += `  <${key}>${stringValue}</${key}>\n`;
-        }
-        xml += `</tool_call>`;
-        return xml;
-    });
 }
 
 export default LlamaCpp;
