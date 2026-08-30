@@ -847,6 +847,11 @@ export class Agent {
 					session.messages.push(toolResponseMessage);
 					session.lastModified = Date.now();
 					await workspaceClient.setSession(session.id, session);
+
+					// Asynchronously tokenize tool results and live-update turn wrapper input tokens
+					aiManager.historyManager.tokenizeMessage(toolResponseMessage, session).catch(err => {
+						console.warn("[Agent] Async tool_response tokenization error:", err);
+					});
 				}
 
 				// Commit turn transaction group
@@ -986,8 +991,55 @@ export class Agent {
 				}
 
 				const errBlock = document.createElement("div");
-				errBlock.className = "response-block error-block";
-				errBlock.innerHTML = `Agent Execution Error: ${e.message}`;
+				errBlock.className = "response-block warning-block";
+				errBlock.style.border = "1px solid var(--color-error, #dc3545)";
+				errBlock.style.background = "var(--bg-secondary)";
+				errBlock.style.padding = "12px 16px";
+				errBlock.style.borderRadius = "var(--borderRadius)";
+				errBlock.style.margin = "8px 0 16px 0";
+				errBlock.innerHTML = `
+					<div style="font-weight: 500; display: flex; align-items: center; gap: 8px;">
+						<ui-icon style="color: var(--color-error, #dc3545);">error</ui-icon>
+						<span><b>Agent Execution Error:</b> ${this.aiManager._escapeHtml(e.message || "An unexpected error occurred during execution.")}</span>
+					</div>
+					<div style="margin-top: 8px; display: flex; gap: 12px; align-items: center; margin-left: 24px;">
+						<button class="theme-button primary resume-agent-btn" style="padding: 4px 10px; font-size: 11px; font-weight: 600; min-width: 80px; cursor: pointer; border-radius: var(--borderRadius); border: none; display: flex; align-items: center; gap: 4px;">
+							<ui-icon style="font-size: 13px;">refresh</ui-icon> Resume
+						</button>
+					</div>
+				`;
+
+				const resumeBtn = errBlock.querySelector(".resume-agent-btn");
+				resumeBtn.onclick = async () => {
+					errBlock.remove();
+
+					// 1. Remove the failed streaming block element if in DOM
+					if (responseBlock && typeof responseBlock.remove === "function") {
+						responseBlock.remove();
+					}
+
+					// 2. Remove incomplete/failed model turn from session history if present
+					if (session && session.messages) {
+						session.messages = session.messages.filter(m => m.id !== modelMessageId);
+						session.lastModified = Date.now();
+						await workspaceClient.setSession(session.id, session);
+					}
+
+					if (aiManager.isSessionViewed(session.id)) {
+						aiManager.historyManager.render();
+					}
+
+					// 3. Re-run agent from last completed tool_result or user prompt
+					aiManager.setSessionProcessing(session.id, true, 'agent', connection);
+					aiManager._updateTabStatus(session.id, "running");
+					const agent = new Agent(aiManager, session, connection);
+					const runningSession = aiManager.runningSessions.get(session.id);
+					if (runningSession) {
+						runningSession.instance = agent;
+					}
+					await agent.run(null, null);
+				};
+
 				if (aiManager.isSessionViewed(session.id)) {
 					aiManager.conversationArea.append(errBlock);
 				}

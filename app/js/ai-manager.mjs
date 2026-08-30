@@ -1480,6 +1480,11 @@ class AIManager {
 		session.lastModified = Date.now();
 		await workspaceClient.setSession(sessionId, session);
 
+		// Asynchronously tokenize the user prompt
+		this.historyManager.tokenizeMessage(userMessage, session).catch(err => {
+			console.warn("[AIManager] Async userMessage tokenization error:", err);
+		});
+
 		if (session.agentMode) {
 			const agent = new Agent(this, session, connection);
 			this.runningSessions.set(sessionId, { type: 'agent', instance: agent });
@@ -2289,6 +2294,13 @@ class AIManager {
 		// Render updated history in UI and dispatch event
 		if (this.activeSessionId === targetSessionId) {
 			this._dispatchContextUpdate("append_user"); // This will also save workspace metadata
+		}
+
+		// Asynchronously tokenize the user prompt
+		if (userMessage) {
+			this.historyManager.tokenizeMessage(userMessage, targetSession).catch(err => {
+				console.warn("[AIManager] Async userMessage tokenization error:", err);
+			});
 		}
 
 		// Auto-rename if this is the first message and the name is default
@@ -3386,14 +3398,32 @@ ${contextText}`;
 		const msgIndex = this.activeSession.messages.findIndex(m => m.id === messageId);
 		if (msgIndex === -1) return;
 
-		const userMessage = this.activeSession.messages[msgIndex];
-		if (userMessage.type !== "user") return;
+		const targetMsg = this.activeSession.messages[msgIndex];
+		let promptIndex = msgIndex;
+		let promptUserMessage = null;
 
-		// 1. Delete all turns AFTER the target turn and their sub-agents
-		const deletedMessages = this.activeSession.messages.slice(msgIndex + 1);
+		if (targetMsg.type === "user") {
+			promptIndex = msgIndex;
+			promptUserMessage = targetMsg;
+		} else if (targetMsg.type === "model" || targetMsg.type === "error") {
+			// Locate the preceding user prompt or tool_response that triggered this model turn
+			for (let i = msgIndex - 1; i >= 0; i--) {
+				const m = this.activeSession.messages[i];
+				if (m.type === "user" || m.type === "tool_response") {
+					promptIndex = i;
+					if (m.type === "user") {
+						promptUserMessage = m;
+					}
+					break;
+				}
+			}
+		}
+
+		// 1. Delete all turns AFTER the triggering prompt (including the target model response if replaying from a model turn)
+		const deletedMessages = this.activeSession.messages.slice(promptIndex + 1);
 		await this.deleteSubAgentsInMessages(deletedMessages);
 
-		this.activeSession.messages.splice(msgIndex + 1);
+		this.activeSession.messages.splice(promptIndex + 1);
 		this.activeSession.lastModified = Date.now();
 		await workspaceClient.setSession(this.activeSession.id, this.activeSession);
 
@@ -3406,9 +3436,9 @@ ${contextText}`;
 		this._setButtonsDisabledState(true);
 
 		if (this.agentMode) {
-			const userMessageElement = this.conversationArea.querySelector(`[data-message-id="${messageId}"]`);
+			const promptElement = promptUserMessage ? this.conversationArea.querySelector(`[data-message-id="${promptUserMessage.id}"]`) : null;
 			this.activeAgent = new Agent(this, this.activeSession, this.ai);
-			await this.activeAgent.run(userMessage, userMessageElement);
+			await this.activeAgent.run(promptUserMessage, promptElement);
 			this.activeAgent = null;
 			return;
 		}

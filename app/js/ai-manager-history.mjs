@@ -634,17 +634,19 @@ class AIManagerHistory {
 			const tokensSpan = new Inline();
 			tokensSpan.className = "turn-tokens-container";
 
+			const replayButton = this._createSingleReplayButton(messageId, true);
+
 			const deleteButton = this._createSingleDeleteButton(messageId);
 			deleteButton.classList.add("delete-turn-btn");
 
-			header.append(expandIcon, summarySpan, tokensSpan, deleteButton);
+			header.append(expandIcon, summarySpan, tokensSpan, replayButton, deleteButton);
 
 			// Content Body
 			const contentDiv = new Block();
 			contentDiv.className = "model-turn-content";
 
 			header.onclick = (e) => {
-				if (e.target.closest('.delete-history-button') || e.target.closest('.delete-turn-btn')) return;
+				if (e.target.closest('.delete-history-button') || e.target.closest('.delete-turn-btn') || e.target.closest('.replay-history-button') || e.target.closest('.replay-turn-btn')) return;
 				if (responseBlock.hasAttribute('expanded')) {
 					responseBlock.removeAttribute('expanded');
 					responseBlock.dataset.manuallyExpanded = "false";
@@ -757,9 +759,15 @@ class AIManagerHistory {
 				contentDiv.innerHTML = this.manager.messageRenderer.renderResponseContent(fullResponse, finalizedMessage, true);
 				// Attach code block buttons to the complete finalized message
 				this.manager.messageRenderer.addCodeBlockButtons(contentDiv, finalizedMessage);
-				
+
 				const tokenCount = typeof finalizedMessage.tokenCount === 'number' ? finalizedMessage.tokenCount : this.ai.estimateTokens([finalizedMessage]);
 				responseBlock.setAttribute("title", `Tokens: ${tokenCount}`);
+				tokensSpan.innerHTML = this.manager.messageRenderer.getModelTurnTokens(fullResponse, finalizedMessage);
+
+				// Asynchronously tokenize the finalized message and update counts
+				this.tokenizeMessage(finalizedMessage, this.manager.runningSessions.get(targetSessionId)?.instance?.session || (this.manager.activeSessionId === targetSessionId ? this.manager.activeSession : null)).catch(err => {
+					console.warn("[HistoryManager] Async turn tokenization error:", err);
+				});
 			};
 
 			const runningBlock = this.manager.runningSessions.get(targetSessionId);
@@ -946,10 +954,12 @@ class AIManagerHistory {
 			tokensSpan.className = "turn-tokens-container";
 			tokensSpan.innerHTML = message.type === "error" ? "" : this.manager.messageRenderer.getModelTurnTokens(message.content, message);
 
+			const replayButton = this._createSingleReplayButton(message.id, true);
+
 			const deleteButton = this._createSingleDeleteButton(message.id);
 			deleteButton.classList.add("delete-turn-btn");
 
-			header.append(expandIcon, summarySpan, tokensSpan, deleteButton);
+			header.append(expandIcon, summarySpan, tokensSpan, replayButton, deleteButton);
 
 			// Content Body
 			const contentDiv = new Block();
@@ -957,7 +967,7 @@ class AIManagerHistory {
 			contentDiv.innerHTML = this.manager.messageRenderer.renderResponseContent(message.content, message, isNew);
 
 			header.onclick = (e) => {
-				if (e.target.closest('.delete-history-button') || e.target.closest('.delete-turn-btn')) return;
+				if (e.target.closest('.delete-history-button') || e.target.closest('.delete-turn-btn') || e.target.closest('.replay-history-button') || e.target.closest('.replay-turn-btn')) return;
 				if (element.hasAttribute('expanded')) {
 					element.removeAttribute('expanded');
 					element.dataset.manuallyExpanded = "false";
@@ -1723,14 +1733,17 @@ class AIManagerHistory {
 		return editButton;
 	}
 
-	_createSingleReplayButton(messageId) {
+	_createSingleReplayButton(messageId, isTurnHeader = false) {
 		const replayButton = new Button();
 		replayButton.classList.add("replay-history-button");
+		if (isTurnHeader) {
+			replayButton.classList.add("replay-turn-btn");
+		}
 		replayButton.icon = "replay";
-		replayButton.title = "Replay this prompt (deletes subsequent turns and regenerates)";
+		replayButton.title = "Replay this turn (prunes subsequent turns and regenerates unaltered)";
 		replayButton.on("click", async (e) => {
 			e.stopPropagation();
-			const confirmed = await window.modal.confirm("Are you sure you want to replay this prompt? This will permanently delete all subsequent messages in this session and request a new response.", "Replay Prompt");
+			const confirmed = await window.modal.confirm("Are you sure you want to replay from this turn? This will permanently delete all subsequent messages in this session and request a new response.", "Replay Turn");
 			if (confirmed) {
 				this.manager.replayMessage(messageId);
 			}
@@ -2077,6 +2090,92 @@ class AIManagerHistory {
 		}
 	}
 
+	/**
+	 * Asynchronously tokenizes a single message using the provider's tokenize endpoint,
+	 * persists the exact count to session storage, and updates matching DOM badges in real time.
+	 */
+	async tokenizeMessage(message, sessionObj = null) {
+		if (!message || !this.ai || !this.ai.isConfigured()) return;
+		if (typeof this.ai.tokenize !== 'function') return;
+		if (message.type === 'system_message' || message.type === 'error' || message.role === 'temp_ai_response') {
+			message.tokenCount = 0;
+			return;
+		}
+
+		const targetSession = sessionObj || this.manager.activeSession;
+		let textToTokenize = message.content || "";
+		if (message.type === 'file_context') {
+			textToTokenize = `--- File: ${message.id || message.filename || 'unknown'} ---\n\`\`\`${message.language || ''}\n${message.content}\n\`\`\``;
+		} else if (message.role === 'model' || message.type === 'model') {
+			let fullOutputText = message.content || "";
+			if (message.thought && !fullOutputText.includes(message.thought)) {
+				fullOutputText += "\n" + message.thought;
+			}
+			if (message.toolCalls && message.toolCalls.length > 0) {
+				for (const tc of message.toolCalls) {
+					const callObj = tc.functionCall || tc;
+					const tcText = `${callObj.name || ""}: ${JSON.stringify(callObj.args || callObj.arguments || {})}`;
+					if (!fullOutputText.includes(tcText)) {
+						fullOutputText += "\n" + tcText;
+					}
+				}
+			}
+			textToTokenize = fullOutputText;
+		}
+
+		if (!textToTokenize.trim()) {
+			message.tokenCount = 0;
+			return;
+		}
+
+		try {
+			const count = await this.ai.tokenize(textToTokenize);
+			if (typeof count === 'number') {
+				message.tokenCount = count;
+				if (targetSession) {
+					const msgInSession = targetSession.messages.find(m => m.id === message.id);
+					if (msgInSession) {
+						msgInSession.tokenCount = count;
+					}
+					targetSession.lastModified = Date.now();
+					await workspaceClient.setSession(targetSession.id, targetSession);
+				}
+
+				// Update any DOM elements showing token counts for this message or preceding model turn
+				if (this.manager.conversationArea) {
+					// 1. If this was a model turn, update its own turn-tokens-container
+					const modelBlock = this.manager.conversationArea.querySelector(`.model-turn-block[data-message-id="${message.id}"]`);
+					if (modelBlock) {
+						const tokensSpan = modelBlock.querySelector('.turn-tokens-container');
+						if (tokensSpan) {
+							tokensSpan.innerHTML = this.manager.messageRenderer.getModelTurnTokens(message.content, message);
+						}
+					}
+
+					// 2. If this was a tool_response, find and update the preceding model turn's turn-tokens-container
+					if (message.type === 'tool_response' && targetSession) {
+						const msgIdx = targetSession.messages.findIndex(m => m.id === message.id);
+						if (msgIdx > 0) {
+							const prevMsg = targetSession.messages[msgIdx - 1];
+							if (prevMsg && (prevMsg.type === 'model' || prevMsg.role === 'model')) {
+								const prevBlock = this.manager.conversationArea.querySelector(`.model-turn-block[data-message-id="${prevMsg.id}"]`);
+								if (prevBlock) {
+									const tokensSpan = prevBlock.querySelector('.turn-tokens-container');
+									if (tokensSpan) {
+										tokensSpan.innerHTML = this.manager.messageRenderer.getModelTurnTokens(prevMsg.content, prevMsg);
+									}
+								}
+							}
+						}
+					}
+				}
+				this.manager._dispatchContextUpdate("tokens_updated");
+			}
+		} catch (err) {
+			console.warn("[HistoryManager] tokenizeMessage error:", err);
+		}
+	}
+
 	async updateMessageTokenCounts(session) {
 		if (!session || !this.ai || !this.ai.isConfigured()) return;
 		if (typeof this.ai.tokenize !== 'function') return;
@@ -2104,6 +2203,21 @@ class AIManagerHistory {
 				let textToTokenize = msg.content;
 				if (msg.type === 'file_context') {
 					textToTokenize = `--- File: ${msg.id || msg.filename || 'unknown'} ---\n\`\`\`${msg.language || ''}\n${msg.content}\n\`\`\``;
+				} else if (msg.role === 'model' || msg.type === 'model') {
+					let fullOutputText = msg.content || "";
+					if (msg.thought && !fullOutputText.includes(msg.thought)) {
+						fullOutputText += "\n" + msg.thought;
+					}
+					if (msg.toolCalls && msg.toolCalls.length > 0) {
+						for (const tc of msg.toolCalls) {
+							const callObj = tc.functionCall || tc;
+							const tcText = `${callObj.name || ""}: ${JSON.stringify(callObj.args || callObj.arguments || {})}`;
+							if (!fullOutputText.includes(tcText)) {
+								fullOutputText += "\n" + tcText;
+							}
+						}
+					}
+					textToTokenize = fullOutputText;
 				}
 
 				const count = await this.ai.tokenize(textToTokenize);
@@ -2471,9 +2585,9 @@ class AIManagerHistory {
 		// Advanced Dialogue Pruning in Agent Mode
 		if (this.manager.agentMode) {
 			// Instead of a fixed message count (like 14), prune oldest dialogue turns ONLY if the estimated tokens exceed the target limit.
-			// For all providers target 80% of their MAX_CONTEXT_TOKENS (defined in their settings/props).
+			// For all providers target 40% of their MAX_CONTEXT_TOKENS (defined in their settings/props).
 			// BUT preserve ALL user instructions to maintain chronological task timeline.
-			const targetLimit = Math.max(1000, Math.floor((this.ai?.MAX_CONTEXT_TOKENS || 8192) * 0.8) - extraTokens);
+			const targetLimit = Math.max(1000, Math.floor((this.ai?.MAX_CONTEXT_TOKENS || 8192) * 0.4) - extraTokens);
 			const currentTokens = this.ai.estimateTokens([...fileContexts, ...dialogueHistory]);
 			if (currentTokens > targetLimit) {
 				const n = dialogueHistory.length;
@@ -2565,9 +2679,9 @@ class AIManagerHistory {
 			});
 		}
 
-		// 4. Prune the chat history to fit within 80% of the context window (leaving 20% headroom for response)
+		// 4. Prune the chat history to fit within 40% of the context window (leaving 60% headroom for response)
 		const maxTokens = this.ai.MAX_CONTEXT_TOKENS || 4096;
-		const allowedTokens = Math.max(1000, Math.floor(maxTokens * 0.8) - extraTokens);
+		const allowedTokens = Math.max(1000, Math.floor(maxTokens * 0.4) - extraTokens);
 		let currentTokens = this.ai.estimateTokens(chatHistory);
 		const minimumMessagesToKeep = 1;
 
