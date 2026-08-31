@@ -168,6 +168,50 @@ export class SessionArtifactsPanel extends Block {
         this.forgivenessModeCheckbox = createToggleRow("accordion-forgiveness-mode", "Forgiveness Mode", "Commit edits immediately to disk with robust single-click rollback safety.", "agent-toggle-wrapper");
         this.allowSubAgentsCheckbox = createToggleRow("accordion-allow-sub-agents", "Allow Sub-Agents", "Allow Cadence to spawn sub-agents to solve smaller tasks.", "sub-agents-toggle-wrapper");
         this.allowRunCommandCheckbox = createToggleRow("accordion-allow-run-command", "Allow Terminal Commands", "Allow Cadence to execute terminal shell commands via the run_command tool.", "run-command-toggle-wrapper");
+        this.autoMilestonesCheckbox = createToggleRow("accordion-auto-milestones", "Auto-Milestones on 'done'", "Automatically freeze a checkpoint milestone when the agent finishes a cycle.", "auto-milestones-toggle-wrapper");
+
+        // Helper to construct a number input row
+        const createNumberRow = (id, title, desc, defaultVal, min = 10, max = 95) => {
+            const wrapper = document.createElement("div");
+            wrapper.className = "toggle-row number-input-row";
+
+            const meta = document.createElement("div");
+            meta.className = "setting-meta";
+
+            const titleSpan = document.createElement("span");
+            titleSpan.className = "toggle-label";
+            titleSpan.textContent = title;
+
+            const descSpan = document.createElement("span");
+            descSpan.className = "setting-desc";
+            descSpan.textContent = desc;
+
+            meta.appendChild(titleSpan);
+            meta.appendChild(descSpan);
+
+            const input = document.createElement("input");
+            input.type = "number";
+            input.id = id;
+            input.min = min;
+            input.max = max;
+            input.value = defaultVal;
+            input.className = "setting-number-input";
+            input.style.width = "65px";
+            input.style.padding = "4px 8px";
+            input.style.borderRadius = "var(--borderRadius)";
+            input.style.border = "1px solid var(--border-primary)";
+            input.style.background = "var(--bg-secondary)";
+            input.style.color = "var(--text-primary)";
+
+            wrapper.appendChild(meta);
+            wrapper.appendChild(input);
+            grid.appendChild(wrapper);
+
+            return input;
+        };
+
+        this.minContextPrefillInput = createNumberRow("accordion-min-prefill", "Min Context Pre-fill (%)", "Aggressively cull dialogue history down to this limit when max pre-fill is exceeded.", 40, 10, 90);
+        this.maxContextPrefillInput = createNumberRow("accordion-max-prefill", "Max Context Pre-fill (%)", "Sliding window upper threshold before culling triggers.", 80, 20, 98);
 
         this.container.appendChild(this.settingsAccordion);
 
@@ -232,6 +276,36 @@ export class SessionArtifactsPanel extends Block {
             localStorage.setItem("aiAllowRunCommand", checked);
             if (ui.aiManager.activeSession) {
                 ui.aiManager.activeSession.allowRunCommand = checked;
+                await workspaceClient.setSession(ui.aiManager.activeSession.id, ui.aiManager.activeSession);
+            }
+        });
+
+        this.autoMilestonesCheckbox.addEventListener("change", async (e) => {
+            const checked = e.target.checked;
+            if (ui.aiManager.activeSession) {
+                ui.aiManager.activeSession.autoMilestones = checked;
+                await workspaceClient.setSession(ui.aiManager.activeSession.id, ui.aiManager.activeSession);
+            }
+        });
+
+        this.minContextPrefillInput.addEventListener("change", async (e) => {
+            let val = parseInt(e.target.value);
+            if (isNaN(val) || val < 10) val = 10;
+            if (val > 90) val = 90;
+            e.target.value = val;
+            if (ui.aiManager.activeSession) {
+                ui.aiManager.activeSession.contextPrefillMinPercentage = val;
+                await workspaceClient.setSession(ui.aiManager.activeSession.id, ui.aiManager.activeSession);
+            }
+        });
+
+        this.maxContextPrefillInput.addEventListener("change", async (e) => {
+            let val = parseInt(e.target.value);
+            if (isNaN(val) || val < 20) val = 20;
+            if (val > 98) val = 98;
+            e.target.value = val;
+            if (ui.aiManager.activeSession) {
+                ui.aiManager.activeSession.contextPrefillMaxPercentage = val;
                 await workspaceClient.setSession(ui.aiManager.activeSession.id, ui.aiManager.activeSession);
             }
         });
@@ -422,12 +496,15 @@ export class SessionArtifactsPanel extends Block {
         this.tasksAccordion.applyState(session._accordionStates.tasks !== false);
         this.backupsAccordion.applyState(session._accordionStates.backups !== false);
 
-        // Update checkbox toggles
+        // Update checkbox toggles and numeric inputs
         this.agentModeCheckbox.checked = session.agentMode ?? (ui.aiManager.agentMode || false);
         this.planningModeCheckbox.checked = session.planningMode ?? (ui.aiManager.planningMode || false);
         this.forgivenessModeCheckbox.checked = session.forgivenessMode ?? (ui.aiManager.forgivenessMode || false);
         this.allowSubAgentsCheckbox.checked = session.allowSubAgents !== false;
         this.allowRunCommandCheckbox.checked = session.allowRunCommand !== false;
+        this.autoMilestonesCheckbox.checked = session.autoMilestones ?? (ui.aiManager.config?.defaultAutoMilestones !== false);
+        this.minContextPrefillInput.value = session.contextPrefillMinPercentage ?? (ui.aiManager.config?.contextPrefillMinPercentage || 40);
+        this.maxContextPrefillInput.value = session.contextPrefillMaxPercentage ?? (ui.aiManager.config?.contextPrefillMaxPercentage || 80);
 
         // Render implementation plan content if not editing
         if (!this.planEditorInstance) {
@@ -511,10 +588,23 @@ export class SessionArtifactsPanel extends Block {
             const undoAllContainer = document.createElement("div");
             undoAllContainer.className = "undo-all-container";
             undoAllContainer.style.display = "flex";
-            undoAllContainer.style.justifyContent = "flex-end";
+            undoAllContainer.style.justifyContent = "space-between";
+            undoAllContainer.style.alignItems = "center";
             undoAllContainer.style.padding = "4px 8px 8px 8px";
             undoAllContainer.style.borderBottom = "1px solid var(--border)";
             undoAllContainer.style.marginBottom = "8px";
+
+            const setMilestoneBtn = new Button("Set Milestone");
+            setMilestoneBtn.icon = "flag";
+            setMilestoneBtn.className = "secondary";
+            setMilestoneBtn.title = "Mark a new checkpoint milestone. Future edits will create new rollback versions without overwriting previous checkpoints.";
+            setMilestoneBtn.onclick = async () => {
+                session.lastMilestoneTimestamp = Date.now();
+                session.lastModified = Date.now();
+                await workspaceClient.setSession(session.id, session);
+                window.modal.toast("Checkpoint milestone created.");
+                this.update();
+            };
 
             const undoAllBtn = new Button("Undo All");
             undoAllBtn.icon = "undo";
@@ -633,6 +723,7 @@ export class SessionArtifactsPanel extends Block {
                 this.update();
             };
 
+            undoAllContainer.appendChild(setMilestoneBtn);
             undoAllContainer.appendChild(undoAllBtn);
             this.backupsList.appendChild(undoAllContainer);
 

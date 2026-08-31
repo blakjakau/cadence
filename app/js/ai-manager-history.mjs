@@ -368,6 +368,7 @@ class AIManagerHistory {
 
 		// Collect IDs of messages that have been summarized to skip rendering them directly in the chat history
 		const summarizedIds = new Set();
+		let lastSummarizedIdx = -1;
 		const summaries = this.chatHistory.filter(msg => msg.type === "cycle_summary");
 		for (const summary of summaries) {
 			const startId = summary.cycleStartMsgId;
@@ -379,16 +380,146 @@ class AIManagerHistory {
 					for (let j = startIdx; j <= endIdx; j++) {
 						summarizedIds.add(this.chatHistory[j].id);
 					}
+					if (endIdx > lastSummarizedIdx) {
+						lastSummarizedIdx = endIdx;
+					}
 				}
+			}
+		}
+
+		// In condensedViewMode: identify the current cycle messages (after the last cycle summary)
+		// and determine the allowed message IDs.
+		// Rule: If currently generating, active turn is the streaming block, so keep only the previous 1 completed turn from history.
+		// If idle (not generating), keep the last 2 completed turns (current turn + previous turn).
+		const runningSession = this.manager.runningSessions.get(this.manager.activeSessionId);
+		const hasActiveStreaming = !!(runningSession && runningSession.responseBlock);
+		const condensedAllowedIds = new Set();
+
+		if (this.manager.condensedViewMode && !this.manager.rawViewMode) {
+			// Find all unsummarized, non-file_context, non-cycle_summary messages (the active cycle)
+			const activeCycleMessages = [];
+			for (let i = lastSummarizedIdx + 1; i < this.chatHistory.length; i++) {
+				const msg = this.chatHistory[i];
+				if (msg.type !== 'file_context' && !summarizedIds.has(msg.id) && msg.type !== 'cycle_summary') {
+					activeCycleMessages.push(msg);
+				}
+			}
+
+			// Group active cycle messages into discrete user-initiated or assistant turns
+			const turns = [];
+			let currentTurn = [];
+			for (const msg of activeCycleMessages) {
+				if (msg.type === "user" || msg.type === "model" || msg.type === "error") {
+					if (currentTurn.length > 0) {
+						turns.push(currentTurn);
+					}
+					currentTurn = [msg];
+				} else {
+					currentTurn.push(msg);
+				}
+			}
+			if (currentTurn.length > 0) {
+				turns.push(currentTurn);
+			}
+
+			// If we have an active streaming block, that streaming block is the "current turn".
+			// So from existing completed history, we only keep the 1 latest turn (the previous turn).
+			// If not streaming, we keep the last 2 turns (current completed turn + previous completed turn).
+			const countToKeep = hasActiveStreaming ? 1 : 2;
+			const turnsToKeep = turns.slice(-countToKeep);
+			for (const turn of turnsToKeep) {
+				for (const msg of turn) {
+					condensedAllowedIds.add(msg.id);
+				}
+			}
+		}
+
+		// Collect and build past cycle summaries block
+		let cycleSummariesWrapper = null;
+		const cycleSummaryMessages = [];
+		if (!this.manager.rawViewMode) {
+			for (let i = 0; i < this.chatHistory.length; i++) {
+				const message = this.chatHistory[i];
+				if (message.type === "cycle_summary") {
+					cycleSummaryMessages.push({ message, index: i });
+				}
+			}
+
+			if (cycleSummaryMessages.length > 0) {
+				const lastSummaryObj = cycleSummaryMessages[cycleSummaryMessages.length - 1].message;
+				const newestTitle = lastSummaryObj.title || (lastSummaryObj.content ? (lastSummaryObj.content.split(/[.\n]/)[0].trim().substring(0, 75) + "...") : "Task Cycle Compacted");
+				const olderCount = cycleSummaryMessages.length - 1;
+				const groupTitleText = olderCount > 0 ? `${newestTitle} (+${olderCount} older cycle${olderCount > 1 ? 's' : ''})` : newestTitle;
+
+				cycleSummariesWrapper = new Block();
+				cycleSummariesWrapper.className = "cycle-summaries-group-block";
+
+				const groupHeader = new Block();
+				groupHeader.className = "cycle-summaries-group-header";
+
+				const groupExpandIcon = new Icon();
+				groupExpandIcon.className = "cycle-summaries-group-expand-icon";
+				groupExpandIcon.textContent = "chevron_right";
+
+				const groupTypeIcon = new Icon();
+				groupTypeIcon.className = "cycle-summaries-group-type-icon";
+				groupTypeIcon.textContent = "compress";
+
+				const groupTitleSpan = new Inline();
+				groupTitleSpan.className = "cycle-summaries-group-title";
+				groupTitleSpan.textContent = groupTitleText;
+
+				const groupCountBadge = new Inline();
+				groupCountBadge.className = "cycle-summaries-group-badge";
+				groupCountBadge.textContent = `${cycleSummaryMessages.length} cycle${cycleSummaryMessages.length > 1 ? 's' : ''}`;
+
+				groupHeader.append(groupExpandIcon, groupTypeIcon, groupTitleSpan, groupCountBadge);
+
+				const groupBody = new Block();
+				groupBody.className = "cycle-summaries-group-body";
+
+				for (const { message, index } of cycleSummaryMessages) {
+					const summaryElement = this._createMessageElement(message, index);
+					if (summaryElement) {
+						groupBody.append(summaryElement);
+					}
+				}
+
+				groupHeader.onclick = (e) => {
+					e.stopPropagation();
+					if (cycleSummariesWrapper.hasAttribute("expanded")) {
+						cycleSummariesWrapper.removeAttribute("expanded");
+					} else {
+						cycleSummariesWrapper.setAttribute("expanded", "");
+					}
+				};
+
+				cycleSummariesWrapper.append(groupHeader, groupBody);
 			}
 		}
 
 		// Use the new element factory for each message in the history
 		let currentModelTurnContent = null;
+		let cycleSummariesAppended = false;
+
 		for (let i = 0; i < this.chatHistory.length; i++) {
 			const message = this.chatHistory[i];
 			if (message.type === 'file_context') continue;
 			if (summarizedIds.has(message.id)) continue;
+
+			if (message.type === 'cycle_summary') {
+				if (!this.manager.rawViewMode) {
+					if (!cycleSummariesAppended && cycleSummariesWrapper) {
+						this.conversationArea.append(cycleSummariesWrapper);
+						cycleSummariesAppended = true;
+					}
+					continue;
+				}
+			}
+
+			if (this.manager.condensedViewMode && !this.manager.rawViewMode && message.type !== 'cycle_summary' && !condensedAllowedIds.has(message.id)) {
+				continue;
+			}
 			
 			const element = this.manager.rawViewMode
 				? this._createExpanderMessageElement(message, i)
@@ -421,16 +552,12 @@ class AIManagerHistory {
 		}
 
 		// Re-append the active streaming block if we are currently processing/generating
-		const runningSession = this.manager.runningSessions.get(this.manager.activeSessionId);
 		if (runningSession && runningSession.responseBlock) {
 			this.conversationArea.append(runningSession.responseBlock);
 		}
 
 		// Manage default expanded state:
-		// If there is an active streaming turn, previous model turns collapse unless manually opened.
-		// If no active streaming turn, only the LAST model turn stays open unless previous ones were manually opened.
 		const modelTurnBlocks = Array.from(this.conversationArea.querySelectorAll(".model-turn-block"));
-		const hasActiveStreaming = !!(runningSession && runningSession.responseBlock);
 
 		modelTurnBlocks.forEach((block, idx) => {
 			const isLast = (idx === modelTurnBlocks.length - 1);
@@ -441,9 +568,9 @@ class AIManagerHistory {
 			} else if (manuallyExpanded === "false") {
 				block.removeAttribute("expanded");
 			} else {
-				// No manual override by user:
-				// If streaming, keep the streaming one open, previous ones closed.
-				// If idle, keep the last model turn open, previous ones closed.
+				// In condensed view:
+				// If streaming: active streaming block is expanded, previous turn is collapsed.
+				// If idle: only the last turn is kept open if desired, or collapsed.
 				if (hasActiveStreaming) {
 					if (block.classList.contains("streaming") || isLast) {
 						block.setAttribute("expanded", "");
@@ -451,10 +578,15 @@ class AIManagerHistory {
 						block.removeAttribute("expanded");
 					}
 				} else {
-					if (isLast) {
-						block.setAttribute("expanded", "");
-					} else {
+					if (this.manager.condensedViewMode && !this.manager.rawViewMode) {
+						// In condensed mode when idle, previous turns are collapsed
 						block.removeAttribute("expanded");
+					} else {
+						if (isLast) {
+							block.setAttribute("expanded", "");
+						} else {
+							block.removeAttribute("expanded");
+						}
 					}
 				}
 			}
@@ -525,6 +657,10 @@ class AIManagerHistory {
 
 	createStreamingBlock(messageId, type = "model", sessionId = null) {
 		const targetSessionId = sessionId || this.manager.activeSessionId;
+		if (this.manager.condensedViewMode && !this.manager.rawViewMode && this.manager.isSessionViewed(targetSessionId)) {
+			// Trigger a clean re-render to enforce the condensed window (previous turn + new active turn)
+			this.render();
+		}
 		if (this.manager.rawViewMode) {
 			const message = { id: messageId, type, content: "" };
 			const element = this._createExpanderMessageElement(message, this.chatHistory.length);
@@ -661,9 +797,10 @@ class AIManagerHistory {
 			responseBlock.activeSegmentDiv = null;
 			
 			let pendingFullResponse = null;
+			let pendingToolCalls = null;
 			let rafId = null;
 
-			const applyUpdate = (fullResponse) => {
+			const applyUpdate = (fullResponse, toolCalls = null) => {
 				if (fullResponse) {
 					const prefillContainer = responseBlock.querySelector('.prefill-progress-container');
 					if (prefillContainer) {
@@ -671,9 +808,11 @@ class AIManagerHistory {
 					}
 				}
 				
+				const liveMsgObj = { id: messageId, toolCalls: toolCalls || [] };
+
 				// Update live summary
-				summarySpan.innerHTML = this.manager.messageRenderer.getModelTurnSummary(fullResponse, { id: messageId });
-				tokensSpan.innerHTML = this.manager.messageRenderer.getModelTurnTokens(fullResponse, { id: messageId });
+				summarySpan.innerHTML = this.manager.messageRenderer.getModelTurnSummary(fullResponse, liveMsgObj);
+				tokensSpan.innerHTML = this.manager.messageRenderer.getModelTurnTokens(fullResponse, liveMsgObj);
 
 				const segments = this.manager.messageRenderer.segmentContent(fullResponse);
 				
@@ -689,7 +828,9 @@ class AIManagerHistory {
 					const existingExpander = responseBlock.activeSegmentDiv.querySelector('.tool-call-preview-expander');
 					const wasUserClosed = existingExpander && existingExpander.dataset.userToggled === 'true' && !existingExpander.open;
 
-					this.manager.messageRenderer.renderResponseSegment(responseBlock.activeSegmentDiv, finalizedText, null, true);
+					// Finalized/earlier segments must not render the trailing tool calls of the active message
+					const finalizedMsgObj = { id: messageId, toolCalls: [] };
+					this.manager.messageRenderer.renderResponseSegment(responseBlock.activeSegmentDiv, finalizedText, finalizedMsgObj, true);
 					// Attach code block buttons once the segment is closed/finalized
 					this.manager.messageRenderer.addCodeBlockButtons(responseBlock.activeSegmentDiv);
 					
@@ -711,7 +852,7 @@ class AIManagerHistory {
 				const existingExpander = responseBlock.activeSegmentDiv.querySelector('.tool-call-preview-expander');
 				const wasUserClosed = existingExpander && existingExpander.dataset.userToggled === 'true' && !existingExpander.open;
 
-				this.manager.messageRenderer.renderResponseSegment(responseBlock.activeSegmentDiv, activeText, null, true);
+				this.manager.messageRenderer.renderResponseSegment(responseBlock.activeSegmentDiv, activeText, liveMsgObj, true);
 				// NOTE: Action buttons are delayed until this block is closed by new segments or generation finishes
 
 				if (wasUserClosed) {
@@ -727,20 +868,21 @@ class AIManagerHistory {
 				}
 			};
 
-			responseBlock.updateContent = (fullResponse, immediate = false) => {
+			responseBlock.updateContent = (fullResponse, immediate = false, toolCalls = null) => {
 				pendingFullResponse = fullResponse;
+				if (toolCalls) pendingToolCalls = toolCalls;
 				if (immediate) {
 					if (rafId) {
 						cancelAnimationFrame(rafId);
 						rafId = null;
 					}
-					applyUpdate(pendingFullResponse);
+					applyUpdate(pendingFullResponse, pendingToolCalls);
 					return;
 				}
 				if (!rafId) {
 					rafId = requestAnimationFrame(() => {
 						rafId = null;
-						applyUpdate(pendingFullResponse);
+						applyUpdate(pendingFullResponse, pendingToolCalls);
 					});
 				}
 			};
@@ -768,6 +910,10 @@ class AIManagerHistory {
 				this.tokenizeMessage(finalizedMessage, this.manager.runningSessions.get(targetSessionId)?.instance?.session || (this.manager.activeSessionId === targetSessionId ? this.manager.activeSession : null)).catch(err => {
 					console.warn("[HistoryManager] Async turn tokenization error:", err);
 				});
+
+				if (this.manager.condensedViewMode && !this.manager.rawViewMode && this.manager.isSessionViewed(targetSessionId)) {
+					this.render();
+				}
 			};
 
 			const runningBlock = this.manager.runningSessions.get(targetSessionId);
@@ -2582,79 +2728,95 @@ class AIManagerHistory {
 		const fileContexts = this.manager.agentMode ? [] : chatHistory.filter(msg => msg.type === "file_context");
 		let dialogueHistory = chatHistory.filter(msg => msg.type !== "file_context");
 
-		// Advanced Dialogue Pruning in Agent Mode
+		// Advanced Dialogue Pruning in Agent Mode (Dynamic sliding window with cache-friendly head tracking)
 		if (this.manager.agentMode) {
-			// Instead of a fixed message count (like 14), prune oldest dialogue turns ONLY if the estimated tokens exceed the target limit.
-			// For all providers target 40% of their MAX_CONTEXT_TOKENS (defined in their settings/props).
-			// BUT preserve ALL user instructions to maintain chronological task timeline.
-			const targetLimit = Math.max(1000, Math.floor((this.ai?.MAX_CONTEXT_TOKENS || 8192) * 0.4) - extraTokens);
-			const currentTokens = this.ai.estimateTokens([...fileContexts, ...dialogueHistory]);
-			if (currentTokens > targetLimit) {
-				const n = dialogueHistory.length;
-				const userPrompts = dialogueHistory.filter(msg => msg.type === "user"); // ALL kept, regardless of boundary — chronological task timeline.
+			const maxContextTokens = this.ai?.MAX_CONTEXT_TOKENS || 8192;
+			const minPct = targetSession?.contextPrefillMinPercentage ?? (this.manager.config?.contextPrefillMinPercentage || 40);
+			const maxPct = targetSession?.contextPrefillMaxPercentage ?? (this.manager.config?.contextPrefillMaxPercentage || 80);
 
-				// estimateTokens() is purely additive per message: exact msg.tokenCount when cached, else chars/3.2 — the same rule used to build currentTokens above for this very array. So a kept subset's cost equals the sum of its members' individual costs and we can walk candidate boundaries with precomputed sums (O(n)) instead of re-filtering + full re-estimation every iteration (was O(n²)).
-				// Kept set at boundary b = ALL user messages ∪ dialogueHistory[b..n) — so pruned set is exactly {i < b : non-user}. Cost(kept) = fileCtxCosts + totalDialogue − Σ(non-user costs before candidateIndex). One forward pass builds the per-message cost table and that prefix sum; each iteration below just looks up a precomputed value instead of rebuilding+re-estimating a fresh slice.
-				const msgTokenCounts = new Array(n); // exact tokenCount when cached, else chars/3.2 — same rule as estimateTokens() (read-only: never mutates message objects)
-				let totalDialogueCosts = 0;
-				for (let i = 0; i < n; i++) {
-					msgTokenCounts[i] = typeof dialogueHistory[i].tokenCount === 'number' ? dialogueHistory[i].tokenCount : this.ai.estimateTokens([dialogueHistory[i]]); // cached for later passes too (section-4 brute force below reuses it)
-					totalDialogueCosts += msgTokenCounts[i];
+			const minTargetLimit = Math.max(1000, Math.floor(maxContextTokens * (minPct / 100)) - extraTokens);
+			const maxTargetLimit = Math.max(1000, Math.floor(maxContextTokens * (maxPct / 100)) - extraTokens);
+
+			const n = dialogueHistory.length;
+			const userPrompts = dialogueHistory.filter(msg => msg.type === "user");
+
+			// Precompute token counts for dialogue history
+			const msgTokenCounts = new Array(n);
+			let totalDialogueCosts = 0;
+			for (let i = 0; i < n; i++) {
+				msgTokenCounts[i] = typeof dialogueHistory[i].tokenCount === 'number' ? dialogueHistory[i].tokenCount : this.ai.estimateTokens([dialogueHistory[i]]);
+				totalDialogueCosts += msgTokenCounts[i];
+			}
+			const fileContextTotalTokens = this.ai.estimateTokens(fileContexts);
+
+			const nonUserPrunedCostBefore = new Array(n + 1);
+			nonUserPrunedCostBefore[0] = 0;
+			for (let i = 0; i < n; i++) {
+				nonUserPrunedCostBefore[i + 1] = nonUserPrunedCostBefore[i] + (dialogueHistory[i].type !== "user" ? msgTokenCounts[i] : 0);
+			}
+
+			// Locate current window head index if stored on the session
+			let currentHeadIndex = 0;
+			if (targetSession?.contextHeadMsgId) {
+				const foundIdx = dialogueHistory.findIndex(m => m.id === targetSession.contextHeadMsgId);
+				if (foundIdx !== -1) {
+					currentHeadIndex = foundIdx;
 				}
+			}
 
+			// Calculate estimated context tokens from current window head
+			// Pair candidateIndex properly
+			if (dialogueHistory[currentHeadIndex]?.type === "tool_response" && currentHeadIndex > 0) {
+				currentHeadIndex = currentHeadIndex - 1;
+			}
+			const currentHeadTokens = fileContextTotalTokens + totalDialogueCosts - nonUserPrunedCostBefore[currentHeadIndex];
 
-				const fileContextTotalTokens = this.ai.estimateTokens(fileContexts); // agent mode: always [] (file contexts already partitioned out), one estimate call either way.
+			let sliceIndex = currentHeadIndex;
 
-				const nonUserPrunedCostBefore = new Array(n + 1); // Cost of NON-USER messages at index < i — one O(n) prepass. User prompts are always kept (chronological task timeline), so only non-user costs can ever be pruned away by a boundary advance; users never enter this table, which is exactly what makes each step below an O(1) lookup instead of re-filtering + full re-estimation every time (which was O(n²)).
-				nonUserPrunedCostBefore[0] = 0;
-				for (let i = 0; i < n; i++) {
-					nonUserPrunedCostBefore[i + 1] = nonUserPrunedCostBefore[i] + (dialogueHistory[i].type !== "user" ? msgTokenCounts[i] : 0);
-				}
-
-				// Search backwards to find the maximum number of recent dialogue turns we can keep. The pairing fixup below is unchanged from before: if a candidate message is a tool_response, its model turn must stay with it (pulled one index earlier). Kept set at boundary b = ALL user messages ∪ dialogueHistory[b..n), so cost(kept) = fileCtx + totalDialogue − nonUserPrunedCostBefore[candidateIndex] — O(1) per step.
-				let sliceIndex = 0;
+			// If current context exceeds maxTargetLimit (e.g. 80%), aggressively cull back down to minTargetLimit (e.g. 40%)
+			if (currentHeadTokens > maxTargetLimit) {
 				for (let count = 1; count <= n; count++) {
 					const rawBoundary = n - count;
-
-					// Fix paired pruning boundary:
-					// If the candidate message is a tool_response, we must keep its model message as well.
 					let candidateIndex = dialogueHistory[rawBoundary].type === "tool_response" && rawBoundary > 0 ? rawBoundary - 1 : rawBoundary;
-
 					const testTokens = fileContextTotalTokens + totalDialogueCosts - nonUserPrunedCostBefore[candidateIndex];
-					
-					if (testTokens <= targetLimit) {
+					if (testTokens <= minTargetLimit) {
 						sliceIndex = candidateIndex;
 					} else {
-						break; // First boundary that doesn't fit — stop, same as before.
+						break;
 					}
 				}
+			}
 
-				if (sliceIndex > 0) {
-					const recentHistory = dialogueHistory.slice(sliceIndex);
-					const keepIds = new Set();
-					userPrompts.forEach(m => keepIds.add(m.id));
-					recentHistory.forEach(m => keepIds.add(m.id));
-					
-					const newDialogueHistory = [];
-					let lastKeptIndex = -1;
-					
-					for (let i = 0; i < dialogueHistory.length; i++) {
-						if (keepIds.has(dialogueHistory[i].id)) {
-							const skipped = i - lastKeptIndex - 1;
-							if (skipped > 0) {
-								newDialogueHistory.push({
-									id: `pruned-gap-${i}`,
-									role: "system",
-									type: "system_message",
-									content: `[${skipped} turns pruned for context length]`
-								});
-							}
-							newDialogueHistory.push(dialogueHistory[i]);
-							lastKeptIndex = i;
+			// Update tracked window head on session
+			if (targetSession && dialogueHistory[sliceIndex]) {
+				targetSession.contextHeadMsgId = dialogueHistory[sliceIndex].id;
+			}
+
+			if (sliceIndex > 0) {
+				const recentHistory = dialogueHistory.slice(sliceIndex);
+				const keepIds = new Set();
+				userPrompts.forEach(m => keepIds.add(m.id));
+				recentHistory.forEach(m => keepIds.add(m.id));
+				
+				const newDialogueHistory = [];
+				let lastKeptIndex = -1;
+				
+				for (let i = 0; i < dialogueHistory.length; i++) {
+					if (keepIds.has(dialogueHistory[i].id)) {
+						const skipped = i - lastKeptIndex - 1;
+						if (skipped > 0) {
+							newDialogueHistory.push({
+								id: `pruned-gap-${i}`,
+								role: "system",
+								type: "system_message",
+								content: `[${skipped} turns pruned for context length]`
+							});
 						}
+						newDialogueHistory.push(dialogueHistory[i]);
+						lastKeptIndex = i;
 					}
-					dialogueHistory = newDialogueHistory;
 				}
+				dialogueHistory = newDialogueHistory;
 			}
 		}
 

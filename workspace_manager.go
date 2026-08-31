@@ -377,7 +377,31 @@ func checkSyntaxHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ext := strings.ToLower(filepath.Ext(req.Path))
-	if ext != ".js" && ext != ".mjs" && ext != ".cjs" && ext != ".json" {
+	if ext == ".json" {
+		w.Header().Set("Content-Type", "application/json")
+		if !json.Valid([]byte(req.Content)) {
+			// Find detailed error using json.Unmarshal
+			var dummy interface{}
+			jsonErr := json.Unmarshal([]byte(req.Content), &dummy)
+			errMsg := "Invalid JSON syntax"
+			if jsonErr != nil {
+				errMsg = jsonErr.Error()
+			}
+			json.NewEncoder(w).Encode(SyntaxCheckResponse{
+				Valid:         false,
+				Error:         errMsg,
+				NodeAvailable: true,
+			})
+			return
+		}
+		json.NewEncoder(w).Encode(SyntaxCheckResponse{
+			Valid:         true,
+			NodeAvailable: true,
+		})
+		return
+	}
+
+	if ext != ".js" && ext != ".mjs" && ext != ".cjs" {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(SyntaxCheckResponse{
 			Valid:         true,

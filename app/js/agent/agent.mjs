@@ -180,7 +180,7 @@ export class Agent {
 							aiManager._stopGlow(session.id);
 						}
 						const shouldScroll = aiManager._shouldAutoScroll();
-						responseBlock.updateContent(fullResponse);
+						responseBlock.updateContent(fullResponse, false, callbacks.toolCalls);
 						if (aiManager.isSessionViewed(session.id) && shouldScroll && aiManager.conversationArea) {
 							aiManager.scrollToBottom(true);
 						}
@@ -504,6 +504,64 @@ export class Agent {
 							aiManager._dispatchContextUpdate("append_model");
 						}
 						return;
+					}
+
+					// Check if the response contains anything other than thought blocks or XML tags
+					const strippedThoughts = (responseContent || "")
+						.replace(/<thought>[\s\S]*?<\/thought>/gi, '')
+						.replace(/<think>[\s\S]*?<\/think>/gi, '')
+						.replace(/<\|channel>thought[\s\S]*?<channel\|>/gi, '')
+						.replace(/<tool_call[\s\S]*?<\/tool_call>/gi, '')
+						.replace(/<[^>]*>/g, '')
+						.trim();
+
+					// If the model finished without making a tool-call and produced no output other than thought:
+					// Crop the turn (remove incomplete/empty model turn) and automatically resubmit the last user/system turn.
+					if (strippedThoughts.length === 0) {
+						if (this.emptyTurnRetryCount === undefined) {
+							this.emptyTurnRetryCount = 0;
+						}
+
+						if (this.emptyTurnRetryCount < 5) {
+							this.emptyTurnRetryCount++;
+							console.warn(`⚠️ [Agent Empty Output / Thought Only] Model finished without tool calls or output text. Cropping turn and resubmitting (Attempt ${this.emptyTurnRetryCount} of 5)...`);
+
+							// 1. Remove empty/thought-only model turn from session history
+							if (session && session.messages) {
+								session.messages = session.messages.filter(m => m.id !== modelMessageId);
+								session.lastModified = Date.now();
+								await workspaceClient.setSession(session.id, session);
+							}
+
+							// 2. Remove the response block element from the DOM
+							if (responseBlock && typeof responseBlock.remove === "function") {
+								responseBlock.remove();
+							}
+
+							// 3. Re-render UI to keep conversation clean
+							if (aiManager.isSessionViewed(session.id)) {
+								aiManager.historyManager.render();
+							}
+
+							// 4. Show brief progress indicator
+							const retryProgress = document.createElement("div");
+							retryProgress.className = "agent-tool-progress";
+							retryProgress.innerHTML = `<ui-icon class="spin">cached</ui-icon> <span>No tool call made. Resubmitting turn (Attempt ${this.emptyTurnRetryCount} of 5)...</span>`;
+							if (aiManager.isSessionViewed(session.id)) {
+								aiManager.conversationArea.append(retryProgress);
+								if (aiManager._shouldAutoScroll() && aiManager.conversationArea) {
+									aiManager.conversationArea.scrollTop = aiManager.conversationArea.scrollHeight;
+								}
+							}
+							await new Promise(r => setTimeout(r, 1000));
+							retryProgress.remove();
+
+							loopCount--; // Retry this turn iteration
+							continue;
+						} else {
+							console.error("❌ [Agent Empty Output] 5 resubmit attempts exhausted.");
+							this.emptyTurnRetryCount = 0;
+						}
 					}
 
 					// Sub-agents MUST always end with a tool call — re-inject a directive instead of halting
@@ -945,6 +1003,12 @@ export class Agent {
 				}
 
 				if (hasPlan || hasDone) {
+					const shouldAutoMilestone = session.autoMilestones ?? (aiManager.config?.defaultAutoMilestones !== false);
+					if (shouldAutoMilestone) {
+						session.lastMilestoneTimestamp = Date.now();
+					}
+					session.lastModified = Date.now();
+					await workspaceClient.setSession(session.id, session);
 					aiManager.setSessionProcessing(session.id, false);
 					if (hasPlan) {
 						aiManager._updateTabStatus(session.id, "halted");

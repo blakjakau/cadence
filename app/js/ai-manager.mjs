@@ -80,12 +80,15 @@ class AIManager {
 		this.config = {
 			summarizeThreshold: parseInt(localStorage.getItem("summarizeThreshold") || "85"),
 			summarizeTargetPercentage: parseInt(localStorage.getItem("summarizeTargetPercentage") || "50"),
+			contextPrefillMinPercentage: parseInt(localStorage.getItem("contextPrefillMinPercentage") || "40"),
+			contextPrefillMaxPercentage: parseInt(localStorage.getItem("contextPrefillMaxPercentage") || "80"),
 			defaultAgentMode: localStorage.getItem("defaultAgentMode") === "true",
 			defaultPlanningMode: localStorage.getItem("defaultPlanningMode") !== "false",
 			defaultForgivenessMode: localStorage.getItem("aiForgivenessMode") === "true",
 			maxSubAgents: parseInt(localStorage.getItem("maxSubAgents") || "3"),
 			defaultAllowSubAgents: localStorage.getItem("defaultAllowSubAgents") !== "false",
 			defaultAllowRunCommand: localStorage.getItem("defaultAllowRunCommand") !== "false",
+			defaultAutoMilestones: localStorage.getItem("defaultAutoMilestones") !== "false",
 		};
 		// NEW: Session TabBar properties
 		this.sessionTabBar = null;
@@ -519,6 +522,13 @@ class AIManager {
 		this.rawViewButton.title = "Toggle Raw / Expander View";
 		this.rawViewButton.classList.add("raw-view-button");
 		this.rawViewButton.onclick = () => this.toggleRawView();
+
+		this.condensedViewMode = false;
+		this.condensedViewButton = new Button("");
+		this.condensedViewButton.icon = "compress";
+		this.condensedViewButton.title = "Toggle Condensed / Detailed View (Shows current & previous turn only)";
+		this.condensedViewButton.classList.add("condensed-view-button");
+		this.condensedViewButton.onclick = () => this.toggleCondensedView();
 
 		this.sessionTabBar.append(this.historyButton, this.newSessionButton)
 
@@ -1066,6 +1076,7 @@ class AIManager {
 		buttonContainer.append(this.artifactsButton);
 		buttonContainer.append(this.aiInfoDisplay); // Element is created, but content will be set by _updateAIInfoDisplay()
 		buttonContainer.append(this.thinkingBudgetSelect);
+		buttonContainer.append(this.condensedViewButton); // Add condensed vs detailed toggle
 		buttonContainer.append(this.rawViewButton); // Add raw view button
 		buttonContainer.append(this.settingsButton);
 		this.stopButton = new Button("Stop");
@@ -1835,6 +1846,14 @@ class AIManager {
 		this.historyManager.render();
 	}
 
+	toggleCondensedView() {
+		this.condensedViewMode = !this.condensedViewMode;
+		this.condensedViewButton.icon = this.condensedViewMode ? "compress" : "expand";
+		this.condensedViewButton.title = this.condensedViewMode ? "Switch to Detailed View" : "Switch to Condensed View (Current & Previous Turn Only)";
+		this.condensedViewButton.classList.toggle("active", this.condensedViewMode);
+		this.historyManager.render();
+	}
+
 	// --- Session Management Delegation ---
 	get allSessionMetadata() { return this.sessionsManager.allSessionMetadata; }
 	set allSessionMetadata(val) { this.sessionsManager.allSessionMetadata = val; }
@@ -2445,10 +2464,14 @@ class AIManager {
 									const filePathForBackup = tab.config.path;
 									let backupId = "";
 									const activeSession = targetSession;
-									const hasExistingBackup = activeSession && activeSession.modifiedFiles && activeSession.modifiedFiles[filePathForBackup] && activeSession.modifiedFiles[filePathForBackup].length > 0;
+									const existingBackups = (activeSession?.modifiedFiles && activeSession.modifiedFiles[filePathForBackup]) || [];
+									const milestoneTs = activeSession?.lastMilestoneTimestamp || 0;
+									const currentMilestoneBackup = existingBackups.length > 0 && existingBackups[existingBackups.length - 1].timestamp >= milestoneTs
+										? existingBackups[existingBackups.length - 1]
+										: null;
 
-									if (hasExistingBackup) {
-										backupId = activeSession.modifiedFiles[filePathForBackup][0].backupId;
+									if (currentMilestoneBackup) {
+										backupId = currentMilestoneBackup.backupId;
 									} else {
 										try {
 											const actId = modelMessage.id || activeSession?.id || "default";
@@ -3549,10 +3572,14 @@ ${contextText}`;
 									const filePathForBackup = tab.config.path;
 									let backupId = "";
 									const activeSession = this.activeSession;
-									const hasExistingBackup = activeSession && activeSession.modifiedFiles && activeSession.modifiedFiles[filePathForBackup] && activeSession.modifiedFiles[filePathForBackup].length > 0;
+									const existingBackups = (activeSession?.modifiedFiles && activeSession.modifiedFiles[filePathForBackup]) || [];
+									const milestoneTs = activeSession?.lastMilestoneTimestamp || 0;
+									const currentMilestoneBackup = existingBackups.length > 0 && existingBackups[existingBackups.length - 1].timestamp >= milestoneTs
+										? existingBackups[existingBackups.length - 1]
+										: null;
 
-									if (hasExistingBackup) {
-										backupId = activeSession.modifiedFiles[filePathForBackup][0].backupId;
+									if (currentMilestoneBackup) {
+										backupId = currentMilestoneBackup.backupId;
 									} else {
 										try {
 											const actId = modelMessage.id || activeSession?.id || "default";

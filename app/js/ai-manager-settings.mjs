@@ -72,10 +72,13 @@ class AIManagerSettings {
             "use-workspace-settings": useWorkspaceSettings,
             summarizeThreshold: aiManager.config.summarizeThreshold,
             summarizeTargetPercentage: aiManager.config.summarizeTargetPercentage,
+            contextPrefillMinPercentage: aiManager.config.contextPrefillMinPercentage ?? 40,
+            contextPrefillMaxPercentage: aiManager.config.contextPrefillMaxPercentage ?? 80,
             defaultAgentMode: aiManager.config.defaultAgentMode,
             defaultPlanningMode: aiManager.config.defaultPlanningMode,
             defaultAllowSubAgents: aiManager.config.defaultAllowSubAgents ?? true,
             defaultAllowRunCommand: aiManager.config.defaultAllowRunCommand ?? true,
+            defaultAutoMilestones: aiManager.config.defaultAutoMilestones ?? true,
             systemPromptSpecialization: systemPromptConfig.specialization,
             systemPromptTechnologies: (systemPromptConfig.technologies || []).join(", "),
             systemPromptAvoidedTechnologies: (systemPromptConfig.avoidedTechnologies || []).join(", "),
@@ -95,6 +98,9 @@ class AIManagerSettings {
             { type: "checkbox", id: "defaultPlanningMode", label: "Default Planning Mode for New Chats" },
             { type: "checkbox", id: "defaultAllowSubAgents", label: "Default Allow Sub-Agents for New Chats" },
             { type: "checkbox", id: "defaultAllowRunCommand", label: "Default Allow Terminal Commands for New Chats" },
+            { type: "checkbox", id: "defaultAutoMilestones", label: "Default Auto-Milestones on 'done' for New Chats" },
+            { type: "number", id: "contextPrefillMinPercentage", label: "Default Min Context Pre-fill Limit (%)" },
+            { type: "number", id: "contextPrefillMaxPercentage", label: "Default Max Context Pre-fill Limit (%)" },
             { type: "number", id: "summarizeThreshold", label: "Summarize History When Context Reaches (%)" },
             { type: "number", id: "summarizeTargetPercentage", label: "Percentage of Old History to Summarize" },
             { type: "heading", label: "Prompt Customisation" },
@@ -192,19 +198,25 @@ class AIManagerSettings {
     async saveSettings(values) {
         const { aiManager } = this;
 
-        // --- Save Generic Settings (Summarization, Defaults) ---
+        // --- Save Generic Settings (Summarization, Context Limits, Defaults) ---
         aiManager.config.summarizeThreshold = parseInt(values.summarizeThreshold);
         aiManager.config.summarizeTargetPercentage = parseInt(values.summarizeTargetPercentage);
+        aiManager.config.contextPrefillMinPercentage = parseInt(values.contextPrefillMinPercentage) || 40;
+        aiManager.config.contextPrefillMaxPercentage = parseInt(values.contextPrefillMaxPercentage) || 80;
         aiManager.config.defaultAgentMode = !!values.defaultAgentMode;
         aiManager.config.defaultPlanningMode = !!values.defaultPlanningMode;
         aiManager.config.defaultAllowSubAgents = !!values.defaultAllowSubAgents;
         aiManager.config.defaultAllowRunCommand = !!values.defaultAllowRunCommand;
+        aiManager.config.defaultAutoMilestones = !!values.defaultAutoMilestones;
         localStorage.setItem("summarizeThreshold", aiManager.config.summarizeThreshold);
         localStorage.setItem("summarizeTargetPercentage", aiManager.config.summarizeTargetPercentage);
+        localStorage.setItem("contextPrefillMinPercentage", aiManager.config.contextPrefillMinPercentage);
+        localStorage.setItem("contextPrefillMaxPercentage", aiManager.config.contextPrefillMaxPercentage);
         localStorage.setItem("defaultAgentMode", aiManager.config.defaultAgentMode);
         localStorage.setItem("defaultPlanningMode", aiManager.config.defaultPlanningMode);
         localStorage.setItem("defaultAllowSubAgents", aiManager.config.defaultAllowSubAgents);
         localStorage.setItem("defaultAllowRunCommand", aiManager.config.defaultAllowRunCommand);
+        localStorage.setItem("defaultAutoMilestones", aiManager.config.defaultAutoMilestones);
 
         // --- Save Forgiveness Mode ---
         aiManager.config.defaultForgivenessMode = !!values.forgivenessMode;

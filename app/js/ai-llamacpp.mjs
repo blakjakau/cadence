@@ -199,17 +199,23 @@ class LlamaCpp extends AI {
                     // Also filter out any remaining tool_call blocks from textPart
                     textPart = textPart.replace(/<tool_call[\s\S]*?<\/tool_call>/g, '').trim();
 
+                    const validToolCalls = (Array.isArray(toolCalls) ? toolCalls : []).filter(tc => tc && typeof tc === 'object');
                     formattedMessages.push({
                         role: "assistant",
                         content: textPart || null,
-                        tool_calls: toolCalls.map(tc => ({
-                            id: tc.id || `call_${crypto.randomUUID()}`,
-                            type: "function",
-                            function: {
-                                name: tc.functionCall.name,
-                                arguments: JSON.stringify(tc.functionCall.args || tc.functionCall.arguments || {})
-                            }
-                        }))
+                        tool_calls: validToolCalls.map(tc => {
+                            const name = tc?.functionCall?.name || tc?.function?.name || tc?.name || "";
+                            const rawArgs = tc?.functionCall?.args || tc?.functionCall?.arguments || tc?.function?.arguments || tc?.arguments || tc?.args || {};
+                            const argsStr = typeof rawArgs === 'string' ? rawArgs : JSON.stringify(rawArgs || {});
+                            return {
+                                id: tc?.id || `call_${crypto.randomUUID()}`,
+                                type: "function",
+                                function: {
+                                    name: name,
+                                    arguments: argsStr
+                                }
+                            };
+                        })
                     });
                 } else {
                     formattedMessages.push({ role: "assistant", content: msg.content });
@@ -225,7 +231,7 @@ class LlamaCpp extends AI {
                         // Find matching tool call to get the ID
                         let toolCallId = `call_${crypto.randomUUID()}`;
                         if (lastAssistantToolCalls) {
-                            const found = lastAssistantToolCalls.find(tc => tc.functionCall && tc.functionCall.name === toolName);
+                            const found = lastAssistantToolCalls.find(tc => (tc.functionCall?.name || tc.function?.name || tc.name) === toolName);
                             if (found && found.id) {
                                 toolCallId = found.id;
                             }
@@ -658,12 +664,12 @@ function parseRelaxedJson(str) {
         }
     }
 
-    // Capture unclosed trailing string for realtime streaming
-    const unclosedKeyRegex = /"([a-zA-Z0-9_-]+)"\s*:\s*"((?:\\.|[^"\\])*)$/;
-    const unclosedMatch = cleaned.match(unclosedKeyRegex);
-    if (unclosedMatch && !matchedKeys.has(unclosedMatch[1])) {
-        const key = unclosedMatch[1];
-        let rawVal = unclosedMatch[2];
+    // Capture unclosed string values (e.g. "replace": "some streamed text without closing quote)
+    const tailText = cleaned.substring(pairRegex.lastIndex || 0);
+    const unclosedTailMatch = tailText.match(/"([a-zA-Z0-9_-]+)"\s*:\s*"((?:\\.|[^"\\])*)$/);
+    if (unclosedTailMatch) {
+        const key = unclosedTailMatch[1];
+        let rawVal = unclosedTailMatch[2];
         try {
             rawVal = JSON.parse(`"${rawVal.replace(/\\$/,'')}"`);
         } catch (e) {
@@ -675,6 +681,34 @@ function parseRelaxedJson(str) {
                 .replace(/\\\\/g, '\\');
         }
         obj[key] = rawVal;
+    }
+
+    // Handle "edits": [ ... ] array for edit_file if present
+    if (cleaned.includes('"edits"')) {
+        const editsMatch = cleaned.match(/"edits"\s*:\s*\[([\s\S]*)/);
+        if (editsMatch) {
+            const items = [];
+            const objRegex = /\{([^{}]*)\}/g;
+            let om;
+            while ((om = objRegex.exec(editsMatch[1])) !== null) {
+                const sub = parseRelaxedJson(`{${om[1]}}`);
+                if (sub && Object.keys(sub).length > 0) {
+                    items.push(sub);
+                }
+            }
+            // Capture unclosed trailing edit object in the edits array
+            const trailingEditsText = editsMatch[1].substring(objRegex.lastIndex);
+            const unclosedObjMatch = trailingEditsText.match(/\{([^{}]*)$/);
+            if (unclosedObjMatch) {
+                const sub = parseRelaxedJson(`{${unclosedObjMatch[1]}}`);
+                if (sub && Object.keys(sub).length > 0) {
+                    items.push(sub);
+                }
+            }
+            if (items.length > 0) {
+                obj.edits = items;
+            }
+        }
     }
 
     return obj;

@@ -1323,13 +1323,19 @@ Snippet: ${r.content || r.snippet || ""}`;
 
             const isForgivenessMode = window.ui?.aiManager?.forgivenessMode === true;
             if (isForgivenessMode) {
-                // 1. Create backup if not already present in the active session
+                // 1. Create backup if not already present in the active session for the current milestone
                 let backupId = "";
                 const activeSession = window.ui?.aiManager?.activeSession;
-                const hasExistingBackup = activeSession && activeSession.modifiedFiles && activeSession.modifiedFiles[resolvedPath] && activeSession.modifiedFiles[resolvedPath].length > 0;
+                const existingBackups = (activeSession?.modifiedFiles && activeSession.modifiedFiles[resolvedPath]) || [];
+                const milestoneTs = activeSession?.lastMilestoneTimestamp || 0;
+                
+                // An existing backup is current for this milestone if it was created after the milestone
+                const currentMilestoneBackup = existingBackups.length > 0 && existingBackups[existingBackups.length - 1].timestamp >= milestoneTs 
+                    ? existingBackups[existingBackups.length - 1] 
+                    : null;
 
-                if (hasExistingBackup) {
-                    backupId = activeSession.modifiedFiles[resolvedPath][0].backupId;
+                if (currentMilestoneBackup) {
+                    backupId = currentMilestoneBackup.backupId;
                 } else {
                     try {
                         const actId = sourceId || activeSession?.id || "default";
@@ -1377,10 +1383,6 @@ Snippet: ${r.content || r.snippet || ""}`;
                     const containers = document.querySelectorAll('.plan-tasks-view');
                     containers.forEach(c => window.ui.renderPlanTasksView(c));
                 }
-
-                const backupMsg = hasExistingBackup 
-                    ? "the rollback backup has been retained" 
-                    : "a rollback backup was created";
 
                 if (syntaxCheck.valid) {
                     return `Successfully edited ${path}.`;
@@ -1569,13 +1571,18 @@ Snippet: ${r.content || r.snippet || ""}`;
 
             const isForgivenessMode = window.ui?.aiManager?.forgivenessMode === true;
             if (isForgivenessMode) {
-                // 1. Create backup if not already present in the active session
+                // 1. Create backup if not already present in the active session for the current milestone
                 let backupId = "";
                 const activeSession = window.ui?.aiManager?.activeSession;
-                const hasExistingBackup = activeSession && activeSession.modifiedFiles && activeSession.modifiedFiles[resolvedPath] && activeSession.modifiedFiles[resolvedPath].length > 0;
+                const existingBackups = (activeSession?.modifiedFiles && activeSession.modifiedFiles[resolvedPath]) || [];
+                const milestoneTs = activeSession?.lastMilestoneTimestamp || 0;
+                
+                const currentMilestoneBackup = existingBackups.length > 0 && existingBackups[existingBackups.length - 1].timestamp >= milestoneTs 
+                    ? existingBackups[existingBackups.length - 1] 
+                    : null;
 
-                if (hasExistingBackup) {
-                    backupId = activeSession.modifiedFiles[resolvedPath][0].backupId;
+                if (currentMilestoneBackup) {
+                    backupId = currentMilestoneBackup.backupId;
                 } else {
                     try {
                         const actId = sourceId || activeSession?.id || "default";
@@ -1618,10 +1625,7 @@ Snippet: ${r.content || r.snippet || ""}`;
                     containers.forEach(c => window.ui.renderPlanTasksView(c));
                 }
 
-                const backupMsg = hasExistingBackup 
-                    ? "the rollback backup has been retained" 
-                    : "a rollback backup was created";
-                return `Successfully removed lines from ${path} in Forgiveness Mode. The change has been committed directly to the file and ${backupMsg}. The tab has switched to the side-by-side Diff view for your review.`;
+                return `Successfully removed lines from ${path} in Forgiveness Mode. The tab has switched to the side-by-side Diff view for your review.`;
             }
 
             // Permission Mode: clean replacement in memory
@@ -1673,128 +1677,107 @@ Snippet: ${r.content || r.snippet || ""}`;
             const sourceLines = sourceContent.split(/\r?\n/);
 
             const aligned = this._alignAnchors(sourceLines, startLine, lineCount, startAnchor, endAnchor);
-            startLine = aligned.startLine;
-            lineCount = aligned.lineCount;
+            const startRow = aligned.startLine - 1;
+            const countVal = aligned.lineCount;
 
-            const startIdx = Math.max(0, startLine - 1);
-            const countVal = Math.max(0, lineCount);
-            const linesToCopy = sourceLines.slice(startIdx, startIdx + countVal).join('\n');
+            if (startRow >= sourceLines.length) {
+                throw new Error(`Start line ${startLine} is beyond the end of the source file (${sourceLines.length} lines).`);
+            }
 
-            // Check if destination file exists
-            let destExists = false;
-            let destTab = this._findOpenTab(cleanDestination);
-            if (destTab) {
-                destExists = true;
-            } else {
-                const files = window.ui?.fileList?.index?.files || [];
-                const normalizedDest = cleanDestination.toLowerCase();
-                const foundInIndex = files.some(f => f.path.replace(/\\/g, '/').replace(/\/+/g, '/').toLowerCase() === normalizedDest);
-                if (foundInIndex) {
-                    destExists = true;
+            const extractedLines = sourceLines.slice(startRow, startRow + countVal);
+            const linesToCopy = extractedLines.join('\n');
+
+            let destOriginalContent = "";
+            let destinationExists = true;
+            try {
+                const readResult = await this.readFile(cleanDestination, undefined, undefined, true);
+                if (readResult.startsWith("Error:")) {
+                    destinationExists = false;
                 } else {
-                    try {
-                        const readRes = await this.conduit.wsRead(cleanDestination);
-                        if (readRes && !readRes.error) {
-                            destExists = true;
+                    destOriginalContent = readResult;
+                }
+            } catch (e) {
+                destinationExists = false;
+            }
+
+            const isForgivenessMode = window.ui?.aiManager?.forgivenessMode === true;
+            const actId = sourceId || window.ui?.aiManager?.activeSession?.id || "default";
+            const activeSession = window.ui?.aiManager?.activeSession;
+            const milestoneTs = activeSession?.lastMilestoneTimestamp || 0;
+
+            if (removeFromSource) {
+                const sourceTab = this._findOpenTab(cleanSource);
+                if (!sourceTab) {
+                    throw new Error(`Failed to open source file ${cleanSource} in the editor.`);
+                }
+                const srcSession = sourceTab.config.session;
+                const srcDoc = srcSession.getDocument();
+                const Range = window.ace.require("ace/range").Range;
+
+                let rangeToRemove;
+                if (startRow + countVal < sourceLines.length) {
+                    rangeToRemove = new Range(startRow, 0, startRow + countVal, 0);
+                } else {
+                    if (startRow > 0) {
+                        const prevLineLen = srcDoc.getLine(startRow - 1).length;
+                        rangeToRemove = new Range(startRow - 1, prevLineLen, sourceLines.length - 1, srcDoc.getLine(sourceLines.length - 1).length);
+                    } else {
+                        rangeToRemove = new Range(0, 0, sourceLines.length - 1, srcDoc.getLine(sourceLines.length - 1).length);
+                    }
+                }
+
+                if (isForgivenessMode) {
+                    let srcBackupId = "";
+                    const existingSrcBackups = (activeSession?.modifiedFiles && activeSession.modifiedFiles[cleanSource]) || [];
+                    const currentSrcMilestoneBackup = existingSrcBackups.length > 0 && existingSrcBackups[existingSrcBackups.length - 1].timestamp >= milestoneTs
+                        ? existingSrcBackups[existingSrcBackups.length - 1]
+                        : null;
+
+                    if (currentSrcMilestoneBackup) {
+                        srcBackupId = currentSrcMilestoneBackup.backupId;
+                    } else {
+                        try {
+                            srcBackupId = await AgentBackup.create(cleanSource, sourceContent, actId);
+
+                            if (activeSession) {
+                                activeSession.modifiedFiles = activeSession.modifiedFiles || {};
+                                if (!activeSession.modifiedFiles[cleanSource]) {
+                                    activeSession.modifiedFiles[cleanSource] = [];
+                                }
+                                activeSession.modifiedFiles[cleanSource].push({
+                                    backupId: srcBackupId,
+                                    timestamp: Date.now(),
+                                    sourceId: actId
+                                });
+                                await workspaceClient.setSession(activeSession.id, activeSession);
+                            }
+                        } catch (e) {
+                            console.error("[AgentTools] Failed to create source backup:", e);
                         }
-                    } catch (e) {
-                        destExists = false;
+                    }
+
+                    srcSession.replace(rangeToRemove, "");
+                    if (window.saveFileTab) {
+                        await window.saveFileTab(sourceTab);
+                        srcSession.baseValue = srcSession.getValue();
+                    }
+                    sourceTab.config.viewMode = "diff";
+                    sourceTab.config.backupId = srcBackupId;
+                } else {
+                    srcSession.replace(rangeToRemove, "");
+                    sourceTab.config.viewMode = "diff";
+                    delete sourceTab.config.backupId;
+
+                    if (activeSession) {
+                        activeSession.pendingEdits = activeSession.pendingEdits || {};
+                        activeSession.pendingEdits[cleanSource] = true;
+                        await workspaceClient.setSession(activeSession.id, activeSession);
                     }
                 }
             }
 
-            if (!destExists) {
-                if (!this.conduit.isConnected) {
-                    return "Error: Conduit not connected.";
-                }
-
-                if (removeFromSource) {
-                    let sourceTab = this._findOpenTab(cleanSource);
-                    if (!sourceTab) {
-                        if (window.ui?.fileList?.open) {
-                            await window.ui.fileList.open(cleanSource, cleanSource);
-                            sourceTab = this._findOpenTab(cleanSource);
-                        }
-                    }
-                    if (!sourceTab) {
-                        throw new Error(`Failed to open source file ${cleanSource} in the editor for removal.`);
-                    }
-
-                    const srcSession = sourceTab.config.session;
-                    const srcOriginalContent = srcSession.getValue();
-                    const srcDoc = srcSession.getDocument();
-                    const srcTotalLines = srcDoc.getLength();
-                    const srcStartRow = Math.max(0, parseInt(startLine, 10) - 1);
-                    const srcCountVal = Math.max(1, parseInt(lineCount, 10));
-
-                    const Range = window.ace.require("ace/range").Range;
-                    let rangeToRemove;
-                    if (srcStartRow + srcCountVal < srcTotalLines) {
-                        rangeToRemove = new Range(srcStartRow, 0, srcStartRow + srcCountVal, 0);
-                    } else {
-                        if (srcStartRow > 0) {
-                            const prevLineLen = srcDoc.getLine(srcStartRow - 1).length;
-                            rangeToRemove = new Range(srcStartRow - 1, prevLineLen, srcTotalLines - 1, srcDoc.getLine(srcTotalLines - 1).length);
-                        } else {
-                            rangeToRemove = new Range(0, 0, srcTotalLines - 1, srcDoc.getLine(srcTotalLines - 1).length);
-                        }
-                    }
-
-                    const isForgivenessMode = window.ui?.aiManager?.forgivenessMode === true;
-                    if (isForgivenessMode) {
-                        let srcBackupId = "";
-                        const activeSession = window.ui?.aiManager?.activeSession;
-                        const hasSrcBackup = activeSession && activeSession.modifiedFiles && activeSession.modifiedFiles[cleanSource] && activeSession.modifiedFiles[cleanSource].length > 0;
-
-                        if (hasSrcBackup) {
-                            srcBackupId = activeSession.modifiedFiles[cleanSource][0].backupId;
-                        } else {
-                            try {
-                                const actId = sourceId || activeSession?.id || "default";
-                                srcBackupId = await AgentBackup.create(cleanSource, srcOriginalContent, actId);
-
-                                if (activeSession) {
-                                    activeSession.modifiedFiles = activeSession.modifiedFiles || {};
-                                    if (!activeSession.modifiedFiles[cleanSource]) {
-                                        activeSession.modifiedFiles[cleanSource] = [];
-                                    }
-                                    activeSession.modifiedFiles[cleanSource].push({
-                                        backupId: srcBackupId,
-                                        timestamp: Date.now(),
-                                        sourceId: actId
-                                    });
-                                    await workspaceClient.setSession(activeSession.id, activeSession);
-                                }
-                            } catch (e) {
-                                console.error("[AgentTools] Failed to create source backup:", e);
-                            }
-                        }
-
-                        srcSession.replace(rangeToRemove, "");
-                        if (window.saveFileTab) {
-                            await window.saveFileTab(sourceTab);
-                            srcSession.baseValue = srcSession.getValue();
-                        }
-                        sourceTab.config.viewMode = "diff";
-                        sourceTab.config.backupId = srcBackupId;
-                    } else {
-                        srcSession.replace(rangeToRemove, "");
-                        sourceTab.config.viewMode = "diff";
-                        delete sourceTab.config.backupId;
-
-                        const activeSession = window.ui?.aiManager?.activeSession;
-                        if (activeSession) {
-                            activeSession.pendingEdits = activeSession.pendingEdits || {};
-                            activeSession.pendingEdits[cleanSource] = true;
-                            await workspaceClient.setSession(activeSession.id, activeSession);
-                        }
-                    }
-                }
-
-                const isForgivenessMode = window.ui?.aiManager?.forgivenessMode === true;
-                const activeSession = window.ui?.aiManager?.activeSession;
-                const actId = sourceId || activeSession?.id || "default";
-
+            // Handle destination insertion
+            if (!destinationExists) {
                 if (isForgivenessMode) {
                     const base64Content = btoa(unescape(encodeURIComponent(linesToCopy)));
                     const result = await this.conduit.wsWrite(cleanDestination, base64Content);
@@ -1865,245 +1848,42 @@ Snippet: ${r.content || r.snippet || ""}`;
 
                 targetTab.click();
                 const actionWord = removeFromSource ? "moved" : "copied";
-                return `Successfully created empty file ${destination} on disk and pending ${actionWord} lines in memory (Permission Mode). The tab has switched to the side-by-side Diff view to review the pending content. Please click 'Apply Changes' at the top to save to disk or 'Discard' to delete/revert.`;
+                return `Successfully ${actionWord} lines from ${source} to ${destination} in memory (Permission Mode). The tab has switched to the Diff view for your review. Please click 'Apply Changes' at the top to save or 'Discard' to revert.`;
             }
 
-            // If removeFromSource is true and source is the same as destination, we handle it as a move within the same file.
-            if (removeFromSource && cleanSource === cleanDestination) {
-                // Ensure file is open in editor
-                let targetTab = this._findOpenTab(cleanDestination);
-                if (!targetTab) {
-                    if (window.ui?.fileList?.open) {
-                        await window.ui.fileList.open(cleanDestination, cleanDestination);
-                        targetTab = this._findOpenTab(cleanDestination);
-                    }
-                }
-                if (!targetTab) {
-                    throw new Error(`Failed to open file ${cleanDestination} in the editor.`);
-                }
-
-                const session = targetTab.config.session;
-                const originalContent = session.getValue();
-
-                const doc = session.getDocument();
-                const totalLines = doc.getLength();
-                const startRow = Math.max(0, parseInt(startLine, 10) - 1);
-                const countVal = Math.max(1, parseInt(lineCount, 10));
-                const insertRow = Math.max(0, parseInt(insertAt, 10) - 1);
-
-                if (insertRow >= startRow && insertRow < startRow + countVal) {
-                    throw new Error("Cannot insert copied lines inside the range of lines being removed from the same file.");
-                }
-
-                const lines = originalContent.split(/\r?\n/);
-                const copiedLinesArr = lines.slice(startRow, startRow + countVal);
-                lines.splice(startRow, countVal);
-
-                let targetInsertRow = insertRow;
-                if (insertRow > startRow) {
-                    targetInsertRow = insertRow - countVal;
-                }
-                lines.splice(targetInsertRow, 0, ...copiedLinesArr);
-                const newContent = lines.join('\n');
-
-                const Range = window.ace.require("ace/range").Range;
-                const endPos = doc.indexToPosition(originalContent.length);
-                const fullRange = new Range(0, 0, endPos.row, endPos.column);
-
-                const isForgivenessMode = window.ui?.aiManager?.forgivenessMode === true;
-                if (isForgivenessMode) {
-                    let backupId = "";
-                    const activeSession = window.ui?.aiManager?.activeSession;
-                    const hasExistingBackup = activeSession && activeSession.modifiedFiles && activeSession.modifiedFiles[cleanDestination] && activeSession.modifiedFiles[cleanDestination].length > 0;
-
-                    if (hasExistingBackup) {
-                        backupId = activeSession.modifiedFiles[cleanDestination][0].backupId;
-                    } else {
-                        try {
-                            const actId = sourceId || activeSession?.id || "default";
-                            backupId = await AgentBackup.create(cleanDestination, originalContent, actId);
-
-                            if (activeSession) {
-                                activeSession.modifiedFiles = activeSession.modifiedFiles || {};
-                                if (!activeSession.modifiedFiles[cleanDestination]) {
-                                    activeSession.modifiedFiles[cleanDestination] = [];
-                                }
-                                activeSession.modifiedFiles[cleanDestination].push({
-                                    backupId: backupId,
-                                    timestamp: Date.now(),
-                                    sourceId: actId
-                                });
-                                await workspaceClient.setSession(activeSession.id, activeSession);
-                            }
-                        } catch (e) {
-                            console.error("[AgentTools] Failed to create backup:", e);
-                        }
-                    }
-
-                    session.replace(fullRange, newContent);
-
-                    if (window.saveFileTab) {
-                        await window.saveFileTab(targetTab);
-                        session.baseValue = session.getValue();
-                    }
-
-                    targetTab.config.viewMode = "diff";
-                    targetTab.config.backupId = backupId;
-                    targetTab.click();
-                    if (window.ui?.renderPlanTasksView) {
-                        const containers = document.querySelectorAll('.plan-tasks-view');
-                        containers.forEach(c => window.ui.renderPlanTasksView(c));
-                    }
-
-                    const backupMsg = hasExistingBackup ? "the rollback backup has been retained" : "a rollback backup was created";
-                    return `Successfully moved lines within ${destination} in Forgiveness Mode. The change has been committed directly to the file and ${backupMsg}. The tab has switched to the side-by-side Diff view for your review.`;
-                }
-
-                session.replace(fullRange, newContent);
-                targetTab.config.viewMode = "diff";
-                delete targetTab.config.backupId;
-
-                const activeSession = window.ui?.aiManager?.activeSession;
-                if (activeSession) {
-                    activeSession.pendingEdits = activeSession.pendingEdits || {};
-                    activeSession.pendingEdits[cleanDestination] = true;
-                    await workspaceClient.setSession(activeSession.id, activeSession);
-                }
-
-                targetTab.click();
-                return `Successfully moved lines within ${destination} in memory (Permission Mode). The tab has switched to the side-by-side Diff view for your review. Please click 'Apply Changes' at the top to save to disk or 'Discard' to revert.`;
-            }
-
-            // Normal flow: Different destination file (and optional removal from source)
-            // Ensure the destination file is open in the editor
-            let targetTab = this._findOpenTab(cleanDestination);
-
-            if (!targetTab) {
-                if (window.ui?.fileList?.open) {
-                    await window.ui.fileList.open(cleanDestination, cleanDestination);
-                    targetTab = this._findOpenTab(cleanDestination);
-                }
-            }
-
+            // Normal flow: Insert into destination
+            const targetTab = this._findOpenTab(cleanDestination);
             if (!targetTab) {
                 throw new Error(`Failed to open destination file ${cleanDestination} in the editor.`);
             }
 
             const session = targetTab.config.session;
-            const originalContent = session.getValue();
-
             const doc = session.getDocument();
+            const originalContent = session.getValue();
             const totalLines = doc.getLength();
-            const insertRow = Math.max(0, parseInt(insertAt, 10) - 1);
+
+            let insertRow = insertAt - 1;
+            if (insertRow < 0) insertRow = 0;
+            if (insertRow > totalLines) insertRow = totalLines;
+
+            const textToInsert = (insertRow >= totalLines && totalLines > 0 && doc.getLine(totalLines - 1) !== "")
+                ? "\n" + linesToCopy
+                : linesToCopy + (totalLines > 0 ? "\n" : "");
 
             const Range = window.ace.require("ace/range").Range;
-            let rangeToInsert;
-            let textToInsert;
+            const rangeToInsert = new Range(insertRow, 0, insertRow, 0);
 
-            if (insertRow >= totalLines) {
-                const lastLineLen = doc.getLine(totalLines - 1).length;
-                rangeToInsert = new Range(totalLines - 1, lastLineLen, totalLines - 1, lastLineLen);
-                textToInsert = "\n" + linesToCopy;
-            } else {
-                rangeToInsert = new Range(insertRow, 0, insertRow, 0);
-                textToInsert = linesToCopy + "\n";
-            }
-
-            const isForgivenessMode = window.ui?.aiManager?.forgivenessMode === true;
-            
-            // Perform removal from source first if requested
-            if (removeFromSource) {
-                let sourceTab = this._findOpenTab(cleanSource);
-                if (!sourceTab) {
-                    if (window.ui?.fileList?.open) {
-                        await window.ui.fileList.open(cleanSource, cleanSource);
-                        sourceTab = this._findOpenTab(cleanSource);
-                    }
-                }
-                if (!sourceTab) {
-                    throw new Error(`Failed to open source file ${cleanSource} in the editor for removal.`);
-                }
-
-                const srcSession = sourceTab.config.session;
-                const srcOriginalContent = srcSession.getValue();
-                const srcDoc = srcSession.getDocument();
-                const srcTotalLines = srcDoc.getLength();
-                const srcStartRow = Math.max(0, parseInt(startLine, 10) - 1);
-                const srcCountVal = Math.max(1, parseInt(lineCount, 10));
-
-                let rangeToRemove;
-                if (srcStartRow + srcCountVal < srcTotalLines) {
-                    rangeToRemove = new Range(srcStartRow, 0, srcStartRow + srcCountVal, 0);
-                } else {
-                    if (srcStartRow > 0) {
-                        const prevLineLen = srcDoc.getLine(srcStartRow - 1).length;
-                        rangeToRemove = new Range(srcStartRow - 1, prevLineLen, srcTotalLines - 1, srcDoc.getLine(srcTotalLines - 1).length);
-                    } else {
-                        rangeToRemove = new Range(0, 0, srcTotalLines - 1, srcDoc.getLine(srcTotalLines - 1).length);
-                    }
-                }
-
-                if (isForgivenessMode) {
-                    let srcBackupId = "";
-                    const activeSession = window.ui?.aiManager?.activeSession;
-                    const hasSrcBackup = activeSession && activeSession.modifiedFiles && activeSession.modifiedFiles[cleanSource] && activeSession.modifiedFiles[cleanSource].length > 0;
-
-                    if (hasSrcBackup) {
-                        srcBackupId = activeSession.modifiedFiles[cleanSource][0].backupId;
-                    } else {
-                        try {
-                            const actId = sourceId || activeSession?.id || "default";
-                            srcBackupId = await AgentBackup.create(cleanSource, srcOriginalContent, actId);
-
-                            if (activeSession) {
-                                activeSession.modifiedFiles = activeSession.modifiedFiles || {};
-                                if (!activeSession.modifiedFiles[cleanSource]) {
-                                    activeSession.modifiedFiles[cleanSource] = [];
-                                }
-                                activeSession.modifiedFiles[cleanSource].push({
-                                    backupId: srcBackupId,
-                                    timestamp: Date.now(),
-                                    sourceId: actId
-                                });
-                                await workspaceClient.setSession(activeSession.id, activeSession);
-                            }
-                        } catch (e) {
-                            console.error("[AgentTools] Failed to create source backup:", e);
-                        }
-                    }
-
-                    srcSession.replace(rangeToRemove, "");
-                    if (window.saveFileTab) {
-                        await window.saveFileTab(sourceTab);
-                        srcSession.baseValue = srcSession.getValue();
-                    }
-                    sourceTab.config.viewMode = "diff";
-                    sourceTab.config.backupId = srcBackupId;
-                } else {
-                    srcSession.replace(rangeToRemove, "");
-                    sourceTab.config.viewMode = "diff";
-                    delete sourceTab.config.backupId;
-
-                    const activeSession = window.ui?.aiManager?.activeSession;
-                    if (activeSession) {
-                        activeSession.pendingEdits = activeSession.pendingEdits || {};
-                        activeSession.pendingEdits[cleanSource] = true;
-                        await workspaceClient.setSession(activeSession.id, activeSession);
-                    }
-                }
-            }
-
-            // Insert into destination
             if (isForgivenessMode) {
                 let backupId = "";
-                const activeSession = window.ui?.aiManager?.activeSession;
-                const hasExistingBackup = activeSession && activeSession.modifiedFiles && activeSession.modifiedFiles[cleanDestination] && activeSession.modifiedFiles[cleanDestination].length > 0;
+                const existingDestBackups = (activeSession?.modifiedFiles && activeSession.modifiedFiles[cleanDestination]) || [];
+                const currentDestMilestoneBackup = existingDestBackups.length > 0 && existingDestBackups[existingDestBackups.length - 1].timestamp >= milestoneTs
+                    ? existingDestBackups[existingDestBackups.length - 1]
+                    : null;
 
-                if (hasExistingBackup) {
-                    backupId = activeSession.modifiedFiles[cleanDestination][0].backupId;
+                if (currentDestMilestoneBackup) {
+                    backupId = currentDestMilestoneBackup.backupId;
                 } else {
                     try {
-                        const actId = sourceId || activeSession?.id || "default";
                         backupId = await AgentBackup.create(cleanDestination, originalContent, actId);
 
                         if (activeSession) {
@@ -2132,24 +1912,21 @@ Snippet: ${r.content || r.snippet || ""}`;
 
                 targetTab.config.viewMode = "diff";
                 targetTab.config.backupId = backupId;
+
                 targetTab.click();
                 if (window.ui?.renderPlanTasksView) {
                     const containers = document.querySelectorAll('.plan-tasks-view');
                     containers.forEach(c => window.ui.renderPlanTasksView(c));
                 }
 
-                const backupMsg = hasExistingBackup
-                    ? "the rollback backup has been retained"
-                    : "a rollback backup was created";
-                const removeMsg = removeFromSource ? " moved" : " copied";
-                return `Successfully${removeMsg} lines to ${destination} in Forgiveness Mode. The change has been committed directly to the file and ${backupMsg}. The tab has switched to the side-by-side Diff view for your review.`;
+                const actionWord = removeFromSource ? "moved" : "copied";
+                return `Successfully ${actionWord} lines from ${source} to ${destination} in Forgiveness Mode.`;
             }
 
             session.replace(rangeToInsert, textToInsert);
             targetTab.config.viewMode = "diff";
             delete targetTab.config.backupId;
 
-            const activeSession = window.ui?.aiManager?.activeSession;
             if (activeSession) {
                 activeSession.pendingEdits = activeSession.pendingEdits || {};
                 activeSession.pendingEdits[cleanDestination] = true;
@@ -2157,8 +1934,8 @@ Snippet: ${r.content || r.snippet || ""}`;
             }
 
             targetTab.click();
-            const removeMsg = removeFromSource ? "moved" : "copied";
-            return `Successfully ${removeMsg} lines to ${destination} in memory (Permission Mode). The tab has switched to the side-by-side Diff view for your review. Please click 'Apply Changes' at the top to save to disk or 'Discard' to revert.`;
+            const actionWord = removeFromSource ? "moved" : "copied";
+            return `Successfully ${actionWord} lines from ${source} to ${destination} in memory (Permission Mode). The tab has switched to the Diff view for your review. Please click 'Apply Changes' at the top to save or 'Discard' to revert.`;
         } catch (error) {
             return `Error copying lines: ${error.message}`;
         }
@@ -2478,20 +2255,22 @@ Snippet: ${r.content || r.snippet || ""}`;
                 
                 let s = sanitizeText(outputBuffer);
 
-                // Strip initial export environment setup echo
-                s = s.replace(/^export\s+PAGER=cat[^\n]*\n?/gm, "");
+                // 1. Strip the initial prologue line containing stty / export setup if present
+                s = s.replace(/^[^\n]*(?:stty\s+-echo|export\s+PAGER)[^\n]*\n?/gm, "");
 
-                // 4. Strip command input echo lines up to the first newline after the clean command
+                // 2. Strip command input echo lines up to the first newline after the clean command
                 if (cleanCmd && s.includes(cleanCmd)) {
                     const idx = s.indexOf(cleanCmd);
                     const afterCmd = s.substring(idx + cleanCmd.length);
                     const firstNewline = afterCmd.indexOf('\n');
                     if (firstNewline !== -1) {
                         s = afterCmd.substring(firstNewline + 1);
+                    } else {
+                        s = afterCmd;
                     }
                 }
 
-                // 5. Strip trailing exit command, standalone 'exit' lines, and prompt noise
+                // 3. Strip trailing exit command, standalone 'exit' lines, and prompt noise
                 s = s.replace(/(?:^|\n)(?:[^\n]*?[#$]\s*)?exit(?:\s+status\s+\d+)?(?=\n|$)/gi, "");
                 s = s.replace(/^.*?[#$]\s*/gm, "");
                 s = s.trim();
@@ -2547,8 +2326,8 @@ Snippet: ${r.content || r.snippet || ""}`;
             }, timeoutDuration);
 
             ws.onopen = () => {
-                // Disable interactive pagers (git log, git diff, man, etc.) and non-interactive environment flags
-                ws.send(`export PAGER=cat GIT_PAGER=cat CI=true NO_COLOR=1 2>/dev/null || true\n${cleanCmd}\nexit\n`);
+                // Disable terminal echo and interactive pagers before executing command
+                ws.send(`stty -echo 2>/dev/null || true; export PAGER=cat GIT_PAGER=cat CI=true NO_COLOR=1 2>/dev/null || true\n${cleanCmd}\nexit\n`);
             };
 
             ws.onmessage = (event) => {

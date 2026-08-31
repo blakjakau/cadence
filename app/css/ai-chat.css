@@ -1019,6 +1019,85 @@
     margin-right: 4px;
 }
 
+/* Group container for past cycle summaries */
+.cycle-summaries-group-block {
+    border: 1px solid var(--border-primary);
+    border-radius: var(--borderRadius);
+    margin: 8px 0;
+    overflow: hidden;
+    background-color: var(--bg-primary);
+    transition: border-color 0.2s ease;
+}
+
+.cycle-summaries-group-block:hover {
+    border-color: color-mix(in srgb, var(--theme) 40%, var(--border-primary));
+}
+
+.cycle-summaries-group-header {
+    display: flex;
+    align-items: center;
+    padding: 7px 12px;
+    cursor: pointer;
+    user-select: none;
+    gap: 8px;
+    font-size: 0.85em;
+    color: var(--text-secondary);
+    background-color: var(--bg-tertiary);
+}
+
+.cycle-summaries-group-header:hover {
+    background-color: color-mix(in srgb, var(--theme) 10%, var(--bg-tertiary));
+}
+
+.cycle-summaries-group-expand-icon {
+    font-size: 16px;
+    color: var(--text-secondary);
+    transition: transform 0.2s ease;
+    flex-shrink: 0;
+}
+
+.cycle-summaries-group-block[expanded] .cycle-summaries-group-expand-icon {
+    transform: rotate(90deg);
+}
+
+.cycle-summaries-group-type-icon {
+    font-size: 16px;
+    color: var(--theme);
+    flex-shrink: 0;
+}
+
+.cycle-summaries-group-title {
+    flex-grow: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--text-primary);
+    font-weight: 500;
+}
+
+.cycle-summaries-group-badge {
+    font-size: 11px;
+    padding: 1px 6px;
+    border-radius: 10px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-primary);
+    color: var(--text-secondary);
+    flex-shrink: 0;
+}
+
+.cycle-summaries-group-body {
+    display: none;
+    padding: 8px 10px;
+    border-top: 1px solid var(--border-primary);
+    background-color: var(--bg-secondary);
+    flex-direction: column;
+    gap: 8px;
+}
+
+.cycle-summaries-group-block[expanded] .cycle-summaries-group-body {
+    display: flex;
+}
+
 /* Cycle summary blocks */
 .cycle-summary-block {
     border-radius: var(--borderRadius);
@@ -1590,6 +1669,12 @@
 .darkmode .chat-turn-expander.size-red .expander-header .item-size-badge,
 .darkmode .chat-turn-expander.size-red .expander-header .expand-arrow {
     color: #fecaca !important;
+}
+
+.condensed-view-button.active,
+.raw-view-button.active {
+    background-color: var(--theme-dark, #005f9e) !important;
+    color: var(--text-inverted, #ffffff) !important;
 }
 
 

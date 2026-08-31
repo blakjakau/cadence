@@ -160,6 +160,45 @@ export class DiffViewPanel extends Block {
         headerLeft.appendChild(this.navContainer);
         headerLeft.appendChild(this.toggleContainer);
 
+        // Checkpoint / Version Selector Dropdown Container
+        this.checkpointContainer = document.createElement("div");
+        this.checkpointContainer.className = "diff-header-checkpoint-container";
+        this.checkpointContainer.style.display = "none";
+        this.checkpointContainer.style.alignItems = "center";
+        this.checkpointContainer.style.gap = "4px";
+        this.checkpointContainer.style.marginLeft = "8px";
+
+        const cpLabel = document.createElement("span");
+        cpLabel.className = "diff-checkpoint-label";
+        cpLabel.textContent = "Compare to:";
+        cpLabel.style.fontSize = "11px";
+        cpLabel.style.color = "var(--text-muted, #888)";
+
+        this.checkpointSelect = document.createElement("select");
+        this.checkpointSelect.className = "diff-checkpoint-select";
+        this.checkpointSelect.style.padding = "2px 6px";
+        this.checkpointSelect.style.borderRadius = "4px";
+        this.checkpointSelect.style.border = "1px solid var(--border)";
+        this.checkpointSelect.style.background = "var(--input-bg, #222)";
+        this.checkpointSelect.style.color = "var(--text-color, #eee)";
+        this.checkpointSelect.style.fontSize = "11px";
+        this.checkpointSelect.style.cursor = "pointer";
+
+        this.checkpointSelect.onchange = (e) => {
+            e.stopPropagation();
+            const selectedBackupId = this.checkpointSelect.value;
+            if (selectedBackupId && selectedBackupId !== this.activeBackupId) {
+                if (this.activeTab) {
+                    this.activeTab.config.backupId = selectedBackupId;
+                }
+                this.update(this.activeFilePath, selectedBackupId, this.activeTab);
+            }
+        };
+
+        this.checkpointContainer.appendChild(cpLabel);
+        this.checkpointContainer.appendChild(this.checkpointSelect);
+        headerLeft.appendChild(this.checkpointContainer);
+
         this.header.appendChild(headerLeft);
 
         this.headerRight = document.createElement("div");
@@ -342,12 +381,55 @@ export class DiffViewPanel extends Block {
                     currentContent = originalContent;
                 }
             } else if (isForgivenessMode) {
+                // Populate checkpoint selector dropdown for multi-checkpoint navigation
+                const activeSession = window.ui?.aiManager?.activeSession;
+                let fileBackups = [];
+                if (activeSession?.modifiedFiles && this.activeFilePath) {
+                    const matchedKey = Object.keys(activeSession.modifiedFiles).find(k => pathsMatch(k, this.activeFilePath));
+                    if (matchedKey) {
+                        fileBackups = activeSession.modifiedFiles[matchedKey] || [];
+                    }
+                }
+
+                // If no specific backupId is passed, default to the most recent checkpoint
+                let activeCheckBackupId = backupId;
+                if ((!activeCheckBackupId || activeCheckBackupId === "default") && fileBackups.length > 0) {
+                    activeCheckBackupId = fileBackups[fileBackups.length - 1].backupId;
+                    this.activeBackupId = activeCheckBackupId;
+                    if (tab) tab.config.backupId = activeCheckBackupId;
+                }
+
+                if (fileBackups.length > 1) {
+                    this.checkpointContainer.style.display = "flex";
+                    this.checkpointSelect.innerHTML = "";
+
+                    // Sort newest to oldest for dropdown display
+                    const reversedBackups = [...fileBackups].reverse();
+                    reversedBackups.forEach((b, idx) => {
+                        const opt = document.createElement("option");
+                        opt.value = b.backupId;
+                        const isLatest = idx === 0;
+                        const isInitial = idx === reversedBackups.length - 1;
+                        const timeStr = new Date(b.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+                        let label = `${timeStr} (v${fileBackups.length - idx})`;
+                        if (isLatest) label += " - Latest";
+                        else if (isInitial) label += " - Initial";
+                        opt.textContent = label;
+                        if (b.backupId === activeCheckBackupId) {
+                            opt.selected = true;
+                        }
+                        this.checkpointSelect.appendChild(opt);
+                    });
+                } else {
+                    this.checkpointContainer.style.display = "none";
+                }
+
                 // Forgiveness Mode: Original is from backup, Current is in-memory/on-disk
                 try {
-                    if (backupId === "new_file") {
+                    if (activeCheckBackupId === "new_file") {
                         originalContent = "";
                     } else {
-                        originalContent = await AgentBackup.rollback(backupId);
+                        originalContent = await AgentBackup.rollback(activeCheckBackupId);
                     }
                 } catch (e) {
                     console.warn("[DiffViewPanel] Failed to retrieve backup:", e);
@@ -373,6 +455,7 @@ export class DiffViewPanel extends Block {
                     currentContent = originalContent;
                 }
             } else {
+                this.checkpointContainer.style.display = "none";
                 // Permission Mode / User Edits: Original is on-disk, Current is dirty/in-memory
                 if (this.activeFilePath) {
                     const fileData = await conduitClient.wsRead(this.activeFilePath);
@@ -747,8 +830,10 @@ export class DiffViewPanel extends Block {
                         rollbackBtn.icon = "<ui-icon class='spinner'>sync</ui-icon>";
                         rollbackBtn.text = "Rolling back...";
 
+                        const rollbackTargetBackupId = this.activeBackupId || backupId;
+
                         // Apply rollback
-                        if (backupId === "new_file") {
+                        if (rollbackTargetBackupId === "new_file") {
                             const result = await conduitClient.wsDelete(filePath);
                             if (result.error) throw new Error(result.error);
 
@@ -763,7 +848,7 @@ export class DiffViewPanel extends Block {
                                 }
                             }
                         } else {
-                            const content = await AgentBackup.rollback(backupId);
+                            const content = await AgentBackup.rollback(rollbackTargetBackupId);
                             const base64Content = btoa(unescape(encodeURIComponent(content)));
                             const result = await conduitClient.wsWrite(filePath, base64Content);
                             if (result.error) throw new Error(result.error);
@@ -783,7 +868,7 @@ export class DiffViewPanel extends Block {
                         if (session && session.modifiedFiles) {
                             const matchedKey = Object.keys(session.modifiedFiles).find(k => pathsMatch(k, filePath));
                             if (matchedKey) {
-                                session.modifiedFiles[matchedKey] = session.modifiedFiles[matchedKey].filter(b => b.backupId !== backupId);
+                                session.modifiedFiles[matchedKey] = session.modifiedFiles[matchedKey].filter(b => b.backupId !== rollbackTargetBackupId);
                                 if (session.modifiedFiles[matchedKey].length === 0) {
                                     delete session.modifiedFiles[matchedKey];
                                 }

@@ -292,6 +292,29 @@ class Claude extends AI {
                                     if (onUpdate) onUpdate(fullResponseAccumulator);
                                 } else if (delta?.type === 'input_json_delta' && currentToolCall) {
                                     currentToolCall.partial_json += delta.partial_json;
+                                    let argsObj = {};
+                                    try {
+                                        argsObj = JSON.parse(currentToolCall.partial_json);
+                                    } catch (e) {
+                                        argsObj = parseRelaxedJson(currentToolCall.partial_json);
+                                    }
+                                    if (!callbacks.toolCalls) callbacks.toolCalls = [];
+                                    const existingIdx = callbacks.toolCalls.findIndex(tc => tc.id === currentToolCall.id);
+                                    const toolEntry = {
+                                        id: currentToolCall.id,
+                                        name: currentToolCall.name,
+                                        args: argsObj,
+                                        functionCall: {
+                                            name: currentToolCall.name,
+                                            args: argsObj
+                                        }
+                                    };
+                                    if (existingIdx >= 0) {
+                                        callbacks.toolCalls[existingIdx] = toolEntry;
+                                    } else {
+                                        callbacks.toolCalls.push(toolEntry);
+                                    }
+                                    if (onUpdate) onUpdate(fullResponseAccumulator);
                                 }
                             }
 
@@ -308,12 +331,12 @@ class Claude extends AI {
                                     try {
                                         argsObj = currentToolCall.partial_json ? JSON.parse(currentToolCall.partial_json) : {};
                                     } catch (e) {
-                                        console.warn("[Claude] Failed to parse input_json from tool_use:", currentToolCall.partial_json);
-                                        argsObj = {};
+                                        argsObj = parseRelaxedJson(currentToolCall.partial_json);
                                     }
 
                                     if (!callbacks.toolCalls) callbacks.toolCalls = [];
-                                    callbacks.toolCalls.push({
+                                    const existingIdx = callbacks.toolCalls.findIndex(tc => tc.id === currentToolCall.id);
+                                    const toolEntry = {
                                         id: currentToolCall.id,
                                         name: currentToolCall.name,
                                         args: argsObj,
@@ -321,7 +344,12 @@ class Claude extends AI {
                                             name: currentToolCall.name,
                                             args: argsObj
                                         }
-                                    });
+                                    };
+                                    if (existingIdx >= 0) {
+                                        callbacks.toolCalls[existingIdx] = toolEntry;
+                                    } else {
+                                        callbacks.toolCalls.push(toolEntry);
+                                    }
 
                                     currentToolCall = null;
                                 }
@@ -522,12 +550,15 @@ function parseRelaxedJson(str) {
         }
     }
 
-    // Capture unclosed trailing string for realtime streaming
-    const unclosedKeyRegex = /"([a-zA-Z0-9_-]+)"\s*:\s*"((?:\\.|[^"\\])*)$/;
-    const unclosedMatch = cleaned.match(unclosedKeyRegex);
-    if (unclosedMatch && !matchedKeys.has(unclosedMatch[1])) {
-        const key = unclosedMatch[1];
-        let rawVal = unclosedMatch[2];
+    // Capture unclosed string values (e.g. "replace": "some streamed text without closing quote)
+    const unclosedPairRegex = /"([a-zA-Z0-9_-]+)"\s*:\s*"((?:\\.|[^"\\])*)$/g;
+    let unclosedMatch;
+    // Check everywhere after known matches or at end of text
+    const tailText = cleaned.substring(pairRegex.lastIndex || 0);
+    const unclosedTailMatch = tailText.match(/"([a-zA-Z0-9_-]+)"\s*:\s*"((?:\\.|[^"\\])*)$/);
+    if (unclosedTailMatch) {
+        const key = unclosedTailMatch[1];
+        let rawVal = unclosedTailMatch[2];
         try {
             rawVal = JSON.parse(`"${rawVal.replace(/\\$/,'')}"`);
         } catch (e) {
@@ -539,6 +570,34 @@ function parseRelaxedJson(str) {
                 .replace(/\\\\/g, '\\');
         }
         obj[key] = rawVal;
+    }
+
+    // Handle "edits": [ ... ] array for edit_file if present
+    if (cleaned.includes('"edits"')) {
+        const editsMatch = cleaned.match(/"edits"\s*:\s*\[([\s\S]*)/);
+        if (editsMatch) {
+            const items = [];
+            const objRegex = /\{([^{}]*)\}/g;
+            let om;
+            while ((om = objRegex.exec(editsMatch[1])) !== null) {
+                const sub = parseRelaxedJson(`{${om[1]}}`);
+                if (sub && Object.keys(sub).length > 0) {
+                    items.push(sub);
+                }
+            }
+            // Capture unclosed trailing edit object in the edits array
+            const trailingEditsText = editsMatch[1].substring(objRegex.lastIndex);
+            const unclosedObjMatch = trailingEditsText.match(/\{([^{}]*)$/);
+            if (unclosedObjMatch) {
+                const sub = parseRelaxedJson(`{${unclosedObjMatch[1]}}`);
+                if (sub && Object.keys(sub).length > 0) {
+                    items.push(sub);
+                }
+            }
+            if (items.length > 0) {
+                obj.edits = items;
+            }
+        }
     }
 
     return obj;

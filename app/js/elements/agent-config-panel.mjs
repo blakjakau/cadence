@@ -112,7 +112,7 @@ export class AgentConfigPanel extends Block {
 			const input = document.createElement("input");
 			input.type = "checkbox";
 			input.id = id;
-			if (key === "defaultAllowSubAgents" || key === "defaultAllowRunCommand" || key === "defaultPlanningMode") {
+			if (key === "defaultAllowSubAgents" || key === "defaultAllowRunCommand" || key === "defaultPlanningMode" || key === "defaultAutoMilestones") {
 				input.checked = localStorage.getItem(key) !== "false";
 			} else {
 				input.checked = localStorage.getItem(key) === "true";
@@ -128,6 +128,7 @@ export class AgentConfigPanel extends Block {
 					if (key === "defaultPlanningMode") window.ui.aiManager.config.defaultPlanningMode = input.checked;
 					if (key === "defaultAllowSubAgents") window.ui.aiManager.config.defaultAllowSubAgents = input.checked;
 					if (key === "defaultAllowRunCommand") window.ui.aiManager.config.defaultAllowRunCommand = input.checked;
+					if (key === "defaultAutoMilestones") window.ui.aiManager.config.defaultAutoMilestones = input.checked;
 					window.ui.aiManager._updatePromptAreaPlaceholder();
 				}
 			};
@@ -163,6 +164,7 @@ export class AgentConfigPanel extends Block {
 		createToggleRow("default-planning-mode", "Default Planning Mode", "Start new sessions with Planning Mode enabled.", "defaultPlanningMode");
 		createToggleRow("default-allow-sub-agents", "Default Allow Sub-Agents", "Start new sessions with sub-agents allowed automatically.", "defaultAllowSubAgents");
 		createToggleRow("default-allow-run-command", "Default Allow Terminal Commands", "Start new sessions with terminal command execution allowed automatically.", "defaultAllowRunCommand");
+		createToggleRow("default-auto-milestones", "Default Auto-Milestones on 'done'", "Automatically freeze a checkpoint milestone when the agent finishes a cycle in new sessions.", "defaultAutoMilestones");
 
 		const createNumberInputRow = (id, title, desc, key, defaultValue) => {
 			const wrapper = document.createElement("div");
