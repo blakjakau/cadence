@@ -490,9 +490,19 @@ export default class AIManagerMessageRenderer {
                         const shortFile = args.path.split('/').pop() || args.path;
                         let fileChipHtml = `<ui-filechip filename="${this._escapeHtml(shortFile)}" path="${this._escapeHtml(args.path)}"></ui-filechip>`;
                         if (toolName === "read_file") {
-                            const start = parseInt(args.startLine || args.startline, 10);
-                            const count = parseInt(args.lineCount || args.linecount, 10);
-                            if (!isNaN(start) && !isNaN(count)) fileChipHtml += ` #L${start}-${start + count}`;
+                            const start = parseInt(args.startLine ?? args.startline ?? args.start_line ?? args.start, 10);
+                            const count = parseInt(args.lineCount ?? args.linecount ?? args.line_count ?? args.count, 10);
+                            const end = parseInt(args.endLine ?? args.endline ?? args.end_line ?? args.end, 10);
+                            if (!isNaN(start) && !isNaN(end)) {
+                                fileChipHtml += ` #L${start}-${end}`;
+                            } else if (!isNaN(start) && !isNaN(count)) {
+                                const calculatedEnd = start + count - 1;
+                                fileChipHtml += calculatedEnd > start ? ` #L${start}-${calculatedEnd}` : ` #L${start}`;
+                            } else if (!isNaN(start)) {
+                                fileChipHtml += ` #L${start}`;
+                            } else if (!isNaN(count) && count > 0) {
+                                fileChipHtml += ` #L1-${count}`;
+                            }
                         } else if (toolName === "search_in_file") {
                             const queryText = args.query || "";
                             const truncatedQuery = queryText.length > 20 ? queryText.substring(0, 20) + "..." : queryText;
@@ -690,9 +700,19 @@ export default class AIManagerMessageRenderer {
                 const shortFile = args.path.split('/').pop() || args.path;
                 let fileChipHtml = `<ui-filechip filename="${this._escapeHtml(shortFile)}" path="${this._escapeHtml(args.path)}"></ui-filechip>`;
                 if (toolName === "read_file") {
-                    const start = parseInt(args.startLine || args.startline, 10);
-                    const count = parseInt(args.lineCount || args.linecount, 10);
-                    if (!isNaN(start) && !isNaN(count)) fileChipHtml += ` #L${start}-${start + count}`;
+                    const start = parseInt(args.startLine ?? args.startline ?? args.start_line ?? args.start, 10);
+                    const count = parseInt(args.lineCount ?? args.linecount ?? args.line_count ?? args.count, 10);
+                    const end = parseInt(args.endLine ?? args.endline ?? args.end_line ?? args.end, 10);
+                    if (!isNaN(start) && !isNaN(end)) {
+                        fileChipHtml += ` #L${start}-${end}`;
+                    } else if (!isNaN(start) && !isNaN(count)) {
+                        const calculatedEnd = start + count - 1;
+                        fileChipHtml += calculatedEnd > start ? ` #L${start}-${calculatedEnd}` : ` #L${start}`;
+                    } else if (!isNaN(start)) {
+                        fileChipHtml += ` #L${start}`;
+                    } else if (!isNaN(count) && count > 0) {
+                        fileChipHtml += ` #L1-${count}`;
+                    }
                 } else if (toolName === "search_in_file") {
                     const queryText = args.query || "";
                     const truncatedQuery = queryText.length > 20 ? queryText.substring(0, 20) + "..." : queryText;
@@ -876,7 +896,21 @@ export default class AIManagerMessageRenderer {
             } else if (args.path) {
                 const shortFile = args.path.split('/').pop() || args.path;
                 let details = shortFile;
-                if (toolName === "edit_file" && (args.edits || args.search !== undefined || args.replace !== undefined)) {
+                if (toolName === "read_file") {
+                    const start = parseInt(args.startLine ?? args.startline ?? args.start_line ?? args.start, 10);
+                    const count = parseInt(args.lineCount ?? args.linecount ?? args.line_count ?? args.count, 10);
+                    const end = parseInt(args.endLine ?? args.endline ?? args.end_line ?? args.end, 10);
+                    if (!isNaN(start) && !isNaN(end)) {
+                        details += ` #L${start}-${end}`;
+                    } else if (!isNaN(start) && !isNaN(count)) {
+                        const calculatedEnd = start + count - 1;
+                        details += calculatedEnd > start ? ` #L${start}-${calculatedEnd}` : ` #L${start}`;
+                    } else if (!isNaN(start)) {
+                        details += ` #L${start}`;
+                    } else if (!isNaN(count) && count > 0) {
+                        details += ` #L1-${count}`;
+                    }
+                } else if (toolName === "edit_file" && (args.edits || args.search !== undefined || args.replace !== undefined)) {
                     let searchLines = 0, replaceLines = 0, replaceBytes = 0;
                     if (Array.isArray(args.edits) && args.edits.length > 0) {
                         for (const ed of args.edits) {
