@@ -7,7 +7,7 @@ import (
 )
 
 // runWebviewApp launches the application using the lightweight webview_go renderer.
-// This is an alternative to Wails, exposed via the --webview flag.
+// This is exposed via the --webview flag.
 func runWebviewApp(url string) {
 	log.Println("Launching webview_go renderer...")
 	

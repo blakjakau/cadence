@@ -40,8 +40,8 @@
 	<script type="text/javascript">
 		const isLocalServer = window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1" || window.location.hostname.endsWith(".localhost");
 		
-		/* Only show the page if we have support for File System Access API (not needed in Local/Wails mode) */
-		if(!('showDirectoryPicker' in window) && !window.runtime && !isLocalServer) { notSupported.push("FilesAPI"); }
+		/* Only show the page if we have support for File System Access API (not needed in Local mode) */
+		if(!('showDirectoryPicker' in window) && !isLocalServer) { notSupported.push("FilesAPI"); }
 		// if(!('serviceWorker' in navigator)) { notSupported.push("ServiceWorker"); }
 		
 		if(notSupported.length > 0) {
@@ -63,11 +63,11 @@
 				}
 			}, 500)
 		} else {
-			/* Only register a service worker if it's supported AND we are not in Native/Wails mode */
+			/* Only register a service worker if it's supported AND we are not on a local server */
 			if ('serviceWorker' in navigator) {
 				const isLocalServer = window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1" || window.location.hostname.endsWith(".localhost");
-				if (window.runtime || isLocalServer) {
-					// In Native mode or local server, unregister any existing workers to clear cache
+				if (isLocalServer) {
+					// In local server mode, unregister any existing workers to clear cache
 					navigator.serviceWorker.getRegistrations().then(registrations => {
 						for (let registration of registrations) { registration.unregister(); }
 					});
@@ -110,7 +110,7 @@
 	</script>
 	
 	
-	<ui-actionbar id="menu" hook="top" slim style="top: 0px; bottom: auto; --wails-draggable: drag;">
+	<ui-actionbar id="menu" hook="top" slim style="top: 0px; bottom: auto;">
 	    <ui-inline id="logo"><img src="images/code-192-simple.svg" style="color: #fff" height="32px"> Cadence </ui-inline>
  
 	    <ui-button id="menu_file">File</ui-button>

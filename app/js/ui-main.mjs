@@ -1,7 +1,6 @@
 import { FileList, Panel, Inline, Block, Button, TabBar, MediaView, Input, MenuItem, ActionBar, EditorHolder, IconTabBar, IconTab, SidebarPanel, extractFilenameAtColumn, findFileMatchesInIndex } from './elements.mjs';
 import { getIconForFileName } from './elements/utils.mjs';
 import TerminalManager from './terminal-manager.mjs'; // Import the new TerminalManager
-import { NativeTitleBar } from './elements/native-titlebar.mjs';
 import conduitClient from './conduit-client.mjs';
 import { ConduitFileList } from './elements/conduit-filelist.mjs';
 import aiManager from './ai-manager.mjs';
@@ -471,26 +470,6 @@ const uiManager = {
 			uiManager.toggleSplitView()
 		})
 
-		// Progressive Enhancement: Wails Detection
-		if (window.runtime) {
-			document.body.classList.add("is-native");
-			const logo = document.getElementById("logo");
-			if(logo) {
-				logo.classList.add("is-draggable")
-			}
-			
-			const menuBar = document.getElementById("menu");
-			if (menuBar) {
-				const titlebar = new NativeTitleBar();
-				const controls = titlebar.getControls();
-				const inlineControls = new Inline(controls);
-				inlineControls.style.marginLeft = "auto";
-				inlineControls.style.display = "flex";
-				menuBar.append(inlineControls);
-				menuBar.classList.add("is-draggable");
-			}
-		}
-
 		leftTabs = new TabBar()
 		leftTabs.type = "tabs"
 		leftTabs.setAttribute("id", "leftTabs")
@@ -541,16 +520,6 @@ const uiManager = {
 				modeMenu.scrollTop = active.offsetTop - modeMenu.offsetHeight / 2 + 12
 			})
 		}, true)
-
-		const inspectBtn = document.querySelector("#inspect_btn");
-		if (inspectBtn) {
-			if (window.runtime) {
-				inspectBtn.style.display = "flex";
-				inspectBtn.on("click", () => {
-					window.runtime.WindowReload();
-				});
-			}
-		}
 
 		leftHolder = new EditorHolder()
 		leftHolder.setAttribute("id", "leftHolder")

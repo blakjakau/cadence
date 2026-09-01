@@ -164,8 +164,7 @@ func parseFlags() {
 	flag.BoolVar(&noIdleShutdownFlag, "no-idle-shutdown", true, "Disable automatic shutdown due to inactivity. Recommended for services.")
 	flag.StringVar(&serveFlag, "serve", "", "Serve live static files from this directory instead of embedded assets.")
 	flag.BoolVar(&browserFlag, "browser", false, "Open in the default browser instead of a native window.")
-	flag.BoolVar(&webviewFlag, "webview", false, "Open using the lightweight webview_go renderer instead of Wails.")
-	flag.BoolVar(&wailsFlag, "wails", false, "Force opening using the Wails rendering engine (if compiled).")
+	flag.BoolVar(&webviewFlag, "webview", false, "Open using the lightweight webview_go renderer.")
 	flag.BoolVar(&headlessFlag, "headless", false, "Run in headless mode (no UI or browser launch).")
 	flag.Parse()
 
@@ -210,10 +209,6 @@ var allowedOrigins = map[string]bool{
 	"http://localhost:3022":  true,
 	"http://localhost:3023":  true,
 	"http://localhost":       true,
-	"http://wails.localhost": true,
-	"wails://wails.localhost": true,
-	"wails://wails": true,
-	"wails://": true,
 	"http://127.0.0.1:3022": true,
 	"http://127.0.0.1:3023": true,
 }
@@ -221,7 +216,6 @@ var rootFlag string
 var serveFlag string
 var browserFlag bool
 var webviewFlag bool
-var wailsFlag bool
 var headlessFlag bool
 var RendererMode string = "unknown"
 var keyFlag bool
@@ -399,12 +393,11 @@ func restartProcess() {
 		os.Exit(1)
 	}
 
-	// Filter out browser/webview/wails flags and force --headless flag
+	// Filter out browser/webview flags and force --headless flag
 	var args []string
 	for _, arg := range os.Args[1:] {
 		if arg == "--browser" || arg == "-browser" ||
 			arg == "--webview" || arg == "-webview" ||
-			arg == "--wails" || arg == "-wails" ||
 			arg == "--headless" || arg == "-headless" {
 			continue
 		}

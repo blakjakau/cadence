@@ -4,7 +4,7 @@ This document outlines the planned and potential future features for Cadence.
 
 ## High Priority / Short Term
 
-### [x] Native UI Layer (Wails, webview_go, and --browser)
+### [x] Native UI Layer (Chrome App mode, webview_go, and --browser)
 
 ### [x] AI Agent Harness
 

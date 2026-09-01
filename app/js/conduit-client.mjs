@@ -14,8 +14,8 @@
  */
 class ConduitClient {
     constructor() {
-        this.host = (window.runtime) ? '127.0.0.1' : (window.location.hostname || '127.0.0.1');
-        this.port = (window.runtime) ? 3022 : (window.location.port || 3022);
+        this.host = window.location.hostname || '127.0.0.1';
+        this.port = window.location.port || 3022;
         this.apiKey = null;
         this.ws = null;
         this.isConnecting = false;
@@ -34,12 +34,12 @@ class ConduitClient {
     }
 
     get baseUrl() {
-        return (window.runtime) ? `http://${this.host}:${this.port}` : (window.location.origin || `http://${this.host}:${this.port}`);
+        return window.location.origin || `http://${this.host}:${this.port}`;
     }
 
     get wsUrl() {
-        const protocol = (window.runtime) ? 'ws:' : (window.location.protocol === 'https:' ? 'wss:' : 'ws:');
-        const host = (window.runtime) ? `${this.host}:${this.port}` : (window.location.host || `${this.host}:${this.port}`);
+        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const host = window.location.host || `${this.host}:${this.port}`;
         let url = `${protocol}//${host}/files`;
         if (this.apiKey) {
             url += `?key=${this.apiKey}`;

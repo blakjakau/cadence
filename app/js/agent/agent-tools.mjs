@@ -2190,8 +2190,8 @@ Snippet: ${r.content || r.snippet || ""}`;
             let isFinished = false;
             const timeoutDuration = (typeof timeoutMs === 'number' && timeoutMs > 0) ? timeoutMs : 60000;
 
-            const port = (window.runtime) ? 3022 : (window.location.port || 3022);
-            const wsHost = (window.runtime) ? `localhost:${port}` : (window.location.host || `localhost:${port}`);
+            const port = window.location.port || 3022;
+            const wsHost = window.location.host || `localhost:${port}`;
             const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
             let wsUrl = `${wsProtocol}//${wsHost}/terminal?sessionId=agent_${Date.now()}`;
             
