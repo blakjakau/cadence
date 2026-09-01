@@ -61,6 +61,15 @@ export const workspaceClient = {
         return await res.json();
     },
 
+    async getSessions() {
+        // Add cache-busting timestamp
+        const res = await fetch(`${API_BASE}/sessions?t=${Date.now()}`);
+        if (!res.ok) {
+            throw new Error(`Failed to fetch sessions: ${res.statusText}`);
+        }
+        return await res.json();
+    },
+
     async setSession(id, data) {
         const res = await fetch(`${API_BASE}/session?id=${encodeURIComponent(id)}`, {
             method: 'POST',
@@ -81,6 +90,20 @@ export const workspaceClient = {
         if (!res.ok) {
             throw new Error(`Failed to delete session: ${res.statusText}`);
         }
+    },
+
+    async checkSyntax(path, content) {
+        const res = await fetch(`${API_BASE}/check-syntax`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ path, content })
+        });
+        if (!res.ok) {
+            throw new Error(`Failed to check syntax: ${res.statusText}`);
+        }
+        return await res.json();
     }
 };
 

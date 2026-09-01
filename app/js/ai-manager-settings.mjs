@@ -1,6 +1,7 @@
 // ai-manager-settings.mjs
 import { Block, Button } from "./elements.mjs"
 import { SettingsPanel } from "./elements/settings-panel.mjs"
+import workspaceClient from "./workspace-client.mjs";
 
 /**
  * Manages the UI and logic for the AIManager's settings panel.
@@ -71,11 +72,19 @@ class AIManagerSettings {
             "use-workspace-settings": useWorkspaceSettings,
             summarizeThreshold: aiManager.config.summarizeThreshold,
             summarizeTargetPercentage: aiManager.config.summarizeTargetPercentage,
+            contextPrefillMinPercentage: aiManager.config.contextPrefillMinPercentage ?? 40,
+            contextPrefillMaxPercentage: aiManager.config.contextPrefillMaxPercentage ?? 80,
+            defaultAgentMode: aiManager.config.defaultAgentMode,
+            defaultPlanningMode: aiManager.config.defaultPlanningMode,
+            defaultAllowSubAgents: aiManager.config.defaultAllowSubAgents ?? true,
+            defaultAllowRunCommand: aiManager.config.defaultAllowRunCommand ?? true,
+            defaultAutoMilestones: aiManager.config.defaultAutoMilestones ?? true,
             systemPromptSpecialization: systemPromptConfig.specialization,
             systemPromptTechnologies: (systemPromptConfig.technologies || []).join(", "),
             systemPromptAvoidedTechnologies: (systemPromptConfig.avoidedTechnologies || []).join(", "),
             systemPromptTone: (systemPromptConfig.tone || ["warm", "playful", "cheeky"]).join(", "),
             "ai-provider": aiManager.aiProvider,
+            forgivenessMode: aiManager.forgivenessMode,
         }
         for (const key in providerOptions) {
             values[`${aiManager.aiProvider}-${key}`] = providerOptions[key].value
@@ -84,6 +93,14 @@ class AIManagerSettings {
         // Build the schema that defines the form structure
         const schema = [
             { type: "checkbox", id: "use-workspace-settings", label: "Use workspace-specific settings" },
+            { type: "checkbox", id: "forgivenessMode", label: "Forgiveness Mode (Apply edits immediately, rollback anytime)" },
+            { type: "checkbox", id: "defaultAgentMode", label: "Default Agent Mode for New Chats" },
+            { type: "checkbox", id: "defaultPlanningMode", label: "Default Planning Mode for New Chats" },
+            { type: "checkbox", id: "defaultAllowSubAgents", label: "Default Allow Sub-Agents for New Chats" },
+            { type: "checkbox", id: "defaultAllowRunCommand", label: "Default Allow Terminal Commands for New Chats" },
+            { type: "checkbox", id: "defaultAutoMilestones", label: "Default Auto-Milestones on 'done' for New Chats" },
+            { type: "number", id: "contextPrefillMinPercentage", label: "Default Min Context Pre-fill Limit (%)" },
+            { type: "number", id: "contextPrefillMaxPercentage", label: "Default Max Context Pre-fill Limit (%)" },
             { type: "number", id: "summarizeThreshold", label: "Summarize History When Context Reaches (%)" },
             { type: "number", id: "summarizeTargetPercentage", label: "Percentage of Old History to Summarize" },
             { type: "heading", label: "Prompt Customisation" },
@@ -181,11 +198,34 @@ class AIManagerSettings {
     async saveSettings(values) {
         const { aiManager } = this;
 
-        // --- Save Generic Settings (Summarization) ---
+        // --- Save Generic Settings (Summarization, Context Limits, Defaults) ---
         aiManager.config.summarizeThreshold = parseInt(values.summarizeThreshold);
         aiManager.config.summarizeTargetPercentage = parseInt(values.summarizeTargetPercentage);
+        aiManager.config.contextPrefillMinPercentage = parseInt(values.contextPrefillMinPercentage) || 40;
+        aiManager.config.contextPrefillMaxPercentage = parseInt(values.contextPrefillMaxPercentage) || 80;
+        aiManager.config.defaultAgentMode = !!values.defaultAgentMode;
+        aiManager.config.defaultPlanningMode = !!values.defaultPlanningMode;
+        aiManager.config.defaultAllowSubAgents = !!values.defaultAllowSubAgents;
+        aiManager.config.defaultAllowRunCommand = !!values.defaultAllowRunCommand;
+        aiManager.config.defaultAutoMilestones = !!values.defaultAutoMilestones;
         localStorage.setItem("summarizeThreshold", aiManager.config.summarizeThreshold);
         localStorage.setItem("summarizeTargetPercentage", aiManager.config.summarizeTargetPercentage);
+        localStorage.setItem("contextPrefillMinPercentage", aiManager.config.contextPrefillMinPercentage);
+        localStorage.setItem("contextPrefillMaxPercentage", aiManager.config.contextPrefillMaxPercentage);
+        localStorage.setItem("defaultAgentMode", aiManager.config.defaultAgentMode);
+        localStorage.setItem("defaultPlanningMode", aiManager.config.defaultPlanningMode);
+        localStorage.setItem("defaultAllowSubAgents", aiManager.config.defaultAllowSubAgents);
+        localStorage.setItem("defaultAllowRunCommand", aiManager.config.defaultAllowRunCommand);
+        localStorage.setItem("defaultAutoMilestones", aiManager.config.defaultAutoMilestones);
+
+        // --- Save Forgiveness Mode ---
+        aiManager.config.defaultForgivenessMode = !!values.forgivenessMode;
+        aiManager.forgivenessMode = !!values.forgivenessMode;
+        localStorage.setItem("aiForgivenessMode", aiManager.forgivenessMode);
+        if (aiManager.activeSession) {
+            aiManager.activeSession.forgivenessMode = aiManager.forgivenessMode;
+            await workspaceClient.setSession(aiManager.activeSession.id, aiManager.activeSession);
+        }
 
         // --- Save System Prompt Settings ---
         const systemPromptConfig = {
@@ -204,7 +244,14 @@ class AIManagerSettings {
         for (const key in currentOptions) {
             const valueKey = `${aiManager.aiProvider}-${key}`
             if (values.hasOwnProperty(valueKey)) {
-                newProviderSettings[key] = values[valueKey];
+                let val = values[valueKey];
+                const optionType = currentOptions[key].type;
+                if (optionType === "number") {
+                    val = Number(val);
+                } else if (optionType === "boolean" || optionType === "checkbox") {
+                    val = val === true || val === "true";
+                }
+                newProviderSettings[key] = val;
             }
         }
 

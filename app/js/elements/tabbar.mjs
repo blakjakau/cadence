@@ -276,10 +276,15 @@ export class TabBar extends Block {
 				this.movingItem.click()
 			}
 
+			this.enforceTabOrder()
+			let oldTabBar = movingTab.parentElement
+			if (oldTabBar && oldTabBar instanceof TabBar) {
+				oldTabBar.enforceTabOrder()
+			}
+
 			// Dispatch custom event after tab is dropped and handled
 			this.dispatch('tabs-updated', { isEmpty: this._tabs.length === 0 });
-			let oldTabBar = movingTab.parentElement
-			if(oldTabBar !== this) {
+			if(oldTabBar !== this && oldTabBar && oldTabBar instanceof TabBar) {
 				oldTabBar.dispatch('tabs-updated', { isEmpty: oldTabBar._tabs.length === 0 });
 			}
 		}
@@ -300,6 +305,11 @@ export class TabBar extends Block {
 		this._click = v
 	}
 
+	set context(v) {
+		if (!isFunction(v)) throw new Error("context must be a function")
+		this._context = v
+	}
+
 	get activeIndex() {
 		for (let i = 0, l = this._tabs.length; i < l; i++) {
 			if (this._tabs[i].getAttribute("active") !== null) {
@@ -314,7 +324,7 @@ export class TabBar extends Block {
 	}
 
 	byTitle(title) {
-		const tab = this.querySelector(`ui-tab-item[title="${title}"`)
+		const tab = this.querySelector(`ui-tab-item[title="${title}"]`)
 		if (!tab) console.warn("No match found for", title)
 		return tab
 	}
@@ -337,6 +347,33 @@ export class TabBar extends Block {
 		this._tabs[i].click()
 	}
 
+	enforceTabOrder() {
+		const settingsPaths = ["agent_config", "plan_tasks", "workspace_settings", "terminal_settings", "editor_settings"];
+		const settingsTabs = this._tabs.filter(t => t.config?.path && settingsPaths.includes(t.config.path));
+		const diffTabs = this._tabs.filter(t => t.config?.path && t.config.path.startsWith("diff_"));
+		const otherTabs = this._tabs.filter(t => !settingsTabs.includes(t) && !diffTabs.includes(t));
+
+		const orderedTabs = [
+			...settingsTabs,
+			...diffTabs,
+			...otherTabs
+		];
+
+		// Find the last ui-button element to ensure tabs are inserted after it
+		const buttons = Array.from(this.querySelectorAll('ui-button'));
+		let ref = buttons.length > 0 ? buttons[buttons.length - 1].nextSibling : this.firstChild;
+
+		orderedTabs.forEach(tab => {
+			if (tab !== ref) {
+				this.insertBefore(tab, ref);
+				ref = tab.nextSibling; // Update ref to maintain order
+			} else {
+				ref = ref.nextSibling;
+			}
+		});
+		this._tabs = orderedTabs;
+	}
+
 	add(config) {
 		const tab = new TabItem(config.name);
 		// Use the pre-built path from the config for the title attribute.
@@ -352,6 +389,7 @@ export class TabBar extends Block {
 		tab.tabBar = this
 		this._tabs.push(tab)
 		this.append(tab)
+		this.enforceTabOrder()
 
 		tab.onclick = (event) => {
 			const tabBar = tab.parentElement;
@@ -373,6 +411,10 @@ export class TabBar extends Block {
 		tab.oncontextmenu = (event) => {
 			event.preventDefault()
 			event.stopPropagation()
+			if ("function" == typeof this._context) {
+				event.tab = tab
+				this._context(event)
+			}
 		}
 
 		tab.onpointerdown = (event) => {
@@ -436,6 +478,9 @@ export class TabBar extends Block {
 		
 		this.dispatch('tabs-updated', { isEmpty: this._tabs.length === 0 });
 		// this.updateTabCloseIcons();
+		if (window.ui && window.ui.checkGlobalFileModifiedNotice) {
+			window.ui.checkGlobalFileModifiedNotice();
+		}
 	}
 	resetMargins() {
 		// Reset margins on all tabs to prevent visual gaps from interrupted drag operations.

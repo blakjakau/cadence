@@ -55,6 +55,9 @@ export class Input extends Element {
 	focus() {
 		this._input.focus()
 	}
+	select() {
+		this._input.select()
+	}
 }
 
 customElements.define("ui-input", Input);

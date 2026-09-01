@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -136,34 +137,37 @@ func readPump(ws *websocket.Conn, ptmx io.Writer, ptyCmd *exec.Cmd, sessionID in
 
 	defer func() {
 		ws.Close()
-		// On Windows, ptyCmd.Process can be nil because the conpty library
-		// doesn't expose it. The ptmx.Close() call in the calling function
-		// (terminalServer) handles killing the process correctly on all platforms.
 		if ptyCmd.Process != nil {
 			ptyCmd.Process.Kill()
 		}
 	}()
 
 	for {
-		var msg wsMessage
-		// ReadJSON is a convenient helper for JSON-based APIs.
-		err := ws.ReadJSON(&msg)
+		messageType, p, err := ws.ReadMessage()
 		if err != nil {
-			// Report unexpected close errors.
 			if !websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
 				log.Printf("WS read error for session #%d: %v", sessionID, err)
 			}
 			break
 		}
-		switch msg.Type {
-		case "resize":
-			// TODO: Resizing is now platform-specific. A new cross-platform
-			// interface is needed to handle this properly.
-			if resizePty != nil {
-				resizePty(msg.Cols, msg.Rows)
+
+		if messageType == websocket.TextMessage || messageType == websocket.BinaryMessage {
+			// Try parsing as JSON control message first
+			var msg wsMessage
+			if err := json.Unmarshal(p, &msg); err == nil && msg.Type != "" {
+				switch msg.Type {
+				case "resize":
+					if resizePty != nil {
+						resizePty(msg.Cols, msg.Rows)
+					}
+				case "data":
+					ptmx.Write([]byte(msg.Content))
+				}
+				continue
 			}
-		case "data":
-			ptmx.Write([]byte(msg.Content))
+
+			// Direct raw stream data sent from terminal clients or agent tools
+			ptmx.Write(p)
 		}
 	}
 }
@@ -198,21 +202,41 @@ func terminalServer(w http.ResponseWriter, r *http.Request) {
 
 	// Determine starting directory
 	startDir := customDir
+	homeDir, homeErr := os.UserHomeDir()
+
 	if startDir == "" {
-		homeDir, err := os.UserHomeDir()
-		if err != nil {
-			log.Printf("ERROR: Could not get user home directory: %v, using current directory.", err)
+		if homeErr != nil {
+			log.Printf("ERROR: Could not get user home directory: %v, using current directory.", homeErr)
 			startDir = "."
 		} else {
 			startDir = homeDir
+		}
+	} else {
+		// 1. Expand leading ~/
+		if strings.HasPrefix(startDir, "~/") && homeErr == nil {
+			startDir = filepath.Join(homeDir, startDir[2:])
+		} else if homeErr == nil {
+			// 2. If startDir doesn't exist as an absolute path, test if it is relative to homeDir
+			// (handles cases where frontend passes paths like "/repo/..." or "repo/..." meant relative to home)
+			if _, err := os.Stat(startDir); os.IsNotExist(err) {
+				cleanRel := strings.TrimPrefix(startDir, "/")
+				candidate := filepath.Join(homeDir, cleanRel)
+				if _, cErr := os.Stat(candidate); cErr == nil {
+					startDir = candidate
+				}
+			}
+		}
+		if absPath, err := filepath.Abs(startDir); err == nil {
+			startDir = absPath
 		}
 	}
 	
 	// Check if startDir exists, fallback to home if not
 	if _, err := os.Stat(startDir); os.IsNotExist(err) {
 		log.Printf("WARNING: Directory %s does not exist, falling back to home.", startDir)
-		homeDir, _ := os.UserHomeDir()
-		startDir = homeDir
+		if homeErr == nil {
+			startDir = homeDir
+		}
 	}
 
 	// Use our new platform-agnostic function to start the PTY.

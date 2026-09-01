@@ -5,31 +5,76 @@ import { Icon } from './icon.mjs';
 export class FileChip extends Button {
     constructor(config) {
         super();
-        this.config = config;
-        this.id = `filechip-${config.id}`; // Use the message id for the element id, prefixed for clarity
-
-        const textContent = `${config.filename} (${(config.content.length / 1024).toFixed(1)} KB)`;
-        this.setAttribute('title', textContent);
         
-        const textElement = document.createElement('span');
-        textElement.textContent = config.filename;
+        if (config) {
+            this.config = config;
+            this.id = `filechip-${config.id}`;
+            const textContent = `${config.filename} (${(config.content.length / 1024).toFixed(1)} KB)`;
+            this.setAttribute('title', textContent);
+            
+            const textElement = document.createElement('span');
+            textElement.textContent = config.filename;
+            this._textElement = textElement;
+        } else {
+            // Handle cases where it's created via HTML tag
+            const filename = this.getAttribute('filename') || this.getAttribute('data-filename');
+            const path = this.getAttribute('path') || this.getAttribute('data-path');
+            this.id = `filechip-${path || 'unknown'}`;
+            
+            const textElement = document.createElement('span');
+            textElement.textContent = filename || '';
+            this._textElement = textElement;
+            
+            if (path) {
+                this.setAttribute('data-path', path);
+            }
+        }
         
         this._close = new Icon();
         this._close.innerHTML = "close";
         this._close.setAttribute("close", "close");
-        // this._close.setAttribute("size", "tiny");
 
-        this.append(textElement, this._close);
+        this._modeToggle = document.createElement('span');
+        this._modeToggle.classList.add('chip-mode-toggle');
+        // Default to Full. If config passed with mode outline, use that.
+        this._modeToggle.textContent = (config && config.mode === 'outline') ? '[Outline]' : '[Full]';
+        this._modeToggle.style.marginRight = '5px';
+        this._modeToggle.style.cursor = 'pointer';
+        this._modeToggle.style.fontSize = '10px';
+        this._modeToggle.style.color = 'var(--text-secondary)';
+        
+        this._modeToggle.onclick = (e) => {
+            e.stopPropagation();
+            const newMode = this._modeToggle.textContent === '[Full]' ? 'outline' : 'full';
+            this._modeToggle.textContent = newMode === 'outline' ? '[Outline]' : '[Full]';
+            this.dispatchEvent(new CustomEvent('chip-mode-toggle', {
+                bubbles: true,
+                composed: true,
+                detail: { mode: newMode }
+            }));
+        };
+
+        this.append(this._modeToggle, this._textElement, this._close);
 
         this.onclick = (e) => {
             if (e.target !== this._close) {
-                // Potentially do something on chip click, like scroll to file in file list
+                const path = this.getAttribute('data-path') || (this.config && this.config.path);
+                if (path) {
+                    this.dispatchEvent(new CustomEvent('file-focus-request', {
+                        bubbles: true,
+                        composed: true,
+                        detail: { path }
+                    }));
+                }
             }
         };
 
         this._close.onclick = (e) => {
             e.stopPropagation();
-            this.dispatch('chip-close');
+            this.dispatchEvent(new CustomEvent('chip-close', {
+                bubbles: true,
+                composed: true
+            }));
         };
 
         // On pointer down, prevent default browser actions like paste/auto-scroll.

@@ -1,0 +1,296 @@
+/* ai-controls.css */
+
+/* Spinner specifically for use inside buttons */
+.button-spinner {
+    width: 16px; /* Smaller for button context */
+    height: 16px;
+    border: 2px solid color-mix(in srgb, var(--text-inverted) 50%, transparent); /* Use a color that works on the button background */
+    border-radius: 50%;
+    border-top-color: var(--text-inverted); /* Spinner color */
+    animation: spin 1s linear infinite;
+    /* This will help center it as our Button class uses flexbox */
+    margin: auto;
+}
+
+/* Optional: Add styling to the button itself while loading */
+.summarize-button.loading {
+}
+
+.theme-button {
+    background-color: var(--theme);
+    color: var(--text-inverted);
+    border: 1px solid var(--theme);
+    cursor: pointer;
+}
+
+.button-container ui-button {
+    color: #ffffff;
+    border: none;
+    min-height: 23px;
+    height: 23px;
+    font-size: 11px;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-weight: 600;
+    align-self: center;
+}
+
+.button-container ui-button.theme-button.secondary {
+    background: var(--theme-dark, rgba(0, 0, 0, 0.33));
+}
+
+.button-container ui-button.error {
+    background: rgba(192, 0, 0, 0.5);
+    display: none;
+}
+
+.clear-button,
+.summarize-button {
+    align-self: flex-end; /* The clear and summarize buttons should be aligned to the end of the flex container. */
+    background-color: var(--bg-secondary);
+    color: var(--text-primary);
+    border: 1px solid var(--border-primary);
+    cursor: pointer;
+}
+
+.clear-button:hover,
+.summarize-button:hover {
+    background-color: var(--theme-dark);
+    border-color: var(--border-primary);
+}
+
+.settings-button {
+    flex-grow: 0;
+}
+
+.spacer {
+    flex-grow: 1;
+}
+
+.ai-provider-select {
+    font-size: 0.85em;
+    color: var(--text-primary);
+    background-color: var(--bg-secondary);
+    padding: 4px 8px;
+    border-radius: var(--borderRadius);
+    cursor: pointer;
+    border: none;
+    outline: none;
+    max-width: 150px;
+}
+
+.button-container {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding-bottom: 4px;
+    height: var(--menuHeight);
+}
+
+.settings-button {
+    order: -1;
+}
+
+/* --- SESSION TABBAR STYLES (MODIFIED) --- */
+.ai-session-tab-container {
+    display: flex;
+    align-items: flex-end;
+    background-color: var(--bg-primary);
+    padding: 0px 4px 0 4px;
+    gap: 4px;
+    border-top: 3px solid var(--theme-dark); /* Swapped from border-bottom */
+    flex-shrink: 0;
+}
+
+.ai-session-tab-container > ui-tabbar {
+    flex-grow: 1;
+}
+
+.ai-session-tab-container .new-session-button {
+    flex-shrink: 0;
+    margin-bottom: 0; /* Remove bottom margin */
+    height: 32px;
+    min-height: 32px;
+    line-height: 32px;
+}
+
+.ai-session-tab-container .new-session-button:hover {
+    background-color: var(--bg-tertiary);
+}
+
+.progress-bar {
+    position: relative;
+    overflow: hidden;
+}
+
+.progress-bar-inner {
+    position: absolute;
+    top: 0;
+    left: 0;
+    height: 100%;
+    width: 0%;
+    background-color: var(--theme);
+    border-radius: 5px;
+    transition: width 0.5s ease-in-out, background-color 0.3s ease-in-out;
+    z-index: 2;
+}
+
+.progress-bar-inner.threshold-yellow {
+    background-color: var(--color-warning);
+}
+
+.progress-bar-inner.threshold-orange {
+    background-color: var(--color-warning-dark);
+}
+
+.progress-bar-inner.threshold-red {
+    background-color: var(--color-error);
+}
+
+.progress-bar-full-history {
+    position: absolute;
+    top: 0;
+    left: 0;
+    height: 100%;
+    width: 0%;
+    background-color: color-mix(in srgb, var(--theme) 35%, transparent);
+    border-radius: 5px;
+    transition: width 0.5s ease-in-out, background-color 0.3s ease-in-out;
+    z-index: 1;
+}
+
+.progress-bar-full-history.threshold-yellow {
+    background-color: color-mix(in srgb, var(--color-warning) 50%, transparent);
+}
+
+.progress-bar-full-history.threshold-orange {
+    background-color: color-mix(in srgb, var(--color-warning-dark) 50%, transparent);
+}
+
+.progress-bar-full-history.threshold-red {
+    background-color: color-mix(in srgb, var(--color-error) 50%, transparent);
+}
+
+.spinner-container {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    min-height: 100px; /* Give the spinner some vertical space */
+}
+
+.loading-spinner {
+    width: 16px;
+    height: 16px;
+    border: 2px solid var(--border-secondary);
+    border-top-color: var(--theme); /* The top border of the loading spinner should be the theme color. */
+    border-radius: 50%;
+    animation: spin-simple 1s linear infinite;
+}
+
+@keyframes spin-simple {
+    from {
+        transform: rotate(0deg);
+    }
+    to {
+        transform: rotate(360deg);
+    }
+}
+
+@keyframes spin {
+    0% {
+        transform: translate(-50%, -50%) rotate(0deg);
+    }
+    100% {
+        transform: translate(-50%, -50%) rotate(360deg);
+    }
+}
+
+.prefill-progress-container {
+    background: color-mix(in srgb, var(--bg-secondary) 85%, var(--theme) 15%);
+    border: 1px solid color-mix(in srgb, var(--border-primary) 70%, var(--theme) 30%);
+    border-radius: var(--borderRadius, 12px);
+    padding: 12px 16px;
+    margin: 10px 0;
+    box-shadow: 0 4px 12px var(--shadow-color, rgba(0, 0, 0, 0.15));
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    transition: all 0.3s ease;
+    animation: fadeIn 0.3s ease-out;
+}
+
+.prefill-progress-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.prefill-progress-icon {
+    font-size: 16px;
+    color: var(--theme);
+    animation: spin-prefill 2s linear infinite;
+}
+
+.prefill-progress-title {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.prefill-progress-percent {
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--theme);
+    margin-left: auto;
+}
+
+.prefill-progress-bar {
+    width: 100%;
+    height: 6px;
+    background-color: var(--theme-dark, rgba(0, 0, 0, 0.2));
+    border-radius: 3px;
+    overflow: hidden;
+    position: relative;
+}
+
+.prefill-progress-fill {
+    height: 100%;
+    background-color: var(--theme);
+    border-radius: 3px;
+    width: 0%;
+    transition: width 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.prefill-progress-details {
+    font-size: 11px;
+    color: var(--text-secondary);
+    text-align: right;
+    font-family: var(--font-mono, monospace);
+}
+
+@keyframes spin-prefill {
+    from {
+        transform: rotate(0deg);
+    }
+    to {
+        transform: rotate(-360deg);
+    }
+}
+
+@keyframes fadeIn {
+    from {
+        opacity: 0;
+        transform: translateY(4px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+.ai-session-tab-container .new-session-button:hover {
+    background-color: var(--bg-tertiary);
+}

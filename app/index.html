@@ -13,8 +13,6 @@
 	<meta property="og:title" content="Cadence, in your browser" />
 	<meta property="og:description" content="Simple, fast, lightweight code editing. Edit your local code files straight from your web browser, or install the web app for that sweet 'native app' experience." />
 	<meta property="og:image" content="images/preview-image.png" />
-	
-    
     
     <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet">
     
@@ -40,10 +38,10 @@
     <script type="module" src="js/elements.mjs" ></script>
     <script type="text/javascript">window.elements=window.__ui</script>
 	<script type="text/javascript">
-		const notSupported = []
+		const isLocalServer = window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1" || window.location.hostname.endsWith(".localhost");
 		
-		/* Only show the page if we have support for File System Access API */
-		if(!('showDirectoryPicker' in window)) { notSupported.push("FilesAPI"); }
+		/* Only show the page if we have support for File System Access API (not needed in Local/Wails mode) */
+		if(!('showDirectoryPicker' in window) && !window.runtime && !isLocalServer) { notSupported.push("FilesAPI"); }
 		// if(!('serviceWorker' in navigator)) { notSupported.push("ServiceWorker"); }
 		
 		if(notSupported.length > 0) {
@@ -58,13 +56,18 @@
 				unsup.querySelector('center').remove(); // remove the image too
 				const content = unsup.innerHTML;
 				unsup.remove(); // remove template from DOM.
-				new ui.Modal().notice(content, title);
-			}, 100)
+				if (window.ui && window.ui.Modal) {
+					new window.ui.Modal().notice(content, title);
+				} else {
+					alert(title + "\n\n" + content.replace(/<[^>]*>/g, ""));
+				}
+			}, 500)
 		} else {
 			/* Only register a service worker if it's supported AND we are not in Native/Wails mode */
 			if ('serviceWorker' in navigator) {
-				if (window.runtime) {
-					// In Native mode, unregister any existing workers to clear cache
+				const isLocalServer = window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1" || window.location.hostname.endsWith(".localhost");
+				if (window.runtime || isLocalServer) {
+					// In Native mode or local server, unregister any existing workers to clear cache
 					navigator.serviceWorker.getRegistrations().then(registrations => {
 						for (let registration of registrations) { registration.unregister(); }
 					});
@@ -91,7 +94,9 @@
 
 		themeCSS = isDev
 		?":root { --theme: #00AABB!important; --themeDark: #007788!important; }"
-		:":root { --theme: #3f51b5!important; --themeDark: #303f9f!important; }"
+		:":root { --theme: #449cc1!important; --themeDark: #2b657d!important; }"
+		// :":root { --theme: #3f51b5!important; --themeDark: #303f9f!important; }"
+		
 		const css = document.getElementById("rootCSS")
 		css.innerText = themeCSS;
 	</script>
@@ -119,6 +124,7 @@
 
 
 	<ui-actionbar id="statusbar" slim hook="bottom">
+		<ui-inline id="indexer_status" hook="left" style="font-size: 11px; opacity: 0.7; padding-left: 10px;"></ui-inline>
 		<ui-button id="inspect_btn" icon="bug_report" hook=right title="Open Inspector" style="display:none"></ui-button>
 		<ui-button id="settings" icon="settings" hook=right onclick="window.ui.execCommand('app:showEditorSettings')"></ui-button>
 		<ui-button id="darkmode_select" hook=right></ui-button>
@@ -208,21 +214,44 @@
 	<ui-menu id="top_folder_context" onclick="(e)=>{ console.log(e) }">
 		<ui-menu-item command="newfile" icon="note_add">New File</ui-menu-item>
 		<ui-menu-item command="refresh" icon="refresh">Refresh Folder</ui-menu-item>
-		<!--<ui-menu-item command="remove" icon="remove">Remove Folder</ui-menu-item>-->
+		<ui-menu-item command="remove" icon="remove">Remove Folder</ui-menu-item>
+		<ui-menu-split></ui-menu-split>
+		<ui-menu-item command="info" icon="info">Folder Info</ui-menu-item>
 	</ui-menu>
 
 	<ui-menu id="folder_context" onclick="(e)=>{ console.log(e) }">
-	<ui-menu-item command="newfile" icon="note_add">New File</ui-menu-item>
-	<ui-menu-item command="refresh" icon="refresh">Refresh Folder</ui-menu-item>
-	<ui-menu-item command="rename" icon="edit">Rename Folder</ui-menu-item>
-	<!--<ui-menu-split></ui-menu-split>-->
-	<!--<ui-menu-item command="delete" icon="delete">Delete Folder</ui-menu-item>-->
+		<ui-menu-item command="newfile" icon="note_add">New File</ui-menu-item>
+		<ui-menu-item command="refresh" icon="refresh">Refresh Folder</ui-menu-item>
+		<ui-menu-item command="rename" icon="edit">Rename Folder</ui-menu-item>
+		<!--<ui-menu-split></ui-menu-split>-->
+		<!--<ui-menu-item command="delete" icon="delete">Delete Folder</ui-menu-item>-->
+		<ui-menu-split></ui-menu-split>
+		<ui-menu-item command="info" icon="info">Folder Info</ui-menu-item>
 	</ui-menu>
 	
 	<ui-menu id="file_context" onclick="(e)=>console.log(e)">
 		<ui-menu-item command="rename" icon="edit">Rename File</ui-menu-item>
 		<ui-menu-split></ui-menu-split>
 		<ui-menu-item command="delete" icon="delete">Delete File</ui-menu-item>
+		<ui-menu-split></ui-menu-split>
+		<ui-menu-item command="info" icon="info">File Info</ui-menu-item>
+	</ui-menu>
+
+	<ui-menu id="ai_tab_context" onclick="(e)=>console.log(e)">
+		<ui-menu-item command="rename" icon="edit">Rename Chat</ui-menu-item>
+		<ui-menu-item command="copy" icon="content_copy">Duplicate Chat</ui-menu-item>
+		<ui-menu-split></ui-menu-split>
+		<ui-menu-item command="archive" icon="history">Archive</ui-menu-item>
+		<ui-menu-item command="delete" icon="delete">Delete</ui-menu-item>
+	</ui-menu>
+
+	<ui-menu id="editor_context" onclick="(e)=>{ window.ui.execCommand(e) }">
+		<ui-menu-item id="editor_context_goto_file" command="editor:goToFile" icon="folder_open" style="display: none;">Go to File</ui-menu-item>
+		<ui-menu-split id="editor_context_goto_file_split" style="display: none;"></ui-menu-split>
+		<ui-menu-item id="editor_context_goto" command="editor:goToDefinition" icon="shortcut" keyTag="Ctrl-B">Lookup Definition</ui-menu-item>
+		<ui-menu-split id="editor_context_split"></ui-menu-split>
+		<ui-menu-item command="editor:undo" icon="undo" keyTag="Ctrl-Z">Undo</ui-menu-item>
+		<ui-menu-item command="editor:redo" icon="redo" keyTag="Ctrl-Y">Redo</ui-menu-item>
 	</ui-menu>
 
 	

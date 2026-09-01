@@ -186,7 +186,7 @@ export class TabItem extends Button {
 			return; // No change needed
 		}
 		this._name = newName;
-		this._text.textContent = newName;
+		this._text.innerHTML = newName;
 
 		if (this.config) {
 			this.config.name = newName;

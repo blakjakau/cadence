@@ -128,6 +128,44 @@ class Modal {
         setTimeout(() => inputElement.focus(), 50); // Focus the input after it's rendered
         return promise;
     }
+
+    toast(message, duration = 3000) {
+        const toastEl = document.createElement('div');
+        toastEl.textContent = message;
+        toastEl.style.position = 'fixed';
+        toastEl.style.bottom = '20px';
+        toastEl.style.left = '50%';
+        toastEl.style.transform = 'translateX(-50%)';
+        toastEl.style.backgroundColor = 'var(--theme-dark, #333)';
+        toastEl.style.color = '#fff';
+        toastEl.style.padding = '12px 24px';
+        toastEl.style.borderRadius = 'var(--radius, 8px)';
+        toastEl.style.boxShadow = '0 4px 12px rgba(0,0,0,0.15)';
+        toastEl.style.zIndex = '99999';
+        toastEl.style.opacity = '0';
+        toastEl.style.transition = 'opacity 0.3s ease, transform 0.3s ease';
+        toastEl.style.pointerEvents = 'none';
+        toastEl.style.fontSize = '14px';
+
+        document.body.appendChild(toastEl);
+
+        // Fade in
+        requestAnimationFrame(() => {
+            requestAnimationFrame(() => {
+                toastEl.style.opacity = '1';
+                toastEl.style.transform = 'translateX(-50%) translateY(-10px)';
+            });
+        });
+
+        // Fade out and remove
+        setTimeout(() => {
+            toastEl.style.opacity = '0';
+            toastEl.style.transform = 'translateX(-50%) translateY(10px)';
+            setTimeout(() => {
+                toastEl.remove();
+            }, 300);
+        }, duration);
+    }
 }
 
 const modal = new Modal

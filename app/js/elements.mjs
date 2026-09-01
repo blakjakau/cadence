@@ -4,6 +4,13 @@ export { Ripple } from './elements/ripple.mjs';
 export { Input } from './elements/input.mjs'; // Re-export Input as it's not a singleton
 export { Button } from './elements/button.mjs';
 export { FileChip } from './elements/filechip.mjs';
+export { SkillChip } from './elements/skillchip.mjs';
+export { SkillItem } from './elements/skillitem.mjs';
+export { SkillPicker } from './elements/skillpicker.mjs';
+export { SkillEditor } from './elements/skill-editor.mjs';
+export { RootChip } from './elements/rootchip.mjs';
+export { RootItem } from './elements/rootitem.mjs';
+export { RootPicker } from './elements/rootpicker.mjs';
 export { FileItem } from './elements/fileitem.mjs';
 export { TabItem } from './elements/tabitem.mjs';
 export { CounterButton } from './elements/counterbutton.mjs';
@@ -20,11 +27,14 @@ export { Menu } from './elements/menu.mjs';
 export { MenuItem } from './elements/menuitem.mjs';
 export { FileUploadList } from './elements/fileuploadlist.mjs'; // Re-export FileUploadList
 export { EditorHolder } from './elements/editorholder.mjs';
+export { SessionArtifactsPanel } from './elements/session-artifacts-panel.mjs';
+export { AgentConfigPanel } from './elements/agent-config-panel.mjs';
+export { DiffViewPanel } from './elements/diff-view-panel.mjs';
 export { IconTabBar } from './elements/icon-tabbar.mjs';
 export { IconTab } from './elements/icon-tab.mjs';
 export { SidebarPanel } from './elements/sidebar-panel.mjs';
 export { Modal } from './elements/modal.mjs';
-export { isset, isNotNull, isFunction, isElement, clone, addStylesheet, sortOnName, readAndOrderDirectory, readAndOrderDirectoryRecursive, buildPath, loadScript } from './elements/utils.mjs';
+export { isset, isNotNull, isFunction, isElement, clone, addStylesheet, sortOnName, readAndOrderDirectory, readAndOrderDirectoryRecursive, buildPath, loadScript, extractFilenameAtColumn, findFileMatchesInIndex } from './elements/utils.mjs';
 export { LoaderBar } from "./elements/loader-bar.mjs"
 export { promptAddFolder, promptSaveFile } from './elements/file-dialogs.mjs';
 import modalInstance from './elements/modal.mjs';
@@ -55,25 +65,9 @@ import { Effects } from './elements/effect.mjs';
 import { Effect } from './elements/effect.mjs';
 import { Ripple } from './elements/ripple.mjs';
 import { EditorHolder } from './elements/editorholder.mjs';
+import { SessionArtifactsPanel } from './elements/session-artifacts-panel.mjs';
+import { AgentConfigPanel } from './elements/agent-config-panel.mjs';
+import { DiffViewPanel } from './elements/diff-view-panel.mjs';
 import { LoaderBar } from "./elements/loader-bar.mjs"
 
-
 // export { modalInstance as Modal }; // Re-export the singleton instance
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

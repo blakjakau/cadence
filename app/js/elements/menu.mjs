@@ -59,8 +59,12 @@ export class Menu extends Panel {
 	}
 
 	showAt(origin) {
+		if (!this.parentElement) {
+			document.body.appendChild(this);
+		}
 		// const self = this
 		let p
+
 
 		// clear styling for left/up combos
 		this.removeAttribute("left")

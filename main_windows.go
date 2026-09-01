@@ -5,6 +5,7 @@ package main
 
 import (
 	"os"
+	"os/exec"
 	"strings"
 	"syscall"
 )
@@ -34,4 +35,8 @@ func main() {
 	getIsCompiled()
 	parseFlags()
 	runCadenceServer(true)
+}
+
+func configureCmdForRestart(cmd *exec.Cmd) {
+	// Windows-specific logic (no Setsid needed)
 }

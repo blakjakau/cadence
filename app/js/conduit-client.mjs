@@ -162,10 +162,13 @@ class ConduitClient {
                 const { resolve, reject } = this.pendingRequests.get(message.requestId);
                 if (message.error) {
                     reject(new Error(message.error));
+                    this.pendingRequests.delete(message.requestId);
+                } else if (message.action === "search_match") {
+                    // Do not resolve or delete pending request yet since this is a streaming chunk!
                 } else {
                     resolve(message);
+                    this.pendingRequests.delete(message.requestId);
                 }
-                this.pendingRequests.delete(message.requestId);
             }
 
             this.emit(message.action, message); // e.g., emit('list', { path, data, error })
@@ -195,9 +198,9 @@ class ConduitClient {
         // Let onclose handle the retry/disconnect logic
     }
 
-    _send(payload) {
+    _send(payload, explicitRequestId = null) {
         return new Promise((resolve, reject) => {
-            const requestId = ++this.requestIdCounter;
+            const requestId = explicitRequestId || ++this.requestIdCounter;
             const message = { ...payload, requestId };
             this.pendingRequests.set(requestId, { resolve, reject });
 
@@ -240,12 +243,19 @@ class ConduitClient {
     }
 
     // --- WebSocket Actions (Promise-based) ---
+    wsMkdir(path) {
+        return this._send({ action: 'mkdir', path });
+    }
+
     wsList(path) {
         return this._send({ action: 'list', path });
     }
 
-    wsRead(path) {
-        return this._send({ action: 'read', path });
+    wsRead(path, startLine = 0, lineCount = 0) {
+        const payload = { action: 'read', path };
+        if (startLine > 0) payload.startLine = startLine;
+        if (lineCount > 0) payload.lineCount = lineCount;
+        return this._send(payload);
     }
 
     wsWrite(path, base64Content) {
@@ -258,6 +268,50 @@ class ConduitClient {
 
     wsDelete(path) {
         return this._send({ action: 'delete', path });
+    }
+
+    wsCountFiles(path) {
+        return this._send({ action: 'count_files', path });
+    }
+
+    wsSearch(path, type, query) {
+        return this._send({ action: 'search', path, type, query });
+    }
+
+    wsSearchWithId(requestId, path, type, query) {
+        return this._send({ action: 'search', path, type, query }, requestId);
+    }
+
+    wsSearchSymbols(query) {
+        return this._send({ action: 'search_symbols', query });
+    }
+
+    wsGetOutline(path) {
+        return this._send({ action: 'get_outline', path });
+    }
+
+    wsGetFileSymbols(path) {
+        return this._send({ action: 'get_file_symbols', path });
+    }
+
+    wsGetIndexerStatus() {
+        return this._send({ action: 'get_indexer_status' });
+    }
+
+    wsFileInfo(path) {
+        return this._send({ action: 'file_info', path });
+    }
+
+    wsWebGet(url) {
+        return this._send({ action: 'web_get', path: url });
+    }
+
+    wsSetActiveRoots(roots, ignorePaths = null) {
+        if (!ignorePaths && window.workspace && window.workspace.ignorePaths) {
+            ignorePaths = window.workspace.ignorePaths;
+        }
+        const payload = { roots, ignorePaths };
+        return this._send({ action: 'set_active_roots', content: JSON.stringify(payload) });
     }
 
     // Watch is fire-and-forget, it just sends the command.

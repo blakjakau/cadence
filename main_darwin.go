@@ -1,5 +1,6 @@
 //go:build darwin
 // +build darwin
+
 package main
 /*
 #cgo CFLAGS: -x objective-c
@@ -10,7 +11,9 @@ import "C"
 import (
 	"log"
 	"net/url"
+	"os/exec"
 	"sync"
+	"syscall"
 )
 var (
 	urlHandleFunc func(*url.URL)
@@ -58,4 +61,10 @@ func main() {
 	})
 	startServerOnce.Do(func() { go runCadenceServer(true) })
 	registerAndRunURLHandler()
+}
+
+func configureCmdForRestart(cmd *exec.Cmd) {
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		Setsid: true,
+	}
 }

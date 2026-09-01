@@ -1,22 +1,43 @@
 package main
 
 import (
+	"bufio"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"io/ioutil"
 	"log"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/fsnotify/fsnotify"
 	"github.com/gorilla/websocket"
 )
 
 
-// fileAPIRoot is a global variable set in main.go
+var indexManagerInit2 sync.Once
+
+func getIndexManagerAPI() *IndexManager {
+	im := GetIndexManager()
+	indexManagerInit2.Do(func() {
+		im.OnStatusUpdate = func() {
+			if fileWatcher != nil {
+				status := map[string]interface{}{
+					"roots": im.GetRoots(),
+					"size":  im.GetTotalSizeFormatted(),
+				}
+				fileWatcher.broadcastIndexerStatus(status)
+			}
+		}
+	})
+	return im
+}
 
 // --- File API message structs ---
 
@@ -27,14 +48,25 @@ type fileRequest struct {
 	Content   string `json:"content,omitempty"`   // Base64 encoded content for "write"
 	Type      string `json:"type,omitempty"`      // For "search"
 	Query     string `json:"query,omitempty"`     // For "search"
+	StartLine int    `json:"startLine,omitempty"` // For "read" partial (1-indexed)
+	LineCount int    `json:"lineCount,omitempty"` // For "read" partial
 }
 
 type fileResponse struct {
-	RequestId int         `json:"requestId,omitempty"` // Added to echo back the request ID
+	RequestId int         `json:"requestId,omitempty"` // Echo back the request ID
 	Action    string      `json:"action"`
 	Path      string      `json:"path"`
 	Error     string      `json:"error,omitempty"`
 	Data      interface{} `json:"data,omitempty"`
+	ModTime   int64       `json:"modTime,omitempty"`
+	FullPath  string      `json:"fullPath,omitempty"`
+	Size      int64       `json:"size,omitempty"`
+}
+
+type searchMatch struct {
+	Path    string `json:"path"`
+	Line    int    `json:"line"`
+	Content string `json:"content"`
 }
 
 type fileInfo struct {
@@ -120,7 +152,7 @@ func (wm *watcherManager) broadcastEvent(event fsnotify.Event) {
 				Path:   reqPath,
 				Data:   event.Op.String(), // e.g., "WRITE", "CREATE"
 			}
-			client.WriteJSON(resp)
+			safeWriteJSON(client, resp)
 		} else {
 			dirPath := filepath.Dir(event.Name)
 			reqPathDir, watchedDir := paths[dirPath]
@@ -140,9 +172,22 @@ func (wm *watcherManager) broadcastEvent(event fsnotify.Event) {
 					Path:   childReqPath,
 					Data:   event.Op.String(),
 				}
-				client.WriteJSON(resp)
+				safeWriteJSON(client, resp)
 			}
 		}
+	}
+}
+
+func (wm *watcherManager) broadcastIndexerStatus(status interface{}) {
+	wm.mu.Lock()
+	defer wm.mu.Unlock()
+
+	resp := fileResponse{
+		Action: "indexer_status",
+		Data:   status,
+	}
+	for client := range wm.subscribers {
+		safeWriteJSON(client, resp)
 	}
 }
 
@@ -184,6 +229,16 @@ func securePath(path string) (string, error) {
 	if err != nil {
 		return "", err // e.g., root doesn't exist or permissions issue
 	}
+
+	// If the path is absolute and under absRoot, make it relative to absRoot first
+	// to avoid duplicate path prefix issues.
+	cleanedPath := filepath.Clean(path)
+	if filepath.IsAbs(cleanedPath) {
+		if rel, err := filepath.Rel(absRoot, cleanedPath); err == nil && !strings.HasPrefix(rel, "..") {
+			path = rel
+		}
+	}
+
 	// 3. Join and clean the requested path relative to the root
 	absPath := filepath.Join(absRoot, filepath.Clean(path))
 	if !strings.HasPrefix(absPath, absRoot) {
@@ -245,7 +300,14 @@ func handleRestGet(w http.ResponseWriter, fullPath, reqPath string) {
 		respData = base64.StdEncoding.EncodeToString(content)
 	}
 
-	resp := fileResponse{Action: "read", Path: reqPath, Data: respData}
+	resp := fileResponse{
+		Action:   "read",
+		Path:     reqPath,
+		Data:     respData,
+		ModTime:  stat.ModTime().Unix(),
+		FullPath: filepath.ToSlash(fullPath),
+		Size:     stat.Size(),
+	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp)
 }
@@ -254,6 +316,12 @@ func handleRestPost(w http.ResponseWriter, r *http.Request, fullPath string) {
 	body, err := ioutil.ReadAll(r.Body)
 	if err != nil {
 		http.Error(w, "Cannot read body", http.StatusBadRequest)
+		return
+	}
+	// Automatically create paths to the folder if they don't exist
+	dir := filepath.Dir(fullPath)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		http.Error(w, "Failed to create directory: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 	// Assumes raw binary content in POST body for simplicity.
@@ -276,6 +344,8 @@ func handleFileWs(w http.ResponseWriter, r *http.Request) {
 	}
 	defer ws.Close()
 	defer fileWatcher.removeClient(ws)
+	defer cancelActiveSearch(ws)
+	defer cleanupWsWriteMutex(ws)
 
 	for {
 		var req fileRequest
@@ -288,10 +358,16 @@ func handleFileWs(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleWsRequest(ws *websocket.Conn, req fileRequest) {
-	fullPath, err := securePath(req.Path)
-	if err != nil {
-		ws.WriteJSON(fileResponse{Action: req.Action, Path: req.Path, Error: "Forbidden"})
-		return
+	log.Printf("[DEBUG] WS Request: action=%s, path=%s, requestId=%d", req.Action, req.Path, req.RequestId)
+	var fullPath string
+	var err error
+	if req.Action != "web_get" {
+		fullPath, err = securePath(req.Path)
+		if err != nil {
+			log.Printf("[DEBUG] WS Error: securePath failed for path %s: %v", req.Path, err)
+			safeWriteJSON(ws, fileResponse{Action: req.Action, Path: req.Path, Error: "Forbidden"})
+			return
+		}
 	}
 
 	var resp fileResponse
@@ -316,7 +392,30 @@ func handleWsRequest(ws *websocket.Conn, req fileRequest) {
 		if err != nil {
 			resp.Error = err.Error()
 		} else {
-			resp.Data = base64.StdEncoding.EncodeToString(content)
+			if stat, statErr := os.Stat(fullPath); statErr == nil {
+				resp.ModTime = stat.ModTime().Unix()
+				resp.FullPath = filepath.ToSlash(fullPath)
+				resp.Size = stat.Size()
+			}
+			if req.StartLine > 0 {
+				lines := strings.Split(string(content), "\n")
+				startIdx := req.StartLine - 1
+				endIdx := startIdx + req.LineCount
+				if startIdx < 0 {
+					startIdx = 0
+				}
+				if endIdx > len(lines) || req.LineCount <= 0 {
+					endIdx = len(lines)
+				}
+				if startIdx < len(lines) {
+					subset := strings.Join(lines[startIdx:endIdx], "\n")
+					resp.Data = base64.StdEncoding.EncodeToString([]byte(subset))
+				} else {
+					resp.Data = base64.StdEncoding.EncodeToString([]byte(""))
+				}
+			} else {
+				resp.Data = base64.StdEncoding.EncodeToString(content)
+			}
 		}
 	case "write":
 		// Content is base64 encoded
@@ -324,9 +423,23 @@ func handleWsRequest(ws *websocket.Conn, req fileRequest) {
 		if err != nil {
 			resp.Error = "Invalid base64 content: " + err.Error()
 		} else {
-			err = ioutil.WriteFile(fullPath, decoded, 0644)
-			if err != nil {
-				resp.Error = err.Error()
+			// Automatically create paths to the folder if they don't exist
+			dir := filepath.Dir(fullPath)
+			if err := os.MkdirAll(dir, 0755); err != nil {
+				resp.Error = "Failed to create directory: " + err.Error()
+			} else {
+				err = ioutil.WriteFile(fullPath, decoded, 0644)
+				if err != nil {
+					resp.Error = err.Error()
+				} else {
+					im := getIndexManagerAPI()
+					im.UpdateFile(fullPath, string(decoded))
+					if stat, statErr := os.Stat(fullPath); statErr == nil {
+						resp.ModTime = stat.ModTime().Unix()
+						resp.FullPath = filepath.ToSlash(fullPath)
+						resp.Size = stat.Size()
+					}
+				}
 			}
 		}
 	case "rename":
@@ -338,9 +451,29 @@ func handleWsRequest(ws *websocket.Conn, req fileRequest) {
 				resp.Error = err.Error()
 			}
 		}
+	case "mkdir":
+		if err := os.MkdirAll(fullPath, 0755); err != nil {
+			resp.Error = err.Error()
+		}
 	case "delete":
 		if err := os.RemoveAll(fullPath); err != nil {
 			resp.Error = err.Error()
+		}
+	case "count_files":
+		count := 0
+		err := filepath.Walk(fullPath, func(path string, info os.FileInfo, err error) error {
+			if err != nil {
+				return err
+			}
+			if path != fullPath {
+				count++
+			}
+			return nil
+		})
+		if err != nil {
+			resp.Error = err.Error()
+		} else {
+			resp.Data = count
 		}
 	case "watch":
 		fileWatcher.addSubscription(ws, req.Path, fullPath)
@@ -354,25 +487,167 @@ func handleWsRequest(ws *websocket.Conn, req fileRequest) {
 			} else {
 				resp.Data = results
 			}
+		} else if req.Type == "content" {
+			results, err := walkAndSearchContent(fullPath, req.Query)
+			if err != nil {
+				resp.Error = err.Error()
+			} else {
+				resp.Data = results
+			}
+		} else if req.Type == "grep" {
+			go startGrepSearch(ws, req.RequestId, req.Query)
+			return // Return early, streaming handles responses
 		} else {
 			resp.Error = "Unsupported search type"
+		}
+	case "get_outline":
+		im := getIndexManagerAPI()
+		resp.Data = im.GetOutline(fullPath)
+	case "get_file_symbols":
+		im := getIndexManagerAPI()
+		resp.Data = im.GetFileSymbols(fullPath)
+	case "search_symbols":
+		im := getIndexManagerAPI()
+		resp.Data = im.SearchSymbols(req.Query)
+	case "set_active_roots":
+		im := getIndexManagerAPI()
+		var payload struct {
+			Roots       []string `json:"roots"`
+			IgnorePaths []string `json:"ignorePaths"`
+		}
+		var roots []string
+		var ignorePaths []string
+		
+		if err := json.Unmarshal([]byte(req.Content), &payload); err == nil && len(payload.Roots) > 0 {
+			roots = payload.Roots
+			ignorePaths = payload.IgnorePaths
+		} else {
+			// Fallback to legacy string array format
+			if err := json.Unmarshal([]byte(req.Content), &roots); err != nil {
+				resp.Error = "Invalid roots format"
+			}
+		}
+		
+		if resp.Error == "" {
+			var secureRoots []string
+			for _, r := range roots {
+				if secureRoot, err := securePath(r); err == nil {
+					secureRoots = append(secureRoots, secureRoot)
+				}
+			}
+			im.SetActiveRoots(secureRoots, ignorePaths)
+			resp.Data = "ok"
+		}
+	case "get_indexer_status":
+		im := getIndexManagerAPI()
+		resp.Data = map[string]interface{}{
+			"roots": im.GetRoots(),
+			"size":  im.GetTotalSizeFormatted(),
+		}
+	case "file_info":
+		stat, err := os.Stat(fullPath)
+		if err != nil {
+			resp.Error = err.Error()
+		} else {
+			resp.Data = map[string]interface{}{
+				"path":          req.Path,
+				"fullPath":      filepath.ToSlash(fullPath),
+				"isDir":         stat.IsDir(),
+				"size":          stat.Size(),
+				"sizeFormatted": formatSize(stat.Size()),
+				"modTime":       stat.ModTime().Unix(),
+				"modTimeStr":    stat.ModTime().Format("2006-01-02 15:04:05"),
+				"gitStatus":     getGitStatus(fullPath),
+			}
+		}
+	case "web_get":
+		urlStr := req.Path
+		if !strings.HasPrefix(urlStr, "http://") && !strings.HasPrefix(urlStr, "https://") {
+			resp.Error = "Invalid URL protocol. Only http/https are allowed."
+		} else {
+			client := &http.Client{Timeout: 15 * time.Second}
+			httpReq, err := http.NewRequest("GET", urlStr, nil)
+			if err != nil {
+				resp.Error = err.Error()
+			} else {
+				httpReq.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+				httpResp, err := client.Do(httpReq)
+				if err != nil {
+					resp.Error = err.Error()
+				} else {
+					defer httpResp.Body.Close()
+					bodyBytes, err := ioutil.ReadAll(httpResp.Body)
+					if err != nil {
+						resp.Error = err.Error()
+					} else {
+						resp.Data = string(bodyBytes)
+					}
+				}
+			}
 		}
 	default:
 		resp.Error = "Unknown action"
 	}
 
-	ws.WriteJSON(resp)
+	log.Printf("[DEBUG] WS Response: action=%s, path=%s, requestId=%d, error=%s", resp.Action, resp.Path, resp.RequestId, resp.Error)
+	safeWriteJSON(ws, resp)
 }
 
 // walkAndSearchFolders recursively searches for directories matching the query.
 func walkAndSearchFolders(path, query string) ([]fileInfo, error) {
-	entries, err := ioutil.ReadDir(path)
+	im := getIndexManagerAPI()
+	var matchingIdx *WorkspaceIndex
+	im.mu.RLock()
+	for root, idx := range im.Indexes {
+		if path == root || strings.HasPrefix(path, root+string(filepath.Separator)) {
+			matchingIdx = idx
+			break
+		}
+	}
+	im.mu.RUnlock()
+
+	visited := make(map[string]bool)
+	return walkAndSearchFoldersHelper(path, query, visited, 0, matchingIdx)
+}
+
+func walkAndSearchFoldersHelper(path, query string, visited map[string]bool, depth int, matchingIdx *WorkspaceIndex) ([]fileInfo, error) {
+	if depth > 15 {
+		return nil, nil // Stop deep recursion
+	}
+
+	// Resolve the absolute path to detect circular symlinks
+	absPath, err := filepath.Abs(path)
 	if err != nil {
 		return nil, err
 	}
+	realPath, err := filepath.EvalSymlinks(absPath)
+	if err != nil {
+		realPath = absPath // Fallback if eval symlinks fails
+	}
 
-	if strings.HasPrefix(filepath.Base(path), ".") && filepath.Base(path) != "." {
-		return nil, nil // Skip dot files/folders themselves for top-level search
+	if visited[realPath] {
+		return nil, nil // Circular dependency/symlink loop detected
+	}
+	visited[realPath] = true
+	defer func() { visited[realPath] = false }() // Cleanup when unwinding
+
+	baseName := filepath.Base(path)
+	// Skip dot folders early (unless it's the exact match query)
+	if strings.HasPrefix(baseName, ".") && baseName != "." && strings.ToLower(baseName) != strings.ToLower(query) {
+		return nil, nil
+	}
+	// Skip other standard large/ignored folders early
+	lowerBaseName := strings.ToLower(baseName)
+	if lowerBaseName == "node_modules" || lowerBaseName == "dist" || lowerBaseName == "build" || lowerBaseName == ".pkgconfig" {
+		return nil, nil
+	}
+	if matchingIdx != nil && matchingIdx.IsPathIgnored(path) {
+		return nil, nil
+	}
+
+	entries, err := ioutil.ReadDir(path)
+	if err != nil {
+		return nil, err
 	}
 
 	var foundItems []fileInfo
@@ -381,16 +656,532 @@ func walkAndSearchFolders(path, query string) ([]fileInfo, error) {
 			continue
 		}
 
-		children, _ := walkAndSearchFolders(filepath.Join(path, entry.Name()), query)
-		
-		// Skip dot folders from being added to results, unless it's the specific query.
-		if strings.HasPrefix(entry.Name(), ".") && strings.ToLower(entry.Name()) != strings.ToLower(query) {
+		childName := entry.Name()
+		childLower := strings.ToLower(childName)
+		// Skip dot folders early, unless it matches the query
+		if strings.HasPrefix(childName, ".") && childLower != strings.ToLower(query) {
 			continue
 		}
-		if strings.Contains(strings.ToLower(entry.Name()), strings.ToLower(query)) || len(children) > 0 {
-			item := fileInfo{Name: entry.Name(), IsDir: true, Size: entry.Size(), ModTime: entry.ModTime().Unix(), Children: children}
+		// Skip standard ignored folders early
+		if childLower == "node_modules" || childLower == "dist" || childLower == "build" || childLower == ".pkgconfig" {
+			continue
+		}
+
+		childPath := filepath.Join(path, childName)
+		if matchingIdx != nil && matchingIdx.IsPathIgnored(childPath) {
+			continue
+		}
+
+		children, _ := walkAndSearchFoldersHelper(childPath, query, visited, depth+1, matchingIdx)
+
+		if strings.Contains(childLower, strings.ToLower(query)) || len(children) > 0 {
+			item := fileInfo{
+				Name:     childName,
+				IsDir:    true,
+				Size:     entry.Size(),
+				ModTime:  entry.ModTime().Unix(),
+				Children: children,
+			}
 			foundItems = append(foundItems, item)
 		}
 	}
 	return foundItems, nil
+}
+
+// walkAndSearchContent recursively searches text files under rootPath for occurrences of query.
+func walkAndSearchContent(rootPath, query string) ([]searchMatch, error) {
+	im := getIndexManagerAPI()
+	var matchingIdx *WorkspaceIndex
+	im.mu.RLock()
+	for root, idx := range im.Indexes {
+		if rootPath == root || strings.HasPrefix(rootPath, root+string(filepath.Separator)) {
+			matchingIdx = idx
+			break
+		}
+	}
+	im.mu.RUnlock()
+
+	var matches []searchMatch
+	queryLower := strings.ToLower(query)
+	limit := 100 // Cap results at 100 to prevent overwhelming memory or socket
+
+	startTime := time.Now()
+	timeout := 5 * time.Second
+
+	// Map to prevent processing the same file multiple times via symlinks
+	visitedFiles := make(map[string]bool)
+
+	err := filepath.WalkDir(rootPath, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return nil // Skip files we can't access
+		}
+		if len(matches) >= limit {
+			return filepath.SkipDir // Stop walking if limit reached
+		}
+		if time.Since(startTime) > timeout {
+			return filepath.SkipAll // Stop search if it takes longer than 5s
+		}
+
+		if matchingIdx != nil && matchingIdx.IsPathIgnored(path) {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+
+		// Skip hidden folders and specific large/binary directories
+		if d.IsDir() {
+			name := d.Name()
+			nameLower := strings.ToLower(name)
+			if strings.HasPrefix(name, ".") && name != "." {
+				return filepath.SkipDir
+			}
+			if nameLower == "node_modules" || nameLower == "dist" || nameLower == "build" || nameLower == ".pkgconfig" {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+
+		// Only search regular files
+		if !d.Type().IsRegular() {
+			return nil
+		}
+
+		// Skip files based on extension
+		ext := strings.ToLower(filepath.Ext(path))
+		skipExts := map[string]bool{
+			".png": true, ".jpg": true, ".jpeg": true, ".gif": true,
+			".ico": true, ".pdf": true, ".zip": true, ".gz": true,
+			".tar": true, ".exe": true, ".bin": true, ".dll": true,
+			".mp4": true, ".mp3": true, ".wav": true, ".webp": true,
+			".conduit-server": true,
+			".gguf": true, ".sqlite": true, ".sqlite3": true, ".db": true,
+			".7z": true, ".rar": true, ".tgz": true, ".iso": true,
+			".so": true, ".dylib": true, ".onnx": true, ".mov": true,
+			".avi": true, ".mkv": true, ".webm": true,
+		}
+		if skipExts[ext] {
+			return nil
+		}
+
+		// Check file size using Lstat/Info first, before reading the whole file!
+		info, err := d.Info()
+		if err != nil {
+			return nil // Skip files whose info we can't read
+		}
+		// Limit file size to 0.5 MB
+		if info.Size() > 512 * 1024 {
+			return nil // Skip large files
+		}
+
+		// Get absolute/canonical path to prevent symlink cycle/redundancy
+		absPath, err := filepath.Abs(path)
+		if err == nil {
+			realPath, err := filepath.EvalSymlinks(absPath)
+			if err == nil {
+				if visitedFiles[realPath] {
+					return nil // Already processed this physical file
+				}
+				visitedFiles[realPath] = true
+			}
+		}
+
+		// Quick check for binary
+		if isBinaryFile(path) {
+			return nil
+		}
+
+		// Read file content safely
+		contentBytes, err := ioutil.ReadFile(path)
+		if err != nil {
+			return nil // Skip unreadable files
+		}
+		content := string(contentBytes)
+
+		if strings.Contains(strings.ToLower(content), queryLower) {
+			lines := strings.Split(content, "\n")
+			relPath, err := filepath.Rel(fileAPIRoot, path)
+			if err != nil {
+				relPath = path
+			}
+			relPath = strings.ReplaceAll(filepath.ToSlash(relPath), "\\", "/")
+
+			for idx, line := range lines {
+				if strings.Contains(strings.ToLower(line), queryLower) {
+					matches = append(matches, searchMatch{
+						Path:    relPath,
+						Line:    idx + 1,
+						Content: strings.TrimSpace(line),
+					})
+					if len(matches) >= limit {
+						break
+					}
+				}
+			}
+		}
+
+		return nil
+	})
+
+	return matches, err
+}
+
+func isBinaryFile(path string) bool {
+	file, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer file.Close()
+
+	buf := make([]byte, 1024)
+	n, _ := file.Read(buf)
+	for i := 0; i < n; i++ {
+		if buf[i] == 0 {
+			return true
+		}
+	}
+	return false
+}
+
+
+var (
+	wsWriteMutexes   = make(map[*websocket.Conn]*sync.Mutex)
+	wsWriteMutexesMu sync.Mutex
+)
+
+func getWsWriteMutex(ws *websocket.Conn) *sync.Mutex {
+	wsWriteMutexesMu.Lock()
+	defer wsWriteMutexesMu.Unlock()
+	mu, ok := wsWriteMutexes[ws]
+	if !ok {
+		mu = &sync.Mutex{}
+		wsWriteMutexes[ws] = mu
+	}
+	return mu
+}
+
+func cleanupWsWriteMutex(ws *websocket.Conn) {
+	wsWriteMutexesMu.Lock()
+	defer wsWriteMutexesMu.Unlock()
+	delete(wsWriteMutexes, ws)
+}
+
+func safeWriteJSON(ws *websocket.Conn, v interface{}) error {
+	mu := getWsWriteMutex(ws)
+	mu.Lock()
+	defer mu.Unlock()
+	return ws.WriteJSON(v)
+}
+
+// --- Active Search Process Manager ---
+
+type activeSearch struct {
+	cmds      []*exec.Cmd
+	cancel    context.CancelFunc
+	requestId int
+}
+
+var (
+	activeSearches   = make(map[*websocket.Conn]*activeSearch)
+	activeSearchesMu sync.Mutex
+)
+
+func cancelActiveSearch(ws *websocket.Conn) {
+	activeSearchesMu.Lock()
+	defer activeSearchesMu.Unlock()
+	if search, ok := activeSearches[ws]; ok {
+		if search.cancel != nil {
+			search.cancel()
+		}
+		for _, cmd := range search.cmds {
+			if cmd != nil && cmd.Process != nil {
+				cmd.Process.Kill()
+			}
+		}
+		if search.requestId != 0 {
+			safeWriteJSON(ws, fileResponse{
+				RequestId: search.requestId,
+				Action:    "search_done",
+				Error:     "Cancelled",
+			})
+		}
+		delete(activeSearches, ws)
+	}
+}
+
+func startGrepSearch(ws *websocket.Conn, reqId int, query string) {
+	// Cancel previous search
+	cancelActiveSearch(ws)
+
+	im := getIndexManagerAPI()
+	im.mu.RLock()
+	type rootInfo struct {
+		path        string
+		ignorePaths []string
+	}
+	var roots []rootInfo
+	for path, idx := range im.Indexes {
+		idx.mu.RLock()
+		ignores := make([]string, len(idx.IgnorePaths))
+		copy(ignores, idx.IgnorePaths)
+		idx.mu.RUnlock()
+		roots = append(roots, rootInfo{path: path, ignorePaths: ignores})
+	}
+	im.mu.RUnlock()
+
+	if len(roots) == 0 {
+		safeWriteJSON(ws, fileResponse{
+			RequestId: reqId,
+			Action:    "search_done",
+			Path:      ".",
+			Data:      0,
+		})
+		return
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	searchTracker := &activeSearch{
+		cancel:    cancel,
+		requestId: reqId,
+	}
+
+	activeSearchesMu.Lock()
+	activeSearches[ws] = searchTracker
+	activeSearchesMu.Unlock()
+
+	matchChan := make(chan []interface{}, 200)
+	var wg sync.WaitGroup
+
+	for _, root := range roots {
+		wg.Add(1)
+		go func(r rootInfo) {
+			defer wg.Done()
+
+			args := []string{"-rnIi", "--line-buffered"}
+			args = append(args, "--exclude-dir=.*")
+			args = append(args, "--exclude=.*")
+			args = append(args, "--exclude-dir=node_modules")
+			args = append(args, "--exclude-dir=dist")
+			args = append(args, "--exclude-dir=build")
+			args = append(args, "--exclude-dir=.pkgconfig")
+
+			for _, ip := range r.ignorePaths {
+				ip = strings.TrimSpace(ip)
+				if ip == "" {
+					continue
+				}
+				args = append(args, "--exclude-dir="+ip)
+				args = append(args, "--exclude="+ip)
+			}
+			args = append(args, "-e", query, r.path)
+
+			cmd := exec.CommandContext(ctx, "grep", args...)
+
+			// Register cmd so it can be killed on cancel
+			activeSearchesMu.Lock()
+			if activeSearches[ws] == searchTracker {
+				searchTracker.cmds = append(searchTracker.cmds, cmd)
+			} else {
+				activeSearchesMu.Unlock()
+				return
+			}
+			activeSearchesMu.Unlock()
+
+			stdout, err := cmd.StdoutPipe()
+			if err != nil {
+				return
+			}
+
+			if err := cmd.Start(); err != nil {
+				return
+			}
+
+			scanner := bufio.NewScanner(stdout)
+			for scanner.Scan() {
+				select {
+				case <-ctx.Done():
+					return
+				default:
+					line := scanner.Text()
+					line = strings.TrimSpace(line)
+					if line == "" {
+						continue
+					}
+
+					firstColon := strings.Index(line, ":")
+					if firstColon == -1 {
+						continue
+					}
+					if firstColon == 1 && len(line) > 2 && line[2] == '\\' {
+						nextColon := strings.Index(line[firstColon+1:], ":")
+						if nextColon == -1 {
+							continue
+						}
+						firstColon = firstColon + 1 + nextColon
+					}
+
+					filePath := line[:firstColon]
+					rest := line[firstColon+1:]
+
+					secondColon := strings.Index(rest, ":")
+					if secondColon == -1 {
+						continue
+					}
+
+					lineNumStr := rest[:secondColon]
+					snippet := rest[secondColon+1:]
+
+					lineNum, err := strconv.Atoi(lineNumStr)
+					if err != nil {
+						continue
+					}
+
+					relPath, err := filepath.Rel(fileAPIRoot, filePath)
+					if err != nil {
+						relPath = filePath
+					}
+					relPath = strings.ReplaceAll(filepath.ToSlash(relPath), "\\", "/")
+
+					select {
+					case matchChan <- []interface{}{relPath, lineNum, strings.TrimSpace(snippet)}:
+					case <-ctx.Done():
+						return
+					}
+				}
+			}
+
+			cmd.Wait()
+		}(root)
+	}
+
+	// Writer goroutine
+	go func() {
+		defer cancelActiveSearch(ws) // Cleanup active search tracking when done
+
+		limit := 500
+		count := 0
+
+		for {
+			select {
+			case match, ok := <-matchChan:
+				if !ok {
+					goto done
+				}
+				if count < limit {
+					safeWriteJSON(ws, fileResponse{
+						RequestId: reqId,
+						Action:    "search_match",
+						Data:      match,
+					})
+					count++
+					if count >= limit {
+						cancel() // Stop the grep processes early
+					}
+				}
+			case <-ctx.Done():
+				goto done
+			}
+		}
+
+	done:
+		activeSearchesMu.Lock()
+		wasCancelled := false
+		if search, ok := activeSearches[ws]; ok && search == searchTracker {
+			search.requestId = 0
+		} else {
+			wasCancelled = true
+		}
+		activeSearchesMu.Unlock()
+
+		if !wasCancelled && ctx.Err() == nil {
+			safeWriteJSON(ws, fileResponse{
+				RequestId: reqId,
+				Action:    "search_done",
+				Data:      count,
+			})
+		}
+	}()
+
+	// Wait for searches and close chan
+	go func() {
+		wg.Wait()
+		close(matchChan)
+	}()
+}
+
+func formatSize(bytes int64) string {
+	const unit = 1024
+	if bytes < unit {
+		return strconv.FormatInt(bytes, 10) + " B"
+	}
+	div, exp := int64(unit), 0
+	for n := bytes / unit; n >= unit; n /= unit {
+		div *= unit
+		exp++
+	}
+	return strconv.FormatFloat(float64(bytes)/float64(div), 'f', 1, 64) + " " + string("KMGTPE"[exp]) + "B"
+}
+
+func getGitStatus(fullPath string) string {
+	dir := filepath.Dir(fullPath)
+	cmd := exec.Command("git", "status", "--porcelain", fullPath)
+	cmd.Dir = dir
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		outStr := string(output)
+		if strings.Contains(outStr, "not a git repository") {
+			return "not a git repository"
+		}
+		return "not available"
+	}
+	statusStr := strings.TrimSpace(string(output))
+	if statusStr == "" {
+		return "clean"
+	}
+	lines := strings.Split(statusStr, "\n")
+	if len(lines) == 0 {
+		return "clean"
+	}
+	hasModified := false
+	hasUntracked := false
+	hasAdded := false
+	hasDeleted := false
+
+	for _, line := range lines {
+		if len(line) < 2 {
+			continue
+		}
+		code := line[:2]
+		if strings.Contains(code, "M") {
+			hasModified = true
+		}
+		if strings.Contains(code, "?") {
+			hasUntracked = true
+		}
+		if strings.Contains(code, "A") {
+			hasAdded = true
+		}
+		if strings.Contains(code, "D") {
+			hasDeleted = true
+		}
+	}
+
+	var states []string
+	if hasModified {
+		states = append(states, "modified")
+	}
+	if hasAdded {
+		states = append(states, "added")
+	}
+	if hasDeleted {
+		states = append(states, "deleted")
+	}
+	if hasUntracked {
+		states = append(states, "untracked")
+	}
+
+	if len(states) > 0 {
+		return strings.Join(states, ", ")
+	}
+	return statusStr
 }

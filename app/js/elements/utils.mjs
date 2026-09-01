@@ -189,3 +189,93 @@ export function getIconForFileName(name) {
     // Default icon for any other file type.
     return 'description';
 }
+
+/**
+ * Extracts a filename string at the given column index on a line if it looks like one.
+ */
+export function extractFilenameAtColumn(line, column) {
+	if (!line || column < 0 || column >= line.length) return null;
+	const allowed = /[a-zA-Z0-9_\-./\\]/;
+	if (!allowed.test(line[column])) return null;
+
+	let start = column;
+	while (start > 0 && allowed.test(line[start - 1])) {
+		start--;
+	}
+
+	let end = column;
+	while (end < line.length - 1 && allowed.test(line[end + 1])) {
+		end++;
+	}
+
+	const str = line.substring(start, end + 1);
+	
+	const parts = str.split(/[/\\]/);
+	const lastPart = parts[parts.length - 1];
+	if (lastPart && lastPart.includes('.') && !lastPart.startsWith('.') && !lastPart.endsWith('.')) {
+		const extParts = lastPart.split('.');
+		const ext = extParts[extParts.length - 1];
+		// File extension must be alphanumeric and between 1 and 6 characters.
+		// Also filter out common code patterns that look like property/method access.
+		if (/^[a-zA-Z0-9]{1,6}$/.test(ext)) {
+			if (!str.startsWith('this.') && !str.startsWith('console.') && !str.startsWith('window.') && !str.startsWith('document.')) {
+				return str;
+			}
+		}
+	}
+	return null;
+}
+
+/**
+ * Find all matching files in the index or tree.
+ */
+export function findFileMatchesInIndex(extractedString) {
+	if (!window.ui || !window.ui.fileList) {
+		return [];
+	}
+	
+	const normalize = (p) => {
+		if (!p) return '';
+		let clean = p.replace(/\\/g, '/').replace(/\/+/g, '/');
+		clean = clean.replace(/^(?:\.\.?\/)+/, '');
+		return clean.replace(/^\//, '').replace(/\/$/, '');
+	};
+	const normExtracted = normalize(extractedString);
+	
+	const filterFiles = (fileListArray) => {
+		const matches = [];
+		for (const file of fileListArray) {
+			const normPath = normalize(file.path);
+			if (normPath === normExtracted || normPath.endsWith('/' + normExtracted) || normPath.includes(normExtracted)) {
+				matches.push(file);
+			} else if (file.name === extractedString || file.name.includes(extractedString)) {
+				matches.push(file);
+			}
+		}
+		// De-duplicate matches by path
+		return [...new Map(matches.map(item => [item.path, item])).values()];
+	};
+
+	// 1. Try checking the flattened index first
+	if (window.ui.fileList.index && window.ui.fileList.index.files) {
+		return filterFiles(window.ui.fileList.index.files);
+	}
+
+	// 2. Fall back to recursive search on the tree in case the index is not yet built
+	if (window.ui.fileList._tree) {
+		const allTreeFiles = [];
+		const gatherFiles = (tree) => {
+			for (const item of tree) {
+				if (item.isDir) {
+					if (item.tree) gatherFiles(item.tree);
+				} else {
+					allTreeFiles.push(item);
+				}
+			}
+		};
+		gatherFiles(window.ui.fileList._tree);
+		return filterFiles(allTreeFiles);
+	}
+	
+	return [];
+}

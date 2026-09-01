@@ -1,12 +1,13 @@
-import prettier from "https://unpkg.com/prettier@2.4.1/esm/standalone.mjs"
-import parserBabel from "https://unpkg.com/prettier@2.4.1/esm/parser-babel.mjs"
-import parserHtml from "https://unpkg.com/prettier@2.4.1/esm/parser-html.mjs"
-import parserCss from "https://unpkg.com/prettier@2.4.1/esm/parser-postcss.mjs"
+import prettier from "https://unpkg.com/prettier@2.8.8/esm/standalone.mjs"
+import parserBabel from "https://unpkg.com/prettier@2.8.8/esm/parser-babel.mjs"
+import parserHtml from "https://unpkg.com/prettier@2.8.8/esm/parser-html.mjs"
+import parserCss from "https://unpkg.com/prettier@2.8.8/esm/parser-postcss.mjs"
 import workspaceClient from "./workspace-client.mjs"
 
 import {
 	getIconForFileName, addStylesheet, buildPath, clone, isElement, isFunction, isNotNull,
 	isset, readAndOrderDirectory, readAndOrderDirectoryRecursive, sortOnName,
+	extractFilenameAtColumn, findFileMatchesInIndex,
 } from "./elements/utils.mjs"
 import ui from "./ui-main.mjs" // Assuming ui-main.mjs handles its own import of Modal via elements.mjs
 import {
@@ -16,6 +17,70 @@ import {
 } from "./elements.mjs"
 import { observeFile, unobserveFile } from "./fileSystemObserver.mjs"
 import conduitClient from "./conduit-client.mjs?v=1778190000000"
+
+function updateIndexerStatus(data) {
+	const el = document.getElementById('indexer_status');
+	if (el && data) {
+		const size = data.size || "0 KB";
+		const roots = data.roots || [];
+		el.textContent = `Index ready (Size: ${size})`;
+		el.title = `Roots:\n${roots.join('\n')}`;
+	}
+}
+
+conduitClient.on('indexer_status', (msg) => {
+	updateIndexerStatus(msg.data);
+});
+
+conduitClient.on('write', (msg) => {
+	if (msg && msg.path && !msg.error) {
+		fileList?.addFileToIndex?.(msg.path);
+	}
+});
+
+conduitClient.on('connect', () => {
+	if (workspace && workspace.folders) {
+		conduitClient.wsSetActiveRoots(workspace.folders).catch(e => console.warn(e));
+	}
+	conduitClient.wsGetIndexerStatus().then(res => {
+		if (!res.error) {
+			updateIndexerStatus(res.data);
+		}
+	}).catch(e => console.warn("Could not get initial index status:", e));
+
+	// Proactively check for external modifications on all open tabs
+	const checkTabs = [...(leftTabs?.tabs || []), ...(rightTabs?.tabs || [])];
+	const checkPromises = [];
+	for (const tab of checkTabs) {
+		const path = tab.config.handle;
+		if (!path || tab.config.mode?.mode === "media" || path === "plan_tasks") continue;
+
+		const p = conduitClient.wsRead(path, 1, 1).then(res => {
+			if (res && res.modTime && tab.config.modTime && res.modTime !== tab.config.modTime) {
+				tab.config.fileModified = true;
+				tab.changed = true;
+
+				const fileItem = fileList.find(path);
+				if (fileItem && fileItem.length > 0) {
+					fileItem[0].changed = true;
+				}
+
+				const targetTabs = tab.config.side === "right" ? rightTabs : leftTabs;
+				if (tab === targetTabs.activeTab) {
+					ui.showFileModifiedNotice(tab, tab.config.side);
+				}
+			}
+		}).catch(e => console.warn(`Error checking external changes for ${path}:`, e));
+		checkPromises.push(p);
+	}
+	if (checkPromises.length > 0) {
+		Promise.allSettled(checkPromises).then(() => {
+			if (ui.checkGlobalFileModifiedNotice) {
+				ui.checkGlobalFileModifiedNotice();
+			}
+		});
+	}
+});
 
 const canPrettify = {
 	"ace/mode/javascript": { name: "babel", plugins: [parserBabel] },
@@ -38,7 +103,7 @@ window.ui = ui
 window.modal = Modal // Assign the singleton instance
 window.code = {
 	version: (() => {
-		const last = "0.4.2"
+		const last = "0.8.0"
 		fetch("/version.json")
 			.then(async (response) => {
 				if (response.ok) {
@@ -72,6 +137,7 @@ const app = {
 	sessionOptions: null,
 	rendererOptions: null,
 	enableLiveAutocompletion: null,
+	keyboardHandler: null,
 	darkmode: "system",
 	aiConfig: {},
 	systemPromptConfig: {}, // NEW: For generic system prompt settings
@@ -81,7 +147,7 @@ const workspace = {
 	id: "default",
 	name: "default",
 	folders: [],
-	ignorePaths: [".git", "node_modules", "dist", "build"],
+	ignorePaths: [".git", ".modules", "node_modules", "dist", "build"],
 	files: [],
 	sidebarPanelWidths: {},
 	scratchpad: "",
@@ -92,6 +158,13 @@ const workspace = {
 	aiSessionsMetadata: [], // Array of {id, name, createdAt, lastModified}
 	activeAiSessionId: null, // The ID of the currently active AI session
 }
+
+// workspace state managment
+let workspaceUnloading = false
+let isOpeningWorkspace = false
+let restoreInProgress = false
+let restoreWaitingForConnect = false
+
 
 // window.showSettings = ui.showSettings
 window.app = app
@@ -108,10 +181,15 @@ window.ui.commands = {
 			switch (command.target) {
 				case "editor":
 					//register with ACE editor
-					leftEdit.commands.addCommand({
-						name: command.name,
-						bindKey: command.bindKey,
-						exec: command.exec,
+					const targetEditors = window.editors || [leftEdit, rightEdit];
+					targetEditors.forEach(editor => {
+						if (editor && editor.id !== "ai-prompt-editor") {
+							editor.commands.addCommand({
+								name: command.name,
+								bindKey: command.bindKey,
+								exec: command.exec,
+							})
+						}
 					})
 					break
 				case "app":
@@ -259,33 +337,80 @@ const getSuggestedStartDirectory = async () => {
 	return null // Fallback to default behavior
 }
 
+// Global helpers to suppress external file change notices temporarily during write/delete operations
+ui.suppressFileChangeNotice = (path, duration = 5000) => {
+	unobserveFile(path)
+	const allOpenTabs = [...(leftTabs?.tabs || []), ...(rightTabs?.tabs || [])]
+	const tab = allOpenTabs.find(t => t.config?.handle === path || t.config?.path === path)
+	if (tab) {
+		tab.config.ignoreNextNotify = true
+		if (tab.config._ignoreTimeout) {
+			clearTimeout(tab.config._ignoreTimeout)
+		}
+		tab.config._ignoreTimeout = setTimeout(() => {
+			tab.config.ignoreNextNotify = false
+			delete tab.config._ignoreTimeout
+		}, duration)
+	}
+}
+
+ui.resumeFileChangeNotice = (path) => {
+	observeFile(path, onFileModified)
+}
+
 const saveFile = async (tab) => {
 	const path = tab.config.handle
 	if (!path || tab.config.mode?.mode === "media") return
 	const text = tab.config.session.getValue()
 
-	unobserveFile(path) // Stop listening to prevent self-triggering modification events
-	tab.config.ignoreNextNotify = true
+	ui.suppressFileChangeNotice(path, 5000)
 	try {
 		const base64Content = btoa(unescape(encodeURIComponent(text)))
-		await conduitClient.wsWrite(path, base64Content)
+		const response = await conduitClient.wsWrite(path, base64Content)
+		if (response && response.modTime) {
+			tab.config.modTime = response.modTime
+		}
+		if (response && response.fullPath) {
+			tab.config.fullPath = response.fullPath
+		}
+		if (response && response.size !== undefined) {
+			tab.config.size = response.size
+		}
+		
+		if (tab.config.session) {
+			tab.config.session.baseValue = text
+		}
 		tab.config.fileModified = false
 		tab.changed = false
+
+		if (window.ui && window.ui.clearAgentEdits) {
+			window.ui.clearAgentEdits(path)
+		}
+
+		// Refresh/hide the notice bar immediately after save
+		const side = tab.config.side
+		const holder = side === "left" ? window.ui?.leftHolder : window.ui?.rightHolder
+		if (holder && holder.updateNoticeBar) {
+			holder.updateNoticeBar(tab)
+		}
+		
+		if (window.ui && window.ui.checkGlobalFileModifiedNotice) {
+			window.ui.checkGlobalFileModifiedNotice()
+		}
 	} catch (error) {
 		console.error("Error saving file:", error)
 		window.modal.notice(`Failed to save ${path}:<br><small>${error.message}</small>`, "Save Error")
 	} finally {
-		observeFile(path, onFileModified) // Always resume listening
-		setTimeout(() => {
-			tab.config.ignoreNextNotify = false
-		}, 2000)
+		ui.resumeFileChangeNotice(path)
 	}
 }
+window.saveFileTab = saveFile;
 
 const saveAppConfig = async () => {
 	app.sessionOptions = ui.leftEdit.session.getOptions()
 	app.rendererOptions = ui.leftEdit.renderer.getOptions()
 	app.enableLiveAutocompletion = ui.leftEdit.$enableLiveAutocompletion
+	app.keyboardHandler = ui.leftEdit.getOption("keyboardHandler") || "ace/keyboard/sublime"
 	delete app.sessionOptions.mode // don't persist the mode, that's dumb
 	delete app.folders //app.folders = workspace.folders
 
@@ -338,18 +463,96 @@ const onFileModified = (path) => {
 		// If the modified tab is the active tab, show the notice bar
 		if (foundTab === currentTabs.activeTab) {
 			ui.showFileModifiedNotice(foundTab, foundTab.config.side)
+		} else {
+			// If not active tab, still update the global notice bar count
+			if (ui.checkGlobalFileModifiedNotice) {
+				ui.checkGlobalFileModifiedNotice()
+			}
 		}
 	}
 }
 
-let workspaceUnloading = false
-const saveWorkspace = async () => {
-	if (workspaceUnloading) return
+const _saveWorkspace = async () => {
+	if (workspaceUnloading || restoreInProgress) return
+
+	const orderedFiles = []
+	let planTasksSide = null
+	let workspaceSettingsSide = null
+	let terminalSettingsSide = null
+	let editorSettingsSide = null
+
+	const addTabsFrom = (tabBar) => {
+		if (tabBar && tabBar.tabs) {
+			tabBar.tabs.forEach(tab => {
+				if (tab.config && tab.config.handle) {
+					if (tab.config.path === "plan_tasks") {
+						planTasksSide = tab.config.side
+					} else if (tab.config.path === "agent_config") {
+						workspace.agentConfigSide = tab.config.side
+					} else if (tab.config.path === "workspace_settings") {
+						workspaceSettingsSide = tab.config.side
+					} else if (tab.config.path === "terminal_settings") {
+						terminalSettingsSide = tab.config.side
+					} else if (tab.config.path === "editor_settings") {
+						editorSettingsSide = tab.config.side
+					} else {
+						orderedFiles.push({
+							name: tab.config.name,
+							path: tab.config.path,
+							handle: tab.config.handle,
+							side: tab.config.side,
+						})
+					}
+				}
+			})
+		}
+	}
+	workspace.agentConfigSide = null
+	workspace.workspaceSettingsSide = null
+	workspace.terminalSettingsSide = null
+	workspace.editorSettingsSide = null
+	addTabsFrom(leftTabs)
+	addTabsFrom(rightTabs)
+	workspace.files = orderedFiles
+	workspace.planTasksSide = planTasksSide
+	workspace.workspaceSettingsSide = workspaceSettingsSide
+	workspace.terminalSettingsSide = terminalSettingsSide
+	workspace.editorSettingsSide = editorSettingsSide
+
 	workspace.openFolders = fileList.openFolders
 	workspace.activeSidebarTab = ui.iconTabBar?.activeTab?.iconId
-	// REMOVED: workspace.promptHistory = ui.aiManager.promptHistory; // No longer here
-	// AI sessions metadata is now stored directly in workspace (small footprint)
-	workspaceClient.setWorkspace(workspace) // This will save workspace.aiSessionsMetadata and workspace.activeAiSessionId
+
+	// --- Persistence enhancement: Capture active editor tab state ---
+	if(!isOpeningWorkspace && !restoreInProgress) {
+		const activeLeftTab = leftTabs?.activeTab //leftTabs.tabs.find(tab => tab.config.handle);
+		const activeRightTab = rightTabs?.activeTab //rightTabs.tabs.find(tab => tab.config.handle);
+	
+		if (activeLeftTab) {	
+			workspace.activeEditorTabHandle = activeLeftTab.config.handle;
+			workspace.activeEditorSide = "left";
+		} else if (activeRightTab) {
+			workspace.activeEditorTabHandle = activeRightTab.config.handle;
+			workspace.activeEditorSide = "right";
+		} else {
+			workspace.activeEditorTabHandle = null;
+			workspace.activeEditorSide = null;
+		}
+		// -------------------------------------------------------------
+	}
+	
+	workspaceClient.setWorkspace(workspace)
+	
+	if (workspace.folders) {
+		conduitClient.wsSetActiveRoots(workspace.folders).catch(e => console.warn(e));
+	}
+}
+
+let saveWorkspaceTimeout;
+const saveWorkspace = () => {
+	clearTimeout(saveWorkspaceTimeout);
+	saveWorkspaceTimeout = setTimeout(() => {
+		_saveWorkspace().catch(e => console.warn("Error running debounced saveWorkspace:", e));
+	}, 250);
 }
 window.saveWorkspace = saveWorkspace
 
@@ -408,9 +611,6 @@ const openWorkspace = (() => {
 
 	// rename for possible future functionality
 	rename.remove()
-
-	let isOpeningWorkspace = false;
-
 	return async (name, triggered = false) => {
 		if (isOpeningWorkspace) return;
 		isOpeningWorkspace = true;
@@ -431,13 +631,18 @@ const openWorkspace = (() => {
 
 			if ("undefined" != typeof load) {
 				workspaceUnloading = true
-			// clear the leftTabs
-			while (leftTabs.tabs.length > 1) {
-				leftTabs.tabs[0].close.click()
-			}
-			if (leftTabs.tabs[0]) leftTabs.tabs[0].close.click()
+				
+				// clear the leftTabs
+				while (leftTabs.tabs.length > 0) {
+					leftTabs.tabs[0].close.click()
+				}
 
-			workspaceUnloading = false
+				// clear the rightTabs
+				while (rightTabs.tabs.length > 0) {
+					rightTabs.tabs[0].close.click()
+				}
+
+				workspaceUnloading = false
 
 			workspace.name = load.name || "default"
 			workspace.folders = load.folders || []
@@ -452,7 +657,13 @@ const openWorkspace = (() => {
 			} catch (e) {
 				// Ignore if .cadence doesn't exist
 			}
-			workspace.ignorePaths = load.ignorePaths || [".git", "node_modules", "dist", "build"]
+			
+			workspace.ignorePaths = load.ignorePaths || [".git", ".modules", "node_modules", "dist", "build"]
+			fileList.ignorePaths = workspace.ignorePaths
+
+			if (workspace.folders) {
+				conduitClient.wsSetActiveRoots(workspace.folders).catch(e => console.warn(e));
+			}
 			workspace.openFolders = load.openFolders || []
 			workspace.scratchpad = load.scratchpad || ""
 			ui.scratchEditor.setValue(workspace.scratchpad || "")
@@ -464,8 +675,9 @@ const openWorkspace = (() => {
 			}
 			workspace.activeSidebarTab = load.activeSidebarTab || null
 			workspace.id = load.id || safeString(workspace.name)
+			workspace.activeEditorTabHandle = load.activeEditorTabHandle || null
+			workspace.activeEditorSide = load.activeEditorSide || null
 
-			fileList.ignorePaths = workspace.ignorePaths
 			// REMOVED: workspace.promptHistory = load.promptHistory || []; // Removed
 			// REMOVED: ui.aiManager.promptHistory = workspace.promptHistory; // Removed
 			workspace.aiConfig = load.aiConfig || {}
@@ -484,6 +696,12 @@ const openWorkspace = (() => {
 					: app.systemPromptConfig
 			}
 
+			workspace.agentConfigSide = load.agentConfigSide || null
+			workspace.planTasksSide = load.planTasksSide || null
+			workspace.workspaceSettingsSide = load.workspaceSettingsSide || null
+			workspace.terminalSettingsSide = load.terminalSettingsSide || null
+			workspace.editorSettingsSide = load.editorSettingsSide || null
+
 			// NEW: Load AI session metadata and active session ID
 			workspace.aiSessionsMetadata = load.aiSessionsMetadata || []
 			workspace.activeAiSessionId = load.activeAiSessionId || null
@@ -496,13 +714,15 @@ const openWorkspace = (() => {
 			// This assumes ui.aiManager.aiProvider is already set by ui.aiManager.loadSettings() in its init
 			const currentProvider = ui.aiManager.aiProvider
 			updateFileListBackground()
-			if (workspace.aiConfig[currentProvider]) {
-				ui.aiManager.ai.setOptions(workspace.aiConfig[currentProvider], null, null, true, "workspace")
-			} else if (app.aiConfig[currentProvider]) {
-				ui.aiManager.ai.setOptions(app.aiConfig[currentProvider], null, null, false, "global")
-			} else {
-				// If no specific config for the current provider, reset to default for that provider
-				ui.aiManager.ai.setOptions({}, null, null, false, "global")
+			if (ui.aiManager.ai) {
+				if (workspace.aiConfig[currentProvider]) {
+					ui.aiManager.ai.setOptions(workspace.aiConfig[currentProvider], null, null, true, "workspace")
+				} else if (app.aiConfig[currentProvider]) {
+					ui.aiManager.ai.setOptions(app.aiConfig[currentProvider], null, null, false, "global")
+				} else {
+					// If no specific config for the current provider, reset to default for that provider
+					ui.aiManager.ai.setOptions({}, null, null, false, "global")
+				}
 			}
 
 			setTimeout(() => {
@@ -544,12 +764,14 @@ const openWorkspace = (() => {
 				workspace.id = "default"
 				workspace.files = []
 				workspace.folders = []
-				workspace.ignorePaths = [".git", "node_modules", "dist", "build"]
+				workspace.ignorePaths = [".git", ".modules", "node_modules", "dist", "build"]
 				// NEW: Initialize empty AI session metadata
 				workspace.aiSessionsMetadata = []
 				// NEW: Initialize empty system prompt config
 				workspace.systemPromptConfig = {}
 				workspace.activeAiSessionId = null
+				workspace.activeEditorTabHandle = null
+				workspace.activeEditorSide = null
 				updateFileListBackground()
 				// AIManager will handle creating the first session when it gets loadSessions call
 				hideActions()
@@ -617,7 +839,7 @@ prefersDarkMode.addEventListener("change", () => {
 const updateThemeAndMode = (doSave = false) => {
 	ui.updateThemeAndMode()
 
-	if (leftEdit.getOption("mode") in canPrettify) {
+	if (currentEditor.getOption("mode") in canPrettify) {
 		prettify.removeAttribute("disabled")
 	} else {
 		prettify.setAttribute("disabled", "disabled")
@@ -681,12 +903,16 @@ const execCommandEditorOptions = () => {
 		if (app.enableLiveAutocompletion) {
 			editor.$enableLiveAutocompletion = app.enableLiveAutocompletion
 		}
-
-		if (editor.getOption("mode") === "ace/mode/javascript") {
-			editor.setOption("useWorker", false)
-		} else {
-			editor.setOption("useWorker", true)
+		if (app.keyboardHandler && !["scratch-editor", "ai-prompt-editor"].includes(editor.id)) {
+			editor.setKeyboardHandler(app.keyboardHandler)
 		}
+
+        // disable workers always because their too old to be very usefull
+// 		if (editor.getOption("mode") === "ace/mode/javascript") {
+			editor.setOption("useWorker", false)
+// 		} else {
+// 			editor.setOption("useWorker", true)
+// 		}
 	}
 }
 
@@ -695,12 +921,11 @@ const execCommandAbout = () => {
 	const versionInfo = `Version ${
 		window.code.version
 	} (${modeStr}) - Copyright &copy; ${new Date().getFullYear()} jakbox.dev`
-	const content = `<p>Simple, fast, lightweight code editing. Edit your local code files straight from your web browser, 
-			or install the web app for that sweet "native app" experience.</p>
+	const content = `<p>A fast, lightweight code editor designed for local development and AI-driven workflows.</p>
 
-			<p>For issues &amp; bugs please see the <a href="https://github.com/blakjakau/dev.jakbox.code/issues" target="_blank">issue tracker</a></p>
+			<p>For issues &amp; bugs please see the <a href="https://github.com/blakjakau/cadence/issues" target="_blank">issue tracker</a></p>
 			
-			<p>Cadence is open source and uses other open source projects see <a href="https://github.com/blakjakau/dev.jakbox.code/blob/master/licence.md" target="_blank">here</a> for licence information</a>.</p>
+			<p>Cadence is open source and uses other open source projects. See <a href="https://github.com/blakjakau/cadence/blob/master/licence.md" target="_blank">here</a> for license information.</p>
 			<br/><small>${versionInfo}</small>`
 	const title = `<img src="images/code-192-blue.svg" width="32px" style="vertical-align: middle;">&nbsp;Cadence`
 	Modal.notice(content, title)
@@ -736,6 +961,13 @@ const execCommandToggleSidebarPanel = (panelId) => {
 	const currentPanel = ui.iconTabBar.activeTab?.iconId
 
 	if (isSidebarVisible && currentPanel === panelId) {
+		if (panelId === "find_in_page") {
+			if (document.activeElement.closest("ui-input") !== ui.searchInput) {
+				// Search input is not focused, focus it instead of closing sidebar
+				ui.focusSearchInput(0)
+				return
+			}
+		}
 		if (panelId == "developer_board") {
 			if (!document.activeElement.classList.contains("ace_text-input")) {
 				// just focus the tab
@@ -752,10 +984,16 @@ const execCommandToggleSidebarPanel = (panelId) => {
 		}
 		ui.toggleSidebar() // Close the sidebar
 	} else if (!isSidebarVisible) {
-		ui.toggleSidebar() // Open the sidebar
 		ui.iconTabBar.activeTabById = panelId
+		ui.toggleSidebar() // Open the sidebar
+		if (panelId === "find_in_page") {
+			ui.focusSearchInput(300)
+		}
 	} else {
 		ui.iconTabBar.activeTabById = panelId // Switch to the new panel
+		if (panelId === "find_in_page") {
+			ui.focusSearchInput(100)
+		}
 	}
 }
 
@@ -869,6 +1107,34 @@ const execCommandPrevBuffer = () => {
 		ui.currentTabs.prev()
 	}
 }
+const execCommandJumpToBuffer = (tabIndex) => {
+	const index = tabIndex - 1
+	const activeEl = document.activeElement
+	if (activeEl && activeEl.closest(".terminal-instance-container")) {
+		if (window.terminalManager?.sessionTabBar) {
+			const tab = window.terminalManager.sessionTabBar.tabs[index]
+			if (tab) {
+				tab.click()
+			}
+		}
+		return
+	}
+	if (activeEl && activeEl.closest("#ai-panel")) {
+		if (ui.aiManager?.sessionTabBar) {
+			const tab = ui.aiManager.sessionTabBar.tabs[index]
+			if (tab) {
+				tab.click()
+			}
+		}
+		return
+	}
+	if (ui.currentTabs) {
+		const tab = ui.currentTabs.tabs[index]
+		if (tab) {
+			tab.click()
+		}
+	}
+}
 
 const execCommandSave = async () => {
 	const tab = currentTabs.activeTab
@@ -897,6 +1163,8 @@ const execCommandSave = async () => {
 
 		// This is a new file, add it to the workspace
 		syncWorkspaceFile(tab)
+
+		fileList?.addFileToIndex?.(config.path)
 
 		// Refresh the folder in the file list to show the new file
 		await fileList.refreshFolder(config.folder)
@@ -932,6 +1200,8 @@ const execCommandSaveAs = async () => {
 	await saveFile(tab)
 	syncWorkspaceFile(tab)
 
+	fileList?.addFileToIndex?.(config.path)
+
 	await fileList.refreshFolder(config.folder)
 	if (oldFolderHandle && oldFolderHandle !== config.folder) {
 		await fileList.refreshFolder(oldFolderHandle)
@@ -939,6 +1209,9 @@ const execCommandSaveAs = async () => {
 }
 
 const execCommandOpen = async () => {
+	
+	return window.ui.omnibox("goto")
+
 	const startIn = await getSuggestedStartDirectory()
 	const newHandle = await window.showOpenFilePicker({ startIn }).catch(console.warn)
 	if (!newHandle) {
@@ -956,6 +1229,8 @@ const execCommandNewFile = async () => {
 	} else if (activeEl && activeEl.closest("#ai-prompt-editor-container")) {
 		context = "ai"
 	} else if (activeEl && (activeEl.closest(".ace_editor") || activeEl.classList.contains("ace_text-input"))) {
+		context = "editor"
+	} else if (activeEl == document.body) {
 		context = "editor"
 	} else {
 		// 2. If no editor is focused, use the active sidebar panel as the context
@@ -980,13 +1255,44 @@ const execCommandNewFile = async () => {
 			return window.terminalManager.createNewTerminalSession()
 		case "editor":
 		default:
-			const srcTab = ui.currentTabs.activeTab
-			const mode = srcTab?.config?.mode?.mode || ""
-			const folder = srcTab?.config?.folder || undefined
+			const targetTabs = ui.currentTabs
+			let mode = "ace/mode/text"
+			let folder = undefined
+
+			const isEditorTab = (t) => {
+				if (!t || !t.config) return false
+				const path = t.config.path || ""
+				if (path === "agent_config" || path === "plan_tasks" || path.startsWith("diff_")) return false
+				if (t.config.mode?.mode === "agent_config" || t.config.mode?.mode === "plan_tasks") return false
+				if (!t.config.session) return false
+				return true
+			}
+
+			const srcTab = targetTabs?.activeTab
+			if (srcTab && isEditorTab(srcTab)) {
+				mode = srcTab.config.mode?.mode || "ace/mode/text"
+				folder = srcTab.config.folder || undefined
+			} else {
+				let found = false
+				if (targetTabs && targetTabs.tabs) {
+					for (let i = targetTabs.tabs.length - 1; i >= 0; i--) {
+						const t = targetTabs.tabs[i]
+						if (isEditorTab(t)) {
+							mode = t.config.mode?.mode || "ace/mode/text"
+							folder = t.config.folder || undefined
+							found = true
+							break
+						}
+					}
+				}
+				if (!found) {
+					mode = "ace/mode/text"
+				}
+			}
+
 			const newSession = ace.createEditSession("", mode)
 			if (app.sessionOptions) newSession.setOptions(app.sessionOptions)
 			newSession.baseValue = ""
-			const targetTabs = ui.currentTabs
 			const tab = targetTabs.add({
 				name: "untitled",
 				mode: { mode: mode },
@@ -1050,7 +1356,7 @@ const execCommandNewWindow = async () => {
 
 // Function to reload a file from disk
 const reloadFile = async (tab) => {
-	const handle = tab.config.handle
+	const handle = tab.config.path || tab.config.handle
 	if (!handle || typeof handle !== "string") {
 		console.warn("No valid file handle found for tab:", tab.config.name)
 		return
@@ -1069,15 +1375,31 @@ const reloadFile = async (tab) => {
 		}
 
 		// Update the session with the new content
+		tab.config.session.baseValue = text // Set baseValue FIRST to avoid dirty state in change event
 		tab.config.session.setValue(text)
-		tab.config.session.baseValue = text // Reset baseValue to current content
 		tab.config.fileModified = false // Clear the file modified flag
 		tab.changed = false // Clear unsaved changes flag
+		tab.config.fullPath = response.fullPath
+		tab.config.modTime = response.modTime
+		tab.config.size = response.size
 
-		// If the reloaded tab is the active tab, ensure the editor updates
-		if (tab === currentTabs.activeTab) {
-			currentEditor.setSession(tab.config.session)
-			currentEditor.focus()
+		if (window.ui && window.ui.fileList) {
+			const fileItem = window.ui.fileList.find(handle)
+			if (fileItem && fileItem.length > 0) {
+				fileItem[0].changed = false
+			}
+		}
+
+		if (window.ui && window.ui.hideFileModifiedNotice) {
+			window.ui.hideFileModifiedNotice(tab.config.side)
+		}
+
+		// Target the side-specific editor to avoid focus/session mixups in split pane mode
+		const targetEditor = tab.config.side === "right" ? rightEdit : leftEdit;
+		const targetTabs = tab.config.side === "right" ? window.ui?.rightTabs : window.ui?.leftTabs;
+		if (targetTabs && targetTabs.activeTab === tab) {
+			targetEditor.setSession(tab.config.session);
+			targetEditor.focus();
 		}
 	} catch (error) {
 		console.error("Error reloading file:", tab.config.name, error)
@@ -1103,7 +1425,7 @@ window.ui.reloadFile = reloadFile
 const syncWorkspaceFile = (tab) => {
 	const config = tab.config
 	const handle = config.handle
-	if (!handle) return
+	if (!handle || handle === "plan_tasks") return
 
 	let matched = false
 	for (const file of workspace.files) {
@@ -1139,8 +1461,16 @@ const setupSessionChangeListener = (session, tab) => {
 				fileItem.changed = isDirty
 			}
 		}
+
+		// Update notice bar dynamically for in-place diff toggling
+		const side = tab.config.side;
+		const holder = side === "left" ? ui.leftHolder : ui.rightHolder;
+		if (holder && holder.updateNoticeBar) {
+			holder.updateNoticeBar(tab);
+		}
 	})
 }
+
 let currentEditor = leftEdit
 let currentTabs = leftEdit
 let currentMediaView = ui.leftMedia
@@ -1164,10 +1494,449 @@ const setCurrentEditor = (editor) => {
 		const fileInWorkspace = workspace.files.find((file) => file.handle === tab.config.handle)
 		if (fileInWorkspace) {
 			fileInWorkspace.side = editor === leftEdit ? "left" : "right"
-			saveWorkspace()
 		}
+		saveWorkspace()
 	}
 }
+
+const renderWorkspaceSettingsView = (panelContent) => {
+	const schema = [
+		{ type: 'textarea', id: 'filelist-ignore-paths', label: 'Ignored Paths (comma-separated)', rows: 5 }
+	];
+	const values = {
+		'filelist-ignore-paths': (fileList.ignorePaths || []).join(', ')
+	};
+	panelContent.render(schema, values, "Workspace Settings", "folder", "var(--theme)");
+	
+	panelContent.off('settings-saved');
+	panelContent.on('settings-saved', (e) => {
+		const newPaths = e.detail['filelist-ignore-paths'].split(',').map(p => p.trim()).filter(p => p);
+		fileList.ignorePaths = newPaths;
+		fileList.dispatch('settings-changed', { ignorePaths: newPaths });
+		saveWorkspace();
+		window.modal.toast("Workspace settings saved.");
+	});
+}
+
+const renderTerminalSettingsView = async (panelContent) => {
+	const tm = window.terminalManager;
+	if (!tm) return;
+	await tm._checkConduitStatus();
+
+	const schema = [
+		{ type: "text", id: "terminal-prompt", label: "Custom Prompt", text: "Custom PS1 prompt to forward to the server" },
+		{ type: "text", id: "terminal-bg-color", label: "Background Color", text: "CSS color for the terminal background" },
+		{ type: "number", id: "terminal-font-size", label: "Font Size", text: "Font size in pixels" },
+		{
+			type: "select",
+			id: "terminal-default-dir",
+			label: "Default Directory",
+			options: [
+				{ value: "home", text: "User Home" },
+				{ value: "current", text: "Current File Directory" },
+				{ value: "restore", text: "Last Used Directory" }
+			]
+		}
+	];
+
+	if (tm.conduitStatus.isInstalled) {
+		schema.push({
+			type: "button",
+			id: "uninstall-btn",
+			label: "Uninstall",
+			text: "Uninstall Conduit",
+			className: "themed cancel",
+			onClickEvent: "uninstall-conduit",
+			help: "Remove the app and disable the protocol handler."
+		});
+	} else if (tm.conduitStatus.isRunning) {
+		schema.push({ type: "button", id: "install-btn", label: "Install Conduit", className: "themed", onClickEvent: "install-conduit" });
+	}
+
+	const values = {
+		"terminal-prompt": tm.config.prompt,
+		"terminal-bg-color": tm.config.backgroundColor,
+		"terminal-font-size": tm.config.fontSize,
+		"terminal-default-dir": tm.config.defaultDir
+	};
+
+	panelContent.render(schema, values, "Terminal Settings", "terminal", "#2da44e");
+
+	panelContent.off("settings-saved");
+	panelContent.off("install-conduit");
+	panelContent.off("uninstall-conduit");
+
+	panelContent.on("settings-saved", (e) => {
+		tm.config.prompt = e.detail["terminal-prompt"];
+		tm.config.backgroundColor = e.detail["terminal-bg-color"];
+		tm.config.fontSize = parseInt(e.detail["terminal-font-size"]);
+		tm.config.defaultDir = e.detail["terminal-default-dir"];
+		tm._saveSettings();
+		window.modal.toast("Terminal settings saved.");
+	});
+
+	panelContent.on("install-conduit", (e) => tm._installConduit(e.detail.element));
+	panelContent.on("uninstall-conduit", async (e) => {
+		const confirmed = await window.modal.confirm(
+			"Are you sure you want to uninstall the Conduit helper? This will close all active terminal sessions and stop the helper process.",
+			"Confirm Uninstall"
+		);
+		if (confirmed) {
+			tm._uninstallConduit(e.detail.element);
+		}
+	});
+}
+
+const renderEditorSettingsView = (panelContent) => {
+	const schema = [
+		{
+			type: "select",
+			id: "editor-keyboard-handler",
+			label: "Keyboard Handler",
+			options: [
+				{ value: "default", text: "Default" },
+				{ value: "ace/keyboard/vim", text: "Vim" },
+				{ value: "ace/keyboard/emacs", text: "Emacs" },
+				{ value: "ace/keyboard/sublime", text: "Sublime" }
+			]
+		},
+		{ type: "number", id: "editor-font-size", label: "Font Size" },
+		{ type: "text", id: "editor-font-family", label: "Font Family" },
+		{ type: "number", id: "editor-tab-size", label: "Tab Size" },
+		{ type: "checkbox", id: "editor-use-soft-tabs", label: "Use Soft Tabs", text: "Insert spaces instead of tabs" },
+		{ type: "checkbox", id: "editor-live-autocompletion", label: "Live Autocompletion", text: "Enable autocompletion as you type" },
+		{ type: "checkbox", id: "editor-basic-autocompletion", label: "Basic Autocompletion", text: "Enable Ctrl+Space autocompletion" },
+		{
+			type: "select",
+			id: "editor-wrap",
+			label: "Wrap Mode",
+			options: [
+				{ value: "off", text: "Off" },
+				{ value: "free", text: "Soft Wrap" },
+				{ value: "80", text: "80 Columns" },
+				{ value: "40", text: "40 Columns" }
+			]
+		},
+		{ type: "checkbox", id: "editor-show-gutter", label: "Show Gutter", text: "Show line numbers gutter" },
+		{ type: "checkbox", id: "editor-highlight-line", label: "Highlight Active Line", text: "Highlight the currently active line" },
+		{ type: "checkbox", id: "editor-show-invisibles", label: "Show Invisibles", text: "Show hidden whitespace characters" },
+		{ type: "checkbox", id: "editor-indent-guides", label: "Show Indent Guides", text: "Display vertical lines indicating indent level" },
+		{ type: "checkbox", id: "editor-print-margin", label: "Show Print Margin", text: "Show a vertical line at print margin" }
+	];
+
+	const getOpt = (name, type) => {
+		if (type === "session" && app.sessionOptions && app.sessionOptions[name] !== undefined) {
+			return app.sessionOptions[name];
+		}
+		if (type === "renderer" && app.rendererOptions && app.rendererOptions[name] !== undefined) {
+			return app.rendererOptions[name];
+		}
+		return ui.leftEdit.getOption(name);
+	};
+
+	const values = {
+		"editor-keyboard-handler": app.keyboardHandler || "ace/keyboard/sublime",
+		"editor-font-size": getOpt("fontSize", "renderer") || 12,
+		"editor-font-family": getOpt("fontFamily", "renderer") || "roboto mono",
+		"editor-tab-size": getOpt("tabSize", "session") || 4,
+		"editor-use-soft-tabs": getOpt("useSoftTabs", "session") !== false,
+		"editor-live-autocompletion": app.enableLiveAutocompletion !== false,
+		"editor-basic-autocompletion": getOpt("enableBasicAutocompletion", "session") !== false,
+		"editor-wrap": getOpt("wrap", "session") || "off",
+		"editor-show-gutter": getOpt("showGutter", "renderer") !== false,
+		"editor-highlight-line": getOpt("highlightActiveLine", "renderer") !== false,
+		"editor-show-invisibles": getOpt("showInvisibles", "renderer") === true,
+		"editor-indent-guides": getOpt("displayIndentGuides", "renderer") !== false,
+		"editor-print-margin": getOpt("showPrintMargin", "renderer") === true
+	};
+
+	panelContent.render(schema, values, "Editor Settings", "settings", "#0969da", true);
+
+	panelContent.off("settings-saved");
+	panelContent.on("settings-saved", async (e) => {
+		if (!app.sessionOptions) app.sessionOptions = {};
+		if (!app.rendererOptions) app.rendererOptions = {};
+
+		app.keyboardHandler = e.detail["editor-keyboard-handler"];
+		app.rendererOptions.fontSize = parseInt(e.detail["editor-font-size"]) || 12;
+		app.rendererOptions.fontFamily = e.detail["editor-font-family"] || "roboto mono";
+		app.sessionOptions.tabSize = parseInt(e.detail["editor-tab-size"]) || 4;
+		app.sessionOptions.useSoftTabs = !!e.detail["editor-use-soft-tabs"];
+		app.enableLiveAutocompletion = !!e.detail["editor-live-autocompletion"];
+		app.sessionOptions.enableBasicAutocompletion = !!e.detail["editor-basic-autocompletion"];
+		app.sessionOptions.wrap = e.detail["editor-wrap"];
+		app.rendererOptions.showGutter = !!e.detail["editor-show-gutter"];
+		app.rendererOptions.highlightActiveLine = !!e.detail["editor-highlight-line"];
+		app.rendererOptions.showInvisibles = !!e.detail["editor-show-invisibles"];
+		app.rendererOptions.displayIndentGuides = !!e.detail["editor-indent-guides"];
+		app.rendererOptions.showPrintMargin = !!e.detail["editor-print-margin"];
+
+		execCommandEditorOptions();
+		await saveAppConfig();
+	});
+}
+
+const openWorkspaceSettings = (targetEditor = leftEdit) => {
+	{
+		let tab = leftTabs.tabs.find(t => t.config?.path === "workspace_settings")
+		if (tab) {
+			if (!restoreInProgress) tab.click()
+			return
+		}
+		tab = rightTabs.tabs.find(t => t.config?.path === "workspace_settings")
+		if (tab) {
+			if (!restoreInProgress) tab.click()
+			return
+		}
+	}
+
+	const removeEmptyUntitledTab = (tabGroup) => {
+		if (tabGroup.tabs.length === 1) {
+			const tab = tabGroup.tabs[0]
+			if (tab.config.name === "untitled" && tab.config.session.getValue() === "") {
+				tabGroup.remove(tab, true)
+			}
+		}
+	}
+	removeEmptyUntitledTab(leftTabs)
+	removeEmptyUntitledTab(rightTabs)
+
+	const tab = targetEditor.tabs.add({
+		name: "Workspace Settings",
+		path: "workspace_settings",
+		mode: { mode: "workspace_settings" },
+		session: null,
+		side: targetEditor === leftEdit ? "left" : "right",
+		handle: "workspace_settings",
+		folder: "",
+		fileModified: false,
+		defaultStatusIcon: "folder",
+	})
+	
+	tab.classList.add("workspace-settings-tab")
+	if (!restoreInProgress) tab.click()
+}
+
+const openTerminalSettings = (targetEditor = leftEdit) => {
+	{
+		let tab = leftTabs.tabs.find(t => t.config?.path === "terminal_settings")
+		if (tab) {
+			if (!restoreInProgress) tab.click()
+			return
+		}
+		tab = rightTabs.tabs.find(t => t.config?.path === "terminal_settings")
+		if (tab) {
+			if (!restoreInProgress) tab.click()
+			return
+		}
+	}
+
+	const removeEmptyUntitledTab = (tabGroup) => {
+		if (tabGroup.tabs.length === 1) {
+			const tab = tabGroup.tabs[0]
+			if (tab.config.name === "untitled" && tab.config.session.getValue() === "") {
+				tabGroup.remove(tab, true)
+			}
+		}
+	}
+	removeEmptyUntitledTab(leftTabs)
+	removeEmptyUntitledTab(rightTabs)
+
+	const tab = targetEditor.tabs.add({
+		name: "Terminal Settings",
+		path: "terminal_settings",
+		mode: { mode: "terminal_settings" },
+		session: null,
+		side: targetEditor === leftEdit ? "left" : "right",
+		handle: "terminal_settings",
+		folder: "",
+		fileModified: false,
+		defaultStatusIcon: "terminal",
+	})
+	
+	tab.classList.add("terminal-settings-tab")
+	if (!restoreInProgress) tab.click()
+}
+
+const openEditorSettings = (targetEditor = leftEdit) => {
+	{
+		let tab = leftTabs.tabs.find(t => t.config?.path === "editor_settings")
+		if (tab) {
+			if (!restoreInProgress) tab.click()
+			return
+		}
+		tab = rightTabs.tabs.find(t => t.config?.path === "editor_settings")
+		if (tab) {
+			if (!restoreInProgress) tab.click()
+			return
+		}
+	}
+
+	const removeEmptyUntitledTab = (tabGroup) => {
+		if (tabGroup.tabs.length === 1) {
+			const tab = tabGroup.tabs[0]
+			if (tab.config.name === "untitled" && tab.config.session.getValue() === "") {
+				tabGroup.remove(tab, true)
+			}
+		}
+	}
+	removeEmptyUntitledTab(leftTabs)
+	removeEmptyUntitledTab(rightTabs)
+
+	const tab = targetEditor.tabs.add({
+		name: "Editor Settings",
+		path: "editor_settings",
+		mode: { mode: "editor_settings" },
+		session: null,
+		side: targetEditor === leftEdit ? "left" : "right",
+		handle: "editor_settings",
+		folder: "",
+		fileModified: false,
+		defaultStatusIcon: "settings",
+	})
+	
+	tab.classList.add("editor-settings-tab")
+	if (!restoreInProgress) tab.click()
+}
+
+const renderPlanTasksView = (container) => {
+	if (container && typeof container.update === "function") {
+		container.update();
+	}
+}
+
+const openPlanAndTaskList = (targetEditor = leftEdit) => {
+	{
+		let tab = leftTabs.tabs.find(t => t.config?.path === "plan_tasks")
+		if (tab) {
+			if (!restoreInProgress) tab.click()
+			return
+		}
+		tab = rightTabs.tabs.find(t => t.config?.path === "plan_tasks")
+		if (tab) {
+			if (!restoreInProgress) tab.click()
+			return
+		}
+	}
+
+	const removeEmptyUntitledTab = (tabGroup) => {
+		if (tabGroup.tabs.length === 1) {
+			const tab = tabGroup.tabs[0]
+			if (tab.config.name === "untitled" && tab.config.session.getValue() === "") {
+				tabGroup.remove(tab, true)
+			}
+		}
+	}
+	removeEmptyUntitledTab(leftTabs)
+	removeEmptyUntitledTab(rightTabs)
+
+	const tab = targetEditor.tabs.add({
+		name: "Session Artifacts & Settings",
+		path: "plan_tasks",
+		mode: { mode: "plan_tasks" },
+		session: null,
+		side: targetEditor === leftEdit ? "left" : "right",
+		handle: "plan_tasks",
+		folder: "",
+		fileModified: false,
+		defaultStatusIcon: "playlist_add_check",
+	})
+	
+	tab.classList.add("plan-tasks-tab")
+	if (!restoreInProgress) tab.click()
+}
+
+const openAgentConfig = (targetEditor = leftEdit) => {
+	{
+		let tab = leftTabs.tabs.find(t => t.config?.path === "agent_config")
+		if (tab) {
+			if (!restoreInProgress) tab.click()
+			return
+		}
+		tab = rightTabs.tabs.find(t => t.config?.path === "agent_config")
+		if (tab) {
+			if (!restoreInProgress) tab.click()
+			return
+		}
+	}
+
+	const removeEmptyUntitledTab = (tabGroup) => {
+		if (tabGroup.tabs.length === 1) {
+			const tab = tabGroup.tabs[0]
+			if (tab.config.name === "untitled" && tab.config.session.getValue() === "") {
+				tabGroup.remove(tab, true)
+			}
+		}
+	}
+	removeEmptyUntitledTab(leftTabs)
+	removeEmptyUntitledTab(rightTabs)
+
+	const tab = targetEditor.tabs.add({
+		name: "Agent Config",
+		path: "agent_config",
+		mode: { mode: "agent_config" },
+		session: null,
+		side: targetEditor === leftEdit ? "left" : "right",
+		handle: "agent_config",
+		folder: "",
+		fileModified: false,
+		defaultStatusIcon: "developer_board",
+	})
+	
+	tab.classList.add("agent-config-tab")
+	if (!restoreInProgress) tab.click()
+}
+
+const openDiffTab = (filePath, backupId, targetEditor = leftEdit) => {
+	const clean = (p) => p ? p.replace(/\\/g, '/') : '';
+	const normPath = clean(filePath);
+	const filename = normPath.split("/").pop();
+	const diffTabPath = `diff_${backupId}`;
+
+	// Don't add a new tab if it's already open
+	{
+		const findOpenTab = (tabBar) => {
+			for (const tab of tabBar.tabs) {
+				if (tab.config?.path === diffTabPath) {
+					return tab;
+				}
+			}
+			return null;
+		};
+
+		let tab = findOpenTab(leftTabs)
+		if (tab) return tab.click()
+		tab = findOpenTab(rightTabs)
+		if (tab) return tab.click()
+	}
+
+	const tab = targetEditor.tabs.add({
+		name: `Diff: ${filename}`,
+		path: diffTabPath,
+		mode: { 
+			mode: "diff",
+			backupId: backupId,
+			filePath: filePath
+		},
+		session: null,
+		side: targetEditor === leftEdit ? "left" : "right",
+		handle: diffTabPath,
+		folder: "",
+		fileModified: false,
+		defaultStatusIcon: "difference",
+	})
+	
+	tab.classList.add("diff-tab")
+	tab.click()
+}
+
+ui.renderPlanTasksView = renderPlanTasksView
+ui.openPlanAndTaskList = openPlanAndTaskList
+ui.openAgentConfig = openAgentConfig
+ui.openWorkspaceSettings = openWorkspaceSettings
+ui.openTerminalSettings = openTerminalSettings
+ui.openEditorSettings = openEditorSettings
+ui.openDiffTab = openDiffTab
 
 const openFileHandle = async (handle, knownPath = null, targetEditor = currentEditor) => {
 	let path = typeof handle === "string" ? handle : handle.path || knownPath
@@ -1175,9 +1944,21 @@ const openFileHandle = async (handle, knownPath = null, targetEditor = currentEd
 
 	// don't add a new tab if the file is already open in a tab
 	{
-		let tab = leftTabs.byTitle(path)
+		const clean = (p) => p ? p.replace(/\\/g, '/') : '';
+		const normPath = clean(path);
+		const findOpenTab = (tabBar) => {
+			for (const tab of tabBar.tabs) {
+				const normTabPath = clean(tab.config?.path);
+				if (normTabPath === normPath || normTabPath.endsWith('/' + normPath) || normPath.endsWith('/' + normTabPath)) {
+					return tab;
+				}
+			}
+			return null;
+		};
+
+		let tab = findOpenTab(leftTabs)
 		if (tab) return tab.click()
-		tab = rightTabs.byTitle(path)
+		tab = findOpenTab(rightTabs)
 		if (tab) return tab.click()
 	}
 
@@ -1194,8 +1975,9 @@ const openFileHandle = async (handle, knownPath = null, targetEditor = currentEd
 
 	let text = ""
 	let rawData = null
+	let fileData = null
 	try {
-		const fileData = await conduitClient.wsRead(path)
+		fileData = await conduitClient.wsRead(path)
 		if (fileData.error) throw new Error(fileData.error)
 		rawData = fileData.data
 		if (!isImage) {
@@ -1307,9 +2089,12 @@ const openFileHandle = async (handle, knownPath = null, targetEditor = currentEd
 		fileModified: false,
 		defaultStatusIcon: tabIcon, // Pass the determined icon to the new tab.
 		rawData: rawData,
+		fullPath: fileData ? fileData.fullPath : undefined,
+		modTime: fileData ? fileData.modTime : undefined,
+		size: fileData ? fileData.size : undefined,
 	})
 	setupSessionChangeListener(newSession, tab)
-	tab.click()
+	if(!restoreInProgress) tab.click()
 	observeFile(path, onFileModified) // Observe the file for changes
 
 	// Only add to workspace and save if it's a newly opened file, not from a restore
@@ -1328,6 +2113,46 @@ fileMenu.click = folderMenu.click = topfolderMenu.click = async (action) => {
 	const filePath = file.path || file.name;
 
 	switch (action) {
+		case "info":
+			try {
+				const info = await conduitClient.wsFileInfo(filePath);
+				if (info.error) {
+					throw new Error(info.error);
+				}
+				const data = info.data;
+				const htmlContent = `
+					<table style="width: 100%; border-collapse: collapse; margin-top: 10px;">
+						<tr>
+							<td style="padding: 8px 4px; font-weight: bold; border-bottom: 1px solid var(--border-color, #eee); width: 100px;">Type</td>
+							<td style="padding: 8px 4px; border-bottom: 1px solid var(--border-color, #eee);">${data.isDir ? 'Folder' : 'File'}</td>
+						</tr>
+						<tr>
+							<td style="padding: 8px 4px; font-weight: bold; border-bottom: 1px solid var(--border-color, #eee);">Size</td>
+							<td style="padding: 8px 4px; border-bottom: 1px solid var(--border-color, #eee);">${data.sizeFormatted} (${data.size.toLocaleString()} bytes)</td>
+						</tr>
+						<tr>
+							<td style="padding: 8px 4px; font-weight: bold; border-bottom: 1px solid var(--border-color, #eee);">Path</td>
+							<td style="padding: 8px 4px; border-bottom: 1px solid var(--border-color, #eee); word-break: break-all; font-family: monospace;">${data.path}</td>
+						</tr>
+						<tr>
+							<td style="padding: 8px 4px; font-weight: bold; border-bottom: 1px solid var(--border-color, #eee);">Full Path</td>
+							<td style="padding: 8px 4px; border-bottom: 1px solid var(--border-color, #eee); word-break: break-all; font-family: monospace;">${data.fullPath}</td>
+						</tr>
+						<tr>
+							<td style="padding: 8px 4px; font-weight: bold; border-bottom: 1px solid var(--border-color, #eee);">Modified</td>
+							<td style="padding: 8px 4px; border-bottom: 1px solid var(--border-color, #eee);">${data.modTimeStr}</td>
+						</tr>
+						<tr>
+							<td style="padding: 8px 4px; font-weight: bold; border-bottom: 1px solid var(--border-color, #eee);">Git Status</td>
+							<td style="padding: 8px 4px; border-bottom: 1px solid var(--border-color, #eee); font-family: monospace;">${data.gitStatus}</td>
+						</tr>
+					</table>
+				`;
+				Modal.notice(htmlContent, `${file.name} Information`);
+			} catch (e) {
+				Modal.notice(`Failed to get file info: ${e.message}`, "Error");
+			}
+			break;
 		case "remove":
 			for (let i = 0; i < workspace.folders.length; i++) {
 				if (workspace.folders[i] === filePath) {
@@ -1349,6 +2174,7 @@ fileMenu.click = folderMenu.click = topfolderMenu.click = async (action) => {
 			const newFilePath = `${filePath}/${newFileName}`;
 			try {
 				await conduitClient.wsWrite(newFilePath, btoa("")); // Create empty file
+				fileList?.addFileToIndex?.(newFilePath);
 				await fileList.refreshFolder(filePath);
 				await openFileHandle(newFilePath, newFilePath);
 			} catch (e) {
@@ -1373,11 +2199,40 @@ fileMenu.click = folderMenu.click = topfolderMenu.click = async (action) => {
 				try {
 					await conduitClient.wsDelete(filePath);
 					// If this was an open tab, close it
-					if (!file.isDir) {
-						const openTabLeft = leftTabs.byTitle(filePath);
-						if (openTabLeft) leftTabs.remove(openTabLeft);
-						const openTabRight = rightTabs.byTitle(filePath);
-						if (openTabRight) rightTabs.remove(openTabRight);
+					const tabsToCloseLeft = [];
+					const tabsToCloseRight = [];
+					const normalizePath = (p) => {
+						if (!p) return "";
+						return p.replace(/\\/g, '/').replace(/^\.\//, '').replace(/^\//, '').replace(/\/$/, '');
+					};
+					const checkAndAddTab = (tab, isDir, path) => {
+						const tabPath = tab.config?.path;
+						if (!tabPath) return false;
+						const normTab = normalizePath(tabPath);
+						const normPath = normalizePath(path);
+						if (isDir) {
+							return normTab === normPath || normTab.startsWith(normPath + '/') || normTab.endsWith('/' + normPath) || normTab.includes('/' + normPath + '/');
+						} else {
+							return normTab === normPath || normTab.endsWith('/' + normPath) || normPath.endsWith('/' + normTab);
+						}
+					};
+
+					for (const tab of leftTabs.tabs) {
+						if (checkAndAddTab(tab, file.isDir, filePath)) {
+							tabsToCloseLeft.push(tab);
+						}
+					}
+					for (const tab of rightTabs.tabs) {
+						if (checkAndAddTab(tab, file.isDir, filePath)) {
+							tabsToCloseRight.push(tab);
+						}
+					}
+
+					for (const tab of tabsToCloseLeft) {
+						await closeTab(leftTabs, { tab }, true);
+					}
+					for (const tab of tabsToCloseRight) {
+						await closeTab(rightTabs, { tab }, true);
 					}
 					const parentPathDelete = filePath.substring(0, filePath.lastIndexOf('/'));
 					await fileList.refreshFolder(parentPathDelete || ".");
@@ -1417,8 +2272,85 @@ fileList.expand = (item) => {
 }
 
 const updateEditorUI = async (targetEditor, targetMediaView, tab) => {
-	if (tab.config.mode.mode === "media") {
+	const holder = targetEditor === leftEdit ? ui.leftHolder : ui.rightHolder
+	
+	const outgoingViewMode = tab.config._lastViewMode || "edit";
+	tab.config._lastViewMode = tab.config.viewMode;
+
+	const isSameTab = tab.config.session && targetEditor.getSession() === tab.config.session;
+	if (isSameTab) {
+		if (outgoingViewMode === "edit" && tab.config.session) {
+			const scrollTop = targetEditor.getSession().getScrollTop();
+			const scrollLeft = targetEditor.getSession().getScrollLeft();
+			if (tab.config.leftSession) {
+				tab.config.leftSession.setScrollTop(scrollTop);
+				tab.config.leftSession.setScrollLeft(scrollLeft);
+			}
+			if (tab.config.rightSession) {
+				tab.config.rightSession.setScrollTop(scrollTop);
+				tab.config.rightSession.setScrollLeft(scrollLeft);
+			}
+		} else if (outgoingViewMode === "diff" && holder.diffView && holder.diffView.leftEditor) {
+			const scrollTop = holder.diffView.leftEditor.getSession().getScrollTop();
+			const scrollLeft = holder.diffView.leftEditor.getSession().getScrollLeft();
+			if (tab.config.session) {
+				tab.config.session.setScrollTop(scrollTop);
+				tab.config.session.setScrollLeft(scrollLeft);
+			}
+		}
+	}
+
+	const hideAllViews = () => {
+		if (holder.planTasksView) holder.planTasksView.style.display = "none"
+		if (holder.agentConfigView) holder.agentConfigView.style.display = "none"
+		if (holder.workspaceSettingsView) holder.workspaceSettingsView.style.display = "none"
+		if (holder.terminalSettingsView) holder.terminalSettingsView.style.display = "none"
+		if (holder.editorSettingsView) holder.editorSettingsView.style.display = "none"
+		if (holder.diffView) holder.diffView.style.display = "none"
 		targetEditor.container.style.display = "none"
+		targetMediaView.style.display = "none"
+	}
+	hideAllViews()
+
+	if (tab.config.viewMode === "diff") {
+		if (holder.diffView) {
+			holder.diffView.style.display = "block"
+			await holder.diffView.update(tab.config.path, tab.config.backupId, tab)
+		}
+		return;
+	}
+
+	if (tab.config.mode.mode === "plan_tasks") {
+		if (holder.planTasksView) {
+			holder.planTasksView.style.display = "block"
+			renderPlanTasksView(holder.planTasksView)
+		}
+	} else if (tab.config.mode.mode === "agent_config") {
+		if (holder.agentConfigView) {
+			holder.agentConfigView.style.display = "block"
+			holder.agentConfigView.update()
+		}
+	} else if (tab.config.mode.mode === "workspace_settings") {
+		if (holder.workspaceSettingsView) {
+			holder.workspaceSettingsView.style.display = "block"
+			renderWorkspaceSettingsView(holder.workspaceSettingsView)
+		}
+	} else if (tab.config.mode.mode === "terminal_settings") {
+		if (holder.terminalSettingsView) {
+			holder.terminalSettingsView.style.display = "block"
+			await renderTerminalSettingsView(holder.terminalSettingsView)
+		}
+	} else if (tab.config.mode.mode === "editor_settings") {
+		if (holder.editorSettingsView) {
+			holder.editorSettingsView.style.display = "block"
+			renderEditorSettingsView(holder.editorSettingsView)
+		}
+	} else if (tab.config.mode.mode === "diff") {
+		if (holder.diffView) {
+			holder.diffView.style.display = "block"
+			await holder.diffView.update(tab.config.mode.filePath, tab.config.mode.backupId, tab)
+		}
+	} else if (tab.config.mode.mode === "media") {
 		targetMediaView.style.display = "block"
 
 		let data = tab.config.rawData
@@ -1430,7 +2362,6 @@ const updateEditorUI = async (targetEditor, targetMediaView, tab) => {
 		targetMediaView.setImage(imageUrl)
 	} else {
 		targetEditor.container.style.display = "block"
-		targetMediaView.style.display = "none"
 		targetEditor.setSession(tab.config.session)
 		targetEditor.focus()
 	}
@@ -1443,7 +2374,6 @@ const updateEditorUI = async (targetEditor, targetMediaView, tab) => {
 		fileList.activeItem.changed = true
 	}
 }
-
 leftTabs.click = async (event) => {
 	const tab = event.tab
 	setCurrentEditor(leftEdit)
@@ -1451,9 +2381,15 @@ leftTabs.click = async (event) => {
 	// Check if the file has been modified externally and show notice
 	if (tab.config.fileModified) {
 		ui.showFileModifiedNotice(tab, "left")
+		ui.hideAgentEditsNotice("left")
 	} else {
 		ui.hideFileModifiedNotice("left") // Hide if not modified
+		ui.updateAgentEditsNotice(tab)
 	}
+	if (ui.leftHolder && ui.leftHolder.updateNoticeBar) {
+		await ui.leftHolder.updateNoticeBar(tab)
+	}
+	saveWorkspace()
 }
 
 rightTabs.click = async (event) => {
@@ -1463,14 +2399,20 @@ rightTabs.click = async (event) => {
 	// Check if the file has been modified externally and show notice
 	if (tab.config.fileModified) {
 		ui.showFileModifiedNotice(tab, "right")
+		ui.hideAgentEditsNotice("right")
 	} else {
 		ui.hideFileModifiedNotice("right") // Hide if not modified
+		ui.updateAgentEditsNotice(tab)
 	}
+	if (ui.rightHolder && ui.rightHolder.updateNoticeBar) {
+		await ui.rightHolder.updateNoticeBar(tab)
+	}
+	saveWorkspace()
 }
 
-const closeTab = async (targetTabs, event) => {
+const closeTab = async (targetTabs, event, force = false) => {
 	const tab = event.tab
-	if (tab.changed) {
+	if (!force && tab.changed) {
 		const confirmed = await window.modal.confirm(
 			"This file has unsaved changes. Are you sure you want to close it?",
 			"Unsaved Changes"
@@ -1517,6 +2459,8 @@ rightTabs.close = (event) => {
 	closeTab(rightTabs, event)
 }
 
+window.closeTab = closeTab;
+
 const defaultTab = (targetTabs) => {
 	if (!targetTabs) {
 		targetTabs = ui.currentTabs
@@ -1545,11 +2489,19 @@ const defaultTab = (targetTabs) => {
 }
 
 // fileActions.hook="bottom";
-let restoreInProgress = false
 const restoreWorkspaceContent = async () => {
 	if (restoreInProgress) return
 	if (!conduitClient.isConnected) {
 		console.debug("restoreWorkspaceContent: WebSocket not connected, waiting...")
+		if (!restoreWaitingForConnect) {
+			restoreWaitingForConnect = true
+			const onConnect = () => {
+				conduitClient.off("connect", onConnect)
+				restoreWaitingForConnect = false
+				restoreWorkspaceContent()
+			}
+			conduitClient.on("connect", onConnect)
+		}
 		return
 	}
 	restoreInProgress = true
@@ -1563,6 +2515,9 @@ const restoreWorkspaceContent = async () => {
 				enableSplitView = true
 				break
 			}
+		}
+		if (workspace.planTasksSide === "right") {
+			enableSplitView = true
 		}
 
 		if (enableSplitView) {
@@ -1578,6 +2533,7 @@ const restoreWorkspaceContent = async () => {
 			const missingFiles = []
 			for (const file of workspace.files) {
 				try {
+					console.debug(`restoreWorkspaceContent: Opening ${file.path} on ${file.side}`)
 					await openFileHandle(file.handle, file.path, file.side === "right" ? rightEdit : leftEdit)
 					fileList.active = file.handle
 				} catch (e) {
@@ -1585,9 +2541,16 @@ const restoreWorkspaceContent = async () => {
 					missingFiles.push(file.path)
 				}
 			}
+            console.debug("restoreWorkspaceContent: Finished opening files.")
 
 			// Restore the open/edited status icons for all tabs
 			for (const tab of leftTabs.tabs) {
+				fileList.active = tab.config.handle
+				if (tab.changed && fileList.activeItem) {
+					fileList.activeItem.changed = true
+				}
+			}
+			for (const tab of rightTabs.tabs) {
 				fileList.active = tab.config.handle
 				if (tab.changed && fileList.activeItem) {
 					fileList.activeItem.changed = true
@@ -1597,9 +2560,59 @@ const restoreWorkspaceContent = async () => {
 
 			// Remove missing files from workspace.files
 			workspace.files = workspace.files.filter((file) => !missingFiles.includes(file.path))
-			saveWorkspace() // Save workspace after removing missing files
 		}
+
+		if (workspace.agentConfigSide) {
+			const targetEditor = workspace.agentConfigSide === "right" ? rightEdit : leftEdit
+			openAgentConfig(targetEditor)
+		}
+
+		if (workspace.planTasksSide) {
+			const targetEditor = workspace.planTasksSide === "right" ? rightEdit : leftEdit
+			openPlanAndTaskList(targetEditor)
+		}
+
+		if (workspace.workspaceSettingsSide) {
+			const targetEditor = workspace.workspaceSettingsSide === "right" ? rightEdit : leftEdit
+			openWorkspaceSettings(targetEditor)
+		}
+
+		if (workspace.terminalSettingsSide) {
+			const targetEditor = workspace.terminalSettingsSide === "right" ? rightEdit : leftEdit
+			openTerminalSettings(targetEditor)
+		}
+
+		if (workspace.editorSettingsSide) {
+			const targetEditor = workspace.editorSettingsSide === "right" ? rightEdit : leftEdit
+			openEditorSettings(targetEditor)
+		}
+
+		// --- Tab Restoration Logic ---
+		if (workspace.activeEditorTabHandle) {
+			const clean = (p) => p ? p.replace(/\\/g, '/').replace(/^\//, '') : '';
+			const targetHandle = clean(workspace.activeEditorTabHandle);
+			
+			const activeTab = leftTabs.tabs.find(t => clean(t.config.handle) === targetHandle) ||
+				rightTabs.tabs.find(t => clean(t.config.handle) === targetHandle);
+
+			if (activeTab) {
+				console.warn(`restoring active tab: ${workspace.activeEditorTabHandle}`);
+				activeTab.click();
+			} else {
+				console.log(`Active tab ${workspace.activeEditorTabHandle} not found in open tabs.`);
+			}
+		} else {
+			// If no specific active tab is saved, ensure at least one default tab exists in the editor
+			const defaultEditor = leftTabs.tabs.length > 0 ? leftTabs : rightTabs;
+			if (defaultEditor.tabs.length === 0) {
+				defaultTab(defaultEditor);
+			}
+		}
+		// -----------------------------
+
 		ui.showSidebar(1)
+		restoreInProgress = false
+		saveWorkspace()
 	} finally {
 		restoreInProgress = false
 	}
@@ -1633,7 +2646,7 @@ const keyBinds = [
 	{
 		target: "app",
 		name: "showKeyboardShortcuts",
-		bindKey: { win: "ctrl-alt-k", mac: "Command-Alt-k" },
+		bindKey: { win: "Ctrl+Alt+K", mac: "Command+Alt+K" },
 		exec: function () {
 			ace.config.loadModule("ace/ext/keybinding_menu", function (module) {
 				module.init(leftEdit)
@@ -1644,7 +2657,7 @@ const keyBinds = [
 	{
 		target: "app",
 		name: "find",
-		bindKey: { win: "Ctrl-F", mac: "Command-F" },
+		bindKey: { win: "Ctrl+F", mac: "Command+F" },
 		exec: () => {
 			window.ui.omnibox("find")
 		},
@@ -1660,15 +2673,23 @@ const keyBinds = [
 	{
 		target: "editor",
 		name: "collapselines",
-		bindKey: { win: "Ctrl-Shift-J", mac: "Command-Shift-J" },
+		bindKey: { win: "Ctrl+Shift+J", mac: "Command+Shift+J" },
 		exec: () => {
 			currentEditor.execCommand("joinlines")
 		},
 	},
 	{
 		target: "app",
+		name: "toggleSearchSidebar",
+		bindKey: { win: "Ctrl+Shift+F", mac: "Command+Shift+F" },
+		exec: () => {
+			execCommandToggleSidebarPanel("find_in_page")
+		},
+	},
+	{
+		target: "app",
 		name: "find-regex",
-		bindKey: { win: "Ctrl-Shift-F", mac: "Command-Shift-F" },
+		bindKey: { win: "Ctrl+Alt+F", mac: "Command+Alt+F" },
 		exec: () => {
 			window.ui.omnibox("regex")
 		},
@@ -1676,7 +2697,7 @@ const keyBinds = [
 	{
 		target: "app",
 		name: "find-regex-multiline",
-		bindKey: { win: "Ctrl-Shift-Alt-F", mac: "Command-Shift-Alt-F" },
+		bindKey: { win: "Ctrl+Shift+Alt+F", mac: "Command+Shift+Alt+F" },
 		exec: () => {
 			window.ui.omnibox("regex-m")
 		},
@@ -1684,7 +2705,7 @@ const keyBinds = [
 	{
 		target: "app",
 		name: "goto",
-		bindKey: { win: "Ctrl-G", mac: "Command-G" },
+		bindKey: { win: "Ctrl+G", mac: "Command+G" },
 		exec: () => {
 			window.ui.omnibox("goto")
 		},
@@ -1692,10 +2713,41 @@ const keyBinds = [
 	{
 		target: "editor",
 		name: "lookup",
-		bindKey: { win: "Ctrl-L", mac: "Command-L" },
+		bindKey: { win: "Ctrl+L", mac: "Command+L" },
 		exec: () => {
 			window.ui.omnibox("lookup")
 		},
+	},
+	{
+		target: "app",
+		name: "toggle-diff-view",
+		bindKey: { win: "Alt+D", mac: "Option+D" },
+		exec: () => {
+			const activeTab = currentTabs?.activeTab;
+			if (activeTab && activeTab.config && activeTab.config.path !== "plan_tasks") {
+				const isDiff = activeTab.config.viewMode === "diff";
+				if (!isDiff) {
+					const session = window.ui?.aiManager?.activeSession;
+					const path = activeTab.config.path;
+					if (session && session.modifiedFiles) {
+						const matchedKey = Object.keys(session.modifiedFiles).find(k => {
+							const normalize = (p) => p ? p.replace(/\\/g, '/').replace(/\/+/g, '/').replace(/^\//, '').replace(/\/$/, '') : '';
+							const n1 = normalize(k);
+							const n2 = normalize(path);
+							return n1 && n2 && (n1 === n2 || n1.endsWith('/' + n2) || n2.endsWith('/' + n1));
+						});
+						if (matchedKey && session.modifiedFiles[matchedKey].length > 0) {
+							const backups = session.modifiedFiles[matchedKey];
+							activeTab.config.backupId = backups[backups.length - 1].backupId;
+						}
+					}
+					activeTab.config.viewMode = "diff";
+				} else {
+					activeTab.config.viewMode = "edit";
+				}
+				activeTab.click();
+			}
+		}
 	},
 	{
 		target: "app",
@@ -1759,9 +2811,7 @@ const keyBinds = [
 		target: "app",
 		name: "showEditorSettings",
 		exec: () => {
-			currentEditor.execCommand("showSettingsMenu", () => {
-				updateThemeAndMode(true)
-			})
+			openEditorSettings(currentEditor)
 		},
 	},
 	{
@@ -1803,7 +2853,20 @@ const keyBinds = [
 		name: "show-terminal",
 		bindKey: { win: "Alt+T", mac: "Option+T" },
 		exec: () => {
-			ui.toggleDrawer()
+			const activeEl = document.activeElement;
+			if (activeEl && activeEl.closest(".terminal-instance-container")) {
+				ui.toggleDrawer(false);
+				if (currentEditor) currentEditor.focus();
+			} else {
+				ui.toggleDrawer(true);
+				// Small delay to ensure the drawer is open before attempting to focus
+				setTimeout(() => {
+					const terminalInput = document.querySelector(".xterm-helper-textarea");
+					if (terminalInput) {
+						terminalInput.focus();
+					}
+				}, 100);
+			}
 		},
 	},
 	{
@@ -1866,27 +2929,27 @@ const keyBinds = [
 	{
 		target: "app",
 		name: "workspaceOpen",
-		exec: async (args) => {
-			await sleep(400)
-			if (args === workspace.name) {
-				return
-			}
-			openWorkspace(args, true)
+			exec: async (args) => {
+				await sleep(400)
+				if (args === workspace.id) {
+					return
+				}
+				openWorkspace(args, true)
+			},
 		},
-	},
-	{
-		target: "app",
-		name: "workspaceRename",
-		exec: async () => {
-			await sleep(400)
+		{
+			target: "app",
+			name: "workspaceRename",
+			exec: async () => {
+				await sleep(400)
+			},
 		},
-	},
-	{
-		target: "app",
-		name: "workspaceDelete",
-		exec: async () => {
-			await sleep(400)
-			if (workspace.name !== "default") {
+		{
+			target: "app",
+			name: "workspaceDelete",
+			exec: async () => {
+				await sleep(400)
+				if (workspace.id !== "default") {
 				const confirmed = await window.modal.confirm(
 					`Are you sure you want to permanently delete the workspace "<strong>${workspace.name}</strong>"? This action cannot be undone.`,
 					"Delete Workspace"
@@ -1953,7 +3016,7 @@ const keyBinds = [
 				workspace.id = id
 				workspace.folders = []
 				workspace.files = []
-				workspace.ignorePaths = [".git", "node_modules", "dist", "build"]
+				workspace.ignorePaths = [".git", ".modules", "node_modules", "dist", "build"]
 				workspace.openFolders = []
 				// NEW: Initialize empty AI session metadata for new workspace
 				updateFileListBackground()
@@ -1998,7 +3061,480 @@ const keyBinds = [
 			execCommandToggleSidebarPanel("developer_board")
 		},
 	},
+	{
+		target: "editor",
+		name: "goToFile",
+		exec: async (editor) => {
+			let matches = null;
+			let filename = "";
+			if (window.ui && window.ui.activeContextMenuFileMatches) {
+				matches = window.ui.activeContextMenuFileMatches;
+				filename = window.ui.activeContextMenuFilename;
+				window.ui.activeContextMenuFileMatches = null;
+				window.ui.activeContextMenuFilename = null;
+			}
+			if (matches && matches.length > 0) {
+				// Inline helper to open files with multi-match logic
+				const handleFileOpening = async (fname, fmatches, ed) => {
+					if (!fmatches || fmatches.length === 0) return;
+					
+					if (fmatches.length === 1) {
+						await openFileHandle(fmatches[0].path, fmatches[0].path, ed);
+						return;
+					}
+					
+					// Multiple matches: look for exact name match first
+					const exactMatch = fmatches.find(f => f.name === fname);
+					if (exactMatch) {
+						await openFileHandle(exactMatch.path, exactMatch.path, ed);
+						return;
+					}
+					
+					// Show choice modal
+					const optionsHtml = fmatches.map((m, idx) => {
+						return `
+							<div class="file-match-option" data-idx="${idx}" style="padding: 10px; margin: 6px 0; border-radius: var(--borderRadius); cursor: pointer; background: var(--bg-hover, #2a2a2a); border: 1px solid var(--border-color, #333); transition: all 0.2s;">
+								<div style="font-weight: bold; color: var(--theme); font-size: 14px;">${m.name}</div>
+								<div style="font-size: 12px; color: var(--text-secondary); margin-top: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
+									<code>${m.path}</code>
+								</div>
+							</div>
+						`;
+					}).join('');
+
+					const container = document.createElement("div");
+					container.innerHTML = `
+						<h1>Multiple files found matching "${fname}"</h1>
+						<div style="max-height: 300px; overflow-y: auto; margin-top: 12px; padding-right: 4px;">
+							${optionsHtml}
+						</div>
+					`;
+
+					const selectModal = new window.modal.constructor();
+					selectModal.inner.appendChild(container);
+					selectModal.actionBar.empty();
+					const cancelBtn = new Button("Cancel");
+					cancelBtn.classList.add("cancel");
+					cancelBtn.on("click", () => selectModal.hide(null));
+					selectModal.actionBar.append(cancelBtn);
+
+					container.querySelectorAll('.file-match-option').forEach(el => {
+						el.onclick = () => {
+							const idx = parseInt(el.getAttribute('data-idx'));
+							selectModal.hide(idx);
+						};
+					});
+
+					const choice = await selectModal.show();
+					if (choice !== null && choice >= 0) {
+						await openFileHandle(fmatches[choice].path, fmatches[choice].path, ed);
+					}
+				};
+
+				await handleFileOpening(filename, matches, editor);
+			}
+		}
+	},
+	{
+		target: "editor",
+		name: "goToDefinition",
+		bindKey: { win: "Ctrl+B", mac: "Command+B" },
+		exec: async (editor) => {
+			let symbol = "";
+			let pos = null;
+			// If context menu registered an active symbol, use it, then clear it
+			if (window.ui && window.ui.activeContextMenuSymbol) {
+				symbol = window.ui.activeContextMenuSymbol;
+				window.ui.activeContextMenuSymbol = null;
+			} else {
+				// Otherwise get the word under the caret/selection
+				pos = editor.getCursorPosition();
+				const range = editor.session.getWordRange(pos.row, pos.column);
+				symbol = editor.session.getTextRange(range).trim();
+			}
+
+			// If triggering via caret/selection, check if there's a filename match
+			if (pos) {
+				const line = editor.session.getLine(pos.row);
+				const filename = extractFilenameAtColumn(line, pos.column);
+				if (filename) {
+					const matches = findFileMatchesInIndex(filename);
+					if (matches && matches.length > 0) {
+						// Inline helper to open files with multi-match logic
+						const handleFileOpening = async (fname, fmatches, ed) => {
+							if (!fmatches || fmatches.length === 0) return;
+							
+							if (fmatches.length === 1) {
+								await openFileHandle(fmatches[0].path, fmatches[0].path, ed);
+								return;
+							}
+							
+							// Multiple matches: look for exact name match first
+							const exactMatch = fmatches.find(f => f.name === fname);
+							if (exactMatch) {
+								await openFileHandle(exactMatch.path, exactMatch.path, ed);
+								return;
+							}
+							
+							// Show choice modal
+							const optionsHtml = fmatches.map((m, idx) => {
+								return `
+									<div class="file-match-option" data-idx="${idx}" style="padding: 10px; margin: 6px 0; border-radius: var(--borderRadius); cursor: pointer; background: var(--bg-hover, #2a2a2a); border: 1px solid var(--border-color, #333); transition: all 0.2s;">
+										<div style="font-weight: bold; color: var(--theme); font-size: 14px;">${m.name}</div>
+										<div style="font-size: 12px; color: var(--text-secondary); margin-top: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
+											<code>${m.path}</code>
+										</div>
+									</div>
+								`;
+							}).join('');
+
+							const container = document.createElement("div");
+							container.innerHTML = `
+								<h1>Multiple files found matching "${fname}"</h1>
+								<div style="max-height: 300px; overflow-y: auto; margin-top: 12px; padding-right: 4px;">
+									${optionsHtml}
+								</div>
+							`;
+
+							const selectModal = new window.modal.constructor();
+							selectModal.inner.appendChild(container);
+							selectModal.actionBar.empty();
+							const cancelBtn = new Button("Cancel");
+							cancelBtn.classList.add("cancel");
+							cancelBtn.on("click", () => selectModal.hide(null));
+							selectModal.actionBar.append(cancelBtn);
+
+							container.querySelectorAll('.file-match-option').forEach(el => {
+								el.onclick = () => {
+									const idx = parseInt(el.getAttribute('data-idx'));
+									selectModal.hide(idx);
+								};
+							});
+
+							const choice = await selectModal.show();
+							if (choice !== null && choice >= 0) {
+								await openFileHandle(fmatches[choice].path, fmatches[choice].path, ed);
+							}
+						};
+
+						await handleFileOpening(filename, matches, editor);
+						return;
+					}
+				}
+			}
+
+			symbol = symbol.replace(/[^a-zA-Z0-9_]/g, "");
+			if (!symbol) return;
+
+			try {
+				let matches = [];
+
+				// 1. Backend symbol search
+				const res = await conduitClient.wsSearchSymbols(symbol);
+				if (res && res.data) {
+					const exactMatches = res.data.filter(s => s.name === symbol);
+					matches = exactMatches.length > 0 ? exactMatches : res.data;
+				}
+
+				// Helper to scan a session for symbol definitions using Regex
+				const scanSessionForSymbol = (session, sym) => {
+					const escapedSymbol = sym.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
+					const regexes = [
+						new RegExp(`(?:const|let|var|function|class|def|func|type|struct|interface)\\s+${escapedSymbol}\\b`),
+						new RegExp(`func\\s+\\([^)]+\\)\\s+${escapedSymbol}\\b`),
+						new RegExp(`\\b${escapedSymbol}\\s*(?::=|=|=>|:[^=])`)
+					];
+					
+					const lines = session.getDocument().getAllLines();
+					for (let i = 0; i < lines.length; i++) {
+						const lineText = lines[i];
+						const trimmed = lineText.trim();
+						if (trimmed.startsWith("//") || trimmed.startsWith("#") || trimmed.startsWith("/*") || trimmed.startsWith("*")) {
+							continue;
+						}
+						if (regexes.some(rx => rx.test(lineText))) {
+							return i + 1; // 1-indexed line
+						}
+					}
+					return -1;
+				};
+
+				const normalize = (p) => p ? p.replace(/\\/g, '/').replace(/\/+/g, '/').replace(/^\//, '').replace(/\/$/, '') : '';
+
+				const pathsMatch = (p1, p2) => {
+					const np1 = normalize(p1);
+					const np2 = normalize(p2);
+					return np1 === np2 || np1.endsWith('/' + np2) || np2.endsWith('/' + np1);
+				};
+
+				const hasMatch = (filePath, line) => {
+					return matches.some(m => pathsMatch(m.filePath, filePath) && m.line === line);
+				};
+
+				// 2. Local active session search
+				const activeTab = editor.tabs?.activeTab;
+				const activePath = activeTab?.config?.path;
+				if (activeTab && activeTab.config && activeTab.config.session && activePath) {
+					const localLine = scanSessionForSymbol(activeTab.config.session, symbol);
+					if (localLine > 0 && !hasMatch(activePath, localLine)) {
+						matches.unshift({
+							name: symbol,
+							type: "local variable",
+							line: localLine,
+							filePath: activePath,
+							signature: activeTab.config.session.getLine(localLine - 1).trim()
+						});
+					}
+				}
+
+				// 3. Fallback: Search other open tabs/sessions
+				const otherTabs = [
+					...(leftTabs?.tabs || []),
+					...(rightTabs?.tabs || [])
+				].filter(t => t !== activeTab);
+
+				for (const tab of otherTabs) {
+					if (tab.config && tab.config.session && tab.config.path) {
+						const line = scanSessionForSymbol(tab.config.session, symbol);
+						if (line > 0 && !hasMatch(tab.config.path, line)) {
+							matches.push({
+								name: symbol,
+								type: "variable/definition",
+								line: line,
+								filePath: tab.config.path,
+								signature: tab.config.session.getLine(line - 1).trim()
+							});
+						}
+					}
+				}
+
+				if (matches.length === 0) {
+					window.modal.toast(`Symbol "${symbol}" not found.`);
+					return;
+				}
+
+				const navigateToSymbol = async (filePath, line) => {
+					const curActiveTab = editor.tabs?.activeTab;
+					const curActivePath = curActiveTab?.config?.path;
+					
+					if (curActivePath && pathsMatch(curActivePath, filePath)) {
+						editor.gotoLine(line, 0, true);
+						editor.focus();
+					} else {
+						await openFileHandle(filePath, filePath, editor);
+						const targetEditor = window.ui.currentEditor || editor;
+						targetEditor.gotoLine(line, 0, true);
+						targetEditor.focus();
+					}
+				};
+
+				if (matches.length === 1) {
+					await navigateToSymbol(matches[0].filePath, matches[0].line);
+				} else {
+					// Show custom sub-modal using Cadence Modal
+					const optionsHtml = matches.map((m, idx) => {
+						const filename = m.filePath.split('/').pop();
+						return `
+							<div class="symbol-match-option" data-idx="${idx}" style="padding: 10px; margin: 6px 0; border-radius: var(--borderRadius); cursor: pointer; background: var(--bg-hover, #2a2a2a); border: 1px solid var(--border-color, #333); transition: all 0.2s;">
+								<div style="font-weight: bold; color: var(--theme); font-size: 14px;">${m.signature || m.name}</div>
+								<div style="font-size: 12px; color: var(--text-secondary); margin-top: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
+									Line ${m.line} in <code>${m.filePath}</code>
+								</div>
+							</div>
+						`;
+					}).join('');
+
+					const container = document.createElement("div");
+					container.innerHTML = `
+						<h1>Multiple definitions found for "${symbol}"</h1>
+						<div style="max-height: 300px; overflow-y: auto; margin-top: 12px; padding-right: 4px;">
+							${optionsHtml}
+						</div>
+					`;
+
+					const selectModal = new window.modal.constructor();
+					selectModal.inner.appendChild(container);
+					selectModal.actionBar.empty();
+					const cancelBtn = new Button("Cancel");
+					cancelBtn.classList.add("cancel");
+					cancelBtn.on("click", () => selectModal.hide(null));
+					selectModal.actionBar.append(cancelBtn);
+
+					container.querySelectorAll('.symbol-match-option').forEach(el => {
+						el.onclick = () => {
+							const idx = parseInt(el.getAttribute('data-idx'));
+							selectModal.hide(idx);
+						};
+					});
+
+					const choice = await selectModal.show();
+					if (choice !== null && choice >= 0) {
+						await navigateToSymbol(matches[choice].filePath, matches[choice].line);
+					}
+				}
+			} catch (err) {
+				console.error("Go to definition failed:", err);
+				window.modal.toast("Go to definition lookup error.");
+			}
+		}
+	},
+	{
+		target: "editor",
+		name: "showFileOutline",
+		bindKey: { win: "Ctrl+Shift+O", mac: "Command+Shift+O" },
+		exec: async (editor) => {
+			const activeTab = editor.tabs?.activeTab;
+			const path = activeTab?.config?.path;
+			if (!path || path === "plan_tasks") return;
+
+			try {
+				const res = await conduitClient.wsGetFileSymbols(path);
+				if (!res || !res.data || res.data.length === 0) {
+					window.modal.toast("No symbols found in current file.");
+					return;
+				}
+
+				const symbols = res.data;
+				
+				// Create a quick outline filter picker modal
+				const container = document.createElement("div");
+				container.style.display = "flex";
+				container.style.flexDirection = "column";
+				container.style.gap = "10px";
+				
+				const title = document.createElement("h1");
+				title.textContent = `File Outline: ${path.split('/').pop()}`;
+				container.appendChild(title);
+
+				const searchInput = new Input();
+				searchInput.type = "text";
+				searchInput.placeholder = "Type to search symbols...";
+				searchInput.style.width = "100%";
+				container.appendChild(searchInput);
+
+				const listContainer = document.createElement("div");
+				listContainer.style.maxHeight = "300px";
+				listContainer.style.overflowY = "auto";
+				listContainer.style.marginTop = "8px";
+				listContainer.style.display = "flex";
+				listContainer.style.flexDirection = "column";
+				listContainer.style.gap = "4px";
+				container.appendChild(listContainer);
+
+				const renderList = (filter = "") => {
+					listContainer.innerHTML = "";
+					const filtered = symbols.filter(s => s.name.toLowerCase().includes(filter.toLowerCase()));
+					if (filtered.length === 0) {
+						listContainer.innerHTML = `<div style="color: var(--text-secondary); padding: 8px;">No matching symbols</div>`;
+						return;
+					}
+					filtered.forEach((sym, idx) => {
+						const item = document.createElement("div");
+						item.className = "symbol-outline-option";
+						item.style.padding = "8px 12px";
+						item.style.borderRadius = "var(--borderRadius)";
+						item.style.cursor = "pointer";
+						item.style.background = idx === 0 ? "var(--theme-dark)" : "var(--bg-hover)";
+						if (idx === 0) item.classList.add("active");
+						item.style.display = "flex";
+						item.style.justifyContent = "space-between";
+						item.style.alignItems = "center";
+						item.style.transition = "all 0.15s";
+						
+						item.innerHTML = `
+							<span style="font-weight: bold; color: ${idx === 0 ? '#fff' : 'var(--theme)'};">${sym.name}</span>
+							<span style="font-size: 11px; opacity: 0.8; color: ${idx === 0 ? '#fff' : 'var(--text-secondary)'};">${sym.type} (Line ${sym.line})</span>
+						`;
+						item.onclick = () => {
+							pickerModal.hide(sym);
+						};
+						listContainer.appendChild(item);
+					});
+				};
+
+				let activeIdx = 0;
+				const handleNav = (direction) => {
+					const items = listContainer.querySelectorAll(".symbol-outline-option");
+					if (items.length === 0) return;
+					items[activeIdx]?.classList.remove("active");
+					items[activeIdx].style.background = "var(--bg-hover)";
+					const activeText = items[activeIdx]?.querySelector("span");
+					if (activeText) activeText.style.color = "var(--theme)";
+					const activeMeta = items[activeIdx]?.querySelector("span:last-child");
+					if (activeMeta) activeMeta.style.color = "var(--text-secondary)";
+
+					if (direction === "down") {
+						activeIdx = (activeIdx + 1) % items.length;
+					} else {
+						activeIdx = (activeIdx - 1 + items.length) % items.length;
+					}
+					items[activeIdx]?.classList.add("active");
+					items[activeIdx].style.background = "var(--theme-dark)";
+					const newActiveText = items[activeIdx]?.querySelector("span");
+					if (newActiveText) newActiveText.style.color = "#fff";
+					const newActiveMeta = items[activeIdx]?.querySelector("span:last-child");
+					if (newActiveMeta) newActiveMeta.style.color = "#fff";
+					items[activeIdx].scrollIntoViewIfNeeded();
+				};
+
+				searchInput.addEventListener("input", (e) => {
+					activeIdx = 0;
+					renderList(e.target.value);
+				});
+
+				searchInput.addEventListener("keydown", (e) => {
+					if (e.key === "ArrowDown") {
+						e.preventDefault();
+						handleNav("down");
+					} else if (e.key === "ArrowUp") {
+						e.preventDefault();
+						handleNav("up");
+					} else if (e.key === "Enter") {
+						e.preventDefault();
+						const items = listContainer.querySelectorAll(".symbol-outline-option");
+						if (items[activeIdx]) {
+							items[activeIdx].click();
+						}
+					}
+				});
+
+				const pickerModal = new window.modal.constructor();
+				pickerModal.inner.appendChild(container);
+				pickerModal.actionBar.empty();
+				const cancelBtn = new Button("Cancel");
+				cancelBtn.classList.add("cancel");
+				cancelBtn.on("click", () => pickerModal.hide(null));
+				pickerModal.actionBar.append(cancelBtn);
+
+				renderList();
+				
+				const promise = pickerModal.show();
+				setTimeout(() => searchInput.focus(), 50);
+
+				const selectedSym = await promise;
+				if (selectedSym) {
+					editor.gotoLine(selectedSym.line, 0, true);
+					editor.focus();
+				}
+			} catch (err) {
+				console.error("Outline picker error:", err);
+				window.modal.toast("Failed to load outline.");
+			}
+		}
+	},
 ]
+
+// add CTRL+[1-9] to switch active tab based on focus context
+for (let i = 1; i <= 9; i++) {
+	keyBinds.push({
+		target: "app",
+		name: `jump-to-buffer-${i}`,
+		bindKey: { win: `Ctrl+${i}`, mac: `Command+${i}` },
+		exec: () => {
+			execCommandJumpToBuffer(i)
+		}
+	});
+}
 
 keyBinds.forEach((bind) => {
 	window.ui.commands.add(bind)
@@ -2142,14 +3678,62 @@ setTimeout(async () => {
 			console.warn("Failed to load app config", e);
 		}
 
+		if (stored && stored.port) {
+			conduitClient.configure({ port: parseInt(stored.port) });
+			if (window.terminalManager) {
+				window.terminalManager.setPort(stored.port);
+			}
+		}
+
 		app.darkmode = stored?.darkmode || "system"
 		app.sessionOptions = stored?.sessionOptions || null
 		app.rendererOptions = stored?.rendererOptions || null
 		app.enableLiveAutocompletion = stored?.enableLiveAutocompletion || null
+		app.keyboardHandler = stored?.keyboardHandler || "ace/keyboard/sublime"
 
 		app.systemPromptConfig = stored?.systemPromptConfig || {} // NEW
 		// Apply any stored editor settings immediately after loading them.
 		execCommandEditorOptions()
+
+		// Register workspace-wide symbol autocomplete
+		try {
+			const langTools = ace.require("ace/ext/language_tools");
+			if (langTools) {
+				const workspaceCompleter = {
+					getCompletions: async (editor, session, pos, prefix, callback) => {
+						if (editor.id === "ai-prompt-editor") {
+							return callback(null, []);
+						}
+						if (!prefix || prefix.length < 2) {
+							return callback(null, []);
+						}
+						try {
+							const res = await conduitClient.wsSearchSymbols(prefix);
+							if (!res || !res.data) {
+								return callback(null, []);
+							}
+							
+							const completions = res.data.map(sym => {
+								const filename = sym.filePath.split('/').pop();
+								return {
+									caption: sym.name,
+									value: sym.name,
+									meta: `${sym.type} (${filename})`,
+									score: sym.name.toLowerCase().startsWith(prefix.toLowerCase()) ? 1000 : 500
+								};
+							});
+							callback(null, completions);
+						} catch (e) {
+							console.warn("Workspace autocomplete search failed:", e);
+							callback(null, []);
+						}
+					}
+				};
+				langTools.addCompleter(workspaceCompleter);
+			}
+		} catch (e) {
+			console.warn("Failed to register workspace autocompleter:", e);
+		}
 
 		app.workspace = stored?.workspace || "default"
 		app.workspaces = stored?.workspaces || [app.workspace]
@@ -2166,19 +3750,17 @@ setTimeout(async () => {
 		saveAppConfig()
 
 		// Automatically restore workspace content once connected
-		conduitClient.on("connect", () => {
-			if (workspace.folders.length > 0 || workspace.files.length > 0) {
-				restoreWorkspaceContent()
-			}
-		})
+		// (Handled internally in restoreWorkspaceContent to avoid connection race condition)
 
 		// After appConfig is loaded and aiManager is initialized, apply global AI settings
 		const currentProvider = ui.aiManager.aiProvider
-		if (app.aiConfig[currentProvider]) {
-			ui.aiManager.ai.setOptions(app.aiConfig[currentProvider], null, null, false, "global")
-		} else {
-			// If no specific config for the current provider, reset to default for that provider
-			ui.aiManager.ai.setOptions({}, null, null, false, "global")
+		if (ui.aiManager.ai) {
+			if (app.aiConfig[currentProvider]) {
+				ui.aiManager.ai.setOptions(app.aiConfig[currentProvider], null, null, false, "global")
+			} else {
+				// If no specific config for the current provider, reset to default for that provider
+				ui.aiManager.ai.setOptions({}, null, null, false, "global")
+			}
 		}
 
 		// set supported files in our FileList control
@@ -2225,6 +3807,7 @@ setTimeout(async () => {
 			leftEdit.container.style.display = "none"
 			leftMedia.style.display = "none"
 			window.ui.hideFileModifiedNotice("left") // Hide notice bar when empty
+			window.ui.hideAgentEditsNotice("left")
 		}
 
 		rightTabs.onEmpty = () => {
@@ -2232,6 +3815,7 @@ setTimeout(async () => {
 			rightEdit.container.style.display = "none"
 			rightMedia.style.display = "none"
 			window.ui.hideFileModifiedNotice("right") // Hide notice bar when empty
+			window.ui.hideAgentEditsNotice("right")
 			ui.toggleSplitView({ targetState: "closed" })
 		}
 

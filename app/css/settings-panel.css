@@ -1,6 +1,17 @@
 /* /code-pwa/css/settings-panel.css */
 
 /* Base container for settings panels */
+ui-settings-panel {
+    position: absolute;
+    top: var(--tabHeight);
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: var(--bg-primary);
+    z-index: 2;
+    box-sizing: border-box;
+}
+
 .settings-panel,
 .settings-panel-container {
     display: none; /* Hidden by default */
@@ -10,6 +21,11 @@
     overflow-y: auto;
     /*background: linear-gradient(to bottom, color-mix(in srgb, var(--bg-secondary) 50%, var(--bg-primary)), var(--bg-primary) 300px);*/
     background: linear-gradient(90deg, var(--theme) 31%, var(--theme-dark) 31%);
+}
+
+.settings-panel.active,
+.settings-panel-container.active {
+    display: flex;
 }
 
 /* A single setting row */

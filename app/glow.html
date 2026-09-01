@@ -1,0 +1,303 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Undulating Glow R&D</title>
+    <style>
+        :root {
+            --theme: #0089cd;
+            --theme-light: #26a8ed;
+            --bg-primary: #1e1e2e;
+            --borderRadius: 16px;
+        }
+
+        body {
+            margin: 0;
+            padding: 0;
+            background-color: var(--bg-primary);
+            font-family: sans-serif;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            color: #fff;
+        }
+
+        .chat-window-mockup {
+            width: 450px;
+            height: 600px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: var(--borderRadius);
+            background-color: rgba(255, 255, 255, 0.03);
+            position: relative;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+        }
+
+        .chat-content {
+            flex: 1;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            justify-content: flex-end;
+            z-index: 10;
+            transition: padding-bottom 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+
+        .chat-content.glow-active {
+            padding-bottom: 68px; /* 20px default + 48px extra padding */
+        }
+
+        .chat-bubble {
+            background-color: rgba(255, 255, 255, 0.08);
+            padding: 12px 16px;
+            border-radius: 12px;
+            margin-bottom: 15px;
+            max-width: 80%;
+            align-self: flex-start;
+        }
+
+        .controls {
+            padding: 20px;
+            background-color: rgba(0, 0, 0, 0.2);
+            display: flex;
+            gap: 10px;
+            z-index: 10;
+        }
+
+        button {
+            padding: 8px 16px;
+            background-color: var(--theme);
+            border: none;
+            color: white;
+            border-radius: 4px;
+            cursor: pointer;
+            font-weight: bold;
+        }
+
+        button:hover {
+            filter: brightness(1.1);
+        }
+
+        /* --- Undulating Glow Implementation --- */
+        .undulating-glow-container {
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            width: 100%;
+            height: 180px; /* Taller panel to prevent clipping and hard edges */
+            pointer-events: none;
+            overflow: hidden;
+            opacity: 0;
+            transition: opacity 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+            z-index: 1;
+        }
+
+        .undulating-glow-container.active {
+            opacity: 1;
+        }
+
+        /* Ambient background glow */
+        .undulating-glow-canvas {
+            position: absolute;
+            bottom: -20px;
+            left: 5%;
+            right: 5%;
+            height: 50px; /* Shorter canvas for faster falloff */
+            background: radial-gradient(ellipse at bottom, var(--theme) 0%, transparent 55%);
+            opacity: 0.4;
+            filter: blur(15px);
+            animation: pulse-ambient 2s ease-in-out infinite alternate; /* Faster ambient pulsing */
+        }
+
+        /* Morphing Glowing Blobs */
+        .glow-blob {
+            position: absolute;
+            top: 135px; /* Anchor top to grow downwards */
+            aspect-ratio: 2 / 1; /* Maintain proportion relative to width */
+            border-radius: 50%;
+            filter: blur(25px); /* Tighter blur radius */
+            mix-blend-mode: screen;
+            opacity: 0.5;
+            transform-origin: top center; /* Anchor top-center so scaling/rotation centers here */
+        }
+
+        .glow-blob-1 {
+            left: -10%;
+            width: 28%; /* Width as a percentage of the container */
+            background: var(--theme);
+            animation: morph-1 2.5s ease-in-out infinite alternate, float-1 2.0s ease-in-out infinite alternate;
+        }
+
+        .glow-blob-2 {
+            left: 3%;
+            width: 32%;
+            background: color-mix(in srgb, var(--theme) 75%, #00f2fe); /* Teal variation */
+            animation: morph-2 2.8s ease-in-out infinite alternate, float-2 2.2s ease-in-out infinite alternate;
+        }
+
+        .glow-blob-3 {
+            left: 16%;
+            width: 22%;
+            background: color-mix(in srgb, var(--theme) 60%, #a855f7); /* Purple variation */
+            animation: morph-3 2.2s ease-in-out infinite alternate, float-3 1.8s ease-in-out infinite alternate;
+            opacity: 0.45;
+        }
+
+        .glow-blob-4 {
+            left: 29%;
+            width: 26%;
+            background: color-mix(in srgb, var(--theme) 80%, white); /* Brighter highlight */
+            animation: morph-1 2.7s ease-in-out infinite alternate, float-4 2.1s ease-in-out infinite alternate;
+        }
+
+        .glow-blob-5 {
+            left: 42%;
+            width: 30%;
+            background: color-mix(in srgb, var(--theme) 70%, #3b82f6); /* Deep blue variation */
+            animation: morph-2 2.4s ease-in-out infinite alternate, float-5 1.9s ease-in-out infinite alternate;
+        }
+
+        .glow-blob-6 {
+            left: 55%;
+            width: 28%;
+            background: color-mix(in srgb, var(--theme) 50%, #ec4899); /* Magenta variation */
+            animation: morph-3 2.9s ease-in-out infinite alternate, float-6 2.3s ease-in-out infinite alternate;
+        }
+
+        .glow-blob-7 {
+            left: 68%;
+            width: 25%;
+            background: color-mix(in srgb, var(--theme) 85%, #00f2fe); /* Cyan-teal variation */
+            animation: morph-1 2.6s ease-in-out infinite alternate, float-7 2.0s ease-in-out infinite alternate;
+        }
+
+        .glow-blob-8 {
+            left: 80%;
+            width: 29%;
+            background: color-mix(in srgb, var(--theme) 40%, #d946ef); /* Fuchsia/Magenta variation */
+            animation: morph-2 2.3s ease-in-out infinite alternate, float-8 1.7s ease-in-out infinite alternate;
+        }
+
+        /* Morph animations changing border-radius to create organic shapes */
+        @keyframes morph-1 {
+            0% { border-radius: 40% 60% 50% 50% / 40% 40% 60% 60%; }
+            50% { border-radius: 60% 40% 60% 40% / 50% 60% 40% 50%; }
+            100% { border-radius: 50% 50% 40% 60% / 40% 50% 60% 40%; }
+        }
+
+        @keyframes morph-2 {
+            0% { border-radius: 50% 40% 60% 50% / 50% 50% 40% 60%; }
+            50% { border-radius: 40% 60% 40% 60% / 60% 40% 60% 40%; }
+            100% { border-radius: 60% 50% 50% 40% / 50% 60% 40% 50%; }
+        }
+
+        @keyframes morph-3 {
+            0% { border-radius: 60% 40% 50% 60% / 40% 60% 40% 60%; }
+            100% { border-radius: 40% 60% 60% 40% / 60% 40% 60% 40%; }
+        }
+
+        /* Translate/undulate animations with wide rotation oscillations (-45deg to 45deg) */
+        @keyframes float-1 {
+            0% { transform: translateY(0) scale(1) rotate(-15deg); }
+            50% { transform: translateY(-10px) scale(1.15) rotate(40deg); }
+            100% { transform: translateY(-4px) scale(0.9) rotate(-35deg); }
+        }
+
+        @keyframes float-2 {
+            0% { transform: translateY(-4px) scale(0.9) rotate(-40deg); }
+            50% { transform: translateY(-12px) scale(1.2) rotate(45deg); }
+            100% { transform: translateY(0) scale(1) rotate(-10deg); }
+        }
+
+        @keyframes float-3 {
+            0% { transform: translateY(-8px) translateX(-5px) scale(0.95) rotate(35deg); }
+            50% { transform: translateY(-2px) translateX(5px) scale(1.1) rotate(-35deg); }
+            100% { transform: translateY(-8px) translateX(-5px) scale(0.95) rotate(35deg); }
+        }
+
+        @keyframes float-4 {
+            0% { transform: translateY(-2px) scale(0.95) rotate(45deg); }
+            50% { transform: translateY(-12px) scale(1.15) rotate(-45deg); }
+            100% { transform: translateY(0) scale(1) rotate(45deg); }
+        }
+
+        @keyframes float-5 {
+            0% { transform: translateY(-10px) scale(1.1) rotate(-30deg); }
+            50% { transform: translateY(-2px) scale(0.9) rotate(35deg); }
+            100% { transform: translateY(-10px) scale(1.1) rotate(-30deg); }
+        }
+
+        @keyframes float-6 {
+            0% { transform: translateY(0) scale(1) rotate(-45deg); }
+            50% { transform: translateY(-11px) scale(1.2) rotate(40deg); }
+            100% { transform: translateY(-4px) scale(0.95) rotate(-15deg); }
+        }
+
+        @keyframes float-7 {
+            0% { transform: translateY(-3px) scale(0.9) rotate(25deg); }
+            50% { transform: translateY(-12px) scale(1.15) rotate(-40deg); }
+            100% { transform: translateY(0) scale(1) rotate(15deg); }
+        }
+
+        @keyframes float-8 {
+            0% { transform: translateY(-9px) translateX(-8px) scale(1.05) rotate(-35deg); }
+            50% { transform: translateY(-1px) translateX(8px) scale(0.9) rotate(35deg); }
+            100% { transform: translateY(-9px) translateX(-8px) scale(1.05) rotate(-35deg); }
+        }
+
+        @keyframes pulse-ambient {
+            0% { opacity: 0.3; transform: scale(0.97); }
+            100% { opacity: 0.5; transform: scale(1.03); }
+        }
+    </style>
+</head>
+<body>
+    <div style="display: flex; flex-direction: column; align-items: center; gap: 20px;">
+        <div class="chat-window-mockup">
+            <div class="chat-content">
+                <div class="chat-bubble">Awaiting response from AI...</div>
+            </div>
+            
+            <!-- Undulating Glow Container -->
+            <div class="undulating-glow-container" id="glow-container">
+                <div class="undulating-glow-canvas"></div>
+                <div class="glow-blob glow-blob-1"></div>
+                <div class="glow-blob glow-blob-2"></div>
+                <div class="glow-blob glow-blob-3"></div>
+                <div class="glow-blob glow-blob-4"></div>
+                <div class="glow-blob glow-blob-5"></div>
+                <div class="glow-blob glow-blob-6"></div>
+                <div class="glow-blob glow-blob-7"></div>
+                <div class="glow-blob glow-blob-8"></div>
+            </div>
+
+            <div class="controls">
+                <button onclick="toggleGlow(true)">Start Loading</button>
+                <button onclick="toggleGlow(false)" style="background-color: #f44336;">Receive Token</button>
+            </div>
+        </div>
+        <div>
+            <h3>Organic Undulating Glow Animation</h3>
+            <p>Uses layered morphing CSS radial-gradients and hardware-accelerated morphing SVG-like blobs.</p>
+        </div>
+    </div>
+
+    <script>
+        function toggleGlow(show) {
+            const glow = document.getElementById('glow-container');
+            const content = document.querySelector('.chat-content');
+            if (show) {
+                glow.classList.add('active');
+                content.classList.add('glow-active');
+            } else {
+                glow.classList.remove('active');
+                content.classList.remove('glow-active');
+            }
+        }
+    </script>
+</body>
+</html>

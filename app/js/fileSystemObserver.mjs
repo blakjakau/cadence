@@ -36,3 +36,12 @@ export const unobserveFile = (path) => {
         observers.delete(path);
     }
 };
+
+conduitClient.on('connect', () => {
+    for (const path of observers.keys()) {
+        conduitClient.wsWatch(path).catch(error => {
+            console.error(`Error re-registering watch for file ${path}:`, error);
+        });
+    }
+});
+

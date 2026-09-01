@@ -61,15 +61,11 @@ func runCadenceServer(block bool) {
 
 	mux := createServerMux()
 
-	if serveFlag != "" {
-		port = "3023"
-	}
-
 	log.Printf("File API Root: %s", fileAPIRoot)
 	log.Printf("Cadence v%s - listening for WS connections (localhost:%s)", version, port)
 	log.Println("------------------------------------------------------------")
 
-	if browserFlag {
+	if browserFlag && !headlessFlag {
 		go func() {
 			time.Sleep(500 * time.Millisecond)
 			openBrowser("http://localhost:" + port + "/")
@@ -77,16 +73,21 @@ func runCadenceServer(block bool) {
 	}
 
 	if block {
-		err := http.ListenAndServe(":"+port, activityMiddleware(corsMiddleware(mux)))
+		err := startServer(":"+port, activityMiddleware(corsMiddleware(mux)))
 		if err != nil {
-			log.Fatal("ListenAndServe: ", err)
+			if browserFlag {
+				log.Printf("Server likely already running (%v). Opening browser and exiting.", err)
+				openBrowser("http://localhost:" + port + "/")
+				os.Exit(0)
+			}
+			log.Fatal("startServer: ", err)
 		}
 	} else {
 		// Start background server (needed for WebSockets in Native mode)
 		go func() {
-			err := http.ListenAndServe(":"+port, activityMiddleware(corsMiddleware(mux)))
+			err := startServer(":"+port, activityMiddleware(corsMiddleware(mux)))
 			if err != nil {
-				log.Println("ListenAndServe (async) Error: ", err)
+				log.Println("startServer (async) Error: ", err)
 			}
 		}()
 	}
@@ -98,8 +99,12 @@ func createServerMux() *http.ServeMux {
 	mux.HandleFunc("/up", upcheckHandler)
 	mux.HandleFunc("/files", filesApiHandler)
 	mux.HandleFunc("/api/config", appConfigHandler)
+	mux.HandleFunc("/api/check-syntax", checkSyntaxHandler)
 	mux.HandleFunc("/api/workspace", workspaceHandler)
 	mux.HandleFunc("/api/session", sessionHandler)
+	mux.HandleFunc("/api/sessions", sessionsHandler)
+	mux.HandleFunc("/api/restart", restartHandler)
+	mux.HandleFunc("/api/stop", stopHandler)
 	mux.HandleFunc("/kill", installationHandler(killHandler))
 	mux.HandleFunc("/install-service", installationHandler(InstallService))
 	mux.HandleFunc("/uninstall", installationHandler(Uninstall))
@@ -132,11 +137,17 @@ func createServerMux() *http.ServeMux {
 		log.Printf("Serving live frontend from: %s", serveFlag)
 		mux.Handle("/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			http.SetCookie(w, &http.Cookie{Name: "cadence_dev", Value: "true", Path: "/"})
+			w.Header().Set("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate")
+			w.Header().Set("Pragma", "no-cache")
+			w.Header().Set("Expires", "0")
 			http.FileServer(http.Dir(serveFlag)).ServeHTTP(w, r)
 		}))
 	} else {
 		mux.Handle("/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			http.SetCookie(w, &http.Cookie{Name: "cadence_dev", Value: "false", Path: "/", MaxAge: -1})
+			w.Header().Set("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate")
+			w.Header().Set("Pragma", "no-cache")
+			w.Header().Set("Expires", "0")
 			http.FileServer(http.FS(getAppFS())).ServeHTTP(w, r)
 		}))
 	}
@@ -155,7 +166,12 @@ func parseFlags() {
 	flag.BoolVar(&browserFlag, "browser", false, "Open in the default browser instead of a native window.")
 	flag.BoolVar(&webviewFlag, "webview", false, "Open using the lightweight webview_go renderer instead of Wails.")
 	flag.BoolVar(&wailsFlag, "wails", false, "Force opening using the Wails rendering engine (if compiled).")
+	flag.BoolVar(&headlessFlag, "headless", false, "Run in headless mode (no UI or browser launch).")
 	flag.Parse()
+
+	if serveFlag != "" {
+		port = "3023"
+	}
 
 	if keyFlag {
 		manageAPIKey(keyFlag)
@@ -206,6 +222,7 @@ var serveFlag string
 var browserFlag bool
 var webviewFlag bool
 var wailsFlag bool
+var headlessFlag bool
 var RendererMode string = "unknown"
 var keyFlag bool
 var installUserFlag bool
@@ -297,6 +314,131 @@ func killHandler() (string, error) {
 	log.Println("Received /kill request. Shutting down application.")
 	go func() { time.Sleep(100 * time.Millisecond); os.Exit(0) }()
 	return "Cadence server is shutting down.", nil
+}
+
+var mainServer *http.Server
+
+func startServer(addr string, handler http.Handler) error {
+	var listener net.Listener
+	var err error
+
+	for i := 0; i < 30; i++ { // Try for up to 3 seconds
+		listener, err = net.Listen("tcp", addr)
+		if err == nil {
+			activeListener = listener
+			break
+		}
+		log.Printf("Port %s is busy, retrying in 100ms... (%d/30)", addr, i+1)
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	if err != nil {
+		return err
+	}
+
+	mainServer = &http.Server{
+		Addr:    addr,
+		Handler: handler,
+	}
+
+	return mainServer.Serve(listener)
+}
+
+func restartHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	log.Println("Received /api/restart request. Preparing to restart server...")
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte(`{"status":"restarting"}`))
+
+	go func() {
+		time.Sleep(250 * time.Millisecond)
+		restartProcess()
+	}()
+}
+
+func stopHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	log.Println("Received /api/stop request. Shutting down server...")
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte(`{"status":"stopping"}`))
+
+	go func() {
+		time.Sleep(250 * time.Millisecond)
+		log.Println("Exiting process.")
+		os.Exit(0)
+	}()
+}
+
+var activeListener net.Listener
+
+func restartProcess() {
+	log.Println("Relaunching process...")
+
+	if activeListener != nil {
+		activeListener.Close()
+	}
+	if mainServer != nil {
+		mainServer.Close()
+	}
+
+	argv0, err := exec.LookPath(os.Args[0])
+	if err != nil {
+		log.Printf("Failed to find path of executable: %v", err)
+		os.Exit(1)
+	}
+
+	// Filter out browser/webview/wails flags and force --headless flag
+	var args []string
+	for _, arg := range os.Args[1:] {
+		if arg == "--browser" || arg == "-browser" ||
+			arg == "--webview" || arg == "-webview" ||
+			arg == "--wails" || arg == "-wails" ||
+			arg == "--headless" || arg == "-headless" {
+			continue
+		}
+		args = append(args, arg)
+	}
+	args = append(args, "--headless")
+
+	var cmd *exec.Cmd
+	if strings.Contains(argv0, "go-build") || strings.Contains(argv0, "/tmp/") {
+		goBin, err := exec.LookPath("go")
+		wd, wdErr := os.Getwd()
+		if err == nil && wdErr == nil {
+			log.Println("Detected 'go run' execution. Relaunching via 'go run .'")
+			runArgs := append([]string{"run", "."}, args...)
+			cmd = exec.Command(goBin, runArgs...)
+			cmd.Dir = wd
+		}
+	}
+
+	if cmd == nil {
+		cmd = exec.Command(argv0, args...)
+	}
+
+	configureCmdForRestart(cmd)
+	cmd.Env = os.Environ()
+
+	err = cmd.Start()
+	if err != nil {
+		log.Printf("Failed to start child process: %v", err)
+		os.Exit(1)
+	}
+
+	log.Printf("Child process started with PID %d, exiting current process.", cmd.Process.Pid)
+	os.Exit(0)
 }
 
 func openBrowser(url string) {

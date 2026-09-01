@@ -7,22 +7,14 @@ import { TabItem } from "./elements/tabitem.mjs";
 import { Modal } from './elements/modal.mjs'; // Import Modal
 
 // The URL for the backend WebSocket server
-const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-const wsHost = (window.runtime) ? 'localhost:3022' : (window.location.host || 'localhost:3022');
-const baseUrl = (window.runtime) ? 'http://localhost:3022' : (window.location.origin || 'http://localhost:3022');
-
-const TERMINAL_WEBSOCKET_URL = `${wsProtocol}//${wsHost}/terminal`;
 const CONDUIT_RELEASE_TAG = "v0.0.11";
-const CONDUIT_DOWNLOAD_PATH = `https://github.com/blakjakau/dev.jakbox.conduit/releases/download/${CONDUIT_RELEASE_TAG}`
-const CONDUIT_UP_URL = `${baseUrl}/up`;
-const CONDUIT_INSTALL_URL = `${baseUrl}/install-user`;
-const CONDUIT_UNINSTALL_URL = `${baseUrl}/uninstall`;
-const CONDUIT_KILL_URL = `${baseUrl}/kill`;
+const CONDUIT_DOWNLOAD_PATH = `https://github.com/blakjakau/dev.jakbox.conduit/releases/download/${CONDUIT_RELEASE_TAG}`;
 const CONDUIT_PROTOCOL_URL = 'conduit://';
 
 class TerminalManager {
 	constructor() {
 		this._initialized = false;
+		this.port = (window.runtime) ? 3022 : (window.location.port || 3022);
 		this.settingsPanel = null;
 		this.settingsButton = null;
 		this.conduitStatus = { isRunning: false, isInstalled: false, version: 'N/A', mode: 'unknown' };
@@ -41,6 +33,39 @@ class TerminalManager {
 		this._nextSessionId = 1; // Simple counter for session IDs
 
 		this.panel = null; // Reference to the SidebarPanel that hosts this manager's UI
+	}
+
+	setPort(port) {
+		this.port = parseInt(port) || this.port;
+	}
+
+	get wsHost() {
+		return (window.runtime) ? `localhost:${this.port}` : (window.location.host || `localhost:${this.port}`);
+	}
+
+	get baseUrl() {
+		return (window.runtime) ? `http://localhost:${this.port}` : (window.location.origin || `http://localhost:${this.port}`);
+	}
+
+	get wsUrl() {
+		const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+		return `${wsProtocol}//${this.wsHost}/terminal`;
+	}
+
+	get conduitUpUrl() {
+		return `${this.baseUrl}/up`;
+	}
+
+	get conduitInstallUrl() {
+		return `${this.baseUrl}/install-user`;
+	}
+
+	get conduitUninstallUrl() {
+		return `${this.baseUrl}/uninstall`;
+	}
+
+	get conduitKillUrl() {
+		return `${this.baseUrl}/kill`;
 	}
 
     /**
@@ -86,10 +111,8 @@ class TerminalManager {
 		this._emptyStateElement = this._createEmptyStateElement();
 		this.terminalContainersWrapper.append(this._loadingStateElement, this._emptyStateElement);
 
-		this.settingsPanel = this._createSettingsPanel();
-
 		// Append UI elements. The containing panel should use flexbox to manage layout.
-		this.panel.append(this.terminalContainersWrapper, this.settingsPanel, this.sessionTabBar);
+		this.panel.append(this.terminalContainersWrapper, this.sessionTabBar);
 
 		// ResizeObserver to fit the *active* terminal when its container (this panel) resizes
 		const resizeObserver = new ResizeObserver(() => this.fit());
@@ -140,6 +163,24 @@ class TerminalManager {
 		// Open the terminal in the provided container
 		term.open(containerElement);
 
+		// // Handle CTRL+1 through CTRL+9 tab switching
+		// term.attachCustomKeyEventHandler((event) => {
+		// 	if (event.type === "keydown") {
+		// 		const isCtrl = event.ctrlKey || event.metaKey;
+		// 		if (isCtrl && event.key >= "1" && event.key <= "9") {
+		// 			const index = parseInt(event.key) - 1;
+		// 			const tab = this.sessionTabBar.tabs[index];
+		// 			if (tab) {
+		// 				event.preventDefault();
+		// 				event.stopPropagation();
+		// 				tab.click();
+		// 			}
+		// 			return false;
+		// 		}
+		// 	}
+		// 	return true;
+		// });
+
 		return { term, fitAddon };
 	}
 
@@ -150,22 +191,55 @@ class TerminalManager {
 	 * @returns {WebSocket} The established WebSocket instance.
 	 */
 	_connectWebSocket(sessionId, term) {
-		let url = TERMINAL_WEBSOCKET_URL + `?sessionId=${sessionId}`;
+		let url = this.wsUrl + `?sessionId=${sessionId}`;
 		if (this.config.prompt) url += `&prompt=${encodeURIComponent(this.config.prompt)}`;
 		
 		let dir = "";
-		if (this.config.defaultDir === "home") {
-			// Backend defaults to home if empty
-		} else if (this.config.defaultDir === "current") {
-			const currentFile = window.ui && window.ui.currentFile;
-			if (currentFile && currentFile.path) {
-				const parts = currentFile.path.split("/");
-				parts.pop(); // Remove filename
-				dir = parts.join("/");
+		
+		const activeEl = document.activeElement;
+		const isTerminalFocused = activeEl && (activeEl.closest?.(".terminal-instance-container") || activeEl.closest?.(".terminal-panel-container"));
+
+		// 1. If terminal currently has focus (e.g. CTRL+N from terminal), prioritize current terminal's CWD
+		if (isTerminalFocused && this._activeSessionId) {
+			const activeSession = this._sessions.get(this._activeSessionId);
+			if (activeSession && activeSession.cwd) {
+				dir = activeSession.cwd;
 			}
-		} else if (this.config.defaultDir === "restore") {
-			dir = localStorage.getItem('terminalLastDir') || "";
 		}
+
+		// 2. Directory of the currently active/focused code editor tab
+		if (!dir) {
+			const activeTab = window.ui?.currentTabs?.activeTab || window.ui?.leftTabs?.activeTab || window.ui?.rightTabs?.activeTab;
+			if (activeTab?.config) {
+				const config = activeTab.config;
+				const filePath = config.handle?.path || config.fileItem?.path || config.path || (typeof config.folder === 'string' ? config.folder : null);
+				if (filePath && typeof filePath === 'string') {
+					const normalized = filePath.replace(/\\/g, '/');
+					if (config.isDir || config.handle?.isDir) {
+						dir = normalized;
+					} else {
+						const parts = normalized.split('/');
+						parts.pop();
+						dir = parts.join('/');
+					}
+				}
+			}
+		}
+
+		// 3. Fallback: CWD of the current active terminal window
+		if (!dir && this._activeSessionId) {
+			const activeSession = this._sessions.get(this._activeSessionId);
+			if (activeSession && activeSession.cwd) {
+				dir = activeSession.cwd;
+			}
+		}
+
+		// 4. Fallback: First root folder of the current project workspace
+		if (!dir) {
+			const rawFolder = window.workspace?.folders?.[0];
+			dir = typeof rawFolder === 'string' ? rawFolder : (rawFolder?.path || rawFolder?.name || "");
+		}
+
 		if (dir) url += `&dir=${encodeURIComponent(dir)}`;
 
 		const ws = new WebSocket(url);
@@ -229,7 +303,7 @@ class TerminalManager {
 		};
 		ws.onerror = (error) => {
 			console.error(`WebSocket Error for session ${sessionId}:`, error);
-			term.writeln(`\r\n\n[Connection Error for session ${sessionId}: Could not connect to terminal server or connection lost.]\r\n[Please ensure the Cadence backend server is running and accessible at ${TERMINAL_WEBSOCKET_URL}]\r\n`);
+			term.writeln(`\r\n\n[Connection Error for session ${sessionId}: Could not connect to terminal server or connection lost.]\r\n[Please ensure the Cadence backend server is running and accessible at ${this.wsUrl}]\r\n`);
 			const session = this._sessions.get(sessionId);
 			if (session && session.ws === ws) {
 				this.deleteTerminalSession(sessionId, session.tabItem);
@@ -354,6 +428,7 @@ class TerminalManager {
 			newSession.containerElement.style.display = "block";
 			this._activeSessionId = sessionId; // Update internal active session ID
 			this.fit(); // Fit the newly visible terminal (before focusing)
+			newSession.term.focus(); // Focus the newly active terminal
 		} else {
 			console.warn(`Attempted to switch to non-existent session: ${sessionId}`);
 			this._activeSessionId = null; // Clear active session if not found
@@ -384,9 +459,9 @@ class TerminalManager {
 				// We just need to clear the old one here.
 				this._activeSessionId = null;
 			}
-			// If this was the last session, show the empty state message
+			// If this was the last session, automatically open a new one
 			if (this._sessions.size === 0 && this.conduitStatus.isRunning) {
-				this._emptyStateElement.style.display = 'flex';
+				this.createNewTerminalSession();
 			}
 			
 		} else {
@@ -444,7 +519,6 @@ class TerminalManager {
 	 * This method is intended to be called when the terminal sidebar panel becomes active.
 	 */
 	async connect() {
-		this.settingsPanel.style.display = 'none';
 		this.terminalContainersWrapper.style.display = 'block'; // Show parent wrapper
 		this._sessions.forEach(session => session.containerElement.style.display = 'none'); // Hide instances
 		this.sessionTabBar.style.display = 'flex';
@@ -512,7 +586,7 @@ class TerminalManager {
 				if (this.panel.offsetParent && this.conduitStatus.isRunning) {
 					try {
 						// Use a short timeout to prevent hanging requests
-						await fetch(CONDUIT_UP_URL, { signal: AbortSignal.timeout(500) });
+						await fetch(this.conduitUpUrl, { signal: AbortSignal.timeout(500) });
 						console.debug('Conduit keep-alive ping sent.');
 					} catch (e) {
 						console.debug('Keep-alive ping failed, conduit might be down.');
@@ -532,7 +606,7 @@ class TerminalManager {
 		const controller = new AbortController();
 		const timeoutId = setTimeout(() => controller.abort(), 200); // Short timeout
 		try {
-			const response = await fetch(CONDUIT_UP_URL, { signal: controller.signal });
+			const response = await fetch(this.conduitUpUrl, { signal: controller.signal });
 			clearTimeout(timeoutId);
 
 			if (response.ok) { // Server is up, get authoritative status.
@@ -583,7 +657,7 @@ class TerminalManager {
 		const downloadContainer = this.setupGuideElement.querySelector('#conduit-download-section');
 		const actionsContainer = this.setupGuideElement?.querySelector('#conduit-actions-section');
 		try {
-			const response = await fetch(CONDUIT_INSTALL_URL);
+			const response = await fetch(this.conduitInstallUrl);
 			const outputText = await response.text();
 			
 			if (downloadContainer) { // Use the download container to show output
@@ -604,7 +678,7 @@ class TerminalManager {
 			this.config.autoLaunch = true;
 			this._saveSettings();
 			
-			try { await fetch(CONDUIT_KILL_URL); } catch (e) { /* Expected */ }
+			try { await fetch(this.conduitKillUrl); } catch (e) { /* Expected */ }
 			await this._launchConduitViaProtocol();
 			button.textContent = 'Waiting for restart...';
 			this._startPollingConduit(); // Polling will detect the new instance and call connect().
@@ -643,12 +717,12 @@ class TerminalManager {
 		}
 
 		try { // Use Modal.notice for alerts
-			const response = await fetch(CONDUIT_UNINSTALL_URL);
+			const response = await fetch(this.conduitUninstallUrl);
 			if (!response.ok) throw new Error(`Server responded with ${response.status}`);
 			
 			localStorage.removeItem('conduitInstalled'); // Clear client-side flag
 			this.conduitStatus.isInstalled = false; // Update local state immediately
-			try { await fetch(CONDUIT_KILL_URL); } catch(e) { /* Expected to fail if server is already gone */ }
+			try { await fetch(this.conduitKillUrl); } catch(e) { /* Expected to fail if server is already gone */ }
 			Modal.notice("Conduit has been uninstalled and all terminal sessions have been closed.", "Uninstalled");
 			this.toggleSettingsPanel(false);
 		} catch (error) {
@@ -756,19 +830,8 @@ class TerminalManager {
 		return el;
 	}
 	toggleSettingsPanel(forceState=undefined) {
-		const isHidden = this.settingsPanel.style.display === 'none';
-		if (isHidden && (forceState===true || forceState!==false)) {
-			// Show settings
-			this.terminalContainersWrapper.style.display = 'none';
-			this._renderSettingsPanel(); // Populate with fresh data
-			this.settingsPanel.style.display = 'flex';
-		} else {
-			// Hide settings
-			this.settingsPanel.style.display = 'none';
-			this.connect();
-			if (this._sessions.size > 0) {
-				this.fit();
-			}
+		if (window.ui && window.ui.openTerminalSettings) {
+			window.ui.openTerminalSettings();
 		}
 	}
 }

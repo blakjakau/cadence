@@ -1,0 +1,55 @@
+/* style_example.css */
+
+/* Top-level component container */
+.example-artifact-panel {
+    display: flex;
+    flex-direction: column;
+    padding: 16px;
+    background-color: var(--bg-card); /* Theme background colors */
+    border: 1px solid var(--border);
+    border-radius: var(--borderRadius);
+    gap: 16px;
+}
+
+/* Header section styling */
+.example-artifact-panel .panel-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding-bottom: 12px;
+    border-bottom: 1px solid var(--border);
+}
+
+.example-artifact-panel .panel-title {
+    font-size: var(--font-size-lg, 16px);
+    font-weight: 600;
+    color: var(--text-color);
+}
+
+/* Form and input sections */
+.example-artifact-panel .panel-form-container {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+/* Actions row styling */
+.example-artifact-panel .panel-actions-row {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    margin-top: 8px;
+}
+
+/* Custom interactive effects */
+.example-artifact-panel .theme-button {
+    transition: background-color 0.2s ease, transform 0.1s ease;
+}
+
+.example-artifact-panel .theme-button:hover {
+    background-color: var(--bg-hover);
+}
+
+.example-artifact-panel .theme-button:active {
+    transform: scale(0.98);
+}

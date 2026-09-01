@@ -1,4 +1,4 @@
-const APP_VERSION = "0.4.0"
+const APP_VERSION = "0.8.1"
 const CACHE_PRELOAD = "preload_resources"
 const CACHE_OFFLINE = "offline_access"
 
@@ -62,10 +62,10 @@ const staticAssets = [
 	"https://fonts.gstatic.com/s/materialicons/v107/flUhRq6tzZclQEJ-Vdg-IuiaDsNc.woff2",
 	"https://fonts.gstatic.com/s/roboto/v29/KFOmCnqEu92Fr1Mu4mxK.woff2",
 
-	"https://unpkg.com/prettier@2.4.1/esm/standalone.mjs",
-	"https://unpkg.com/prettier@2.4.1/esm/parser-babel.mjs",
-	"https://unpkg.com/prettier@2.4.1/esm/parser-html.mjs",
-	"https://unpkg.com/prettier@2.4.1/esm/parser-postcss.mjs",
+	"https://unpkg.com/prettier@2.8.8/esm/standalone.mjs",
+	"https://unpkg.com/prettier@2.8.8/esm/parser-babel.mjs",
+	"https://unpkg.com/prettier@2.8.8/esm/parser-html.mjs",
+	"https://unpkg.com/prettier@2.8.8/esm/parser-postcss.mjs",
 ]
 
 self.addEventListener("install", function (event) {

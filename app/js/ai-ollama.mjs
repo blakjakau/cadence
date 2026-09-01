@@ -15,10 +15,12 @@ const defaultModels = [
 class Ollama extends AI {
 	constructor() {
 		super();
+        this.providerId = 'ollama';
 		this.config = {
 			server: "http://localhost:11434",
 			model: null, // Initial model is null, not an empty string
-			system: ""
+			system: "",
+			maxTurns: 0
 		};
 		this.context = null; // For /api/generate context (Ollama's internal context)
         this.MAX_CONTEXT_TOKENS = 0; // This will be dynamically set by _queryModelCapability
@@ -33,13 +35,29 @@ class Ollama extends AI {
                 default: null, // Default for settings schema is null
                 enum: defaultModels, // Initial enum uses the object format
                 lookupCallback: this._getAvailableModels.bind(this) 
-            }
+            },
+            maxTurns: { type: "number", label: "Max Agent Turns (0 for unlimited)", default: 0 }
         };
 	}
 
     isConfigured() {
     	// Check for non-empty server AND non-null/non-empty model
     	return this.config.server !== "" && this.config.model !== null && this.config.model !== "";
+    }
+
+    get supportsJSONTools() {
+        if (this.serverSupportsTools !== undefined) {
+            return this.serverSupportsTools;
+        }
+        return true;
+    }
+
+    get supportsReasoning() {
+        if (this.serverSupportsReasoning !== undefined) {
+            return this.serverSupportsReasoning;
+        }
+        const model = (this.config.model || "").toLowerCase();
+        return model.includes('r1') || model.includes('reasoning') || model.includes('deepseek') || model.includes('think') || model.includes('ornith') || model.includes('qwen');
     }
 
 
@@ -109,6 +127,9 @@ class Ollama extends AI {
 		await this._checkApiVersion();
 	}
 
+	/**
+	 * Query the Ollama server for context length and capabilities of the configured model.
+	 */
 	async _queryModelCapability() {
         // If no model is selected/configured, we can't query its capability.
         // Set a default and indicate failure.
@@ -144,11 +165,33 @@ class Ollama extends AI {
 			}
             this._modelCaps = modelCaps; // Store it for other potential uses
 
+            // Dynamically detect reasoning and tool calling capabilities from model metadata and template
+            const capabilities = Array.isArray(modelCaps.capabilities) ? modelCaps.capabilities : [];
+            const template = (modelCaps.template || "").toLowerCase();
+            const families = Array.isArray(modelCaps.details?.families) ? modelCaps.details.families : [];
+            const family = (modelCaps.details?.family || "").toLowerCase();
+
+            const hasReasoningInTemplate = template.includes('<think>') 
+                || template.includes('thought') 
+                || template.includes('reasoning_content')
+                || template.includes('[think]');
+            const hasReasoningInCap = capabilities.includes('thinking') || capabilities.includes('reasoning');
+            const hasReasoningInFamily = families.some(f => f.includes('deepseek') || f.includes('qwen3')) || family.includes('deepseek');
+            this.serverSupportsReasoning = hasReasoningInTemplate || hasReasoningInCap || hasReasoningInFamily;
+
+            const hasToolsInTemplate = template.includes('.tools') 
+                || template.includes('tools') 
+                || template.includes('[tool_calls]') 
+                || template.includes('tool_call')
+                || template.includes('call:');
+            const hasToolsInCap = capabilities.includes('tools');
+            this.serverSupportsTools = hasToolsInTemplate || hasToolsInCap;
+
 			// Ollama context length is typically found in model_info
 			if (modelCaps?.details?.families?.[0] && modelCaps?.model_info) {
-				const family = modelCaps.details.families[0]; 
-				if (modelCaps.model_info[`${family}.context_length`]) {
-					this.MAX_CONTEXT_TOKENS = modelCaps.model_info[`${family}.context_length`];
+				const fam = modelCaps.details.families[0]; 
+				if (modelCaps.model_info[`${fam}.context_length`]) {
+					this.MAX_CONTEXT_TOKENS = modelCaps.model_info[`${fam}.context_length`];
 				} else {
                     this.MAX_CONTEXT_TOKENS = 8192; // Fallback to a default if context_length isn't explicitly found
                     console.warn(`Could not find context_length for model ${this.config.model}. Using default ${this.MAX_CONTEXT_TOKENS}.`);
@@ -158,7 +201,7 @@ class Ollama extends AI {
                  console.warn(`Unexpected model capability structure for ${this.config.model}. Using default ${this.MAX_CONTEXT_TOKENS}.`);
             }
 
-			console.debug("Model Capabilities:", modelCaps, `MAX_CONTEXT_TOKENS: ${this.MAX_CONTEXT_TOKENS}`);
+			console.debug("Model Capabilities:", modelCaps, `MAX_CONTEXT_TOKENS: ${this.MAX_CONTEXT_TOKENS}, supportsReasoning: ${this.serverSupportsReasoning}, supportsTools: ${this.serverSupportsTools}`);
             return true;
 		} catch (error) {
 			console.error("Error querying Ollama model capabilities:", error);
@@ -257,20 +300,24 @@ class Ollama extends AI {
 			const decoder = new TextDecoder();
 
 			let partialResponse = '', lastChunk, fullResponse = '';
+            const requestStartTime = Date.now();
 
 			while (true) {
 				const { done, value } = await reader.read();
 				if (done) {
                     let finalContextRatioPercent = null; 
 
-                    if (lastChunk?.eval_count !== undefined && lastChunk?.prompt_eval_count !== undefined && this.MAX_CONTEXT_TOKENS > 0) {
+                    if (lastChunk?.eval_count !== undefined && lastChunk?.prompt_eval_count !== undefined) {
                         const totalTokensUsedInThisRequest = lastChunk.eval_count + lastChunk.prompt_eval_count;
-                        this.contextUsed = Math.round((totalTokensUsedInThisRequest / this.MAX_CONTEXT_TOKENS) * 100);
-                        finalContextRatioPercent = this.contextUsed;
-
-                        if (onContextRatioUpdate) {
-                            onContextRatioUpdate(finalContextRatioPercent / 100); 
+                        if (this.MAX_CONTEXT_TOKENS > 0) {
+                            this.contextUsed = Math.round((totalTokensUsedInThisRequest / this.MAX_CONTEXT_TOKENS) * 100);
+                            finalContextRatioPercent = this.contextUsed;
+                            if (onContextRatioUpdate) {
+                                onContextRatioUpdate(finalContextRatioPercent / 100); 
+                            }
                         }
+                        const requestEndTime = Date.now();
+                        this.recordTelemetry(lastChunk.prompt_eval_count, lastChunk.eval_count, requestEndTime - requestStartTime, 0);
                     } else if (this.MAX_CONTEXT_TOKENS > 0) { 
                         this.contextUsed = 0; 
                         finalContextRatioPercent = 0; 
@@ -398,12 +445,16 @@ class Ollama extends AI {
             const reader = response.body.getReader();
             const decoder = new TextDecoder();
 
-            let partialResponse = '', fullResponse = '';
+            let partialResponse = '', lastChunk, fullResponse = '';
+            const requestStartTime = Date.now();
 
             while (true) {
                 const { done, value } = await reader.read();
                 if (done) {
-                    // Call onDone with the full response and null for context ratio
+                    if (lastChunk?.eval_count !== undefined && lastChunk?.prompt_eval_count !== undefined) {
+                        const requestEndTime = Date.now();
+                        this.recordTelemetry(lastChunk.prompt_eval_count, lastChunk.eval_count, requestEndTime - requestStartTime, 0);
+                    }
                     if (onDone) onDone(fullResponse, null); 
                     break;
                 }
@@ -417,6 +468,7 @@ class Ollama extends AI {
                     if (jsonObject) {
                         try {
                             const parsed = JSON.parse(jsonObject);
+                            lastChunk = parsed;
                             if (parsed.message?.content) {
                                 fullResponse += parsed.message.content;
                                 if (onUpdate) onUpdate(fullResponse);
