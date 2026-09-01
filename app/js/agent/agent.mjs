@@ -485,10 +485,12 @@ export class Agent {
 				if (sourceToolCalls && sourceToolCalls.length > 0) {
 					toolCalls = sourceToolCalls.map(tc => {
 						const callObj = tc.functionCall || tc;
+						const sig = tc.thoughtSignature || tc.thought_signature || callObj.thoughtSignature || callObj.thought_signature || lastModelMsg?.thoughtSignature || callbacks?.thoughtSignature;
 						return {
 							id: tc.id || `call_${crypto.randomUUID()}`,
 							name: callObj.name || tc.name,
-							arguments: callObj.args || callObj.arguments || {}
+							arguments: callObj.args || callObj.arguments || {},
+							...(sig ? { thoughtSignature: sig } : {})
 						};
 					});
 				} else {

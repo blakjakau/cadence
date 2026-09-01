@@ -2998,14 +2998,22 @@ class AIManagerHistory {
 					content: content
 				};
 				
+				const msgSig = msg.thoughtSignature || msg.thought_signature;
 				if (this.ai.supportsJSONTools && toolCalls && toolCalls.length > 0) {
-					contextItem.toolCalls = toolCalls;
+					contextItem.toolCalls = toolCalls.map(tc => {
+						const callObj = tc.functionCall || tc;
+						const sig = tc.thoughtSignature || tc.thought_signature || callObj.thoughtSignature || callObj.thought_signature || msgSig;
+						return {
+							...tc,
+							...(sig ? { thoughtSignature: sig } : {})
+						};
+					});
 				}
 				if (msg.thought) {
 					contextItem.thought = msg.thought;
 				}
-				if (msg.thoughtSignature) {
-					contextItem.thoughtSignature = msg.thoughtSignature;
+				if (msgSig) {
+					contextItem.thoughtSignature = msgSig;
 				}
 				
 				contextForAI.push(contextItem);

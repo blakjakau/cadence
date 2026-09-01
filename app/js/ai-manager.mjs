@@ -2388,11 +2388,17 @@ class AIManager {
 				this._stopGlow(targetSessionId);
 				// First, update the session data and add the delete button to the user's prompt.
 				const modelMessage = { id: modelMessageId, role: "model", type: "model", content: fullResponse, diffStatuses: [], timestamp: Date.now() };
-				if (callbacks.toolCalls && callbacks.toolCalls.length > 0) {
-					modelMessage.toolCalls = callbacks.toolCalls;
-				}
 				if (callbacks.thoughtSignature) {
 					modelMessage.thoughtSignature = callbacks.thoughtSignature;
+				}
+				if (callbacks.toolCalls && callbacks.toolCalls.length > 0) {
+					modelMessage.toolCalls = callbacks.toolCalls.map(tc => {
+						const sig = tc.thoughtSignature || tc.thought_signature || callbacks.thoughtSignature;
+						return {
+							...tc,
+							...(sig ? { thoughtSignature: sig } : {})
+						};
+					});
 				}
 				targetSession.messages.push(modelMessage);
 				if (this.isSessionViewed(targetSessionId)) {
@@ -3091,7 +3097,13 @@ ${contextText}`;
 			modelMessage.thoughtSignature = callbacks.thoughtSignature;
 		}
 		if (callbacks.toolCalls && callbacks.toolCalls.length > 0) {
-			modelMessage.toolCalls = callbacks.toolCalls;
+			modelMessage.toolCalls = callbacks.toolCalls.map(tc => {
+				const sig = tc.thoughtSignature || tc.thought_signature || callbacks.thoughtSignature;
+				return {
+					...tc,
+					...(sig ? { thoughtSignature: sig } : {})
+				};
+			});
 		}
 
 		const targetSession = sessionObj || this.activeSession;
@@ -3499,11 +3511,17 @@ ${contextText}`;
 			onDone: async (fullResponse) => {
 				this._stopGlow(this.activeSessionId);
 				const modelMessage = { id: modelMessageId, role: "model", type: "model", content: fullResponse, diffStatuses: [], timestamp: Date.now() };
-				if (callbacks.toolCalls && callbacks.toolCalls.length > 0) {
-					modelMessage.toolCalls = callbacks.toolCalls;
-				}
 				if (callbacks.thoughtSignature) {
 					modelMessage.thoughtSignature = callbacks.thoughtSignature;
+				}
+				if (callbacks.toolCalls && callbacks.toolCalls.length > 0) {
+					modelMessage.toolCalls = callbacks.toolCalls.map(tc => {
+						const sig = tc.thoughtSignature || tc.thought_signature || callbacks.thoughtSignature;
+						return {
+							...tc,
+							...(sig ? { thoughtSignature: sig } : {})
+						};
+					});
 				}
 				this.activeSession.messages.push(modelMessage);
 				this.historyManager.addInteractionToLastUserMessage(userMessage);

@@ -355,8 +355,9 @@ class Gemini extends AI {
                 if (msg.toolCalls) {
                     last.toolCalls = (last.toolCalls || []).concat(msg.toolCalls);
                 }
-                if (msg.thoughtSignature) {
-                    last.thoughtSignature = msg.thoughtSignature;
+                const sig = msg.thoughtSignature || msg.thought_signature;
+                if (sig) {
+                    last.thoughtSignature = sig;
                 }
             } else {
                 preprocessed.push({
@@ -369,13 +370,16 @@ class Gemini extends AI {
         const contents = [];
         for (const msg of preprocessed) {
             if (msg.role === 'user' || msg.role === 'model') {
-                if (msg.role === 'user' && msg.content.startsWith('[Tool Response: ')) {
+                const contentStr = typeof msg.content === 'string' ? msg.content : '';
+                const hasToolResponse = msg.role === 'user' && (msg.type === 'tool_response' || contentStr.includes('[Tool Response: '));
+                
+                if (hasToolResponse) {
                     const parts = [];
                     const regex = /\[Tool Response: ([^\]]+)\]\n\n/g;
                     let match;
                     const matches = [];
                     
-                    while ((match = regex.exec(msg.content)) !== null) {
+                    while ((match = regex.exec(contentStr)) !== null) {
                         matches.push({
                             toolName: match[1].split(' ')[0],
                             index: match.index,
@@ -383,24 +387,35 @@ class Gemini extends AI {
                         });
                     }
                     
-                    for (let i = 0; i < matches.length; i++) {
-                        const current = matches[i];
-                        const next = matches[i + 1];
-                        let sectionContent = next ? msg.content.substring(current.contentStart, next.index) : msg.content.substring(current.contentStart);
-                        
-                        sectionContent = sectionContent.replace(/\n\n---\n\n$/, '').trim();
-                        
-                        parts.push({
-                            functionResponse: {
-                                name: current.toolName,
-                                response: { result: sectionContent }
+                    if (matches.length > 0) {
+                        if (matches[0].index > 0) {
+                            const leadingText = contentStr.substring(0, matches[0].index).trim();
+                            if (leadingText) {
+                                parts.push({ text: leadingText });
                             }
-                        });
+                        }
+
+                        for (let i = 0; i < matches.length; i++) {
+                            const current = matches[i];
+                            const next = matches[i + 1];
+                            let sectionContent = next ? contentStr.substring(current.contentStart, next.index) : contentStr.substring(current.contentStart);
+                            
+                            sectionContent = sectionContent.replace(/\n\n---\n\n$/, '').trim();
+                            
+                            parts.push({
+                                functionResponse: {
+                                    name: current.toolName,
+                                    response: { result: sectionContent }
+                                }
+                            });
+                        }
+                    } else if (contentStr.trim()) {
+                        parts.push({ text: contentStr.trim() });
                     }
 
                     if (parts.length > 0) {
                         contents.push({
-                            role: 'function',
+                            role: 'user',
                             parts: parts
                         });
                         continue;
@@ -408,20 +423,52 @@ class Gemini extends AI {
                 }
                 
                 if (msg.role === 'model') {
-                    if (msg.toolCalls && msg.toolCalls.length > 0) {
+                    let toolCalls = msg.toolCalls;
+                    // Self-healing: if no toolCalls array but content has <tool_call
+                    if ((!toolCalls || toolCalls.length === 0) && contentStr.includes('<tool_call')) {
+                        const parsed = [];
+                        const toolCallRegex = /<tool_call\s+name=["']([^"']+)["']\s*>([\s\S]*?)<\/tool_call>/gi;
+                        let tcMatch;
+                        while ((tcMatch = toolCallRegex.exec(contentStr)) !== null) {
+                            const toolName = tcMatch[1];
+                            const toolArgsContent = tcMatch[2];
+                            let args = {};
+                            try {
+                                args = JSON.parse(toolArgsContent.trim());
+                            } catch (e) {
+                                const tagRegex = /<([a-zA-Z0-9_-]+)>([\s\S]*?)<\/\1>/g;
+                                let tagMatch;
+                                while ((tagMatch = tagRegex.exec(toolArgsContent)) !== null) {
+                                    args[tagMatch[1]] = tagMatch[2].trim();
+                                }
+                            }
+                            const sig = msg.thoughtSignature || msg.thought_signature;
+                            parsed.push({
+                                id: `call_${crypto.randomUUID()}`,
+                                name: toolName,
+                                args: args,
+                                ...(sig ? { thoughtSignature: sig } : {})
+                            });
+                        }
+                        if (parsed.length > 0) {
+                            toolCalls = parsed;
+                        }
+                    }
+
+                    if (toolCalls && toolCalls.length > 0) {
                         const parts = [];
                         
                         // Extract any leading text (e.g., thoughts) before the first tool call from the content
-                        let textPart = msg.content;
-                        const toolCallIdx = msg.content.indexOf('<tool_call');
+                        let textPart = contentStr;
+                        const toolCallIdx = contentStr.indexOf('<tool_call');
                         if (toolCallIdx !== -1) {
-                            textPart = msg.content.substring(0, toolCallIdx).trim();
+                            textPart = contentStr.substring(0, toolCallIdx).trim();
                         }
                         if (textPart) {
                             parts.push({ text: textPart });
                         }
 
-                        for (const rawCall of msg.toolCalls) {
+                        for (const rawCall of toolCalls) {
                             const callObj = rawCall.functionCall || rawCall;
                             let args = callObj.args || callObj.arguments || {};
                             if (typeof args === 'string') {
@@ -434,13 +481,12 @@ class Gemini extends AI {
                             }
                             const functionCallPart = {
                                 functionCall: {
-                                    name: callObj.name,
+                                    name: callObj.name || rawCall.name,
                                     args: args
                                 }
                             };
-                            if (rawCall.thoughtSignature) {
-                                functionCallPart.thoughtSignature = rawCall.thoughtSignature;
-                            }
+                            const sig = rawCall.thoughtSignature || rawCall.thought_signature || callObj.thoughtSignature || callObj.thought_signature || msg.thoughtSignature || msg.thought_signature;
+                            functionCallPart.thoughtSignature = sig || "skip_thought_signature_validator";
                             parts.push(functionCallPart);
                         }
 
@@ -452,9 +498,9 @@ class Gemini extends AI {
                     }
                 }
 
-                contents.push({ role: msg.role, parts: [{ text: msg.content }] });
+                contents.push({ role: msg.role, parts: [{ text: contentStr }] });
             } else if (msg.type === 'file_context') {
-                const fileContent = `--- File: ${msg.filename} ---\n\`\`\`${msg.language}\n${msg.content}\n\`\`\``;
+                const fileContent = `--- File: ${msg.filename || msg.id} ---\n\`\`\`${msg.language || ''}\n${msg.content}\n\`\`\``;
                 if (contents.length > 0 && contents[contents.length - 1].role === 'user') {
                     contents[contents.length - 1].parts.push({ text: fileContent });
                 } else {
@@ -582,8 +628,9 @@ class Gemini extends AI {
 
                             if (candidate.content && candidate.content.parts) {
                                 for (const part of candidate.content.parts) {
-                                    if (part.thoughtSignature) {
-                                        callbacks.thoughtSignature = part.thoughtSignature;
+                                    const partSig = part.thoughtSignature || part.thought_signature || candidate.thoughtSignature || candidate.thought_signature;
+                                    if (partSig) {
+                                        callbacks.thoughtSignature = partSig;
                                     }
                                     if (part.text || part.thought) {
                                         const partThought = !!part.thought;
@@ -621,16 +668,24 @@ class Gemini extends AI {
                                         }
 
                                         if (!callbacks.toolCalls) callbacks.toolCalls = [];
+                                        const callSig = part.thoughtSignature || part.thought_signature || part.functionCall.thoughtSignature || part.functionCall.thought_signature || callbacks.thoughtSignature;
                                         const rawCall = { 
                                             id: `call_${crypto.randomUUID()}`,
                                             name: part.functionCall.name,
                                             args: part.functionCall.args || {},
                                             functionCall: part.functionCall 
                                         };
-                                        if (part.thoughtSignature) {
-                                            rawCall.thoughtSignature = part.thoughtSignature;
+                                        if (callSig) {
+                                            rawCall.thoughtSignature = callSig;
                                         }
                                         callbacks.toolCalls.push(rawCall);
+                                    }
+                                }
+                                if (callbacks.thoughtSignature && callbacks.toolCalls) {
+                                    for (const tc of callbacks.toolCalls) {
+                                        if (!tc.thoughtSignature) {
+                                            tc.thoughtSignature = callbacks.thoughtSignature;
+                                        }
                                     }
                                 }
                                 callbacks.totalThinkingMs = totalThinkingMs;
