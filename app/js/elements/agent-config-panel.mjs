@@ -165,6 +165,7 @@ export class AgentConfigPanel extends Block {
 		createToggleRow("default-allow-sub-agents", "Default Allow Sub-Agents", "Start new sessions with sub-agents allowed automatically.", "defaultAllowSubAgents");
 		createToggleRow("default-allow-run-command", "Default Allow Terminal Commands", "Start new sessions with terminal command execution allowed automatically.", "defaultAllowRunCommand");
 		createToggleRow("default-auto-milestones", "Default Auto-Milestones on 'done'", "Automatically freeze a checkpoint milestone when the agent finishes a cycle in new sessions.", "defaultAutoMilestones");
+		createToggleRow("default-auto-rollback-on-failures", "Auto-Rollback on Edit Failures", "Automatically roll back a file when consecutive edits fail.", "defaultAutoRollbackOnFailures");
 
 		const createNumberInputRow = (id, title, desc, key, defaultValue) => {
 			const wrapper = document.createElement("div");
@@ -215,6 +216,7 @@ export class AgentConfigPanel extends Block {
 		};
 
 		createNumberInputRow("max-sub-agents", "Max Sub-Agents", "Maximum number of parallel sub-agents the main agent is permitted to spawn.", "maxSubAgents", "3");
+		createNumberInputRow("default-auto-rollback-threshold", "Auto-Rollback Failure Count", "Number of consecutive failed edits before rolling back the file (default 3).", "defaultAutoRollbackThreshold", "3");
 
 		this.container.appendChild(this.defaultsAccordion);
 	}

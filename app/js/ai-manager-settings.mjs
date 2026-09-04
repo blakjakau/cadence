@@ -79,6 +79,8 @@ class AIManagerSettings {
             defaultAllowSubAgents: aiManager.config.defaultAllowSubAgents ?? true,
             defaultAllowRunCommand: aiManager.config.defaultAllowRunCommand ?? true,
             defaultAutoMilestones: aiManager.config.defaultAutoMilestones ?? true,
+            defaultAutoRollbackOnFailures: aiManager.config.defaultAutoRollbackOnFailures ?? false,
+            defaultAutoRollbackThreshold: aiManager.config.defaultAutoRollbackThreshold ?? 3,
             systemPromptSpecialization: systemPromptConfig.specialization,
             systemPromptTechnologies: (systemPromptConfig.technologies || []).join(", "),
             systemPromptAvoidedTechnologies: (systemPromptConfig.avoidedTechnologies || []).join(", "),
@@ -99,6 +101,8 @@ class AIManagerSettings {
             { type: "checkbox", id: "defaultAllowSubAgents", label: "Default Allow Sub-Agents for New Chats" },
             { type: "checkbox", id: "defaultAllowRunCommand", label: "Default Allow Terminal Commands for New Chats" },
             { type: "checkbox", id: "defaultAutoMilestones", label: "Default Auto-Milestones on 'done' for New Chats" },
+            { type: "checkbox", id: "defaultAutoRollbackOnFailures", label: "Auto-Rollback on Repeated Edit Failures" },
+            { type: "number", id: "defaultAutoRollbackThreshold", label: "Auto-Rollback Edit Failure Threshold" },
             { type: "number", id: "contextPrefillMinPercentage", label: "Default Min Context Pre-fill Limit (%)" },
             { type: "number", id: "contextPrefillMaxPercentage", label: "Default Max Context Pre-fill Limit (%)" },
             { type: "number", id: "summarizeThreshold", label: "Summarize History When Context Reaches (%)" },
@@ -208,6 +212,8 @@ class AIManagerSettings {
         aiManager.config.defaultAllowSubAgents = !!values.defaultAllowSubAgents;
         aiManager.config.defaultAllowRunCommand = !!values.defaultAllowRunCommand;
         aiManager.config.defaultAutoMilestones = !!values.defaultAutoMilestones;
+        aiManager.config.defaultAutoRollbackOnFailures = !!values.defaultAutoRollbackOnFailures;
+        aiManager.config.defaultAutoRollbackThreshold = parseInt(values.defaultAutoRollbackThreshold) || 3;
         localStorage.setItem("summarizeThreshold", aiManager.config.summarizeThreshold);
         localStorage.setItem("summarizeTargetPercentage", aiManager.config.summarizeTargetPercentage);
         localStorage.setItem("contextPrefillMinPercentage", aiManager.config.contextPrefillMinPercentage);
@@ -217,6 +223,8 @@ class AIManagerSettings {
         localStorage.setItem("defaultAllowSubAgents", aiManager.config.defaultAllowSubAgents);
         localStorage.setItem("defaultAllowRunCommand", aiManager.config.defaultAllowRunCommand);
         localStorage.setItem("defaultAutoMilestones", aiManager.config.defaultAutoMilestones);
+        localStorage.setItem("defaultAutoRollbackOnFailures", aiManager.config.defaultAutoRollbackOnFailures);
+        localStorage.setItem("defaultAutoRollbackThreshold", aiManager.config.defaultAutoRollbackThreshold);
 
         // --- Save Forgiveness Mode ---
         aiManager.config.defaultForgivenessMode = !!values.forgivenessMode;

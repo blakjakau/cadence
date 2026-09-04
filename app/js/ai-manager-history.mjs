@@ -798,23 +798,32 @@ class AIManagerHistory {
 			
 			let pendingFullResponse = null;
 			let pendingToolCalls = null;
+			let pendingThought = null;
+			let pendingIsThinking = false;
 			let rafId = null;
 
-			const applyUpdate = (fullResponse, toolCalls = null) => {
-				if (fullResponse) {
+			const applyUpdate = (fullResponse, toolCalls = null, thought = null, isThinking = false) => {
+				if (fullResponse || thought) {
 					const prefillContainer = responseBlock.querySelector('.prefill-progress-container');
 					if (prefillContainer) {
 						prefillContainer.remove();
 					}
 				}
 				
-				const liveMsgObj = { id: messageId, toolCalls: toolCalls || [] };
+				const targetSession = this.manager.runningSessions.get(targetSessionId)?.instance?.session || (this.manager.activeSessionId === targetSessionId ? this.manager.activeSession : null);
+				const skipXml = this.manager.isKnownReasoningModel(targetSession);
+				const liveMsgObj = { 
+					id: messageId, 
+					toolCalls: toolCalls || [],
+					thought: thought || "",
+					isThinking: !!isThinking
+				};
 
 				// Update live summary
-				summarySpan.innerHTML = this.manager.messageRenderer.getModelTurnSummary(fullResponse, liveMsgObj);
+				summarySpan.innerHTML = this.manager.messageRenderer.getModelTurnSummary(fullResponse, liveMsgObj, skipXml);
 				tokensSpan.innerHTML = this.manager.messageRenderer.getModelTurnTokens(fullResponse, liveMsgObj);
 
-				const segments = this.manager.messageRenderer.segmentContent(fullResponse);
+				const segments = this.manager.messageRenderer.segmentContent(fullResponse, skipXml);
 				
 				if (!responseBlock.activeSegmentDiv) {
 					responseBlock.activeSegmentDiv = document.createElement("div");
@@ -829,8 +838,8 @@ class AIManagerHistory {
 					const wasUserClosed = existingExpander && existingExpander.dataset.userToggled === 'true' && !existingExpander.open;
 
 					// Finalized/earlier segments must not render the trailing tool calls of the active message
-					const finalizedMsgObj = { id: messageId, toolCalls: [] };
-					this.manager.messageRenderer.renderResponseSegment(responseBlock.activeSegmentDiv, finalizedText, finalizedMsgObj, true);
+					const finalizedMsgObj = { id: messageId, toolCalls: [], thought: thought || "", isThinking: false };
+					this.manager.messageRenderer.renderResponseSegment(responseBlock.activeSegmentDiv, finalizedText, finalizedMsgObj, true, skipXml);
 					// Attach code block buttons once the segment is closed/finalized
 					this.manager.messageRenderer.addCodeBlockButtons(responseBlock.activeSegmentDiv);
 					
@@ -852,7 +861,7 @@ class AIManagerHistory {
 				const existingExpander = responseBlock.activeSegmentDiv.querySelector('.tool-call-preview-expander');
 				const wasUserClosed = existingExpander && existingExpander.dataset.userToggled === 'true' && !existingExpander.open;
 
-				this.manager.messageRenderer.renderResponseSegment(responseBlock.activeSegmentDiv, activeText, liveMsgObj, true);
+				this.manager.messageRenderer.renderResponseSegment(responseBlock.activeSegmentDiv, activeText, liveMsgObj, true, skipXml);
 				// NOTE: Action buttons are delayed until this block is closed by new segments or generation finishes
 
 				if (wasUserClosed) {
@@ -868,21 +877,23 @@ class AIManagerHistory {
 				}
 			};
 
-			responseBlock.updateContent = (fullResponse, immediate = false, toolCalls = null) => {
+			responseBlock.updateContent = (fullResponse, immediate = false, toolCalls = null, thought = null, isThinking = false) => {
 				pendingFullResponse = fullResponse;
-				if (toolCalls) pendingToolCalls = toolCalls;
+				if (toolCalls !== null) pendingToolCalls = toolCalls;
+				if (thought !== null) pendingThought = thought;
+				pendingIsThinking = !!isThinking;
 				if (immediate) {
 					if (rafId) {
 						cancelAnimationFrame(rafId);
 						rafId = null;
 					}
-					applyUpdate(pendingFullResponse, pendingToolCalls);
+					applyUpdate(pendingFullResponse, pendingToolCalls, pendingThought, pendingIsThinking);
 					return;
 				}
 				if (!rafId) {
 					rafId = requestAnimationFrame(() => {
 						rafId = null;
-						applyUpdate(pendingFullResponse, pendingToolCalls);
+						applyUpdate(pendingFullResponse, pendingToolCalls, pendingThought, pendingIsThinking);
 					});
 				}
 			};
@@ -896,9 +907,12 @@ class AIManagerHistory {
 				if (running) running.responseBlock = null;
 				this._localActiveStreamingBlock = null;
 				
+				const targetSession = this.manager.runningSessions.get(targetSessionId)?.instance?.session || (this.manager.activeSessionId === targetSessionId ? this.manager.activeSession : null);
+				const skipXml = this.manager.isKnownReasoningModel(targetSession);
+
 				responseBlock.classList.remove("streaming");
-				summarySpan.innerHTML = this.manager.messageRenderer.getModelTurnSummary(fullResponse, finalizedMessage);
-				contentDiv.innerHTML = this.manager.messageRenderer.renderResponseContent(fullResponse, finalizedMessage, true);
+				summarySpan.innerHTML = this.manager.messageRenderer.getModelTurnSummary(fullResponse, finalizedMessage, skipXml);
+				contentDiv.innerHTML = this.manager.messageRenderer.renderResponseContent(fullResponse, finalizedMessage, true, skipXml);
 				// Attach code block buttons to the complete finalized message
 				this.manager.messageRenderer.addCodeBlockButtons(contentDiv, finalizedMessage);
 
@@ -1151,9 +1165,7 @@ class AIManagerHistory {
 										let cycleStartIdx = -1;
 										for (let i = msgIdx - 1; i >= 0; i--) {
 											const prevMsg = allMsgs[i];
-											if (prevMsg.type === "cycle_summary" || 
-												(prevMsg.type === "tool_response" && prevMsg.content && prevMsg.content.includes("[Tool Response: done]")) ||
-												(prevMsg.role === "model" && prevMsg.toolCalls && prevMsg.toolCalls.some(tc => (tc.functionCall?.name || tc.name) === "done"))) {
+											if (prevMsg.type === "cycle_summary" || this.isCycleBoundary(prevMsg, i, allMsgs)) {
 												cycleStartIdx = i + 1;
 												break;
 											}
@@ -2407,7 +2419,37 @@ class AIManagerHistory {
 	}
 
 	/**
-	 * Agent-mode auto-compaction: condenses the most recent COMPLETED task cycle (ended with a `done` tool call and not yet summarized) into one cycle_summary message — reusing exactly what the manual "Summarize Cycle" path in agent.mjs does, so UI rendering stays identical. No-op unless the target session is in agent mode AND has at least one completed-but-unsummarized boundary; returns true only if a new summary was actually inserted and persisted (idempotent — boundaries already carrying an adjacent cycle_summary are skipped).
+	 * Determines if a message is a cycle boundary marker.
+	 * Cycle boundaries include:
+	 * 1. Done boundary: model turn invoking done, or tool_response confirming done
+	 * 2. Accepted plan boundary: model turn with planStatus === "accepted", or tool_response for an accepted plan
+	 * Note: Rejected or unactioned plans remain normal history and are NOT cycle boundaries.
+	 */
+	isCycleBoundary(msg, idx = -1, allMsgs = null) {
+		if (!msg) return false;
+
+		// 1. Done boundary: tool_response confirming done, or model turn invoking done
+		if (msg.type === "tool_response" && msg.content?.includes("[Tool Response: done]")) return true;
+		const hasDoneCall = Array.isArray(msg.toolCalls) && msg.toolCalls.some(tc => (tc.functionCall?.name || tc.name) === "done");
+		if ((msg.role === "model" || msg.type === "model") && hasDoneCall) return true;
+
+		// 2. Accepted plan boundary:
+		// Only accepted plans are cycle boundaries. Rejected or unactioned plans remain normal history.
+		if ((msg.role === "model" || msg.type === "model") && msg.planStatus === "accepted") return true;
+
+		// Tool response immediately following an accepted plan model turn
+		if (msg.type === "tool_response" && allMsgs && idx > 0) {
+			const prev = allMsgs[idx - 1];
+			if ((prev?.role === "model" || prev?.type === "model") && prev?.planStatus === "accepted") {
+				return true;
+			}
+		}
+
+		return false;
+	}
+
+	/**
+	 * Agent-mode auto-compaction: condenses the most recent COMPLETED task cycle (ended with a `done` tool call, or an accepted implementation plan, and not yet summarized) into one cycle_summary message — reusing exactly what the manual "Summarize Cycle" path in agent.mjs does, so UI rendering stays identical. No-op unless the target session is in agent mode AND has at least one completed-but-unsummarized boundary; returns true only if a new summary was actually inserted and persisted (idempotent — boundaries already carrying an adjacent cycle_summary are skipped).
 	 */
 	async autoCompactAgentCycle(sessionObj = null) {
 		const targetSession = sessionObj || this.manager.activeSession;
@@ -2419,41 +2461,42 @@ class AIManagerHistory {
 		const messages = targetSession.messages;
 		if (messages.length < 2) return false;
 
-		const isDoneBoundary = (msg) => {
-			if (!msg || !msg.content && !(Array.isArray(msg.toolCalls))) return false;
-			if (msg.type === "tool_response" && msg.content?.includes("[Tool Response: done]")) return true; // Accumulated tool results confirming a `done` call.
-			const hasDoneCall = Array.isArray(msg.toolCalls) && msg.toolCalls.some(tc => (tc.functionCall?.name || tc.name) === "done");
-			if ((msg.role === "model" || msg.type === "model") && hasDoneCall) return true; // The model turn that invoked `done`.
-			return false;
-		};
-
 		const isToolResponse = (msg) => msg && msg.type === "tool_response"; // Operator precedence: must parenthesize the comparison itself, not just `!!` on a possibly-undefined value.
 
-
 		// Locate the latest completed cycle boundary not already summarized — mirrors agent.mjs' manual path exactly, including its idempotency guard.
-		let lastDoneIdx = -1;
+		let lastBoundaryIdx = -1;
 		for (let i = messages.length - 1; i >= 0; i--) {
-			if (!isDoneBoundary(messages[i])) continue;
+			if (!this.isCycleBoundary(messages[i], i, messages)) continue;
 
-			const hasSummary = messages.some(m => m.type === "cycle_summary" && (m.cycleEndMsgId === messages[i].id || m.cycleEndMsgId === messages[i + 1]?.id)); // Already summarized — keep scanning older boundaries.
+			const hasSummary = messages.some(m => m.type === "cycle_summary" && (
+				m.cycleEndMsgId === messages[i].id || 
+				m.cycleEndMsgId === messages[i + 1]?.id ||
+				(i > 0 && m.cycleEndMsgId === messages[i - 1]?.id)
+			)); // Already summarized — keep scanning older boundaries.
 			if (!hasSummary) {
-				lastDoneIdx = i;
+				lastBoundaryIdx = i;
 				break;
 			}
 		}
 
-		if (lastDoneIdx === -1) return false; // No completed cycle awaiting summarization yet.
+		if (lastBoundaryIdx === -1) return false; // No completed cycle awaiting summarization yet.
 
-		let endIdx = lastDoneIdx;
-		const nextMsg = messages[lastDoneIdx + 1];
-		if ((messages[lastDoneIdx].role === "model" || messages[lastDoneIdx].type === "model") && isToolResponse(nextMsg)) {
-			endIdx = lastDoneIdx + 1; // Pull the trailing accumulated tool_response into the summarized span so nothing dangles after it.
+		let endIdx = lastBoundaryIdx;
+		const nextMsg = messages[lastBoundaryIdx + 1];
+		if ((messages[lastBoundaryIdx].role === "model" || messages[lastBoundaryIdx].type === "model") && isToolResponse(nextMsg)) {
+			endIdx = lastBoundaryIdx + 1; // Pull the trailing accumulated tool_response into the summarized span so nothing dangles after it.
 		}
 
-		let cycleStartIdx = -1; // Scan backwards for a previous boundary marker (summary or done call) — start AFTER it, mirroring agent.mjs' manual path exactly.
-		for (let i = endIdx - 2; i >= 0; i--) {
+		// Find start of current boundary so we scan strictly BEFORE it for the previous boundary
+		let boundaryStartIdx = endIdx;
+		if (isToolResponse(messages[endIdx]) && endIdx > 0 && (messages[endIdx - 1].role === "model" || messages[endIdx - 1].type === "model")) {
+			boundaryStartIdx = endIdx - 1;
+		}
+
+		let cycleStartIdx = -1; // Scan backwards for a previous boundary marker (summary or cycle boundary) — start AFTER it, mirroring agent.mjs' manual path exactly.
+		for (let i = boundaryStartIdx - 1; i >= 0; i--) {
 			const msg = messages[i];
-			if (msg.type === "cycle_summary" || isDoneBoundary(msg)) {
+			if (msg.type === "cycle_summary" || this.isCycleBoundary(msg, i, messages)) {
 				cycleStartIdx = i + 1;
 				break;
 			}
@@ -2464,10 +2507,20 @@ class AIManagerHistory {
 			cycleStartIdx = fallbackIdx; // -1 if there's no user/model turn at all — handled by the span guard below (never summarize an empty / non-conversational span).
 		}
 
-
-		if (cycleStartIdx >= endIdx) return false; // Span too small (<2 messages) to summarize meaningfully — same guard as performSummarization().
+		if (cycleStartIdx === -1 || cycleStartIdx >= endIdx) return false; // Span too small (<2 messages) to summarize meaningfully — same guard as performSummarization().
 
 		const cycleMessages = messages.slice(cycleStartIdx, endIdx + 1);
+
+		let progressEl = null;
+		if (this.manager.isSessionViewed?.(targetSession.id) && this.conversationArea) {
+			progressEl = document.createElement("div");
+			progressEl.className = "agent-tool-progress";
+			progressEl.innerHTML = `<ui-icon class="spin">cached</ui-icon> Compacting cycle...`;
+			this.conversationArea.append(progressEl);
+			if (this.manager._shouldAutoScroll?.() && this.conversationArea) {
+				this.conversationArea.scrollTop = this.conversationArea.scrollHeight;
+			}
+		}
 
 		try {
 			const result = await this.manager.generateCycleSummary(cycleMessages);
@@ -2498,6 +2551,8 @@ class AIManagerHistory {
 		} catch (e) {
 			console.error("Error during automatic agent cycle compaction:", e); // Safe no-op on failure — the prompt proceeds without compacting.
 			return false;
+		} finally {
+			if (progressEl) progressEl.remove();
 		}
 	}
 

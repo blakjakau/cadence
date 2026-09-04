@@ -15,6 +15,7 @@ class AgentTools {
         this.conduit = conduit;
         this.editBuffer = {}; // Tracks { [resolvedPath]: { markerIds: [] } }
         this.syntaxErrors = {}; // Tracks pending syntax errors: { [resolvedPath]: errorString }
+        this.fileFailureCounts = {}; // Tracks consecutive edit failures per [resolvedPath]
     }
 
     _getEffectiveWorkspaceFolders(sourceId = null) {
@@ -29,8 +30,17 @@ class AgentTools {
 
             const pinnedRoots = session?.pinnedRoots || [];
             if (pinnedRoots.length > 0) {
-                const filtered = allFolders.filter(f => pinnedRoots.some(p => f === p || f.endsWith('/' + p) || f.split(/[\\/]/).filter(Boolean).pop() === p));
+                const filtered = allFolders.filter(f => {
+                    const normF = f.replace(/\\/g, '/').replace(/\/+$/, '');
+                    const nameF = normF.split('/').filter(Boolean).pop() || normF;
+                    return pinnedRoots.some(p => {
+                        const normP = p.replace(/\\/g, '/').replace(/\/+$/, '');
+                        const nameP = normP.split('/').filter(Boolean).pop() || normP;
+                        return normF === normP || normF.endsWith('/' + normP) || nameF === nameP;
+                    });
+                });
                 if (filtered.length > 0) return filtered;
+                return pinnedRoots;
             }
         } catch (e) {
             console.warn("[AgentTools] Error resolving pinned roots:", e);
@@ -456,11 +466,11 @@ Snippet: ${r.content || r.snippet || ""}`;
      * @param {string} path 
      * @returns {boolean|string} Returns true if permitted, or an error string if blocked.
      */
-    _checkFilePermitted(path) {
+    _checkFilePermitted(path, sourceId = null) {
         if (!window.ui?.fileList?.index?.files) return true; 
 
         try {
-            const resolvedPath = this._resolveAndValidatePath(path);
+            const resolvedPath = this._resolveAndValidatePath(path, sourceId);
             
             const file = window.ui.fileList.index.files.find(f => {
                 const fPath = f.path.replace(/\\/g, '/').replace(/\/+/g, '/').toLowerCase();
@@ -495,12 +505,12 @@ Snippet: ${r.content || r.snippet || ""}`;
      * Reads a file's content.
      * @param {string} path 
      */
-    async readFile(path, startLine, lineCount, bypassCache = false) {
+    async readFile(path, startLine, lineCount, bypassCache = false, sourceId = null) {
         try {
-            const permitted = this._checkFilePermitted(path);
+            const permitted = this._checkFilePermitted(path, sourceId);
             if (permitted !== true) return permitted;
 
-            const resolvedPath = this._resolveAndValidatePath(path);
+            const resolvedPath = this._resolveAndValidatePath(path, sourceId);
             
             // Try to find if the file is open in the editor
             let openTab = this._findOpenTab(resolvedPath);
@@ -674,12 +684,12 @@ Snippet: ${r.content || r.snippet || ""}`;
      * Reads a file's structural outline.
      * @param {string} path 
      */
-    async readFileOutline(path) {
+    async readFileOutline(path, sourceId = null) {
         try {
-            const permitted = this._checkFilePermitted(path);
+            const permitted = this._checkFilePermitted(path, sourceId);
             if (permitted !== true) return permitted;
 
-            const resolvedPath = this._resolveAndValidatePath(path);
+            const resolvedPath = this._resolveAndValidatePath(path, sourceId);
             let outline = "";
             if (this.conduit.isConnected) {
                 const result = await this.conduit.wsGetOutline(resolvedPath);
@@ -733,11 +743,49 @@ Snippet: ${r.content || r.snippet || ""}`;
      * Searches for text across files (Grep) accelerating using Go and local buffers.
      * @param {string} query 
      */
-    async searchFiles(query) {
+    async searchFiles(query, targetPath = null, sourceId = null) {
         try {
             if (typeof query !== 'string') {
                 return "Error: Query must be a string.";
             }
+
+            // Support both signatures: searchFiles(query, sourceId) and searchFiles(query, targetPath, sourceId)
+            if (typeof targetPath === 'string' && !sourceId) {
+                const aiManager = window.ui?.aiManager;
+                const isSessionId = targetPath.startsWith('session_') || 
+                                    targetPath.startsWith('sub_') || 
+                                    targetPath === aiManager?.activeSessionId ||
+                                    aiManager?.runningSessions?.has(targetPath);
+                if (isSessionId) {
+                    sourceId = targetPath;
+                    targetPath = null;
+                }
+            }
+
+            let targetFolder = null;
+            if (targetPath) {
+                try {
+                    targetFolder = this._resolveAndValidatePath(targetPath, sourceId);
+                } catch (e) {
+                    return `Error resolving path '${targetPath}': ${e.message}`;
+                }
+            }
+
+            const effectiveFolders = this._getEffectiveWorkspaceFolders(sourceId);
+            let searchRoots = [];
+            if (targetFolder) {
+                const isWithinEffective = effectiveFolders.some(f => {
+                    const normF = f.replace(/\\/g, '/').replace(/\/+$/, '');
+                    return targetFolder === normF || targetFolder.startsWith(normF + '/');
+                });
+                if (!isWithinEffective) {
+                    return `Security Exception: Access to path '${targetPath}' is denied. It lies outside the allowed workspace folders.`;
+                }
+                searchRoots = [targetFolder];
+            } else {
+                searchRoots = effectiveFolders.length > 0 ? effectiveFolders : ["."];
+            }
+
             const matches = [];
             const lowercaseQuery = query.toLowerCase();
             const searchedPaths = new Set();
@@ -753,7 +801,8 @@ Snippet: ${r.content || r.snippet || ""}`;
                 if (skipExtensions.includes(extension)) continue;
 
                 try {
-                    const resolvedPath = this._resolveAndValidatePath(path);
+                    const resolvedPath = this._resolveAndValidatePath(path, sourceId);
+                    if (targetFolder && !resolvedPath.startsWith(targetFolder)) continue;
                     searchedPaths.add(resolvedPath);
 
                     const edits = this.editBuffer[resolvedPath]?.edits || [];
@@ -762,21 +811,19 @@ Snippet: ${r.content || r.snippet || ""}`;
                         const lines = content.split('\n');
                         lines.forEach((line, idx) => {
                             if (line.toLowerCase().includes(lowercaseQuery)) {
-                                matches.push({ path, line: idx + 1, content: line.trim() });
+                                matches.push({ path: resolvedPath, line: idx + 1, content: line.trim() });
                             }
                         });
                     }
                 } catch (e) {
-                    // Ignore local search errors
+                    // Ignore local search errors or files outside pinned roots
                 }
             }
 
             // 2. Search remaining files using backend Go server if connected
             if (this.conduit.isConnected) {
-                console.debug(`[AgentTools] Running backend Go search for query: "${query}"`);
+                console.debug(`[AgentTools] Running backend Go search for query: "${query}" in roots:`, searchRoots);
                 try {
-                    const folders = this._getEffectiveWorkspaceFolders(sourceId);
-                    const searchRoots = folders.length > 0 ? folders : ["."];
                     for (const rootFolder of searchRoots) {
                         try {
                             const res = await this.conduit.wsSearch(rootFolder, "content", query);
@@ -784,15 +831,16 @@ Snippet: ${r.content || r.snippet || ""}`;
                                 for (const match of res.data) {
                                     try {
                                         const resolved = this._resolveAndValidatePath(match.path, sourceId);
+                                        if (targetFolder && !resolved.startsWith(targetFolder)) continue;
                                         if (searchedPaths.has(resolved)) continue; // Already searched
                                         searchedPaths.add(resolved);
                                         matches.push({
-                                            path: match.path,
+                                            path: resolved,
                                             line: match.line,
                                             content: match.content
                                         });
                                     } catch (e) {
-                                        // Skip files that fail path resolution
+                                        // Skip files that fail path resolution or lie outside pinned roots
                                     }
                                 }
                             }
@@ -805,7 +853,7 @@ Snippet: ${r.content || r.snippet || ""}`;
                 }
             }
 
-            // 3. Fallback to client-side indexing if backend search is offline/unavailable
+            // 3. Fallback to client-side indexing if backend search returned no matches or is offline
             if (matches.length === 0 && window.ui?.fileList?.index?.files) {
                 console.debug("[AgentTools] Falling back to client-side files index search");
                 const files = window.ui.fileList.index.files;
@@ -815,6 +863,7 @@ Snippet: ${r.content || r.snippet || ""}`;
                     
                     try {
                         const resolvedPath = this._resolveAndValidatePath(file.path, sourceId);
+                        if (targetFolder && !resolvedPath.startsWith(targetFolder)) continue;
                         if (searchedPaths.has(resolvedPath)) continue;
                         
                         searchedCount++;
@@ -822,19 +871,19 @@ Snippet: ${r.content || r.snippet || ""}`;
 
                         // Filename match check
                         if (file.path.toLowerCase().includes(lowercaseQuery)) {
-                            matches.push({ path: file.path, type: "filename_match" });
+                            matches.push({ path: resolvedPath, type: "filename_match" });
                         }
 
                         const extension = file.path.split('.').pop().toLowerCase();
                         const skipExtensions = ['png', 'jpg', 'jpeg', 'gif', 'ico', 'pdf', 'zip', 'gz', 'tar', 'exe', 'bin', 'dll'];
                         if (skipExtensions.includes(extension)) continue;
 
-                        const content = await this.readFile(resolvedPath, undefined, undefined, true);
+                        const content = await this.readFile(resolvedPath, undefined, undefined, true, sourceId);
                         if (content && !content.startsWith("Error:") && content.toLowerCase().includes(lowercaseQuery)) {
                             const lines = content.split('\n');
                             lines.forEach((line, idx) => {
                                 if (line.toLowerCase().includes(lowercaseQuery)) {
-                                    matches.push({ path: file.path, line: idx + 1, content: line.trim() });
+                                    matches.push({ path: resolvedPath, line: idx + 1, content: line.trim() });
                                 }
                             });
                         }
@@ -943,12 +992,12 @@ Snippet: ${r.content || r.snippet || ""}`;
      * @param {string} path 
      * @param {string} query 
      */
-    async searchInFile(path, query) {
+    async searchInFile(path, query, sourceId = null) {
         try {
-            const permitted = this._checkFilePermitted(path);
+            const permitted = this._checkFilePermitted(path, sourceId);
             if (permitted !== true) return permitted;
 
-            const resolvedPath = this._resolveAndValidatePath(path);
+            const resolvedPath = this._resolveAndValidatePath(path, sourceId);
             if (!query) return "Error: Query is empty.";
 
             let content = "";
@@ -960,7 +1009,11 @@ Snippet: ${r.content || r.snippet || ""}`;
             } else if (this.conduit.isConnected) {
                 const result = await this.conduit.wsRead(resolvedPath);
                 if (result.error) throw new Error(result.error);
-                content = atob(result.data);
+                try {
+                    content = decodeURIComponent(escape(atob(result.data)));
+                } catch (e) {
+                    content = atob(result.data);
+                }
             } else {
                 return "Error: Cannot read file, Conduit is not connected.";
             }
@@ -1321,101 +1374,130 @@ Snippet: ${r.content || r.snippet || ""}`;
                 this.syntaxErrors[resolvedPath] = syntaxCheck.error;
             }
 
-            const isForgivenessMode = window.ui?.aiManager?.forgivenessMode === true;
-            if (isForgivenessMode) {
-                // 1. Create backup if not already present in the active session for the current milestone
-                let backupId = "";
-                const activeSession = window.ui?.aiManager?.activeSession;
-                const existingBackups = (activeSession?.modifiedFiles && activeSession.modifiedFiles[resolvedPath]) || [];
-                const milestoneTs = activeSession?.lastMilestoneTimestamp || 0;
-                
-                // An existing backup is current for this milestone if it was created after the milestone
-                const currentMilestoneBackup = existingBackups.length > 0 && existingBackups[existingBackups.length - 1].timestamp >= milestoneTs 
-                    ? existingBackups[existingBackups.length - 1] 
-                    : null;
+            const targetSessionId = sourceId || window.ui?.aiManager?.activeSessionId;
+            const aiManager = window.ui?.aiManager;
+            const activeSession = (targetSessionId && aiManager?.runningSessions?.get(targetSessionId)?.instance?.session)
+                || (targetSessionId === aiManager?.activeSessionId ? aiManager?.activeSession : null)
+                || window.ui?.aiManager?.activeSession;
 
-                if (currentMilestoneBackup) {
-                    backupId = currentMilestoneBackup.backupId;
-                } else {
-                    try {
-                        const actId = sourceId || activeSession?.id || "default";
-                        if (activeSession?.turnTransactionId) {
-                            backupId = await AgentBackup.recordFileChange(activeSession.turnTransactionId, resolvedPath, originalContent, actId);
-                        } else {
-                            backupId = await AgentBackup.create(resolvedPath, originalContent, actId);
-                        }
-                        
-                        if (activeSession) {
-                            activeSession.modifiedFiles = activeSession.modifiedFiles || {};
-                            if (!activeSession.modifiedFiles[resolvedPath]) {
-                                activeSession.modifiedFiles[resolvedPath] = [];
-                            }
-                            activeSession.modifiedFiles[resolvedPath].push({
-                                backupId: backupId,
-                                timestamp: Date.now(),
-                                sourceId: actId
-                            });
-                            await workspaceClient.setSession(activeSession.id, activeSession);
-                        }
-                    } catch (e) {
-                        console.error("[AgentTools] Failed to create backup:", e);
+            const isForgivenessMode = (activeSession?.forgivenessMode ?? window.ui?.aiManager?.forgivenessMode) === true;
+
+            // 1. Create backup if not already present in the active session for the current milestone
+            let backupId = "";
+            const existingBackups = (activeSession?.modifiedFiles && activeSession.modifiedFiles[resolvedPath]) || [];
+            const milestoneTs = activeSession?.lastMilestoneTimestamp || activeSession?.createdAt || 0;
+            
+            // An existing backup is current for this milestone if it was created after the milestone
+            const currentMilestoneBackup = existingBackups.length > 0 && existingBackups[existingBackups.length - 1].timestamp >= milestoneTs 
+                ? existingBackups[existingBackups.length - 1] 
+                : null;
+
+            if (currentMilestoneBackup) {
+                backupId = currentMilestoneBackup.backupId;
+            } else {
+                try {
+                    const actId = sourceId || activeSession?.id || "default";
+                    if (activeSession?.turnTransactionId) {
+                        backupId = await AgentBackup.recordFileChange(activeSession.turnTransactionId, resolvedPath, originalContent, actId);
+                    } else {
+                        backupId = await AgentBackup.create(resolvedPath, originalContent, actId);
                     }
+                    
+                    if (activeSession) {
+                        activeSession.modifiedFiles = activeSession.modifiedFiles || {};
+                        if (!activeSession.modifiedFiles[resolvedPath]) {
+                            activeSession.modifiedFiles[resolvedPath] = [];
+                        }
+                        activeSession.modifiedFiles[resolvedPath].push({
+                            backupId: backupId,
+                            timestamp: Date.now(),
+                            sourceId: actId
+                        });
+                        await workspaceClient.setSession(activeSession.id, activeSession);
+                    }
+                } catch (e) {
+                    console.error("[AgentTools] Failed to create backup:", e);
                 }
+            }
 
-                // 2. Perform the edit on Ace session using the aligned range
-                const Range = window.ace.require("ace/range").Range;
-                const rangeToReplace = new Range(startLineIndex, startColIndex, endLineIndex, endColIndex);
-                session.replace(rangeToReplace, replacementString ?? "");
+            // 2. Perform the edit on Ace session using the aligned range
+            const Range = window.ace.require("ace/range").Range;
+            const rangeToReplace = new Range(startLineIndex, startColIndex, endLineIndex, endColIndex);
+            session.replace(rangeToReplace, replacementString ?? "");
 
+            if (isForgivenessMode) {
                 // 3. Save to disk immediately only if syntax is valid; otherwise defer save to memory
                 if (syntaxCheck.valid && window.saveFileTab) {
                     await window.saveFileTab(targetTab);
                     session.baseValue = session.getValue();
                 }
-
-                // 4. Set tab to diff view mode automatically for implicit review
-                targetTab.config.viewMode = "diff";
-                targetTab.config.backupId = backupId;
-
-                // 5. Focus & Redraw
-                targetTab.click();
-                if (window.ui?.renderPlanTasksView) {
-                    const containers = document.querySelectorAll('.plan-tasks-view');
-                    containers.forEach(c => window.ui.renderPlanTasksView(c));
+            } else {
+                // Track pending AI edits in active session for Permission Mode
+                if (activeSession) {
+                    activeSession.pendingEdits = activeSession.pendingEdits || {};
+                    activeSession.pendingEdits[resolvedPath] = true;
+                    await workspaceClient.setSession(activeSession.id, activeSession);
                 }
+            }
 
-                if (syntaxCheck.valid) {
+            // 4. Set tab to diff view mode automatically with backupId retained for rollback and review
+            targetTab.config.viewMode = "diff";
+            targetTab.config.backupId = backupId;
+
+            // 5. Focus & Redraw
+            targetTab.click();
+            if (window.ui?.renderPlanTasksView) {
+                const containers = document.querySelectorAll('.plan-tasks-view');
+                containers.forEach(c => window.ui.renderPlanTasksView(c));
+            }
+
+            if (syntaxCheck.valid) {
+                delete this.fileFailureCounts[resolvedPath];
+                if (isForgivenessMode) {
                     return `Successfully edited ${path}.`;
                 } else {
-                    return `Successfully edited ${path}.\n⚠️ Notice: File currently has syntax errors (${syntaxCheck.error}). Ensure subsequent edits resolve this before completing the task.`;
+                    return `Successfully edited ${path} in memory (Permission Mode). The tab has switched to the side-by-side Diff view for your review. Click 'Apply Changes' at the top to save to disk or 'Discard' / rollback anytime.`;
                 }
-            }
-
-            // Permission Mode: clean replacement in memory using the aligned range
-            const Range = window.ace.require("ace/range").Range;
-            const rangeToReplace = new Range(startLineIndex, startColIndex, endLineIndex, endColIndex);
-            session.replace(rangeToReplace, replacementString ?? "");
-            // Set tab to diff view mode automatically for implicit review
-            targetTab.config.viewMode = "diff";
-            delete targetTab.config.backupId;
-
-            // Track pending AI edits in active session
-            const activeSession = window.ui?.aiManager?.activeSession;
-            if (activeSession) {
-                activeSession.pendingEdits = activeSession.pendingEdits || {};
-                activeSession.pendingEdits[resolvedPath] = true;
-                await workspaceClient.setSession(activeSession.id, activeSession);
-            }
-
-            // Focus & Redraw
-            targetTab.click();
-            if (syntaxCheck.valid) {
-                return `Successfully edited ${path}.`;
             } else {
-                return `Successfully edited ${path}.\n⚠️ Notice: File currently has syntax errors (${syntaxCheck.error}). Ensure subsequent edits resolve this before completing the task.`;
+                this.fileFailureCounts[resolvedPath] = (this.fileFailureCounts[resolvedPath] || 0) + 1;
+                const failCount = this.fileFailureCounts[resolvedPath];
+                let autoRollbackNotice = "";
+
+                const shouldAutoRollback = activeSession?.autoRollbackOnFailures ?? (aiManager?.config?.defaultAutoRollbackOnFailures === true);
+                const threshold = activeSession?.autoRollbackFailureThreshold ?? (aiManager?.config?.defaultAutoRollbackThreshold || 3);
+
+                if (shouldAutoRollback && failCount >= threshold) {
+                    this.fileFailureCounts[resolvedPath] = 0;
+                    await this.rollbackFile(path, "cycle_start", sourceId);
+                    autoRollbackNotice = `\n\n🚨 [Auto-Rollback Triggered] Reached ${failCount} consecutive edit/syntax failures on "${path}". The file has been automatically rolled back to its clean state at cycle start. Call read_file to inspect the baseline content before attempting new edits.`;
+                }
+
+                return `Successfully edited ${path}.\n⚠️ Notice: File currently has syntax errors (${syntaxCheck.error}). Ensure subsequent edits resolve this before completing the task.${autoRollbackNotice}`;
             }
         } catch (error) {
-            return `Error editing file: ${error.message}`;
+            let autoRollbackNotice = "";
+            try {
+                const resolvedPath = this._resolveAndValidatePath(path, sourceId);
+                this.fileFailureCounts[resolvedPath] = (this.fileFailureCounts[resolvedPath] || 0) + 1;
+                const failCount = this.fileFailureCounts[resolvedPath];
+
+                const targetSessionId = sourceId || window.ui?.aiManager?.activeSessionId;
+                const aiManager = window.ui?.aiManager;
+                const session = (targetSessionId && aiManager?.runningSessions?.get(targetSessionId)?.instance?.session)
+                    || (targetSessionId === aiManager?.activeSessionId ? aiManager?.activeSession : null);
+
+                const shouldAutoRollback = session?.autoRollbackOnFailures ?? (aiManager?.config?.defaultAutoRollbackOnFailures === true);
+                const threshold = session?.autoRollbackFailureThreshold ?? (aiManager?.config?.defaultAutoRollbackThreshold || 3);
+
+                if (shouldAutoRollback && failCount >= threshold) {
+                    this.fileFailureCounts[resolvedPath] = 0;
+                    await this.rollbackFile(path, "cycle_start", sourceId);
+                    autoRollbackNotice = `\n\n🚨 [Auto-Rollback Triggered] Reached ${failCount} consecutive edit failures on "${path}". The file has been automatically rolled back to its clean state at cycle start. Call read_file to inspect the baseline content before attempting new edits.`;
+                }
+            } catch (err) {
+                console.warn("[AgentTools] Auto-rollback tracking error:", err);
+            }
+            return `Error editing file: ${error.message}${autoRollbackNotice}`;
         }
     }
 
@@ -1569,82 +1651,81 @@ Snippet: ${r.content || r.snippet || ""}`;
                 throw new Error("You must provide either 'search' or both 'startLine' and 'lineCount'.");
             }
 
-            const isForgivenessMode = window.ui?.aiManager?.forgivenessMode === true;
-            if (isForgivenessMode) {
-                // 1. Create backup if not already present in the active session for the current milestone
-                let backupId = "";
-                const activeSession = window.ui?.aiManager?.activeSession;
-                const existingBackups = (activeSession?.modifiedFiles && activeSession.modifiedFiles[resolvedPath]) || [];
-                const milestoneTs = activeSession?.lastMilestoneTimestamp || 0;
-                
-                const currentMilestoneBackup = existingBackups.length > 0 && existingBackups[existingBackups.length - 1].timestamp >= milestoneTs 
-                    ? existingBackups[existingBackups.length - 1] 
-                    : null;
+            const targetSessionId = sourceId || window.ui?.aiManager?.activeSessionId;
+            const aiManager = window.ui?.aiManager;
+            const activeSession = (targetSessionId && aiManager?.runningSessions?.get(targetSessionId)?.instance?.session)
+                || (targetSessionId === aiManager?.activeSessionId ? aiManager?.activeSession : null)
+                || window.ui?.aiManager?.activeSession;
 
-                if (currentMilestoneBackup) {
-                    backupId = currentMilestoneBackup.backupId;
-                } else {
-                    try {
-                        const actId = sourceId || activeSession?.id || "default";
-                        backupId = await AgentBackup.create(resolvedPath, originalContent, actId);
-                        
-                        if (activeSession) {
-                            activeSession.modifiedFiles = activeSession.modifiedFiles || {};
-                            if (!activeSession.modifiedFiles[resolvedPath]) {
-                                activeSession.modifiedFiles[resolvedPath] = [];
-                            }
-                            activeSession.modifiedFiles[resolvedPath].push({
-                                backupId: backupId,
-                                timestamp: Date.now(),
-                                sourceId: actId
-                            });
-                            await workspaceClient.setSession(activeSession.id, activeSession);
+            const isForgivenessMode = (activeSession?.forgivenessMode ?? window.ui?.aiManager?.forgivenessMode) === true;
+
+            // 1. Create backup if not already present in the active session for the current milestone
+            let backupId = "";
+            const existingBackups = (activeSession?.modifiedFiles && activeSession.modifiedFiles[resolvedPath]) || [];
+            const milestoneTs = activeSession?.lastMilestoneTimestamp || activeSession?.createdAt || 0;
+            
+            const currentMilestoneBackup = existingBackups.length > 0 && existingBackups[existingBackups.length - 1].timestamp >= milestoneTs 
+                ? existingBackups[existingBackups.length - 1] 
+                : null;
+
+            if (currentMilestoneBackup) {
+                backupId = currentMilestoneBackup.backupId;
+            } else {
+                try {
+                    const actId = sourceId || activeSession?.id || "default";
+                    backupId = await AgentBackup.create(resolvedPath, originalContent, actId);
+                    
+                    if (activeSession) {
+                        activeSession.modifiedFiles = activeSession.modifiedFiles || {};
+                        if (!activeSession.modifiedFiles[resolvedPath]) {
+                            activeSession.modifiedFiles[resolvedPath] = [];
                         }
-                    } catch (e) {
-                        console.error("[AgentTools] Failed to create backup:", e);
+                        activeSession.modifiedFiles[resolvedPath].push({
+                            backupId: backupId,
+                            timestamp: Date.now(),
+                            sourceId: actId
+                        });
+                        await workspaceClient.setSession(activeSession.id, activeSession);
                     }
+                } catch (e) {
+                    console.error("[AgentTools] Failed to create backup:", e);
                 }
+            }
 
-                // 2. Perform the clean edit on Ace session
-                session.replace(rangeToReplace, "");
+            // 2. Perform the clean edit on Ace session
+            session.replace(rangeToReplace, "");
 
+            if (isForgivenessMode) {
                 // 3. Save to disk immediately
                 if (window.saveFileTab) {
                     await window.saveFileTab(targetTab);
                     session.baseValue = session.getValue();
                 }
-
-                // 4. Set tab to diff view mode automatically for implicit review
-                targetTab.config.viewMode = "diff";
-                targetTab.config.backupId = backupId;
-
-                // 5. Focus & Redraw
-                targetTab.click();
-                if (window.ui?.renderPlanTasksView) {
-                    const containers = document.querySelectorAll('.plan-tasks-view');
-                    containers.forEach(c => window.ui.renderPlanTasksView(c));
+            } else {
+                // Track pending AI edits in active session for Permission Mode
+                if (activeSession) {
+                    activeSession.pendingEdits = activeSession.pendingEdits || {};
+                    activeSession.pendingEdits[resolvedPath] = true;
+                    await workspaceClient.setSession(activeSession.id, activeSession);
                 }
-
-                return `Successfully removed lines from ${path} in Forgiveness Mode. The tab has switched to the side-by-side Diff view for your review.`;
             }
 
-            // Permission Mode: clean replacement in memory
-            session.replace(rangeToReplace, "");
-            // Set tab to diff view mode automatically for implicit review
+            // 4. Set tab to diff view mode automatically with backupId retained
             targetTab.config.viewMode = "diff";
-            delete targetTab.config.backupId;
+            targetTab.config.backupId = backupId;
 
-            // Track pending AI edits in active session
-            const activeSession = window.ui?.aiManager?.activeSession;
-            if (activeSession) {
-                activeSession.pendingEdits = activeSession.pendingEdits || {};
-                activeSession.pendingEdits[resolvedPath] = true;
-                await workspaceClient.setSession(activeSession.id, activeSession);
+            // 5. Focus & Redraw
+            targetTab.click();
+            if (window.ui?.renderPlanTasksView) {
+                const containers = document.querySelectorAll('.plan-tasks-view');
+                containers.forEach(c => window.ui.renderPlanTasksView(c));
             }
 
-            // Focus & Redraw
-            targetTab.click();
-            return `Successfully removed lines from ${path} in memory (Permission Mode). The tab has switched to the side-by-side Diff view for your review. Please click 'Apply Changes' at the top to save to disk or 'Discard' to revert.`;
+            if (isForgivenessMode) {
+                return `Successfully removed lines from ${path} in Forgiveness Mode. The tab has switched to the side-by-side Diff view for your review.`;
+            } else {
+                return `Successfully removed lines from ${path} in memory (Permission Mode). The tab has switched to the side-by-side Diff view for your review. Please click 'Apply Changes' at the top to save to disk or 'Discard' to revert.`;
+            }
         } catch (error) {
             return `Error removing lines: ${error.message}`;
         }
@@ -1700,10 +1781,15 @@ Snippet: ${r.content || r.snippet || ""}`;
                 destinationExists = false;
             }
 
-            const isForgivenessMode = window.ui?.aiManager?.forgivenessMode === true;
-            const actId = sourceId || window.ui?.aiManager?.activeSession?.id || "default";
-            const activeSession = window.ui?.aiManager?.activeSession;
-            const milestoneTs = activeSession?.lastMilestoneTimestamp || 0;
+            const targetSessionId = sourceId || window.ui?.aiManager?.activeSessionId;
+            const aiManager = window.ui?.aiManager;
+            const activeSession = (targetSessionId && aiManager?.runningSessions?.get(targetSessionId)?.instance?.session)
+                || (targetSessionId === aiManager?.activeSessionId ? aiManager?.activeSession : null)
+                || window.ui?.aiManager?.activeSession;
+
+            const isForgivenessMode = (activeSession?.forgivenessMode ?? window.ui?.aiManager?.forgivenessMode) === true;
+            const actId = sourceId || activeSession?.id || "default";
+            const milestoneTs = activeSession?.lastMilestoneTimestamp || activeSession?.createdAt || 0;
 
             if (removeFromSource) {
                 const sourceTab = this._findOpenTab(cleanSource);
@@ -1726,54 +1812,50 @@ Snippet: ${r.content || r.snippet || ""}`;
                     }
                 }
 
-                if (isForgivenessMode) {
-                    let srcBackupId = "";
-                    const existingSrcBackups = (activeSession?.modifiedFiles && activeSession.modifiedFiles[cleanSource]) || [];
-                    const currentSrcMilestoneBackup = existingSrcBackups.length > 0 && existingSrcBackups[existingSrcBackups.length - 1].timestamp >= milestoneTs
-                        ? existingSrcBackups[existingSrcBackups.length - 1]
-                        : null;
+                let srcBackupId = "";
+                const existingSrcBackups = (activeSession?.modifiedFiles && activeSession.modifiedFiles[cleanSource]) || [];
+                const currentSrcMilestoneBackup = existingSrcBackups.length > 0 && existingSrcBackups[existingSrcBackups.length - 1].timestamp >= milestoneTs
+                    ? existingSrcBackups[existingSrcBackups.length - 1]
+                    : null;
 
-                    if (currentSrcMilestoneBackup) {
-                        srcBackupId = currentSrcMilestoneBackup.backupId;
-                    } else {
-                        try {
-                            srcBackupId = await AgentBackup.create(cleanSource, sourceContent, actId);
+                if (currentSrcMilestoneBackup) {
+                    srcBackupId = currentSrcMilestoneBackup.backupId;
+                } else {
+                    try {
+                        srcBackupId = await AgentBackup.create(cleanSource, sourceContent, actId);
 
-                            if (activeSession) {
-                                activeSession.modifiedFiles = activeSession.modifiedFiles || {};
-                                if (!activeSession.modifiedFiles[cleanSource]) {
-                                    activeSession.modifiedFiles[cleanSource] = [];
-                                }
-                                activeSession.modifiedFiles[cleanSource].push({
-                                    backupId: srcBackupId,
-                                    timestamp: Date.now(),
-                                    sourceId: actId
-                                });
-                                await workspaceClient.setSession(activeSession.id, activeSession);
+                        if (activeSession) {
+                            activeSession.modifiedFiles = activeSession.modifiedFiles || {};
+                            if (!activeSession.modifiedFiles[cleanSource]) {
+                                activeSession.modifiedFiles[cleanSource] = [];
                             }
-                        } catch (e) {
-                            console.error("[AgentTools] Failed to create source backup:", e);
+                            activeSession.modifiedFiles[cleanSource].push({
+                                backupId: srcBackupId,
+                                timestamp: Date.now(),
+                                sourceId: actId
+                            });
+                            await workspaceClient.setSession(activeSession.id, activeSession);
                         }
+                    } catch (e) {
+                        console.error("[AgentTools] Failed to create source backup:", e);
                     }
+                }
 
-                    srcSession.replace(rangeToRemove, "");
+                srcSession.replace(rangeToRemove, "");
+                if (isForgivenessMode) {
                     if (window.saveFileTab) {
                         await window.saveFileTab(sourceTab);
                         srcSession.baseValue = srcSession.getValue();
                     }
-                    sourceTab.config.viewMode = "diff";
-                    sourceTab.config.backupId = srcBackupId;
                 } else {
-                    srcSession.replace(rangeToRemove, "");
-                    sourceTab.config.viewMode = "diff";
-                    delete sourceTab.config.backupId;
-
                     if (activeSession) {
                         activeSession.pendingEdits = activeSession.pendingEdits || {};
                         activeSession.pendingEdits[cleanSource] = true;
                         await workspaceClient.setSession(activeSession.id, activeSession);
                     }
                 }
+                sourceTab.config.viewMode = "diff";
+                sourceTab.config.backupId = srcBackupId;
             }
 
             // Handle destination insertion
@@ -1873,69 +1955,65 @@ Snippet: ${r.content || r.snippet || ""}`;
             const Range = window.ace.require("ace/range").Range;
             const rangeToInsert = new Range(insertRow, 0, insertRow, 0);
 
-            if (isForgivenessMode) {
-                let backupId = "";
-                const existingDestBackups = (activeSession?.modifiedFiles && activeSession.modifiedFiles[cleanDestination]) || [];
-                const currentDestMilestoneBackup = existingDestBackups.length > 0 && existingDestBackups[existingDestBackups.length - 1].timestamp >= milestoneTs
-                    ? existingDestBackups[existingDestBackups.length - 1]
-                    : null;
+            let backupId = "";
+            const existingDestBackups = (activeSession?.modifiedFiles && activeSession.modifiedFiles[cleanDestination]) || [];
+            const currentDestMilestoneBackup = existingDestBackups.length > 0 && existingDestBackups[existingDestBackups.length - 1].timestamp >= milestoneTs
+                ? existingDestBackups[existingDestBackups.length - 1]
+                : null;
 
-                if (currentDestMilestoneBackup) {
-                    backupId = currentDestMilestoneBackup.backupId;
-                } else {
-                    try {
-                        backupId = await AgentBackup.create(cleanDestination, originalContent, actId);
+            if (currentDestMilestoneBackup) {
+                backupId = currentDestMilestoneBackup.backupId;
+            } else {
+                try {
+                    backupId = await AgentBackup.create(cleanDestination, originalContent, actId);
 
-                        if (activeSession) {
-                            activeSession.modifiedFiles = activeSession.modifiedFiles || {};
-                            if (!activeSession.modifiedFiles[cleanDestination]) {
-                                activeSession.modifiedFiles[cleanDestination] = [];
-                            }
-                            activeSession.modifiedFiles[cleanDestination].push({
-                                backupId: backupId,
-                                timestamp: Date.now(),
-                                sourceId: actId
-                            });
-                            await workspaceClient.setSession(activeSession.id, activeSession);
+                    if (activeSession) {
+                        activeSession.modifiedFiles = activeSession.modifiedFiles || {};
+                        if (!activeSession.modifiedFiles[cleanDestination]) {
+                            activeSession.modifiedFiles[cleanDestination] = [];
                         }
-                    } catch (e) {
-                        console.error("[AgentTools] Failed to create backup:", e);
+                        activeSession.modifiedFiles[cleanDestination].push({
+                            backupId: backupId,
+                            timestamp: Date.now(),
+                            sourceId: actId
+                        });
+                        await workspaceClient.setSession(activeSession.id, activeSession);
                     }
+                } catch (e) {
+                    console.error("[AgentTools] Failed to create backup:", e);
                 }
+            }
 
-                session.replace(rangeToInsert, textToInsert);
+            session.replace(rangeToInsert, textToInsert);
 
+            if (isForgivenessMode) {
                 if (window.saveFileTab) {
                     await window.saveFileTab(targetTab);
                     session.baseValue = session.getValue();
                 }
-
-                targetTab.config.viewMode = "diff";
-                targetTab.config.backupId = backupId;
-
-                targetTab.click();
-                if (window.ui?.renderPlanTasksView) {
-                    const containers = document.querySelectorAll('.plan-tasks-view');
-                    containers.forEach(c => window.ui.renderPlanTasksView(c));
+            } else {
+                if (activeSession) {
+                    activeSession.pendingEdits = activeSession.pendingEdits || {};
+                    activeSession.pendingEdits[cleanDestination] = true;
+                    await workspaceClient.setSession(activeSession.id, activeSession);
                 }
-
-                const actionWord = removeFromSource ? "moved" : "copied";
-                return `Successfully ${actionWord} lines from ${source} to ${destination} in Forgiveness Mode.`;
             }
 
-            session.replace(rangeToInsert, textToInsert);
             targetTab.config.viewMode = "diff";
-            delete targetTab.config.backupId;
-
-            if (activeSession) {
-                activeSession.pendingEdits = activeSession.pendingEdits || {};
-                activeSession.pendingEdits[cleanDestination] = true;
-                await workspaceClient.setSession(activeSession.id, activeSession);
-            }
+            targetTab.config.backupId = backupId;
 
             targetTab.click();
+            if (window.ui?.renderPlanTasksView) {
+                const containers = document.querySelectorAll('.plan-tasks-view');
+                containers.forEach(c => window.ui.renderPlanTasksView(c));
+            }
+
             const actionWord = removeFromSource ? "moved" : "copied";
-            return `Successfully ${actionWord} lines from ${source} to ${destination} in memory (Permission Mode). The tab has switched to the Diff view for your review. Please click 'Apply Changes' at the top to save or 'Discard' to revert.`;
+            if (isForgivenessMode) {
+                return `Successfully ${actionWord} lines from ${source} to ${destination} in Forgiveness Mode.`;
+            } else {
+                return `Successfully ${actionWord} lines from ${source} to ${destination} in memory (Permission Mode). The tab has switched to the Diff view for your review. Please click 'Apply Changes' at the top to save or 'Discard' to revert.`;
+            }
         } catch (error) {
             return `Error copying lines: ${error.message}`;
         }
@@ -2066,12 +2144,12 @@ Snippet: ${r.content || r.snippet || ""}`;
      * Opens a file in the workspace editor for the user to review.
      * @param {string} path 
      */
-    async openFile(path) {
+    async openFile(path, sourceId = null) {
         try {
-            const permitted = this._checkFilePermitted(path);
+            const permitted = this._checkFilePermitted(path, sourceId);
             if (permitted !== true) return permitted;
 
-            const resolvedPath = this._resolveAndValidatePath(path);
+            const resolvedPath = this._resolveAndValidatePath(path, sourceId);
             if (window.ui?.fileList?.open) {
                 await window.ui.fileList.open(resolvedPath);
                 return `Successfully opened ${path} in the editor.`;
@@ -2430,15 +2508,21 @@ Snippet: ${r.content || r.snippet || ""}`;
             case 'web_fetch':
                 return await this.webFetch(args.url);
             case 'read_file':
-                return await this.readFile(args.path, args.startLine, args.lineCount);
+                return await this.readFile(args.path, args.startLine, args.lineCount, false, sourceId);
             case 'read_file_outline':
-                return await this.readFileOutline(args.path);
+                return await this.readFileOutline(args.path, sourceId);
             case 'read_symbol':
                 return await this.readSymbol(args.query || args.symbol, sourceId);
             case 'search_files':
-                return await this.searchFiles(args.query, sourceId);
+            case 'search_in_files': {
+                const targetPath = args.path || args.folder || args.directory || null;
+                if (targetPath && /\.[a-zA-Z0-9_-]+$/.test(targetPath)) {
+                    return await this.searchInFile(targetPath, args.query, sourceId);
+                }
+                return await this.searchFiles(args.query, targetPath, sourceId);
+            }
             case 'search_in_file':
-                return await this.searchInFile(args.path, args.query);
+                return await this.searchInFile(args.path, args.query, sourceId);
             case 'edit_file':
                 return await this.editFile(
                     args.path,
@@ -2477,7 +2561,7 @@ Snippet: ${r.content || r.snippet || ""}`;
                     try {
                         const resolvedPath = this._resolveAndValidatePath(args.path, sourceId);
                         const targetTab = this._findOpenTab(resolvedPath);
-                        let originalContent = targetTab?.config?.session?.getValue() || (await this.readFile(args.path));
+                        let originalContent = targetTab?.config?.session?.getValue() || (await this.readFile(args.path, undefined, undefined, false, sourceId));
                         if (typeof originalContent === 'string') {
                             if (args.edits && Array.isArray(args.edits)) {
                                 for (const ed of args.edits) {
@@ -2503,7 +2587,7 @@ Snippet: ${r.content || r.snippet || ""}`;
                 return `Syntax validation failed for ${args.path}:\n${syntaxCheck.error}`;
             }
             case 'open_file':
-                return await this.openFile(args.path);
+                return await this.openFile(args.path, sourceId);
             case 'find_file':
                 return await this.findFile(args.path, sourceId);
             case 'run_command':
@@ -2616,8 +2700,259 @@ Snippet: ${r.content || r.snippet || ""}`;
                 }
                 return "Agent successfully completed the execution loop.";
             }
+            case 'checkpoint':
+                return await this.checkpoint(args.name, sourceId);
+            case 'rollback_file':
+                return await this.rollbackFile(args.path, args.target || "cycle_start", sourceId);
+            case 'rollback_cycle':
+                return await this.rollbackCycle(args.target || "cycle_start", sourceId);
             default:
                 throw new Error(`Tool '${name}' is not recognized.`);
+        }
+    }
+
+    /**
+     * Creates a named checkpoint milestone for the current session.
+     * @param {string} name - The label/name for the checkpoint.
+     * @param {string} [sourceId] - Session ID.
+     * @returns {Promise<string>}
+     */
+    async checkpoint(name, sourceId = null) {
+        try {
+            const targetSessionId = sourceId || window.ui?.aiManager?.activeSessionId;
+            const aiManager = window.ui?.aiManager;
+            const session = (targetSessionId && aiManager?.runningSessions?.get(targetSessionId)?.instance?.session)
+                || (targetSessionId === aiManager?.activeSessionId ? aiManager?.activeSession : null);
+
+            if (!session) {
+                throw new Error("No active session found to create a checkpoint.");
+            }
+
+            const checkpointTs = Date.now();
+            session.lastMilestoneTimestamp = checkpointTs;
+            session.lastModified = checkpointTs;
+            session.checkpoints = session.checkpoints || [];
+            session.checkpoints.push({
+                name: name || "checkpoint",
+                timestamp: checkpointTs
+            });
+
+            await workspaceClient.setSession(session.id, session);
+
+            if (window.ui?.sessionArtifactsPanel?.update) {
+                window.ui.sessionArtifactsPanel.update();
+            }
+
+            return `Checkpoint "${name || "checkpoint"}" created. Current file states are saved as a milestone; subsequent edits can be rolled back to this checkpoint.`;
+        } catch (error) {
+            return `Error creating checkpoint: ${error.message}`;
+        }
+    }
+
+    /**
+     * Rolls back a single file to either cycle_start or last_checkpoint.
+     * Reconciles Conduit on disk, open Ace editor tabs, diff tabs, and internal caches.
+     * @param {string} path - File path to rollback.
+     * @param {"cycle_start"|"last_checkpoint"} [target="cycle_start"]
+     * @param {string} [sourceId] - Session ID.
+     * @returns {Promise<string>}
+     */
+    async rollbackFile(path, target = "cycle_start", sourceId = null) {
+        try {
+            const targetSessionId = sourceId || window.ui?.aiManager?.activeSessionId;
+            const aiManager = window.ui?.aiManager;
+            const session = (targetSessionId && aiManager?.runningSessions?.get(targetSessionId)?.instance?.session)
+                || (targetSessionId === aiManager?.activeSessionId ? aiManager?.activeSession : null);
+
+            if (!session) {
+                throw new Error("No active session found.");
+            }
+
+            const resolvedPath = this._resolveAndValidatePath(path, sourceId);
+
+            const normalize = (p) => p ? p.replace(/\\/g, '/').replace(/\/+/g, '/').replace(/^\//, '').replace(/\/$/, '') : '';
+            const pathsMatch = (p1, p2) => {
+                const n1 = normalize(p1);
+                const n2 = normalize(p2);
+                if (!n1 || !n2) return false;
+                return n1 === n2 || n1.endsWith('/' + n2) || n2.endsWith('/' + n1);
+            };
+
+            const matchedKey = Object.keys(session.modifiedFiles || {}).find(k => pathsMatch(k, resolvedPath));
+            const backups = matchedKey ? session.modifiedFiles[matchedKey] : null;
+
+            if (!backups || backups.length === 0) {
+                return `Notice: No recorded edits found for ${path} in this session. Nothing to rollback.`;
+            }
+
+            let targetBackup = null;
+            let rollbackDescription = "";
+            let remainingBackups = [];
+
+            if (target === "last_checkpoint" && session.lastMilestoneTimestamp && session.lastMilestoneTimestamp > 0) {
+                const postCheckpointBackups = backups.filter(b => b.timestamp >= session.lastMilestoneTimestamp);
+                if (postCheckpointBackups.length === 0) {
+                    return `Notice: "${path}" has not been modified since the last checkpoint. It is already at its checkpoint state.`;
+                }
+                targetBackup = postCheckpointBackups[0];
+                remainingBackups = backups.filter(b => b.timestamp < session.lastMilestoneTimestamp);
+                rollbackDescription = "the last checkpoint";
+            } else {
+                const cycleTs = session.currentCycleStartTimestamp || 0;
+                const cycleBackups = backups.filter(b => b.timestamp >= cycleTs);
+                if (cycleBackups.length > 0) {
+                    targetBackup = cycleBackups[0];
+                    remainingBackups = backups.filter(b => b.timestamp < cycleTs);
+                } else {
+                    targetBackup = backups[0];
+                    remainingBackups = [];
+                }
+                rollbackDescription = "the beginning of the cycle";
+            }
+
+            if (!targetBackup) {
+                return `Notice: Could not identify a backup target for ${path}.`;
+            }
+
+            if (window.ui?.suppressFileChangeNotice) {
+                window.ui.suppressFileChangeNotice(resolvedPath, 5000);
+            }
+
+            try {
+                if (targetBackup.isNewFile) {
+                    if (this.conduit && this.conduit.isConnected) {
+                        await this.conduit.wsDelete(resolvedPath);
+                    }
+
+                    const allOpenTabs = [...(window.ui?.leftTabs?.tabs || []), ...(window.ui?.rightTabs?.tabs || [])];
+                    const targetTab = allOpenTabs.find(t => pathsMatch(t.config?.path, resolvedPath));
+                    if (targetTab) {
+                        if (window.closeTab) {
+                            await window.closeTab(targetTab.tabBar, { tab: targetTab }, true);
+                        } else {
+                            targetTab.tabBar.remove(targetTab, true);
+                        }
+                    }
+                } else {
+                    const content = await AgentBackup.rollback(targetBackup.backupId);
+
+                    if (this.conduit && this.conduit.isConnected) {
+                        const base64Content = btoa(unescape(encodeURIComponent(content)));
+                        const result = await this.conduit.wsWrite(resolvedPath, base64Content);
+                        if (result.error) throw new Error(result.error);
+                    }
+
+                    const allOpenTabs = [...(window.ui?.leftTabs?.tabs || []), ...(window.ui?.rightTabs?.tabs || [])];
+                    const targetTab = allOpenTabs.find(t => pathsMatch(t.config?.path, resolvedPath));
+                    if (targetTab && targetTab.config?.session) {
+                        targetTab.config.session.setValue(content);
+                        targetTab.config.session.baseValue = content;
+                        targetTab.config.viewMode = "editor";
+                        delete targetTab.config.backupId;
+                        targetTab.changed = false;
+                    } else if (targetTab && window.saveFileTab) {
+                        await window.saveFileTab(targetTab);
+                    }
+
+                    const diffTabs = allOpenTabs.filter(t => t.config?.path?.startsWith("diff_") && pathsMatch(t.config?.originalPath || t.config?.path, resolvedPath));
+                    for (const diffTab of diffTabs) {
+                        diffTab.tabBar?.remove(diffTab, true);
+                    }
+                }
+
+                if (remainingBackups.length > 0) {
+                    session.modifiedFiles[matchedKey] = remainingBackups;
+                } else {
+                    delete session.modifiedFiles[matchedKey];
+                }
+                session.lastModified = Date.now();
+                await workspaceClient.setSession(session.id, session);
+
+                delete this.syntaxErrors[resolvedPath];
+                delete this.editBuffer[resolvedPath];
+                if (this.fileFailureCounts) {
+                    delete this.fileFailureCounts[resolvedPath];
+                }
+
+                if (window.ui?.fileList?.refreshFolders) {
+                    window.ui.fileList.refreshFolders();
+                }
+                if (window.ui?.sessionArtifactsPanel?.update) {
+                    window.ui.sessionArtifactsPanel.update();
+                }
+
+                return `Successfully rolled back "${path}" to ${rollbackDescription}. File content has been restored to its baseline state. Please call read_file before attempting any new edits on this file.`;
+            } finally {
+                if (window.ui?.resumeFileChangeNotice) {
+                    window.ui.resumeFileChangeNotice(resolvedPath);
+                }
+            }
+        } catch (error) {
+            return `Error rolling back file: ${error.message}`;
+        }
+    }
+
+    /**
+     * Rolls back all files modified in the current cycle or since the last checkpoint.
+     * @param {"cycle_start"|"last_checkpoint"} [target="cycle_start"]
+     * @param {string} [sourceId] - Session ID.
+     * @returns {Promise<string>}
+     */
+    async rollbackCycle(target = "cycle_start", sourceId = null) {
+        try {
+            const targetSessionId = sourceId || window.ui?.aiManager?.activeSessionId;
+            const aiManager = window.ui?.aiManager;
+            const session = (targetSessionId && aiManager?.runningSessions?.get(targetSessionId)?.instance?.session)
+                || (targetSessionId === aiManager?.activeSessionId ? aiManager?.activeSession : null);
+
+            if (!session || !session.modifiedFiles) {
+                return "Notice: No modified files found in this session.";
+            }
+
+            const modifiedPaths = Object.keys(session.modifiedFiles);
+            if (modifiedPaths.length === 0) {
+                return "Notice: No modified files found to rollback.";
+            }
+
+            const rolledBack = [];
+            const unchanged = [];
+            const errors = [];
+
+            for (const filePath of modifiedPaths) {
+                try {
+                    const result = await this.rollbackFile(filePath, target, sourceId);
+                    if (result.startsWith("Successfully rolled back")) {
+                        rolledBack.push(filePath);
+                    } else if (result.startsWith("Notice:")) {
+                        unchanged.push(`${filePath} (${result.replace("Notice: ", "")})`);
+                    } else {
+                        errors.push(`${filePath}: ${result}`);
+                    }
+                } catch (err) {
+                    errors.push(`${filePath}: ${err.message}`);
+                }
+            }
+
+            const targetLabel = target === "last_checkpoint" ? "the last checkpoint" : "the beginning of the cycle";
+            if (rolledBack.length === 0 && errors.length === 0) {
+                return `Notice: All files were already at ${targetLabel}.`;
+            }
+
+            let summary = `Rollback Cycle completed for ${targetLabel}:\n`;
+            if (rolledBack.length > 0) {
+                summary += `\nRestored files (${rolledBack.length}):\n` + rolledBack.map(f => `- ${f}`).join('\n');
+            }
+            if (unchanged.length > 0) {
+                summary += `\nUnchanged files (${unchanged.length}):\n` + unchanged.map(f => `- ${f}`).join('\n');
+            }
+            if (errors.length > 0) {
+                summary += `\nErrors encountered:\n` + errors.map(e => `- ${e}`).join('\n');
+            }
+            summary += `\n\nAll rolled back files have been restored on disk and in editor buffers. Use read_file to review restored files before making further changes.`;
+
+            return summary;
+        } catch (error) {
+            return `Error rolling back cycle: ${error.message}`;
         }
     }
 

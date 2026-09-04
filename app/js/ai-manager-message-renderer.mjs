@@ -313,7 +313,84 @@ export default class AIManagerMessageRenderer {
         })
     }
 
-    renderResponseContent(content, message = null, isNew = false) {
+    /**
+     * Checks if XML tag parsing should be bypassed (e.g. for known reasoning / native tool models).
+     * @param {Object|null} message 
+     * @param {Object|null} session 
+     * @param {boolean|null} explicitSkip 
+     * @returns {boolean}
+     */
+    shouldSkipXmlParsing(message = null, session = null, explicitSkip = null) {
+        if (explicitSkip !== null && explicitSkip !== undefined) return explicitSkip;
+        if (message && message.thought !== undefined) return true;
+        return this.aiManager.isKnownReasoningModel ? this.aiManager.isKnownReasoningModel(session) : false;
+    }
+
+    /**
+     * Extracts thought and clean body text from raw content and structured message,
+     * seamlessly handling both closed tags and actively streaming unclosed thought tags.
+     * @param {string} content 
+     * @param {Object|null} message 
+     * @param {boolean|null} skipXml 
+     * @returns {{ thinkContent: string, bodyContent: string, isClosed: boolean }}
+     */
+    extractThoughtAndBody(content, message = null, skipXml = null) {
+        let thinkContent = (message?.thought || "").trim();
+        let bodyContent = content || "";
+        const shouldSkip = this.shouldSkipXmlParsing(message, null, skipXml);
+
+        if (shouldSkip) {
+            const isClosed = message?.isThinking ? false : true;
+            return { thinkContent, bodyContent, isClosed };
+        }
+
+        let isClosed = true;
+
+        if (bodyContent) {
+            // Check if content begins with a thought block (closed or unclosed/streaming)
+            const openMatch = bodyContent.match(/^(?:\s*<(?:thought|think|thinking)>|\s*<\|channel\>thought\n)/i);
+            if (openMatch) {
+                const openTag = openMatch[0];
+                const contentStart = openMatch.index + openTag.length;
+                const closeMatch = bodyContent.match(/<\/(?:thought|think|thinking)>|<\|channel\>/i);
+                if (closeMatch) {
+                    // Closed thought block
+                    if (!thinkContent) {
+                        thinkContent = bodyContent.substring(contentStart, closeMatch.index).trim();
+                    }
+                    bodyContent = bodyContent.substring(closeMatch.index + closeMatch[0].length).trim();
+                    isClosed = true;
+                } else {
+                    // Unclosed thought block (actively streaming thinking)
+                    if (!thinkContent) {
+                        thinkContent = bodyContent.substring(contentStart).trim();
+                    }
+                    bodyContent = "";
+                    isClosed = false;
+                }
+            } else {
+                // If thought tags are present inside bodyContent
+                if (/<(?:thought|think|thinking)>[\s\S]*?<\/(?:thought|think|thinking)>/i.test(bodyContent)) {
+                    if (!thinkContent) {
+                        const m = bodyContent.match(/<(?:thought|think|thinking)>([\s\S]*?)<\/(?:thought|think|thinking)>/i);
+                        if (m) thinkContent = m[1].trim();
+                    }
+                    bodyContent = bodyContent.replace(/<(?:thought|think|thinking)>[\s\S]*?<\/(?:thought|think|thinking)>/gi, '').trim();
+                }
+                if (/<\|channel\>thought\n[\s\S]*?(?:<\|channel\>|$)/i.test(bodyContent)) {
+                    if (!thinkContent) {
+                        const m = bodyContent.match(/<\|channel\>thought\n([\s\S]*?)(?:<\|channel\>|$)/i);
+                        if (m) thinkContent = m[1].trim();
+                    }
+                    bodyContent = bodyContent.replace(/<\|channel\>thought\n[\s\S]*?(?:<\|channel\>|$)/gi, '').trim();
+                }
+            }
+        }
+
+        return { thinkContent, bodyContent, isClosed };
+    }
+
+    renderResponseContent(content, message = null, isNew = false, skipXml = null) {
         if (!content && (!message || (!message.toolCalls && !message.thought))) return "";
 
         let isFailed = false;
@@ -334,8 +411,11 @@ export default class AIManagerMessageRenderer {
             }
         }
 
-        const rawContent = content || "";
-        const parsed = this.parseBlocks(rawContent);
+        const shouldSkip = this.shouldSkipXmlParsing(message, null, skipXml);
+        const { thinkContent, bodyContent, isClosed } = this.extractThoughtAndBody(content, message, shouldSkip);
+        let rawContent = bodyContent;
+
+        const parsed = this.parseBlocks(rawContent, shouldSkip);
         const rangesToRemove = [];
 
         if (parsed.planBlock) {
@@ -394,17 +474,11 @@ export default class AIManagerMessageRenderer {
             thoughtSeconds = (message.thoughtDurationMs / 1000).toFixed(1);
         }
 
-        // Check either parsed XML thoughtBlock or structured message.thought
-        const thinkContent = parsed.thoughtBlock 
-            ? rawContent.substring(parsed.thoughtBlock.contentStartIdx, parsed.thoughtBlock.contentEndIdx).trim()
-            : (message?.thought || "").trim();
-
         if (thinkContent) {
-            const isClosed = parsed.thoughtBlock ? parsed.thoughtBlock.closed : true;
             let thinkLabel = "Thinking...";
             if (isClosed) {
                 const firstLine = thinkContent.split('\n').map(l => l.trim()).find(l => l.length > 0) || "Thought Process";
-                thinkLabel = this._escapeHtml(firstLine);
+                thinkLabel = this._escapeHtml(thoughtSeconds ? `${firstLine} (${thoughtSeconds}s)` : firstLine);
             }
             const thinkSegments = this.segmentThoughtContent(thinkContent);
             const thinkSegmentsHtml = thinkSegments.map(seg => `<div class="thought-segment">${this.aiManager.md.render(seg)}</div>`).join('');
@@ -419,19 +493,16 @@ export default class AIManagerMessageRenderer {
                     </div>
                 </div>
             `;
-            if (parsed.thoughtBlock) {
-                rangesToRemove.push({ startIdx: parsed.thoughtBlock.startIdx, endIdx: parsed.thoughtBlock.endIdx });
-            }
         }
 
         const mainContent = this.removeRanges(rawContent, rangesToRemove);
         let finalHtml = thinkHtml;
-        const finalParsed = this.parseBlocks(mainContent);
+        const finalParsed = this.parseBlocks(mainContent, shouldSkip);
 
         // 1. If message has structured JSON toolCalls, prioritize rendering them and strip any XML blocks from content
         if (message && message.toolCalls && message.toolCalls.length > 0) {
-            // Strip any leftover XML tool tags from mainContent
-            const cleanContent = mainContent
+            // Strip any leftover XML tool tags from mainContent if XML parsing is active
+            const cleanContent = shouldSkip ? mainContent : mainContent
                 .replace(/<tool_call\s+name=["']([^"']+)["']\s*>[\s\S]*?<\/tool_call>/gi, '')
                 .replace(/<tool_call[\s\S]*?>/gi, '')
                 .replace(/<\/tool_call>/gi, '')
@@ -830,13 +901,19 @@ export default class AIManagerMessageRenderer {
         }
     }
 
-    getModelTurnSummary(content, message = null) {
+    getModelTurnSummary(content, message = null, skipXml = null) {
         let thoughtSeconds = null;
         if (message && message.thoughtDurationMs !== undefined) {
             thoughtSeconds = (message.thoughtDurationMs / 1000).toFixed(1);
         }
 
-        const parsed = this.parseBlocks(content || "");
+        const shouldSkip = this.shouldSkipXmlParsing(message, null, skipXml);
+        const { thinkContent, bodyContent, isClosed } = this.extractThoughtAndBody(content, message, shouldSkip);
+        if (!isClosed) {
+            return "Thinking...";
+        }
+
+        const parsed = this.parseBlocks(bodyContent || "", shouldSkip);
         
         // 1. Gather all tool calls (from message.toolCalls or parsed.toolCallBlocks)
         const toolCallsList = [];
@@ -851,7 +928,7 @@ export default class AIManagerMessageRenderer {
         } else if (parsed.toolCallBlocks && parsed.toolCallBlocks.length > 0) {
             for (const tc of parsed.toolCallBlocks) {
                 const name = tc.name;
-                const toolArgs = content.substring(tc.contentStartIdx, tc.contentEndIdx);
+                const toolArgs = bodyContent.substring(tc.contentStartIdx, tc.contentEndIdx);
                 const args = this.parseToolArgs(toolArgs);
                 toolCallsList.push({ name, args, closed: tc.closed });
             }
@@ -953,13 +1030,10 @@ export default class AIManagerMessageRenderer {
 
         // Calculate text words if no tool call, or in addition
         const rangesToRemove = [];
-        if (parsed.thoughtBlock) {
-            rangesToRemove.push({ startIdx: parsed.thoughtBlock.startIdx, endIdx: parsed.thoughtBlock.endIdx });
-        }
         if (parsed.toolCallBlocks) {
             parsed.toolCallBlocks.forEach(b => rangesToRemove.push({ startIdx: b.startIdx, endIdx: b.endIdx }));
         }
-        const textOnly = this.removeRanges(content || "", rangesToRemove).trim();
+        const textOnly = this.removeRanges(bodyContent || "", rangesToRemove).trim();
         const wordCount = textOnly ? textOnly.split(/\s+/).filter(Boolean).length : 0;
 
         let prefix = thoughtSeconds ? `${thoughtSeconds}s: ` : "";
@@ -1055,12 +1129,11 @@ export default class AIManagerMessageRenderer {
         return null;
     }
 
-    parseBlocks(content) {
-        if (!content) return { thoughtBlock: null, planBlock: null, taskListBlock: null, completeTaskBlocks: [], toolCallBlocks: [] };
+    parseBlocks(content, skipXml = false) {
+        if (!content || skipXml) return { planBlock: null, taskListBlock: null, completeTaskBlocks: [], toolCallBlocks: [] };
         let inCodeBlock = false;
         let inInlineCode = false;
 
-        let thoughtBlock = null;
         let planBlock = null;
         let taskListBlock = null;
         const completeTaskBlocks = [];
@@ -1073,38 +1146,7 @@ export default class AIManagerMessageRenderer {
 
         while (i < len) {
             if (activeBlock) {
-                if (activeBlock.type === 'thought') {
-                    if (activeBlock.subType === 'thought' && content.startsWith("</thought>", i)) {
-                        activeBlock.endIdx = i + 10;
-                        activeBlock.contentEndIdx = i;
-                        activeBlock.closed = true;
-                        activeBlock = null;
-                        inCodeBlock = false;
-                        inInlineCode = false;
-                        i += 10;
-                        continue;
-                    }
-                    if (activeBlock.subType === 'think' && content.startsWith("</think>", i)) {
-                        activeBlock.endIdx = i + 8;
-                        activeBlock.contentEndIdx = i;
-                        activeBlock.closed = true;
-                        activeBlock = null;
-                        inCodeBlock = false;
-                        inInlineCode = false;
-                        i += 8;
-                        continue;
-                    }
-                    if (activeBlock.subType === 'channel' && content.startsWith("<|channel>", i)) {
-                        activeBlock.endIdx = i + 10;
-                        activeBlock.contentEndIdx = i;
-                        activeBlock.closed = true;
-                        activeBlock = null;
-                        inCodeBlock = false;
-                        inInlineCode = false;
-                        i += 10;
-                        continue;
-                    }
-                } else if (activeBlock.type === 'plan') {
+                if (activeBlock.type === 'plan') {
                     if (content.startsWith("</implementation_plan>", i)) {
                         activeBlock.endIdx = i + 22;
                         activeBlock.contentEndIdx = i;
@@ -1167,27 +1209,6 @@ export default class AIManagerMessageRenderer {
                 continue;
             }
 
-            if (!thoughtBlock) {
-                if (content.startsWith("<thought>", i)) {
-                    thoughtBlock = { type: 'thought', subType: 'thought', startIdx: i, contentStartIdx: i + 9, closed: false };
-                    activeBlock = thoughtBlock;
-                    i += 9;
-                    continue;
-                }
-                if (content.startsWith("<think>", i)) {
-                    thoughtBlock = { type: 'thought', subType: 'think', startIdx: i, contentStartIdx: i + 7, closed: false };
-                    activeBlock = thoughtBlock;
-                    i += 7;
-                    continue;
-                }
-                if (content.startsWith("<|channel>thought", i)) {
-                    thoughtBlock = { type: 'thought', subType: 'channel', startIdx: i, contentStartIdx: i + 17, closed: false };
-                    activeBlock = thoughtBlock;
-                    i += 17;
-                    continue;
-                }
-            }
-
             if (!planBlock) {
                 if (content.startsWith("<implementation_plan>", i)) {
                     planBlock = { type: 'plan', startIdx: i, contentStartIdx: i + 21, closed: false };
@@ -1244,7 +1265,6 @@ export default class AIManagerMessageRenderer {
         }
 
         return {
-            thoughtBlock,
             planBlock,
             taskListBlock,
             completeTaskBlocks,
@@ -1401,13 +1421,13 @@ export default class AIManagerMessageRenderer {
      * @param {Object} message 
      * @param {boolean} isNew 
      */
-    renderResponseSegment(containerDiv, content, message, isNew = false) {
+    renderResponseSegment(containerDiv, content, message, isNew = false, skipXml = null) {
         if (!containerDiv) return;
-        const parsed = this.parseBlocks(content);
 
-        if (parsed.thoughtBlock) {
-            const thinkContent = content.substring(parsed.thoughtBlock.contentStartIdx, parsed.thoughtBlock.contentEndIdx).trim();
-            const isClosed = parsed.thoughtBlock.closed;
+        const shouldSkip = this.shouldSkipXmlParsing(message, null, skipXml);
+        const { thinkContent, bodyContent, isClosed } = this.extractThoughtAndBody(content, message, shouldSkip);
+
+        if (thinkContent) {
             let thoughtSeconds = null;
             if (message && message.thoughtDurationMs !== undefined) {
                 thoughtSeconds = (message.thoughtDurationMs / 1000).toFixed(1);
@@ -1417,20 +1437,34 @@ export default class AIManagerMessageRenderer {
 
             let thoughtBlockEl = containerDiv.querySelector('.thought-block');
             if (!thoughtBlockEl) {
-                containerDiv.innerHTML = this.renderResponseContent(content, message, isNew);
-                thoughtBlockEl = containerDiv.querySelector('.thought-block');
-                if (thoughtBlockEl) {
-                    const tc = thoughtBlockEl.querySelector('.thought-content');
-                    if (tc) {
-                        tc.finalizedCount = Math.max(0, thinkSegments.length - 1);
-                        tc.activeSegmentDiv = tc.lastElementChild;
-                    }
+                containerDiv.innerHTML = "";
+                thoughtBlockEl = document.createElement("div");
+                thoughtBlockEl.className = "thought-block";
+                if (!isClosed) {
+                    thoughtBlockEl.setAttribute("expanded", "");
+                }
+                const thinkSegmentsHtml = thinkSegments.map(seg => `<div class="thought-segment">${this.aiManager.md.render(seg)}</div>`).join('');
+                thoughtBlockEl.innerHTML = `
+                    <div class="thought-header" onclick="this.parentElement.dataset.userToggled = 'true'; this.parentElement.hasAttribute('expanded') ? this.parentElement.removeAttribute('expanded') : this.parentElement.setAttribute('expanded', '')">
+                        <ui-icon>chevron_right</ui-icon>
+                        <span class="thought-label" title="${this._escapeHtml(thinkLabel)}">${this._escapeHtml(thinkLabel)}</span>
+                    </div>
+                    <div class="thought-content">
+                        ${thinkSegmentsHtml}
+                    </div>
+                `;
+                containerDiv.appendChild(thoughtBlockEl);
+                const tc = thoughtBlockEl.querySelector('.thought-content');
+                if (tc) {
+                    tc.finalizedCount = Math.max(0, thinkSegments.length - 1);
+                    tc.activeSegmentDiv = tc.lastElementChild;
                 }
             } else {
                 // Update existing thought block incrementally
                 const headerSpan = thoughtBlockEl.querySelector('.thought-header span');
                 if (headerSpan && headerSpan.textContent !== thinkLabel) {
                     headerSpan.textContent = thinkLabel;
+                    headerSpan.title = thinkLabel;
                 }
 
                 if (isClosed && !thoughtBlockEl.dataset.userToggled) {
@@ -1467,22 +1501,20 @@ export default class AIManagerMessageRenderer {
                 }
             }
 
-            // If thought block is closed or tool calls are present, render subsequent content/tool cards into a dedicated trailing wrapper
-            if (isClosed || (message && message.toolCalls && message.toolCalls.length > 0)) {
+            // Render non-thought body content and tool cards into bodyWrapper ONLY IF thought block is closed or tool calls exist or bodyContent has length
+            if (isClosed || (message && message.toolCalls && message.toolCalls.length > 0) || bodyContent.length > 0) {
                 let bodyWrapper = containerDiv.querySelector('.segment-body-wrapper');
                 if (!bodyWrapper) {
                     bodyWrapper = document.createElement("div");
                     bodyWrapper.className = "segment-body-wrapper";
                     containerDiv.appendChild(bodyWrapper);
                 }
-                const afterThought = content.substring(parsed.thoughtBlock.endIdx).trim();
-                const currentBodySig = `${afterThought.length}_${(message?.toolCalls || []).map(tc => `${tc.name || tc.functionCall?.name}:${JSON.stringify(tc.args || tc.functionCall?.args || '').length}`).join(';')}`;
+                const currentBodySig = `${bodyContent.length}_${(message?.toolCalls || []).map(tc => `${tc.name || tc.functionCall?.name}:${JSON.stringify(tc.args || tc.functionCall?.args || '').length}`).join(';')}`;
                 if (bodyWrapper.dataset.renderSig !== currentBodySig) {
                     bodyWrapper.dataset.renderSig = currentBodySig;
-                    // Render only the non-thought portion into the body wrapper
                     let bodyHtml = "";
                     if (message && message.toolCalls && message.toolCalls.length > 0) {
-                        const cleanContent = afterThought
+                        const cleanContent = shouldSkip ? bodyContent : bodyContent
                             .replace(/<tool_call\s+name=["']([^"']+)["']\s*>[\s\S]*?<\/tool_call>/gi, '')
                             .replace(/<tool_call[\s\S]*?>/gi, '')
                             .replace(/<\/tool_call>/gi, '')
@@ -1500,27 +1532,26 @@ export default class AIManagerMessageRenderer {
                             }
                             bodyHtml += this._renderSingleToolCallCard(toolName, args, tc, tcIdx, message);
                         }
-                    } else if (afterThought.length > 0) {
-                        bodyHtml = this.renderResponseContent(afterThought, message, isNew);
+                    } else if (bodyContent.length > 0) {
+                        bodyHtml = this.aiManager.md.render(bodyContent);
                     }
                     bodyWrapper.innerHTML = bodyHtml;
                 }
             }
         } else {
-            const currentContentSig = `${content.length}_${(message?.toolCalls || []).map(tc => `${tc.name || tc.functionCall?.name}:${JSON.stringify(tc.args || tc.functionCall?.args || '').length}`).join(';')}`;
+            const currentContentSig = `${bodyContent.length}_${(message?.toolCalls || []).map(tc => `${tc.name || tc.functionCall?.name}:${JSON.stringify(tc.args || tc.functionCall?.args || '').length}`).join(';')}`;
             if (containerDiv.dataset.renderSig !== currentContentSig) {
                 containerDiv.dataset.renderSig = currentContentSig;
-                containerDiv.innerHTML = this.renderResponseContent(content, message, isNew);
+                containerDiv.innerHTML = this.renderResponseContent(bodyContent, message, isNew, shouldSkip);
             }
         }
     }
 
-    segmentContent(content) {
+    segmentContent(content, skipXml = false) {
         if (!content) return [""];
         const segments = [];
         let currentStart = 0;
         let inCodeBlock = false;
-        let inReasoning = false;
         let inXmlBlock = false;
         let activeXmlTag = "";
         
@@ -1528,7 +1559,7 @@ export default class AIManagerMessageRenderer {
         const len = content.length;
         
         while (i < len) {
-            if (!inCodeBlock) {
+            if (!inCodeBlock && !skipXml) {
                 if (!inXmlBlock) {
                     for (const tag of ["tool_call", "implementation_plan", "task_list", "complete_task"]) {
                         if (content.startsWith(`<${tag}`, i)) {
@@ -1547,28 +1578,19 @@ export default class AIManagerMessageRenderer {
                 }
             }
 
-            if (!inCodeBlock && !inXmlBlock) {
-                if (!inReasoning) {
-                    if (content.startsWith("<thought>", i) || content.startsWith("<think>", i) || content.startsWith("<|channel>thought", i)) {
-                        inReasoning = true;
-                    }
-                } else {
-                    let endTagLen = 0;
-                    if (content.startsWith("</thought>", i)) endTagLen = 10;
-                    else if (content.startsWith("</think>", i)) endTagLen = 8;
-                    else if (content.startsWith("<|channel>", i)) endTagLen = 10;
-                    
-                    if (endTagLen > 0) {
-                        i += endTagLen;
-                        segments.push(content.substring(currentStart, i));
-                        currentStart = i;
-                        inReasoning = false;
-                        continue;
+            if (!inCodeBlock && !inXmlBlock && !skipXml) {
+                for (const closeTag of ["</thought>", "</think>", "</thinking>", "<|channel>"]) {
+                    if (content.startsWith(closeTag, i)) {
+                        const endIdx = i + closeTag.length;
+                        segments.push(content.substring(currentStart, endIdx));
+                        currentStart = endIdx;
+                        i = endIdx;
+                        break;
                     }
                 }
             }
 
-            if (!inReasoning && !inXmlBlock && content.startsWith("```", i)) {
+            if (!inXmlBlock && content.startsWith("```", i)) {
                 if (inCodeBlock) {
                     i += 3;
                     if (content.startsWith("\n", i)) i++;
@@ -1587,7 +1609,7 @@ export default class AIManagerMessageRenderer {
                 }
             }
 
-            if (!inCodeBlock && !inReasoning && !inXmlBlock) {
+            if (!inCodeBlock && !inXmlBlock) {
                 const currentSegmentLength = i - currentStart;
                 if (currentSegmentLength >= 3200 && content[i] === '\n') {
                     i++;

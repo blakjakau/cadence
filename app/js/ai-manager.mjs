@@ -89,6 +89,8 @@ class AIManager {
 			defaultAllowSubAgents: localStorage.getItem("defaultAllowSubAgents") !== "false",
 			defaultAllowRunCommand: localStorage.getItem("defaultAllowRunCommand") !== "false",
 			defaultAutoMilestones: localStorage.getItem("defaultAutoMilestones") !== "false",
+			defaultAutoRollbackOnFailures: localStorage.getItem("defaultAutoRollbackOnFailures") === "true",
+			defaultAutoRollbackThreshold: parseInt(localStorage.getItem("defaultAutoRollbackThreshold") || "3", 10),
 		};
 		// NEW: Session TabBar properties
 		this.sessionTabBar = null;
@@ -3062,22 +3064,29 @@ ${contextText}`;
 			}
 		}
 
-		// Extract thought if present in finalizedResponse
-		let thoughtText = "";
-		const thoughtMatch = finalizedResponse.match(/<(?:thought|think)>([\s\S]*?)<\/(?:thought|think)>/i)
-			|| finalizedResponse.match(/<\|channel\>thought\n([\s\S]*?)(?:<\|channel\>|$)/i);
-		if (thoughtMatch) {
-			thoughtText = thoughtMatch[1].trim();
-		}
+		// Extract thought and clean content (skip XML parsing/stripping if known reasoning model)
+		const isReasoning = this.isKnownReasoningModel(sessionObj);
+		let thoughtText = callbacks?.thought || "";
+		let cleanText = finalizedResponse;
 
-		// Clean up XML tags from finalized text content
-		let cleanText = finalizedResponse
-			.replace(/<(?:thought|think)>[\s\S]*?<\/(?:thought|think)>/gi, '')
-			.replace(/<\|channel\>thought\n[\s\S]*?(?:<\|channel\>|$)/gi, '')
-			.replace(/<tool_call\s+name=["']([^"']+)["']\s*>[\s\S]*?<\/tool_call>/gi, '')
-			.replace(/<tool_call[\s\S]*?>/gi, '')
-			.replace(/<\/tool_call>/gi, '')
-			.trim();
+		if (!isReasoning) {
+			const thoughtMatch = finalizedResponse.match(/<(?:thought|think)>([\s\S]*?)<\/(?:thought|think)>/i)
+				|| finalizedResponse.match(/<\|channel\>thought\n([\s\S]*?)(?:<\|channel\>|$)/i);
+			if (thoughtMatch && !thoughtText) {
+				thoughtText = thoughtMatch[1].trim();
+			}
+
+			// Clean up XML tags from finalized text content
+			cleanText = finalizedResponse
+				.replace(/<(?:thought|think)>[\s\S]*?<\/(?:thought|think)>/gi, '')
+				.replace(/<\|channel\>thought\n[\s\S]*?(?:<\|channel\>|$)/gi, '')
+				.replace(/<tool_call\s+name=["']([^"']+)["']\s*>[\s\S]*?<\/tool_call>/gi, '')
+				.replace(/<tool_call[\s\S]*?>/gi, '')
+				.replace(/<\/tool_call>/gi, '')
+				.trim();
+		} else {
+			cleanText = cleanText.trim();
+		}
 
 		const modelMessage = {
 			id: modelMessageId,
@@ -3147,57 +3156,72 @@ ${contextText}`;
 		return finalizedResponse;
 	}
 
-	_checkStreamingResponse(fullResponse) {
+	isKnownReasoningModel(session = null) {
+		const targetSession = session || this.activeSession;
+		const activeAi = targetSession?.connectionId ? AIConnections.getInstance(targetSession.connectionId) : this.ai;
+		if (!activeAi) return false;
+		const sessionThinking = targetSession?.thinkingLevel;
+		const effectiveThinkingLevel = (sessionThinking && sessionThinking !== "auto")
+			? sessionThinking
+			: (activeAi?.config?.thinkingLevel || "medium");
+		return !!(activeAi.supportsReasoning && effectiveThinkingLevel !== "off" && !targetSession?.disableReasoning);
+	}
+
+	_checkStreamingResponse(fullResponse, session = null) {
 		if (!fullResponse) return { shouldAbort: false, reason: "" };
 
-		// 1. Check if the first tool_call block has successfully closed
-		if (fullResponse.includes("</tool_call>")) {
-			const supportsJSONTools = this.ai && this.ai.supportsJSONTools;
-			if (!supportsJSONTools) {
-				return { shouldAbort: true, reason: "tool_call_closed" };
+		const isReasoning = this.isKnownReasoningModel(session);
+
+		if (!isReasoning) {
+			// 1. Check if the first tool_call block has successfully closed
+			if (fullResponse.includes("</tool_call>")) {
+				const supportsJSONTools = this.ai && this.ai.supportsJSONTools;
+				if (!supportsJSONTools) {
+					return { shouldAbort: true, reason: "tool_call_closed" };
+				}
 			}
-		}
 
-		// 2. Count occurrences of thought-starts and tool-call-starts
-		let thoughtCount = 0;
-		// Count "<thought>"
-		let idx = 0;
-		while ((idx = fullResponse.indexOf("<thought>", idx)) !== -1) {
-			thoughtCount++;
-			idx += 9;
-		}
-		// Count "<think>"
-		idx = 0;
-		while ((idx = fullResponse.indexOf("<think>", idx)) !== -1) {
-			thoughtCount++;
-			idx += 7;
-		}
-		// Count "<|channel>thought"
-		idx = 0;
-		while ((idx = fullResponse.indexOf("<|channel>thought", idx)) !== -1) {
-			thoughtCount++;
-			idx += 17;
-		}
-
-		// Count "<tool_call"
-		let toolCallCount = 0;
-		idx = 0;
-		while ((idx = fullResponse.indexOf("<tool_call", idx)) !== -1) {
-			toolCallCount++;
-			idx += 10;
-		}
-
-		if (thoughtCount > 1) {
-			const supportsReasoning = this.ai && this.ai.supportsReasoning;
-			if (!supportsReasoning) {
-				return { shouldAbort: true, reason: "secondary_thought" };
+			// 2. Count occurrences of thought-starts and tool-call-starts
+			let thoughtCount = 0;
+			// Count "<thought>"
+			let idx = 0;
+			while ((idx = fullResponse.indexOf("<thought>", idx)) !== -1) {
+				thoughtCount++;
+				idx += 9;
 			}
-		}
+			// Count "<think>"
+			idx = 0;
+			while ((idx = fullResponse.indexOf("<think>", idx)) !== -1) {
+				thoughtCount++;
+				idx += 7;
+			}
+			// Count "<|channel>thought"
+			idx = 0;
+			while ((idx = fullResponse.indexOf("<|channel>thought", idx)) !== -1) {
+				thoughtCount++;
+				idx += 17;
+			}
 
-		if (toolCallCount > 1) {
-			const supportsParallelTools = this.ai && this.ai.supportsParallelTools;
-			if (!supportsParallelTools) {
-				return { shouldAbort: true, reason: "secondary_tool_call" };
+			// Count "<tool_call"
+			let toolCallCount = 0;
+			idx = 0;
+			while ((idx = fullResponse.indexOf("<tool_call", idx)) !== -1) {
+				toolCallCount++;
+				idx += 10;
+			}
+
+			if (thoughtCount > 1) {
+				const supportsReasoning = this.ai && this.ai.supportsReasoning;
+				if (!supportsReasoning) {
+					return { shouldAbort: true, reason: "secondary_thought" };
+				}
+			}
+
+			if (toolCallCount > 1) {
+				const supportsParallelTools = this.ai && this.ai.supportsParallelTools;
+				if (!supportsParallelTools) {
+					return { shouldAbort: true, reason: "secondary_tool_call" };
+				}
 			}
 		}
 

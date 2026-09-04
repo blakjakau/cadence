@@ -469,9 +469,15 @@ class Ollama extends AI {
                         try {
                             const parsed = JSON.parse(jsonObject);
                             lastChunk = parsed;
+                            if (parsed.message?.thinking) {
+                                callbacks.thought = (callbacks.thought || "") + parsed.message.thinking;
+                                callbacks.isThinking = true;
+                                if (onUpdate) onUpdate(fullResponse, { thought: callbacks.thought, isThinking: true, toolCalls: callbacks.toolCalls });
+                            }
                             if (parsed.message?.content) {
+                                callbacks.isThinking = false;
                                 fullResponse += parsed.message.content;
-                                if (onUpdate) onUpdate(fullResponse);
+                                if (onUpdate) onUpdate(fullResponse, { thought: callbacks.thought, isThinking: false, toolCalls: callbacks.toolCalls });
                             }
                         } catch (e) {
                             console.error('Error parsing JSON chunk from chat stream:', e, jsonObject);
