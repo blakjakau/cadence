@@ -314,6 +314,63 @@ export default class AIManagerMessageRenderer {
     }
 
     /**
+     * Escapes faux XML tags (e.g. <thought>, <tool_call>, etc.) outside markdown code blocks and inline backticks
+     * so they are rendered as plain visible text rather than swallowed or parsed as HTML nodes.
+     * @param {string} text 
+     * @returns {string}
+     */
+    escapeFauxTags(text) {
+        if (!text || typeof text !== 'string') return text || "";
+        if (!text.includes("<")) return text;
+
+        const regex = /<\/?(?:thought|think|thinking|tool_call(?:\s+[^>]*)?|implementation_plan|task_list|complete_task)>|<\|channel\>thought|<channel\|>|<\|channel\|>/gi;
+
+        let result = "";
+        let i = 0;
+        let inCodeBlock = false;
+        let inInlineCode = false;
+        const len = text.length;
+
+        while (i < len) {
+            if (text.startsWith("```", i)) {
+                inCodeBlock = !inCodeBlock;
+                result += "```";
+                i += 3;
+                continue;
+            }
+            if (text.startsWith("`", i) && !inCodeBlock) {
+                inInlineCode = !inInlineCode;
+                result += "`";
+                i += 1;
+                continue;
+            }
+
+            if (inCodeBlock || inInlineCode) {
+                result += text[i];
+                i++;
+                continue;
+            }
+
+            if (text[i] === '<') {
+                regex.lastIndex = i;
+                const match = regex.exec(text);
+                if (match && match.index === i) {
+                    const tag = match[0];
+                    const escaped = tag.replace(/</g, "&lt;").replace(/>/g, "&gt;");
+                    result += escaped;
+                    i += tag.length;
+                    continue;
+                }
+            }
+
+            result += text[i];
+            i++;
+        }
+
+        return result;
+    }
+
+    /**
      * Checks if XML tag parsing should be bypassed (e.g. for known reasoning / native tool models).
      * @param {Object|null} message 
      * @param {Object|null} session 
@@ -322,8 +379,9 @@ export default class AIManagerMessageRenderer {
      */
     shouldSkipXmlParsing(message = null, session = null, explicitSkip = null) {
         if (explicitSkip !== null && explicitSkip !== undefined) return explicitSkip;
-        if (message && message.thought !== undefined) return true;
-        return this.aiManager.isKnownReasoningModel ? this.aiManager.isKnownReasoningModel(session) : false;
+        if (message && (message.thought !== undefined || message.thoughtSignature || message.isThinking)) return true;
+        const targetSession = session || (message?.sessionId ? this.aiManager.sessions?.get?.(message.sessionId) : null) || this.aiManager.activeSession;
+        return this.aiManager.isKnownReasoningModel ? this.aiManager.isKnownReasoningModel(targetSession) : false;
     }
 
     /**
@@ -481,7 +539,7 @@ export default class AIManagerMessageRenderer {
                 thinkLabel = this._escapeHtml(thoughtSeconds ? `${firstLine} (${thoughtSeconds}s)` : firstLine);
             }
             const thinkSegments = this.segmentThoughtContent(thinkContent);
-            const thinkSegmentsHtml = thinkSegments.map(seg => `<div class="thought-segment">${this.aiManager.md.render(seg)}</div>`).join('');
+            const thinkSegmentsHtml = thinkSegments.map(seg => `<div class="thought-segment">${this.aiManager.md.render(shouldSkip ? this.escapeFauxTags(seg) : seg)}</div>`).join('');
             thinkHtml = `
                 <div class="thought-block" ${isClosed ? "" : "expanded"}>
                     <div class="thought-header" onclick="this.parentElement.dataset.userToggled = 'true'; this.parentElement.hasAttribute('expanded') ? this.parentElement.removeAttribute('expanded') : this.parentElement.setAttribute('expanded', '')">
@@ -508,7 +566,7 @@ export default class AIManagerMessageRenderer {
                 .replace(/<\/tool_call>/gi, '')
                 .trim();
             if (cleanContent) {
-                finalHtml += this.aiManager.md.render(cleanContent);
+                finalHtml += this.aiManager.md.render(shouldSkip ? this.escapeFauxTags(cleanContent) : cleanContent);
             }
             for (let tcIdx = 0; tcIdx < message.toolCalls.length; tcIdx++) {
                 const tc = message.toolCalls[tcIdx];
@@ -659,11 +717,11 @@ export default class AIManagerMessageRenderer {
             }
             const remainingText = mainContent.substring(lastIdx);
             if (remainingText.trim()) {
-                finalHtml += this.aiManager.md.render(remainingText);
+                finalHtml += this.aiManager.md.render(shouldSkip ? this.escapeFauxTags(remainingText) : remainingText);
             }
         } else {
             if (mainContent.trim()) {
-                finalHtml += this.aiManager.md.render(mainContent);
+                finalHtml += this.aiManager.md.render(shouldSkip ? this.escapeFauxTags(mainContent) : mainContent);
             }
         }
 
@@ -1427,7 +1485,7 @@ export default class AIManagerMessageRenderer {
         const shouldSkip = this.shouldSkipXmlParsing(message, null, skipXml);
         const { thinkContent, bodyContent, isClosed } = this.extractThoughtAndBody(content, message, shouldSkip);
 
-        if (thinkContent) {
+        if (thinkContent || (message && message.isThinking)) {
             let thoughtSeconds = null;
             if (message && message.thoughtDurationMs !== undefined) {
                 thoughtSeconds = (message.thoughtDurationMs / 1000).toFixed(1);
@@ -1443,7 +1501,7 @@ export default class AIManagerMessageRenderer {
                 if (!isClosed) {
                     thoughtBlockEl.setAttribute("expanded", "");
                 }
-                const thinkSegmentsHtml = thinkSegments.map(seg => `<div class="thought-segment">${this.aiManager.md.render(seg)}</div>`).join('');
+                const thinkSegmentsHtml = thinkSegments.map(seg => `<div class="thought-segment">${this.aiManager.md.render(shouldSkip ? this.escapeFauxTags(seg) : seg)}</div>`).join('');
                 thoughtBlockEl.innerHTML = `
                     <div class="thought-header" onclick="this.parentElement.dataset.userToggled = 'true'; this.parentElement.hasAttribute('expanded') ? this.parentElement.removeAttribute('expanded') : this.parentElement.setAttribute('expanded', '')">
                         <ui-icon>chevron_right</ui-icon>
@@ -1477,11 +1535,11 @@ export default class AIManagerMessageRenderer {
                     while (thinkSegments.length > tc.finalizedCount + 1) {
                         const finalizedText = thinkSegments[tc.finalizedCount];
                         if (tc.activeSegmentDiv) {
-                            tc.activeSegmentDiv.innerHTML = this.aiManager.md.render(finalizedText);
+                            tc.activeSegmentDiv.innerHTML = this.aiManager.md.render(shouldSkip ? this.escapeFauxTags(finalizedText) : finalizedText);
                         } else {
                             const newDiv = document.createElement("div");
                             newDiv.className = "thought-segment";
-                            newDiv.innerHTML = this.aiManager.md.render(finalizedText);
+                            newDiv.innerHTML = this.aiManager.md.render(shouldSkip ? this.escapeFauxTags(finalizedText) : finalizedText);
                             tc.append(newDiv);
                         }
                         tc.finalizedCount++;
@@ -1497,7 +1555,7 @@ export default class AIManagerMessageRenderer {
                     }
 
                     const activeText = thinkSegments[thinkSegments.length - 1];
-                    tc.activeSegmentDiv.innerHTML = this.aiManager.md.render(activeText);
+                    tc.activeSegmentDiv.innerHTML = this.aiManager.md.render(shouldSkip ? this.escapeFauxTags(activeText) : activeText);
                 }
             }
 
@@ -1520,7 +1578,7 @@ export default class AIManagerMessageRenderer {
                             .replace(/<\/tool_call>/gi, '')
                             .trim();
                         if (cleanContent) {
-                            bodyHtml += this.aiManager.md.render(cleanContent);
+                            bodyHtml += this.aiManager.md.render(shouldSkip ? this.escapeFauxTags(cleanContent) : cleanContent);
                         }
                         for (let tcIdx = 0; tcIdx < message.toolCalls.length; tcIdx++) {
                             const tc = message.toolCalls[tcIdx];
@@ -1533,7 +1591,7 @@ export default class AIManagerMessageRenderer {
                             bodyHtml += this._renderSingleToolCallCard(toolName, args, tc, tcIdx, message);
                         }
                     } else if (bodyContent.length > 0) {
-                        bodyHtml = this.aiManager.md.render(bodyContent);
+                        bodyHtml = this.aiManager.md.render(shouldSkip ? this.escapeFauxTags(bodyContent) : bodyContent);
                     }
                     bodyWrapper.innerHTML = bodyHtml;
                 }

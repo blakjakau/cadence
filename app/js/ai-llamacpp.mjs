@@ -429,7 +429,6 @@ class LlamaCpp extends AI {
 
                             if (typeof delta.reasoning_content === 'string') {
                                 let reasoningPart = delta.reasoning_content;
-                                reasoningPart = reasoningPart.replace(/<[^>]*?\b(?:tool(?:_?call)?|thought|think|channel)\b[^>]*?>/gi, '');
 
                                 if (!isReasoning) {
                                     isReasoning = true;
@@ -438,6 +437,7 @@ class LlamaCpp extends AI {
                                     thinkingStartTime = Date.now();
                                 }
                                 callbacks.thought += reasoningPart;
+                                if (onUpdate) onUpdate(fullResponse, { thought: callbacks.thought, isThinking: true, toolCalls: callbacks.toolCalls });
                             }
 
                             if (typeof delta.content === 'string') {

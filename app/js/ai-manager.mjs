@@ -1368,11 +1368,11 @@ class AIManager {
 		}
 	}
 
-	setSessionProcessing(sessionId, processing, type = 'chat', controller = null) {
+	setSessionProcessing(sessionId, processing, type = 'chat', controller = null, session = null) {
 		if (!sessionId) return;
 		if (processing) {
 			if (!this.runningSessions.has(sessionId)) {
-				this.runningSessions.set(sessionId, { type, controller });
+				this.runningSessions.set(sessionId, { type, controller, session: session || (this.activeSessionId === sessionId ? this.activeSession : null) });
 			}
 			this._updateTabStatus(sessionId, "running");
 		} else {
@@ -1519,11 +1519,20 @@ class AIManager {
 			this.setSessionProcessing(sessionId, true, 'chat', connection);
 			
 			const callbacks = {
-				onUpdate: (fullResponse) => {
-					responseBlock.updateContent(fullResponse);
+				onUpdate: (fullResponse, updateData = null) => {
+					const toolCalls = updateData?.toolCalls ?? callbacks.toolCalls;
+					const thought = updateData?.thought ?? callbacks.thought;
+					const isThinking = updateData?.isThinking ?? callbacks.isThinking;
+					responseBlock.updateContent(fullResponse, false, toolCalls, thought, isThinking);
 				},
 				onDone: async (fullResponse) => {
 					const modelMessage = { id: modelMessageId, role: "model", type: "model", content: fullResponse, diffStatuses: [], timestamp: Date.now() };
+					if (callbacks.thought) {
+						modelMessage.thought = callbacks.thought;
+					}
+					if (callbacks.totalThinkingMs !== undefined) {
+						modelMessage.thoughtDurationMs = callbacks.totalThinkingMs;
+					}
 					session.messages.push(modelMessage);
 					session.lastModified = Date.now();
 					await workspaceClient.setSession(sessionId, session);
@@ -2374,14 +2383,17 @@ class AIManager {
 		}
 
 		const callbacks = {
-			onUpdate: (fullResponse) => { // Update the responseBlock directly
-				if (callbacks.toolCalls && callbacks.toolCalls.length > 0) {
+			onUpdate: (fullResponse, updateData = null) => { // Update the responseBlock directly
+				const toolCalls = updateData?.toolCalls ?? callbacks.toolCalls;
+				const thought = updateData?.thought ?? callbacks.thought;
+				const isThinking = updateData?.isThinking ?? callbacks.isThinking;
+				if (toolCalls && toolCalls.length > 0) {
 					this._startGlow(targetSessionId);
 				} else {
 					this._stopGlow(targetSessionId);
 				}
 				const shouldScroll = this._shouldAutoScroll();
-				responseBlock.updateContent(fullResponse);
+				responseBlock.updateContent(fullResponse, false, toolCalls, thought, isThinking);
 				if (this.isSessionViewed(targetSessionId) && shouldScroll && this.conversationArea) {
 					this.scrollToBottom(true);
 				}
@@ -2390,6 +2402,12 @@ class AIManager {
 				this._stopGlow(targetSessionId);
 				// First, update the session data and add the delete button to the user's prompt.
 				const modelMessage = { id: modelMessageId, role: "model", type: "model", content: fullResponse, diffStatuses: [], timestamp: Date.now() };
+				if (callbacks.thought) {
+					modelMessage.thought = callbacks.thought;
+				}
+				if (callbacks.totalThinkingMs !== undefined) {
+					modelMessage.thoughtDurationMs = callbacks.totalThinkingMs;
+				}
 				if (callbacks.thoughtSignature) {
 					modelMessage.thoughtSignature = callbacks.thoughtSignature;
 				}
@@ -3158,7 +3176,8 @@ ${contextText}`;
 
 	isKnownReasoningModel(session = null) {
 		const targetSession = session || this.activeSession;
-		const activeAi = targetSession?.connectionId ? AIConnections.getInstance(targetSession.connectionId) : this.ai;
+		const connId = targetSession?.connectionId || this.activeSession?.connectionId || AIConnections.defaultConnectionId;
+		const activeAi = connId ? AIConnections.getInstance(connId) : this.ai;
 		if (!activeAi) return false;
 		const sessionThinking = targetSession?.thinkingLevel;
 		const effectiveThinkingLevel = (sessionThinking && sessionThinking !== "auto")
@@ -3520,14 +3539,17 @@ ${contextText}`;
 		}
 
 		const callbacks = {
-			onUpdate: (fullResponse) => {
-				if (callbacks.toolCalls && callbacks.toolCalls.length > 0) {
+			onUpdate: (fullResponse, updateData = null) => {
+				const toolCalls = updateData?.toolCalls ?? callbacks.toolCalls;
+				const thought = updateData?.thought ?? callbacks.thought;
+				const isThinking = updateData?.isThinking ?? callbacks.isThinking;
+				if (toolCalls && toolCalls.length > 0) {
 					this._startGlow(this.activeSessionId);
 				} else {
 					this._stopGlow(this.activeSessionId);
 				}
 				const shouldScroll = this._shouldAutoScroll();
-				responseBlock.updateContent(fullResponse);
+				responseBlock.updateContent(fullResponse, false, toolCalls, thought, isThinking);
 				if (shouldScroll && this.conversationArea) {
 					this.scrollToBottom(true);
 				}
@@ -3535,6 +3557,12 @@ ${contextText}`;
 			onDone: async (fullResponse) => {
 				this._stopGlow(this.activeSessionId);
 				const modelMessage = { id: modelMessageId, role: "model", type: "model", content: fullResponse, diffStatuses: [], timestamp: Date.now() };
+				if (callbacks.thought) {
+					modelMessage.thought = callbacks.thought;
+				}
+				if (callbacks.totalThinkingMs !== undefined) {
+					modelMessage.thoughtDurationMs = callbacks.totalThinkingMs;
+				}
 				if (callbacks.thoughtSignature) {
 					modelMessage.thoughtSignature = callbacks.thoughtSignature;
 				}

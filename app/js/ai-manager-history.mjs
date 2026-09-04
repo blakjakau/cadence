@@ -810,7 +810,7 @@ class AIManagerHistory {
 					}
 				}
 				
-				const targetSession = this.manager.runningSessions.get(targetSessionId)?.instance?.session || (this.manager.activeSessionId === targetSessionId ? this.manager.activeSession : null);
+				const targetSession = this.manager.runningSessions.get(targetSessionId)?.session || this.manager.runningSessions.get(targetSessionId)?.instance?.session || (this.manager.activeSessionId === targetSessionId ? this.manager.activeSession : null);
 				const skipXml = this.manager.isKnownReasoningModel(targetSession);
 				const liveMsgObj = { 
 					id: messageId, 
@@ -907,7 +907,7 @@ class AIManagerHistory {
 				if (running) running.responseBlock = null;
 				this._localActiveStreamingBlock = null;
 				
-				const targetSession = this.manager.runningSessions.get(targetSessionId)?.instance?.session || (this.manager.activeSessionId === targetSessionId ? this.manager.activeSession : null);
+				const targetSession = this.manager.runningSessions.get(targetSessionId)?.session || this.manager.runningSessions.get(targetSessionId)?.instance?.session || (this.manager.activeSessionId === targetSessionId ? this.manager.activeSession : null);
 				const skipXml = this.manager.isKnownReasoningModel(targetSession);
 
 				responseBlock.classList.remove("streaming");
@@ -944,7 +944,7 @@ class AIManagerHistory {
 	 * @param {number} index The message's index in the chat history array (needed for delete button logic).
 	 * @returns {HTMLElement|null} The generated DOM element or null if message is invalid.
 	 */
-	_createMessageElement(message, index, isNew = false) {
+	_createMessageElement(message, index, isNew = false, session = null) {
 		if (!message.id) {
 			message.id = crypto.randomUUID();
 		}
@@ -1124,7 +1124,9 @@ class AIManagerHistory {
 			// Content Body
 			const contentDiv = new Block();
 			contentDiv.className = "model-turn-content";
-			contentDiv.innerHTML = this.manager.messageRenderer.renderResponseContent(message.content, message, isNew);
+			const targetSession = session || (message?.sessionId ? this.manager.sessions?.get?.(message.sessionId) : null) || this.manager.activeSession;
+			const skipXml = this.manager.isKnownReasoningModel(targetSession);
+			contentDiv.innerHTML = this.manager.messageRenderer.renderResponseContent(message.content, message, isNew, skipXml);
 
 			header.onclick = (e) => {
 				if (e.target.closest('.delete-history-button') || e.target.closest('.delete-turn-btn') || e.target.closest('.replay-history-button') || e.target.closest('.replay-turn-btn')) return;
@@ -2694,22 +2696,24 @@ class AIManagerHistory {
 		}
 		extraTokens += 500; // general safety headroom
 
-		// NEW: Always strip thought blocks from the context.
-		// Native reasoning models will get confused and try to explicitly output the tags
-		// if they see them in the few-shot history.
-		chatHistory = chatHistory.map(msg => {
-			if (msg.content) {
-				let newContent = msg.content;
-				newContent = newContent.replace(/<thought>[\s\S]*?<\/thought>/gi, '');
-				newContent = newContent.replace(/<think>[\s\S]*?<\/think>/gi, '');
-				newContent = newContent.replace(/<\|channel>thought[\s\S]*?<channel\|>/gi, '');
-				return {
-					...msg,
-					content: newContent.trim()
-				};
-			}
-			return msg;
-		}).filter(msg => msg.content && msg.content.trim() !== "");
+		// Strip XML thought blocks from the context for non-reasoning models.
+		// For native reasoning models, thoughts are preserved in msg.thought and
+		// discussion of <thought> tags in msg.content is preserved.
+		if (!this.manager.isKnownReasoningModel(targetSession)) {
+			chatHistory = chatHistory.map(msg => {
+				if (msg.content) {
+					let newContent = msg.content;
+					newContent = newContent.replace(/<thought>[\s\S]*?<\/thought>/gi, '');
+					newContent = newContent.replace(/<think>[\s\S]*?<\/think>/gi, '');
+					newContent = newContent.replace(/<\|channel>thought[\s\S]*?<channel\|>/gi, '');
+					return {
+						...msg,
+						content: newContent.trim()
+					};
+				}
+				return msg;
+			}).filter(msg => msg.content && msg.content.trim() !== "");
+		}
 
 		// NEW: Strip redundant full read_file outputs (keeping only the latest read for each file)
 		const fullReads = [];
