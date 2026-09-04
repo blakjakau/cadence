@@ -837,8 +837,14 @@ class AIManagerHistory {
 					const existingExpander = responseBlock.activeSegmentDiv.querySelector('.tool-call-preview-expander');
 					const wasUserClosed = existingExpander && existingExpander.dataset.userToggled === 'true' && !existingExpander.open;
 
-					// Finalized/earlier segments must not render the trailing tool calls of the active message
-					const finalizedMsgObj = { id: messageId, toolCalls: [], thought: thought || "", isThinking: false };
+					// Finalized/earlier segments must not render the trailing tool calls of the active message,
+					// and only segment 0 should receive the thought block.
+					const finalizedMsgObj = { 
+						id: messageId, 
+						toolCalls: [], 
+						thought: segmentIndex === 0 ? (thought || "") : "", 
+						isThinking: false 
+					};
 					this.manager.messageRenderer.renderResponseSegment(responseBlock.activeSegmentDiv, finalizedText, finalizedMsgObj, true, skipXml);
 					// Attach code block buttons once the segment is closed/finalized
 					this.manager.messageRenderer.addCodeBlockButtons(responseBlock.activeSegmentDiv);
@@ -861,7 +867,12 @@ class AIManagerHistory {
 				const existingExpander = responseBlock.activeSegmentDiv.querySelector('.tool-call-preview-expander');
 				const wasUserClosed = existingExpander && existingExpander.dataset.userToggled === 'true' && !existingExpander.open;
 
-				this.manager.messageRenderer.renderResponseSegment(responseBlock.activeSegmentDiv, activeText, liveMsgObj, true, skipXml);
+				// Trailing active segment only hosts the thought block if it is the first/only segment
+				const activeMsgObj = responseBlock.finalizedSegmentDivs.length === 0
+					? liveMsgObj
+					: { ...liveMsgObj, thought: "", isThinking: false };
+
+				this.manager.messageRenderer.renderResponseSegment(responseBlock.activeSegmentDiv, activeText, activeMsgObj, true, skipXml);
 				// NOTE: Action buttons are delayed until this block is closed by new segments or generation finishes
 
 				if (wasUserClosed) {

@@ -1485,7 +1485,28 @@ export default class AIManagerMessageRenderer {
         const shouldSkip = this.shouldSkipXmlParsing(message, null, skipXml);
         const { thinkContent, bodyContent, isClosed } = this.extractThoughtAndBody(content, message, shouldSkip);
 
-        if (thinkContent || (message && message.isThinking)) {
+        // Check if an earlier sibling segment in this turn already hosts the thought block
+        const parentTurn = containerDiv.parentElement;
+        let thoughtBlockEl = containerDiv.querySelector('.thought-block');
+        const externalThoughtBlock = parentTurn && !thoughtBlockEl ? parentTurn.querySelector('.thought-block') : null;
+
+        if (externalThoughtBlock) {
+            // Update closed status or duration on the turn's existing thought block if needed
+            if (isClosed && !externalThoughtBlock.dataset.userToggled && externalThoughtBlock.hasAttribute('expanded')) {
+                externalThoughtBlock.removeAttribute('expanded');
+            }
+            if (message && message.thoughtDurationMs !== undefined) {
+                const thoughtSeconds = (message.thoughtDurationMs / 1000).toFixed(1);
+                const headerSpan = externalThoughtBlock.querySelector('.thought-header span');
+                const thinkLabel = `Thought Process (${thoughtSeconds}s)`;
+                if (headerSpan && headerSpan.textContent !== thinkLabel) {
+                    headerSpan.textContent = thinkLabel;
+                    headerSpan.title = thinkLabel;
+                }
+            }
+        }
+
+        if (!externalThoughtBlock && (thinkContent || (message && message.isThinking))) {
             let thoughtSeconds = null;
             if (message && message.thoughtDurationMs !== undefined) {
                 thoughtSeconds = (message.thoughtDurationMs / 1000).toFixed(1);
@@ -1493,7 +1514,6 @@ export default class AIManagerMessageRenderer {
             const thinkLabel = isClosed ? (thoughtSeconds ? `Thought Process (${thoughtSeconds}s)` : "Thought Process") : "Thinking...";
             const thinkSegments = this.segmentThoughtContent(thinkContent);
 
-            let thoughtBlockEl = containerDiv.querySelector('.thought-block');
             if (!thoughtBlockEl) {
                 containerDiv.innerHTML = "";
                 thoughtBlockEl = document.createElement("div");
@@ -1600,7 +1620,10 @@ export default class AIManagerMessageRenderer {
             const currentContentSig = `${bodyContent.length}_${(message?.toolCalls || []).map(tc => `${tc.name || tc.functionCall?.name}:${JSON.stringify(tc.args || tc.functionCall?.args || '').length}`).join(';')}`;
             if (containerDiv.dataset.renderSig !== currentContentSig) {
                 containerDiv.dataset.renderSig = currentContentSig;
-                containerDiv.innerHTML = this.renderResponseContent(bodyContent, message, isNew, shouldSkip);
+                const nonThoughtMessage = (message && (message.thought || message.isThinking))
+                    ? { ...message, thought: "", isThinking: false }
+                    : message;
+                containerDiv.innerHTML = this.renderResponseContent(bodyContent, nonThoughtMessage, isNew, shouldSkip);
             }
         }
     }
