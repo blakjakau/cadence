@@ -2817,6 +2817,28 @@ class AIManager {
 			(msg) => msg.type === "user" || msg.type === "model" || msg.type === "tool_response"
 		);
 
+		// Helper to safely slice strings without splitting UTF-16 surrogate pairs (e.g. emojis)
+		const safeSlice = (str, start, end) => {
+			if (!str) return "";
+			let s = start !== undefined ? (start < 0 ? Math.max(0, str.length + start) : Math.min(str.length, start)) : 0;
+			let e = end !== undefined ? (end < 0 ? Math.max(0, str.length + end) : Math.min(str.length, end)) : str.length;
+			if (s > 0 && s < str.length && str.charCodeAt(s) >= 0xDC00 && str.charCodeAt(s) <= 0xDFFF) {
+				s++;
+			}
+			if (e > 0 && e <= str.length && str.charCodeAt(e - 1) >= 0xD800 && str.charCodeAt(e - 1) <= 0xDBFF) {
+				e--;
+			}
+			return str.slice(s, e);
+		};
+
+		const sanitizeSurrogates = (str) => {
+			if (typeof str !== 'string') return str;
+			if (typeof str.toWellFormed === 'function') {
+				return str.toWellFormed();
+			}
+			return str.replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, '\uFFFD');
+		};
+
 		// Distill messages to capture essential intent and action without bloating context
 		const distillMessage = (msg) => {
 			let content = msg.content || "";
@@ -2829,9 +2851,9 @@ class AIManager {
 			if (msg.type === "tool_response") {
 				// Truncate massive tool response outputs (e.g. huge file reads or directory listings)
 				if (content.length > 800) {
-					content = content.substring(0, 500) + "\n...[output truncated for summarization]...\n" + content.substring(content.length - 200);
+					content = safeSlice(content, 0, 500) + "\n...[output truncated for summarization]...\n" + safeSlice(content, -200);
 				}
-				return `[Tool Response]\n${content.trim()}`;
+				return sanitizeSurrogates(`[Tool Response]\n${content.trim()}`);
 			}
 
 			if (msg.role === "model") {
@@ -2850,12 +2872,12 @@ class AIManager {
 					
 					// Combine tool details with any accompanying text
 					const cleanText = content.replace(/<tool_call\s+name=["']([^"']+)["']\s*>[\s\S]*?<\/tool_call>/gi, '').trim();
-					return `[Assistant]\n${toolDetails}${cleanText ? `\n${cleanText}` : ''}`;
+					return sanitizeSurrogates(`[Assistant]\n${toolDetails}${cleanText ? `\n${cleanText}` : ''}`);
 				}
-				return `[Assistant]\n${content.trim()}`;
+				return sanitizeSurrogates(`[Assistant]\n${content.trim()}`);
 			}
 
-			return `[User]\n${content.trim()}`;
+			return sanitizeSurrogates(`[User]\n${content.trim()}`);
 		};
 
 		// Distill all messages in the cycle
@@ -2882,6 +2904,7 @@ class AIManager {
 
 		// Function to perform a single AI summarization call without reasoning overhead
 		const runSummaryCall = async (contextText) => {
+			const sanitizedText = sanitizeSurrogates(contextText);
 			const prompt = `Please summarize the following agent task cycle.
 You must output your response in the following XML format:
 <title>A very concise, single-line, active-voice title summarizing the main outcome of the cycle (max 10 words)</title>
@@ -2890,7 +2913,7 @@ Outline what the user requested, what implementation actions (file edits, creati
 </summary>
 
 Here is the task cycle to summarize:
-${contextText}`;
+${sanitizedText}`;
 
 			let summaryResponse = "";
 			await new Promise((resolve, reject) => {
