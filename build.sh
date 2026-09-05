@@ -2,27 +2,9 @@
 
 # Define build functions for clarity
 build_for_linux() {
-  echo "build for ... linux amd64 (Native via Wails)"
-  # Ensure the fake pkg-config path is used for the build
-  export PKG_CONFIG_PATH=$PWD/.pkgconfig
-  
-  # Use Wails CLI if available, otherwise fallback to standard go build
-  WAILS_CMD=$(which wails || echo "$HOME/go/bin/wails")
-  
-  if [ -f "$WAILS_CMD" ]; then
-    CGO_ENABLED=1 $WAILS_CMD build -clean -debug -platform linux/amd64 -tags wails
-    mkdir -p dist
-    # Wails v2 usually puts the output in build/bin/
-    if [ -f "build/bin/cadence-linux-x64" ]; then
-        mv build/bin/cadence-linux-x64 dist/
-        echo "Success: dist/cadence-linux-x64 created."
-    else
-        echo "Error: Could not find build/bin/cadence-linux-x64. Check the build/bin folder."
-    fi
-  else
-    echo "Wails CLI not found. Building standard server-only binary..."
-    GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o dist/cadence-linux-x64 .
-  fi
+  echo "build for ... linux amd64"
+  mkdir -p dist
+  GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o dist/cadence-linux-x64 .
 }
 
 build_for_mac() {

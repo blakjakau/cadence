@@ -931,22 +931,7 @@ const execCommandAbout = () => {
 	Modal.notice(content, title)
 }
 const execCommandAddFolder = async () => {
-	if (window.runtime) {
-		const folder = await window.runtime.OpenDirectoryDialog({
-			Title: "Add Folder to Workspace",
-			DefaultDirectory: workspace.folders?.[0] || "",
-		})
-		if (folder) {
-			if (!workspace.folders.includes(folder)) {
-				workspace.folders.push(folder)
-				updateFileListBackground()
-				saveWorkspace()
-				await fileList.refreshAll()
-			}
-		}
-	} else {
-		fileOpen.click()
-	}
+	fileOpen.click()
 }
 const execCommandToggleFolders = () => {
 	ui.toggleSidebar()

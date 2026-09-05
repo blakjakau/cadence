@@ -14,7 +14,7 @@ const CONDUIT_PROTOCOL_URL = 'conduit://';
 class TerminalManager {
 	constructor() {
 		this._initialized = false;
-		this.port = (window.runtime) ? 3022 : (window.location.port || 3022);
+		this.port = window.location.port || 3022;
 		this.settingsPanel = null;
 		this.settingsButton = null;
 		this.conduitStatus = { isRunning: false, isInstalled: false, version: 'N/A', mode: 'unknown' };
@@ -40,11 +40,11 @@ class TerminalManager {
 	}
 
 	get wsHost() {
-		return (window.runtime) ? `localhost:${this.port}` : (window.location.host || `localhost:${this.port}`);
+		return window.location.host || `localhost:${this.port}`;
 	}
 
 	get baseUrl() {
-		return (window.runtime) ? `http://localhost:${this.port}` : (window.location.origin || `http://localhost:${this.port}`);
+		return window.location.origin || `http://localhost:${this.port}`;
 	}
 
 	get wsUrl() {

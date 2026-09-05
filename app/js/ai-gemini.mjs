@@ -637,20 +637,23 @@ class Gemini extends AI {
                                         const partText = part.text || '';
                                         if (partThought && !isReasoning) {
                                             isReasoning = true;
+                                            callbacks.isThinking = true;
+                                            callbacks.thought = callbacks.thought || "";
                                             thinkingStartTime = Date.now();
-                                            fullResponseAccumulator += "<thought>\n" + partText;
+                                            if (partText) {
+                                                callbacks.thought += partText;
+                                            }
                                         } else if (partThought && isReasoning) {
                                             if (partText) {
-                                                fullResponseAccumulator += partText;
+                                                callbacks.thought += partText;
                                             }
                                         } else if (!partThought && isReasoning) {
                                             isReasoning = false;
+                                            callbacks.isThinking = false;
                                             totalThinkingMs += Date.now() - thinkingStartTime;
-                                            const backticks = fullResponseAccumulator.match(/```/g);
-                                            if (backticks && backticks.length % 2 !== 0) {
-                                                fullResponseAccumulator += "\n```\n";
+                                            if (partText) {
+                                                fullResponseAccumulator += partText;
                                             }
-                                            fullResponseAccumulator += "\n</thought>\n" + partText;
                                         } else if (!partThought && !isReasoning) {
                                             if (partText) {
                                                 fullResponseAccumulator += partText;
@@ -659,12 +662,8 @@ class Gemini extends AI {
                                     } else if (part.functionCall) {
                                         if (isReasoning) {
                                             isReasoning = false;
+                                            callbacks.isThinking = false;
                                             totalThinkingMs += Date.now() - thinkingStartTime;
-                                            const backticks = fullResponseAccumulator.match(/```/g);
-                                            if (backticks && backticks.length % 2 !== 0) {
-                                                fullResponseAccumulator += "\n```\n";
-                                            }
-                                            fullResponseAccumulator += "\n</thought>\n";
                                         }
 
                                         if (!callbacks.toolCalls) callbacks.toolCalls = [];
@@ -689,7 +688,7 @@ class Gemini extends AI {
                                     }
                                 }
                                 callbacks.totalThinkingMs = totalThinkingMs;
-                                if (onUpdate) onUpdate(fullResponseAccumulator);
+                                if (onUpdate) onUpdate(fullResponseAccumulator, { thought: callbacks.thought, isThinking: callbacks.isThinking, toolCalls: callbacks.toolCalls });
                             }
                         }
                         processedIndex = objectEndIndex + 1;
@@ -701,13 +700,10 @@ class Gemini extends AI {
                 if (done) {
                     if (isReasoning) {
                         isReasoning = false;
+                        callbacks.isThinking = false;
                         totalThinkingMs += Date.now() - thinkingStartTime;
-                        const backticks = fullResponseAccumulator.match(/```/g);
-                        if (backticks && backticks.length % 2 !== 0) {
-                            fullResponseAccumulator += "\n```\n";
-                        }
-                        fullResponseAccumulator += "\n</thought>";
-                        if (onUpdate) onUpdate(fullResponseAccumulator);
+                        callbacks.totalThinkingMs = totalThinkingMs;
+                        if (onUpdate) onUpdate(fullResponseAccumulator, { thought: callbacks.thought, isThinking: false, toolCalls: callbacks.toolCalls });
                     }
                     buffer = ''; 
                     processedIndex = 0;

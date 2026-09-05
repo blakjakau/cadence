@@ -102,11 +102,15 @@ class AIManagerSessions {
 			defaultConnectionId = window.ui.aiManager.connectionsManager.defaultConnectionId;
 		}
 
+		const now = Date.now();
 		const newSessionData = {
-			id: newId, name: newName, createdAt: Date.now(), lastModified: Date.now(),
+			id: newId, name: newName, createdAt: now, lastModified: now,
 			version: CURRENT_SESSION_VERSION,
 			messages: [], promptInput: "", promptHistory: [], scrollTop: 0,
 			evergreenFiles: [], modifiedFiles: {}, pendingEdits: {},
+			lastMilestoneTimestamp: now,
+			checkpoints: [{ name: "session_start", timestamp: now }],
+			currentCycleStartTimestamp: now,
 			agentMode: defaultAgent,
 			planningMode: defaultPlanning,
 			forgivenessMode: defaultForgiveness,
@@ -229,6 +233,11 @@ class AIManagerSessions {
 			if (actions) actions.style.display = 'none';
 			const input = latestCard.querySelector('textarea');
 			if (input) input.style.display = 'none';
+		}
+
+		// Automatically compact the preceding planning cycle on plan acceptance
+		if (isAccepted) {
+			await this.manager.historyManager.autoCompactAgentCycle(sourceSession);
 		}
 
 		// Submit the prompt immediately in the same session

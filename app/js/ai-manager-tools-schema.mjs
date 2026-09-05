@@ -16,7 +16,10 @@ export const subAgentToolsList = [
     "query_parent",
     // "web_search",
     "research",
-    "web_fetch"
+    "web_fetch",
+    "checkpoint",
+    "rollback_file",
+    "rollback_cycle"
 ];
 
 export const tools = [
@@ -60,11 +63,12 @@ export const tools = [
     },
     {
         name: "search_files",
-        description: "Search for an exact string across all files in the project.",
+        description: "Search for an exact string across all files in the project (or optionally within a specific path/folder).",
         parameters: {
             type: "object",
             properties: {
-                query: { type: "string", description: "The exact text query to search for." }
+                query: { type: "string", description: "The exact text query to search for." },
+                path: { type: "string", description: "Optional folder or directory path to restrict the search to." }
             },
             required: ["query"]
         }
@@ -342,6 +346,47 @@ export const tools = [
                 url: { type: "string", description: "The URL of the webpage to fetch." }
             },
             required: ["url"]
+        }
+    },
+    {
+        name: "checkpoint",
+        description: "Create a stable checkpoint for all files modified so far in this task. Use this after completing and verifying a sub-step (e.g. syntax is valid and logic is working) before attempting risky refactors.",
+        parameters: {
+            type: "object",
+            properties: {
+                name: { type: "string", description: "Short label for this checkpoint, e.g., 'auth-middleware-complete'" }
+            },
+            required: ["name"]
+        }
+    },
+    {
+        name: "rollback_file",
+        description: "Reverts a file to its state at the beginning of the current cycle or to the last checkpoint. Use this when an edit has corrupted the file, introduced unresolvable syntax errors, or when you need a clean slate to re-read and re-apply changes.",
+        parameters: {
+            type: "object",
+            properties: {
+                path: { type: "string", description: "The path of the file to rollback." },
+                target: {
+                    type: "string",
+                    enum: ["cycle_start", "last_checkpoint"],
+                    description: "Optional. Whether to revert all the way to cycle start ('cycle_start', default) or to the most recent checkpoint ('last_checkpoint')."
+                }
+            },
+            required: ["path"]
+        }
+    },
+    {
+        name: "rollback_cycle",
+        description: "Reverts all files modified in the current task cycle back to their state at the beginning of the cycle or to the last checkpoint.",
+        parameters: {
+            type: "object",
+            properties: {
+                target: {
+                    type: "string",
+                    enum: ["cycle_start", "last_checkpoint"],
+                    description: "Optional. Whether to revert all modified files to cycle start ('cycle_start', default) or to the most recent checkpoint ('last_checkpoint')."
+                }
+            }
         }
     }
 ];

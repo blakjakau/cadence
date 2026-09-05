@@ -39,6 +39,16 @@ export class Agent {
 		this._abortAgent = false;
 		let isThrottled = true;
 		const { aiManager, session, connection } = this;
+		const now = Date.now();
+		if (!session.currentCycleStartTimestamp) {
+			session.currentCycleStartTimestamp = now;
+		}
+		if (!session.lastMilestoneTimestamp) {
+			session.lastMilestoneTimestamp = session.createdAt || now;
+		}
+		if (!session.checkpoints || session.checkpoints.length === 0) {
+			session.checkpoints = [{ name: "session_start", timestamp: session.lastMilestoneTimestamp }];
+		}
 		const connConfig = connection?.config || {};
 		const hasRateLimits = !!(connConfig.rpmLimit || connConfig.rpdLimit || connConfig.tpmLimit || connConfig.requestsPerMin || connection?.requestsPerMin);
 		const maxTurns = connConfig.maxTurns !== undefined ? connConfig.maxTurns : (connection?.config?.maxTurns || 0);
@@ -171,22 +181,25 @@ export class Agent {
 
 			const runPromise = new Promise((resolve, reject) => {
 				callbacks = {
-					onUpdate: (fullResponse) => {
+					onUpdate: (fullResponse, updateData = null) => {
 						if (streamForciblyEnded) return;
 						currentFullResponse = fullResponse;
-						if (callbacks.toolCalls && callbacks.toolCalls.length > 0) {
+						const toolCalls = updateData?.toolCalls ?? callbacks.toolCalls;
+						const thought = updateData?.thought ?? callbacks.thought;
+						const isThinking = updateData?.isThinking ?? callbacks.isThinking;
+						if (toolCalls && toolCalls.length > 0) {
 							aiManager._startGlow(session.id);
 						} else {
 							aiManager._stopGlow(session.id);
 						}
 						const shouldScroll = aiManager._shouldAutoScroll();
-						responseBlock.updateContent(fullResponse, false, callbacks.toolCalls);
+						responseBlock.updateContent(fullResponse, false, toolCalls, thought, isThinking);
 						if (aiManager.isSessionViewed(session.id) && shouldScroll && aiManager.conversationArea) {
 							aiManager.scrollToBottom(true);
 						}
 
 						// Scan streaming tokens for early truncation
-						const check = aiManager._checkStreamingResponse(fullResponse);
+						const check = aiManager._checkStreamingResponse(fullResponse, session);
 						if (check.shouldAbort) {
 							streamForciblyEnded = true;
 							forcedReason = check.reason;
@@ -493,7 +506,7 @@ export class Agent {
 							...(sig ? { thoughtSignature: sig } : {})
 						};
 					});
-				} else {
+				} else if (!aiManager.isKnownReasoningModel(session)) {
 					toolCalls = aiManager._parseAllToolCalls(responseContent);
 				}
 
@@ -509,13 +522,16 @@ export class Agent {
 					}
 
 					// Check if the response contains anything other than thought blocks or XML tags
-					const strippedThoughts = (responseContent || "")
-						.replace(/<thought>[\s\S]*?<\/thought>/gi, '')
-						.replace(/<think>[\s\S]*?<\/think>/gi, '')
-						.replace(/<\|channel>thought[\s\S]*?<channel\|>/gi, '')
-						.replace(/<tool_call[\s\S]*?<\/tool_call>/gi, '')
-						.replace(/<[^>]*>/g, '')
-						.trim();
+					let strippedThoughts = (responseContent || "").trim();
+					if (!aiManager.isKnownReasoningModel(session)) {
+						strippedThoughts = strippedThoughts
+							.replace(/<thought>[\s\S]*?<\/thought>/gi, '')
+							.replace(/<think>[\s\S]*?<\/think>/gi, '')
+							.replace(/<\|channel>thought[\s\S]*?<channel\|>/gi, '')
+							.replace(/<tool_call[\s\S]*?<\/tool_call>/gi, '')
+							.replace(/<[^>]*>/g, '')
+							.trim();
+					}
 
 					// If the model finished without making a tool-call and produced no output other than thought:
 					// Crop the turn (remove incomplete/empty model turn) and automatically resubmit the last user/system turn.
@@ -948,6 +964,7 @@ export class Agent {
 							for (let i = endIdx - 2; i >= 0; i--) {
 								const msg = messages[i];
 								if (msg.type === "cycle_summary" || 
+									aiManager.historyManager?.isCycleBoundary(msg, i, messages) ||
 									(msg.type === "tool_response" && msg.content && msg.content.includes("[Tool Response: done]")) ||
 									(msg.role === "model" && msg.toolCalls && msg.toolCalls.some(tc => (tc.functionCall?.name || tc.name) === "done"))) {
 									cycleStartIdx = i + 1;
@@ -1009,6 +1026,7 @@ export class Agent {
 					if (shouldAutoMilestone) {
 						session.lastMilestoneTimestamp = Date.now();
 					}
+					delete session.currentCycleStartTimestamp;
 					session.lastModified = Date.now();
 					await workspaceClient.setSession(session.id, session);
 					aiManager.setSessionProcessing(session.id, false);

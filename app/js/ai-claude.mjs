@@ -248,6 +248,10 @@ class Claude extends AI {
         let fullResponseAccumulator = '';
         let currentToolCall = null;
         let isReasoning = false;
+        let thinkingStartTime = 0;
+        let totalThinkingMs = 0;
+        callbacks.thought = callbacks.thought || "";
+        callbacks.isThinking = false;
 
         try {
             while (true) {
@@ -276,8 +280,9 @@ class Claude extends AI {
                                     };
                                 } else if (block?.type === 'thinking') {
                                     isReasoning = true;
-                                    fullResponseAccumulator += "<thought>\n";
-                                    if (onUpdate) onUpdate(fullResponseAccumulator);
+                                    callbacks.isThinking = true;
+                                    thinkingStartTime = Date.now();
+                                    if (onUpdate) onUpdate(fullResponseAccumulator, { thought: callbacks.thought, isThinking: true, toolCalls: callbacks.toolCalls });
                                 }
                             }
 
@@ -286,10 +291,10 @@ class Claude extends AI {
                                 const delta = parsed.delta;
                                 if (delta?.type === 'text_delta') {
                                     fullResponseAccumulator += delta.text;
-                                    if (onUpdate) onUpdate(fullResponseAccumulator);
+                                    if (onUpdate) onUpdate(fullResponseAccumulator, { thought: callbacks.thought, isThinking: callbacks.isThinking, toolCalls: callbacks.toolCalls });
                                 } else if (delta?.type === 'thinking_delta') {
-                                    fullResponseAccumulator += delta.thinking;
-                                    if (onUpdate) onUpdate(fullResponseAccumulator);
+                                    callbacks.thought = (callbacks.thought || "") + delta.thinking;
+                                    if (onUpdate) onUpdate(fullResponseAccumulator, { thought: callbacks.thought, isThinking: true, toolCalls: callbacks.toolCalls });
                                 } else if (delta?.type === 'input_json_delta' && currentToolCall) {
                                     currentToolCall.partial_json += delta.partial_json;
                                     let argsObj = {};
@@ -314,7 +319,7 @@ class Claude extends AI {
                                     } else {
                                         callbacks.toolCalls.push(toolEntry);
                                     }
-                                    if (onUpdate) onUpdate(fullResponseAccumulator);
+                                    if (onUpdate) onUpdate(fullResponseAccumulator, { thought: callbacks.thought, isThinking: callbacks.isThinking, toolCalls: callbacks.toolCalls });
                                 }
                             }
 
@@ -322,8 +327,12 @@ class Claude extends AI {
                             if (parsed.type === 'content_block_stop') {
                                 if (isReasoning) {
                                     isReasoning = false;
-                                    fullResponseAccumulator += "\n</thought>\n";
-                                    if (onUpdate) onUpdate(fullResponseAccumulator);
+                                    callbacks.isThinking = false;
+                                    if (thinkingStartTime) {
+                                        totalThinkingMs += (Date.now() - thinkingStartTime);
+                                        callbacks.totalThinkingMs = totalThinkingMs;
+                                    }
+                                    if (onUpdate) onUpdate(fullResponseAccumulator, { thought: callbacks.thought, isThinking: false, toolCalls: callbacks.toolCalls });
                                 }
 
                                 if (currentToolCall) {

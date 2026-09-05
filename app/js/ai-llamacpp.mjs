@@ -429,25 +429,22 @@ class LlamaCpp extends AI {
 
                             if (typeof delta.reasoning_content === 'string') {
                                 let reasoningPart = delta.reasoning_content;
-                                reasoningPart = reasoningPart.replace(/<[^>]*?\b(?:tool(?:_?call)?|thought|think|channel)\b[^>]*?>/gi, '');
 
                                 if (!isReasoning) {
                                     isReasoning = true;
+                                    callbacks.isThinking = true;
+                                    callbacks.thought = callbacks.thought || "";
                                     thinkingStartTime = Date.now();
-                                    chunkUpdate += "<thought>\n";
                                 }
-                                chunkUpdate += reasoningPart;
+                                callbacks.thought += reasoningPart;
+                                if (onUpdate) onUpdate(fullResponse, { thought: callbacks.thought, isThinking: true, toolCalls: callbacks.toolCalls });
                             }
 
                             if (typeof delta.content === 'string') {
                                 if (isReasoning) {
                                     isReasoning = false;
+                                    callbacks.isThinking = false;
                                     totalThinkingMs += Date.now() - thinkingStartTime;
-                                    const backticks = fullResponse.match(/```/g);
-                                    if (backticks && backticks.length % 2 !== 0) {
-                                        chunkUpdate += "\n```\n";
-                                    }
-                                    chunkUpdate += "\n</thought>\n";
                                 }
                                 chunkUpdate += delta.content;
                             }
@@ -455,20 +452,15 @@ class LlamaCpp extends AI {
                             if (delta.tool_calls || ('tool_calls' in delta)) {
                                 if (isReasoning) {
                                     isReasoning = false;
+                                    callbacks.isThinking = false;
                                     totalThinkingMs += Date.now() - thinkingStartTime;
-                                    const backticks = fullResponse.match(/```/g);
-                                    if (backticks && backticks.length % 2 !== 0) {
-                                        chunkUpdate += "\n```\n";
-                                    }
-                                    chunkUpdate += "\n</thought>\n";
                                 }
 
-                                // Commit chunkUpdate (e.g. </thought>) immediately so it's not lost if tool parsing throws
                                 callbacks.totalThinkingMs = totalThinkingMs;
                                 if (chunkUpdate) {
                                     fullResponse += chunkUpdate;
                                     chunkUpdate = '';
-                                    if (onUpdate) onUpdate(fullResponse);
+                                    if (onUpdate) onUpdate(fullResponse, { thought: callbacks.thought, isThinking: callbacks.isThinking, toolCalls: callbacks.toolCalls });
                                 }
 
                                 if (delta.tool_calls && Array.isArray(delta.tool_calls)) {
@@ -533,7 +525,7 @@ class LlamaCpp extends AI {
                                     }
                                 }
  
-                                if (onUpdate) onUpdate(fullResponse);
+                                if (onUpdate) onUpdate(fullResponse, { thought: callbacks.thought, isThinking: callbacks.isThinking, toolCalls: callbacks.toolCalls });
                             }
                         }
                     } catch (e) {
@@ -544,12 +536,9 @@ class LlamaCpp extends AI {
  
             if (isReasoning) {
                 isReasoning = false;
+                callbacks.isThinking = false;
                 totalThinkingMs += Date.now() - thinkingStartTime;
-                const backticks = fullResponse.match(/```/g);
-                if (backticks && backticks.length % 2 !== 0) {
-                    fullResponse += "\n```\n";
-                }
-                fullResponse += "\n</thought>";
+                callbacks.totalThinkingMs = totalThinkingMs;
             }
  
             const requestEndTime = Date.now();

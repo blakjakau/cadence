@@ -104,6 +104,7 @@ Note: The active model does not support native function calling/tools. Tools are
   - ALWAYS use \`edit_file\` to modify existing files. You can supply either a single (search, replace) pair OR an \`edits\` array (\`[{ search: "...", replace: "..." }, ...]\`) to make multiple changes in a single call.
   - If an edit fails to match, do NOT attempt to rewrite the file with \`create_file\`. Call \`read_file\` around the failing line to inspect the exact indentation and context, then retry with a corrected \`edit_file\` search block.
   - ALWAYS make the smallest viable change per edit.
+  - Checkpoints & Rollbacks: Call \`checkpoint\` after finishing and verifying a stable sub-step before starting risky edits. If an edit corrupts a file or introduces syntax errors that you cannot resolve, call \`rollback_file\` to restore the file to its clean baseline at \`cycle_start\` or \`last_checkpoint\`, then \`read_file\` to inspect the clean code. Call \`rollback_cycle\` if you need to reset all changes in the current task.
 - For information that is temporally variant (technology, pricing, current events), treat your internal knowledge as suspect. Prioritize using \`research\` or \`web_fetch\` to validate facts against the current date (${new Intl.DateTimeFormat('en-US', { month: 'long', year: 'numeric', }).format(new Date())})
 - Context Limits **STRICT REQUIREMENT**: 
 	Conserve context size by:

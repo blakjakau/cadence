@@ -169,6 +169,7 @@ export class SessionArtifactsPanel extends Block {
         this.allowSubAgentsCheckbox = createToggleRow("accordion-allow-sub-agents", "Allow Sub-Agents", "Allow Cadence to spawn sub-agents to solve smaller tasks.", "sub-agents-toggle-wrapper");
         this.allowRunCommandCheckbox = createToggleRow("accordion-allow-run-command", "Allow Terminal Commands", "Allow Cadence to execute terminal shell commands via the run_command tool.", "run-command-toggle-wrapper");
         this.autoMilestonesCheckbox = createToggleRow("accordion-auto-milestones", "Auto-Milestones on 'done'", "Automatically freeze a checkpoint milestone when the agent finishes a cycle.", "auto-milestones-toggle-wrapper");
+        this.autoRollbackCheckbox = createToggleRow("accordion-auto-rollback", "Auto-Rollback on Edit Failures", "Automatically rollback a file if consecutive edit attempts fail.", "auto-rollback-toggle-wrapper");
 
         // Helper to construct a number input row
         const createNumberRow = (id, title, desc, defaultVal, min = 10, max = 95) => {
@@ -210,8 +211,9 @@ export class SessionArtifactsPanel extends Block {
             return input;
         };
 
-        this.minContextPrefillInput = createNumberRow("accordion-min-prefill", "Min Context Pre-fill (%)", "Aggressively cull dialogue history down to this limit when max pre-fill is exceeded.", 40, 10, 90);
+        this.autoRollbackThresholdInput = createNumberRow("accordion-auto-rollback-threshold", "Auto-Rollback Failure Count", "Consecutive failed edits before auto-rollback is triggered.", 3, 1, 10);
         this.maxContextPrefillInput = createNumberRow("accordion-max-prefill", "Max Context Pre-fill (%)", "Sliding window upper threshold before culling triggers.", 80, 20, 98);
+        this.minContextPrefillInput = createNumberRow("accordion-min-prefill", "Min Context Pre-fill (%)", "Sliding window cull target when max pre-fill is triggered.", 40, 10, 90);
 
         this.container.appendChild(this.settingsAccordion);
 
@@ -284,6 +286,25 @@ export class SessionArtifactsPanel extends Block {
             const checked = e.target.checked;
             if (ui.aiManager.activeSession) {
                 ui.aiManager.activeSession.autoMilestones = checked;
+                await workspaceClient.setSession(ui.aiManager.activeSession.id, ui.aiManager.activeSession);
+            }
+        });
+
+        this.autoRollbackCheckbox.addEventListener("change", async (e) => {
+            const checked = e.target.checked;
+            if (ui.aiManager.activeSession) {
+                ui.aiManager.activeSession.autoRollbackOnFailures = checked;
+                await workspaceClient.setSession(ui.aiManager.activeSession.id, ui.aiManager.activeSession);
+            }
+        });
+
+        this.autoRollbackThresholdInput.addEventListener("change", async (e) => {
+            let val = parseInt(e.target.value);
+            if (isNaN(val) || val < 1) val = 1;
+            if (val > 10) val = 10;
+            e.target.value = val;
+            if (ui.aiManager.activeSession) {
+                ui.aiManager.activeSession.autoRollbackFailureThreshold = val;
                 await workspaceClient.setSession(ui.aiManager.activeSession.id, ui.aiManager.activeSession);
             }
         });
@@ -503,6 +524,8 @@ export class SessionArtifactsPanel extends Block {
         this.allowSubAgentsCheckbox.checked = session.allowSubAgents !== false;
         this.allowRunCommandCheckbox.checked = session.allowRunCommand !== false;
         this.autoMilestonesCheckbox.checked = session.autoMilestones ?? (ui.aiManager.config?.defaultAutoMilestones !== false);
+        this.autoRollbackCheckbox.checked = session.autoRollbackOnFailures ?? (ui.aiManager.config?.defaultAutoRollbackOnFailures === true);
+        this.autoRollbackThresholdInput.value = session.autoRollbackFailureThreshold ?? (ui.aiManager.config?.defaultAutoRollbackThreshold || 3);
         this.minContextPrefillInput.value = session.contextPrefillMinPercentage ?? (ui.aiManager.config?.contextPrefillMinPercentage || 40);
         this.maxContextPrefillInput.value = session.contextPrefillMaxPercentage ?? (ui.aiManager.config?.contextPrefillMaxPercentage || 80);
 
