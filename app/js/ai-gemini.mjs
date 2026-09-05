@@ -982,7 +982,7 @@ class Gemini extends AI {
 
                 requestBody.contents = this._toGeminiContents(processedMessages);
                 
-                if (window.ui?.aiManager?.agentMode || (session && session.parentId)) {
+                if (!(session && session.noTools) && (window.ui?.aiManager?.agentMode || (session && session.parentId))) {
                     const isSubAgent = !!(session && session.parentId);
                     let filteredTools = getToolsForSession(isSubAgent, this.supportsJSONTools);
                     if (!isSubAgent) {

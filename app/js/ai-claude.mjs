@@ -399,9 +399,13 @@ class Claude extends AI {
                 model: this.config.model,
                 messages: claudeMessages,
                 stream: true,
-                max_tokens: 4096,
-                tools: this._getFormattedTools(session)
+                max_tokens: 4096
             };
+
+            // Omit the tool schema for tool-less calls (e.g. cycle summarization).
+            if (!(session && session.noTools)) {
+                requestBody.tools = this._getFormattedTools(session);
+            }
 
             if (session && session.temperatureOverride !== undefined) {
                 requestBody.temperature = session.temperatureOverride;

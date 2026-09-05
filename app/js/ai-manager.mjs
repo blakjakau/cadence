@@ -2902,18 +2902,19 @@ class AIManager {
 		const maxTokens = (summarizationAI.MAX_CONTEXT_TOKENS || 8192);
 		const budgetTokens = Math.max(2000, Math.floor(maxTokens * 0.6));
 
-		// Function to perform a single AI summarization call without reasoning overhead
-		const runSummaryCall = async (contextText) => {
-			const sanitizedText = sanitizeSurrogates(contextText);
-			const prompt = `Please summarize the following agent task cycle.
-You must output your response in the following XML format:
+		// Concise, standalone system prompt for the summarization task.
+		// Replaces the full chat/agent system prompt (and tool schema) for this call.
+		const summarizationSystemPrompt = `You are a summarization assistant. Summarize the given agent task cycle into the following XML format:
 <title>A very concise, single-line, active-voice title summarizing the main outcome of the cycle (max 10 words)</title>
 <summary>
 Outline what the user requested, what implementation actions (file edits, creations, commands) the agent performed, and the final outcome/results. Keep the summary concise but descriptive of all changes.
 </summary>
+Output only the XML. Do not use any tools.`;
 
-Here is the task cycle to summarize:
-${sanitizedText}`;
+		// Function to perform a single AI summarization call without reasoning overhead
+		const runSummaryCall = async (contextText) => {
+			const sanitizedText = sanitizeSurrogates(contextText);
+			const prompt = `Here is the task cycle to summarize:\n${sanitizedText}`;
 
 			let summaryResponse = "";
 			await new Promise((resolve, reject) => {
@@ -2926,13 +2927,13 @@ ${sanitizedText}`;
 						onDone: () => resolve(),
 						onError: (error) => reject(error),
 					},
-					null,
-					{ disableReasoning: true } // Disable reasoning overhead
+					summarizationSystemPrompt,
+					{ disableReasoning: true, noTools: true } // Disable reasoning + tool schema
 				);
 			});
+
 			return summaryResponse;
 		};
-
 		let finalSummaryResponse = "";
 
 		try {

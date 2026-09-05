@@ -355,7 +355,7 @@ class LlamaCpp extends AI {
                 }
             }
 
-            if (window.ui?.aiManager?.agentMode || (session && session.parentId)) {
+            if (!(session && session.noTools) && (window.ui?.aiManager?.agentMode || (session && session.parentId))) {
                 const isSubAgent = !!(session && session.parentId);
                 let filteredTools = getToolsForSession(isSubAgent, this.supportsJSONTools);
                 if (!isSubAgent) {
