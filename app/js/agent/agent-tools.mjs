@@ -3268,18 +3268,6 @@ Snippet: ${r.content || r.snippet || ""}`;
         // 3. Create a clean session structure
         const subId = `ai-session-${crypto.randomUUID()}`;
         const subName = `Sub-Agent: ${args.objective.slice(0, 30)}${args.objective.length > 30 ? '...' : ''}`;
-        
-        const subSystemPrompt = `You are a specialized child sub-agent spawned to perform the following objective:
-"${args.objective}"
-
-You operate with a limited toolset. Do not try to perform tasks outside this scope.
-
-# STRICT RULES
-- You MUST end EVERY turn with a tool call. No exceptions.
-- If you have completed your objective, call \`sub_agent_complete\` with your results.
-- If you are blocked or need clarification from the user, call \`query\` to ask your question.
-- If you encounter an unrecoverable error, call \`sub_agent_complete\` with the error details.
-- NEVER end a turn with only conversational text and no tool call. If you are unsure what to do next, call \`query\`.`;
 
         const subSessionData = {
             id: subId,
@@ -3298,7 +3286,6 @@ You operate with a limited toolset. Do not try to perform tasks outside this sco
             planningMode: false,
             forgivenessMode: parentSession.forgivenessMode ?? false,
             connectionId: selectedConnectionId,
-            systemPromptOverride: subSystemPrompt,
             pinnedRoots: parentSession.pinnedRoots || []
         };
 

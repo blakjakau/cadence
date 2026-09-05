@@ -1043,9 +1043,11 @@ class AIManagerHistory {
 			getSubSessionPromise.then(subSession => {
 				if (subSession) {
 					title.querySelector("span").textContent = subSession.name;
+					const firstUserMsg = subSession.messages?.find(m => m.role === "user" || m.type === "user");
+					const objectiveText = firstUserMsg?.content ? (firstUserMsg.content.length > 60 ? firstUserMsg.content.slice(0, 60) + "…" : firstUserMsg.content) : "Sub-agent task";
 					desc.textContent = subSession.systemPromptOverride ? 
-						(subSession.systemPromptOverride.match(/"([^"]+)"/)?.[1] || "Sub-agent task") : 
-						"Sub-agent task";
+						(subSession.systemPromptOverride.match(/"([^"]+)"/)?.[1] || objectiveText) : 
+						objectiveText;
 
 					// Check running status in pool
 					const running = window.ui?.aiManager?.runningSessions.get(subAgentId);
@@ -2690,7 +2692,8 @@ class AIManagerHistory {
 				hasTasks,
 				hasAcceptedPlan,
 				hasCompletedAllTasks,
-				planningMode
+				planningMode,
+				isSubAgent: !!(targetSession && targetSession.parentId)
 			});
 
 			if (directivesText) {
@@ -3106,7 +3109,8 @@ class AIManagerHistory {
 				hasTasks,
 				hasAcceptedPlan,
 				hasCompletedAllTasks,
-				planningMode
+				planningMode,
+				isSubAgent: !!(targetSession && targetSession.parentId)
 			});
 
 			if (directivesText) {
