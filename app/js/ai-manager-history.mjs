@@ -1043,9 +1043,11 @@ class AIManagerHistory {
 			getSubSessionPromise.then(subSession => {
 				if (subSession) {
 					title.querySelector("span").textContent = subSession.name;
+					const firstUserMsg = subSession.messages?.find(m => m.role === "user" || m.type === "user");
+					const objectiveText = firstUserMsg?.content ? (firstUserMsg.content.length > 60 ? firstUserMsg.content.slice(0, 60) + "…" : firstUserMsg.content) : "Sub-agent task";
 					desc.textContent = subSession.systemPromptOverride ? 
-						(subSession.systemPromptOverride.match(/"([^"]+)"/)?.[1] || "Sub-agent task") : 
-						"Sub-agent task";
+						(subSession.systemPromptOverride.match(/"([^"]+)"/)?.[1] || objectiveText) : 
+						objectiveText;
 
 					// Check running status in pool
 					const running = window.ui?.aiManager?.runningSessions.get(subAgentId);
@@ -2481,11 +2483,11 @@ class AIManagerHistory {
 		for (let i = messages.length - 1; i >= 0; i--) {
 			if (!this.isCycleBoundary(messages[i], i, messages)) continue;
 
-			const hasSummary = messages.some(m => m.type === "cycle_summary" && (
+			const hasSummary = messages.some(m => m.type === "cycle_summary" && !m.isSeed && (
 				m.cycleEndMsgId === messages[i].id || 
 				m.cycleEndMsgId === messages[i + 1]?.id ||
 				(i > 0 && m.cycleEndMsgId === messages[i - 1]?.id)
-			)); // Already summarized — keep scanning older boundaries.
+			)); // Already summarized — keep scanning older boundaries. (isSeed placeholders are NOT real summaries.)
 			if (!hasSummary) {
 				lastBoundaryIdx = i;
 				break;
@@ -2566,6 +2568,184 @@ class AIManagerHistory {
 			return false;
 		} finally {
 			if (progressEl) progressEl.remove();
+		}
+	}
+
+	// MARK: cycle-seed helpers
+
+	/**
+	 * Extracts the last model turn's CONTENT ONLY (strips thought/reasoning blocks and tool calls) as a lightweight seed for a new cycle while the full compaction is still in flight. Returns a trimmed string, or null when there is no usable model content. Marker strings are built via concatenation so the literal channel/tool-call markers never appear verbatim in this source.
+	 */
+	_extractLastModelContent(messages) {
+		const LT = "<", SL = "</";
+		const thoughtOpen = LT + "thought>", thoughtClose = SL + "thought>";
+		const channelOpen = LT + "|channel>thought", channelClose = LT + "channel|>";
+		const toolOpen = LT + "tool_call>", toolClose = SL + "tool_call>";
+		for (let i = messages.length - 1; i >= 0; i--) {
+			const msg = messages[i];
+			if (!(msg.role === "model" || msg.type === "model")) continue;
+			let content = (msg.content || "");
+			content = content.replace(new RegExp(thoughtOpen + "[\\s\\S]*?" + thoughtClose, "gi"), "");
+			content = content.replace(new RegExp(channelOpen + "[\\s\\S]*?" + channelClose, "gi"), "");
+			content = content.replace(new RegExp(toolOpen + "[\\s\\S]*?" + toolClose, "gi"), "");
+			content = content.trim();
+			if (content) return content;
+		}
+		return null;
+	}
+
+	/**
+	 * Inserts a transient cycle_summary seed (last model output, content-only) as a stand-in for the in-flight compaction so the new cycle starts with a continuity anchor. Marked `isSeed: true` so the background compaction can replace it with the real summary when it completes. The seed's `cycleStartMsgId`/`cycleEndMsgId` point to the cycle being compacted so `prepareMessagesForAI` can hide the covered span while the seed is in place.
+	 */
+	_insertCycleSeed(targetSession, cycleStartMsgId, cycleEndMsgId, content) {
+		const messages = targetSession.messages;
+		const seed = {
+			id: crypto.randomUUID(),
+			role: "system",
+			type: "cycle_summary",
+			title: "Compacting cycle…",
+			content,
+			timestamp: Date.now(),
+			isSeed: true,
+			cycleStartMsgId,
+			cycleEndMsgId
+		};
+		messages.push(seed); // Append at the end — the new cycle's first conversational message follows it.
+		targetSession.lastModified = Date.now();
+		workspaceClient.setSession(targetSession.id, targetSession);
+		if (this.manager.isSessionViewed?.(targetSession.id)) {
+			this.render({ isNewMessage: true });
+		}
+		return seed.id;
+	}
+
+	/**
+	 * Synchronously inserts a lightweight content-only seed (last model output, thoughts/tool-calls stripped) for the latest completed-but-unsummarized cycle, as a stand-in for the in-flight background compaction. Returns the seed ID if a seed was inserted, or null when there is no boundary or no usable model content. Safe no-op on failure — the prompt proceeds without a seed.
+	 */
+	seedCycleIfCompacting(targetSession) {
+		try {
+			const messages = targetSession.messages;
+			const boundary = this._findCycleBoundary(messages);
+			if (!boundary) return null; // No completed cycle awaiting summarization yet.
+			const { cycleStartIdx, endIdx } = boundary;
+			const content = this._extractLastModelContent(messages.slice(0, endIdx + 1));
+			if (!content) return null; // No usable model content to seed with.
+			return this._insertCycleSeed(targetSession, messages[cycleStartIdx].id, messages[endIdx].id, content);
+		} catch (e) {
+			console.error("Error seeding cycle for background compaction:", e); // Safe no-op on failure.
+			return null;
+		}
+	}
+
+	/**
+	 * Locates the latest COMPLETED-but-unsummarized task cycle boundary and computes its span (cycleStartIdx..endIdx). Mirrors agent.mjs' manual path exactly, including its idempotency guard. Returns null when there is no such boundary or the span is too small to summarize meaningfully.
+	 */
+	_findCycleBoundary(messages) {
+		const isToolResponse = (msg) => msg && msg.type === "tool_response"; // Operator precedence: must parenthesize the comparison itself, not just `!!` on a possibly-undefined value.
+
+		// Locate the latest completed cycle boundary not already summarized — mirrors agent.mjs' manual path exactly, including its idempotency guard.
+		let lastBoundaryIdx = -1;
+		for (let i = messages.length - 1; i >= 0; i--) {
+			if (!this.isCycleBoundary(messages[i], i, messages)) continue;
+
+			const hasSummary = messages.some(m => m.type === "cycle_summary" && !m.isSeed && (
+				m.cycleEndMsgId === messages[i].id ||
+				m.cycleEndMsgId === messages[i + 1]?.id ||
+				(i > 0 && m.cycleEndMsgId === messages[i - 1]?.id)
+			)); // Already summarized — keep scanning older boundaries. (isSeed placeholders are NOT real summaries — the in-flight compaction must still find this boundary.)
+			if (!hasSummary) {
+				lastBoundaryIdx = i;
+				break;
+			}
+		}
+
+		if (lastBoundaryIdx === -1) return null; // No completed cycle awaiting summarization yet.
+
+		let endIdx = lastBoundaryIdx;
+		const nextMsg = messages[lastBoundaryIdx + 1];
+		if ((messages[lastBoundaryIdx].role === "model" || messages[lastBoundaryIdx].type === "model") && isToolResponse(nextMsg)) {
+			endIdx = lastBoundaryIdx + 1; // Pull the trailing accumulated tool_response into the summarized span so nothing dangles after it.
+		}
+
+		// Find start of current boundary so we scan strictly BEFORE it for the previous boundary
+		let boundaryStartIdx = endIdx;
+		if (isToolResponse(messages[endIdx]) && endIdx > 0 && (messages[endIdx - 1].role === "model" || messages[endIdx - 1].type === "model")) {
+			boundaryStartIdx = endIdx - 1;
+		}
+
+		let cycleStartIdx = -1; // Scan backwards for a previous boundary marker (summary or cycle boundary) — start AFTER it, mirroring agent.mjs' manual path exactly.
+		for (let i = boundaryStartIdx - 1; i >= 0; i--) {
+			const msg = messages[i];
+			if (msg.type === "cycle_summary" || this.isCycleBoundary(msg, i, messages)) {
+				cycleStartIdx = i + 1;
+				break;
+			}
+		}
+
+		if (cycleStartIdx === -1) { // No previous boundary found anywhere before this one — fall back to the first conversational message, mirroring agent.mjs' manual path exactly.
+			const fallbackIdx = messages.findIndex(msg => msg.type === "user" || msg.role === "model");
+			cycleStartIdx = fallbackIdx; // -1 if there's no user/model turn at all — handled by the span guard below (never summarize an empty / non-conversational span).
+		}
+
+		if (cycleStartIdx === -1 || cycleStartIdx >= endIdx) return null; // Span too small (<2 messages) to summarize meaningfully — same guard as performSummarization().
+
+		return { cycleStartIdx, endIdx };
+	}
+
+	/**
+	 * Fire-and-forget background compaction: locates the latest completed-but-unsummarized cycle and summarizes it on a separate (non-primary) connection without blocking the caller. The caller is expected to have already inserted a lightweight content-only seed (via _insertCycleSeed) as a stand-in; when the real summary arrives, the seed is replaced in-place so the covered span collapses into the full <compacted_cycle> block. Safe no-op on any failure — the prompt proceeds without compacting.
+	 */
+	async autoCompactAgentCycleAsync(sessionObj = null) {
+		const targetSession = sessionObj || this.manager.activeSession;
+		if (!targetSession || !this.ai?.isConfigured()) return false;
+
+		const agentModeEnabled = targetSession.agentMode ?? this.manager.agentMode;
+		if (!agentModeEnabled) return false; // Standard mode has its own performSummarization() path.
+
+		const messages = targetSession.messages;
+		if (messages.length < 2) return false;
+
+		// Re-locate the boundary at run time (not at call time) so it stays robust to messages appended while the summary AI call is in flight.
+		const boundary = this._findCycleBoundary(messages);
+		if (!boundary) return false; // No completed cycle awaiting summarization yet, or span too small to summarize meaningfully.
+		const { cycleStartIdx, endIdx } = boundary;
+		const cycleMessages = messages.slice(cycleStartIdx, endIdx + 1);
+
+		try {
+			const result = await this.manager.generateCycleSummary(cycleMessages);
+			if (!result || !result.summary) return false; // AI unavailable or returned nothing — safe no-op.
+
+			const summaryMessage = {
+				id: crypto.randomUUID(),
+				role: "system",
+				type: "cycle_summary",
+				title: result.title,
+				content: result.summary,
+				timestamp: Date.now(),
+				cycleStartMsgId: messages[cycleStartIdx].id,
+				cycleEndMsgId: messages[endIdx].id
+			};
+
+			// Replace the content-only seed (if present) with the real summary so the covered span collapses into the full block instead of leaving a dangling placeholder.
+			const seedIdx = messages.findIndex(m => m.type === "cycle_summary" && m.isSeed);
+			if (seedIdx !== -1) {
+				messages[seedIdx] = summaryMessage; // In-place swap keeps the seed's position (end of the covered span) stable.
+			} else {
+				messages.splice(endIdx + 1, 0, summaryMessage); // No seed was inserted — insert AFTER the cycle end, same position as the manual path.
+			}
+			targetSession.lastModified = Date.now();
+			await workspaceClient.setSession(targetSession.id, targetSession);
+
+			if (this.manager.isSessionViewed?.(targetSession.id)) {
+				this.render({ isNewMessage: true }); // Collapse the just-summarized span into its summary block automatically.
+				const conversationArea = this.conversationArea;
+				if (conversationArea) conversationArea.scrollTop = conversationArea.scrollHeight;
+			}
+
+			return true;
+		} catch (e) {
+			console.error("Error during background agent cycle compaction:", e); // Safe no-op on failure — the prompt proceeds without compacting.
+			return false;
 		}
 	}
 
@@ -2690,7 +2870,8 @@ class AIManagerHistory {
 				hasTasks,
 				hasAcceptedPlan,
 				hasCompletedAllTasks,
-				planningMode
+				planningMode,
+				isSubAgent: !!(targetSession && targetSession.parentId)
 			});
 
 			if (directivesText) {
@@ -3106,7 +3287,8 @@ class AIManagerHistory {
 				hasTasks,
 				hasAcceptedPlan,
 				hasCompletedAllTasks,
-				planningMode
+				planningMode,
+				isSubAgent: !!(targetSession && targetSession.parentId)
 			});
 
 			if (directivesText) {

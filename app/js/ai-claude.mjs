@@ -1,7 +1,7 @@
 // ai-claude.mjs
 import AI from './ai.mjs';
 import systemPrompt from "./claudeSystemPrompt.mjs";
-import { tools as cadenceTools } from "./ai-manager-tools-schema.mjs";
+import { getToolsForSession } from "./ai-manager-tools-schema.mjs";
 
 // Fallback static list of common Claude models with their context window sizes.
 // Used when the API endpoint is unavailable or fails.
@@ -133,8 +133,10 @@ class Claude extends AI {
         return `${this.config.server}/v1/messages`;
     }
 
-    _getFormattedTools() {
-        return cadenceTools.map(tool => ({
+    _getFormattedTools(session = null) {
+        const isSubAgent = !!(session && session.parentId);
+        const toolSet = getToolsForSession(isSubAgent, this.supportsJSONTools);
+        return toolSet.map(tool => ({
             name: tool.name,
             description: tool.description || "",
             input_schema: {
@@ -397,9 +399,13 @@ class Claude extends AI {
                 model: this.config.model,
                 messages: claudeMessages,
                 stream: true,
-                max_tokens: 4096,
-                tools: this._getFormattedTools()
+                max_tokens: 4096
             };
+
+            // Omit the tool schema for tool-less calls (e.g. cycle summarization).
+            if (!(session && session.noTools)) {
+                requestBody.tools = this._getFormattedTools(session);
+            }
 
             if (session && session.temperatureOverride !== undefined) {
                 requestBody.temperature = session.temperatureOverride;

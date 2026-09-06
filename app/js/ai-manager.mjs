@@ -204,6 +204,8 @@ class AIManager {
 
 			basePrompt = getAgentSystemPrompt(modelName, {
 				supportsJSONTools,
+				supportsParallelTools: !!(activeAi && activeAi.supportsParallelTools),
+				isSubAgent: !!(targetSession && targetSession.parentId),
 				hasPlan,
 				hasTasks,
 				hasAcceptedPlan,
@@ -1603,6 +1605,97 @@ class AIManager {
 	 * @param {string} parentConnectionId - The connection ID of the parent session.
 	 * @returns {Promise<string>} The selected connection ID.
 	 */
+	/**
+	 * Returns true if the given connection ID is currently in use by a running session (chat or agent).
+	 * @param {string} connId
+	 * @returns {boolean}
+	 */
+	_isConnectionBusy(connId) {
+		for (const [sessionId, running] of this.runningSessions) {
+			let conn = null;
+			if (running.type === 'agent' && running.instance) {
+				conn = running.instance.connection;
+			} else if (running.type === 'chat' && running.controller) {
+				conn = running.controller;
+			}
+			if (conn && conn.connectionId === connId) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/**
+	 * Selects a connection for background cycle compaction. Prefers a *separate* (non-primary) connection so the
+	 * compaction can run in the background without contending with the active prompt. Among the available
+	 * non-busy connections, prefers the fastest one (highest average tokens/sec) so the summary arrives sooner;
+	 * falls back to the size-based heuristic when telemetry is empty.
+	 * @param {string} primaryConnId - The primary (active) connection ID.
+	 * @returns {Promise<string>} The selected connection ID (falls back to primaryConnId when no separate candidate is available).
+	 */
+	async _selectCompactionConnection(primaryConnId) {
+		try {
+			const busy = new Set();
+			for (const [sessionId, running] of this.runningSessions) {
+				let conn = null;
+				if (running.type === 'agent' && running.instance) conn = running.instance.connection;
+				else if (running.type === 'chat' && running.controller) conn = running.controller;
+				if (conn && conn.connectionId) busy.add(conn.connectionId);
+			}
+			let candidates = AIConnections.getConnections().filter(c => {
+				const inst = AIConnections.getInstance(c.id);
+				return inst && inst.isConfigured() && !busy.has(c.id);
+			});
+			// Exclude the primary connection when a separate one is available (avoids contention with the active prompt).
+			const nonPrimary = candidates.filter(c => c.id !== primaryConnId);
+			if (nonPrimary.length > 0) candidates = nonPrimary;
+			if (candidates.length > 0) {
+				const withTps = candidates
+					.map(c => ({ conn: c, tps: AIConnections.getInstance(c.id).averageTokensPerSec || 0 }))
+					.sort((a, b) => b.tps - a.tps);
+				const fastest = withTps[0];
+				// Only trust the speed ranking when the top candidate has real telemetry; otherwise fall back to size-based selection.
+				if (fastest.tps > 0) {
+					return fastest.conn.id;
+				}
+				const sizePick = await this.selectConnectionForSubAgent("medium", primaryConnId);
+				if (sizePick === primaryConnId && nonPrimary.length > 0) {
+					// The size-based pick landed on the primary connection — prefer a separate one to keep the call off the main thread.
+					return nonPrimary[0].id;
+				}
+				return sizePick;
+			}
+		} catch (e) {
+			console.warn("[Cycle Summary] Connection selection failed, using primary:", e);
+		}
+		return primaryConnId;
+	}
+
+	/**
+	 * Synchronously checks whether a *separate* (non-primary, non-busy) connection is available for background cycle compaction.
+	 * Used by generate() to decide whether to take the non-blocking async compaction path (separate connection) or the
+	 * awaited path (compaction would contend with the primary connection the new prompt is about to use).
+	 * @param {string} primaryConnId - The primary (active) connection ID.
+	 * @returns {boolean} True when a separate non-busy configured connection exists.
+	 */
+	_hasSeparateCompactionConnection(primaryConnId) {
+		try {
+			const busy = new Set();
+			for (const [sessionId, running] of this.runningSessions) {
+				let conn = null;
+				if (running.type === 'agent' && running.instance) conn = running.instance.connection;
+				else if (running.type === 'chat' && running.controller) conn = running.controller;
+				if (conn && conn.connectionId) busy.add(conn.connectionId);
+			}
+			return AIConnections.getConnections().some(c => {
+				const inst = AIConnections.getInstance(c.id);
+				return inst && inst.isConfigured() && !busy.has(c.id) && c.id !== primaryConnId;
+			});
+		} catch (e) {
+			return false;
+		}
+	}
+
 	async selectConnectionForSubAgent(hintSize, parentConnectionId) {
 		const allConfiguredConnections = AIConnections.getConnections().filter(c => {
 			const inst = AIConnections.getInstance(c.id);
@@ -1626,20 +1719,7 @@ class AIManager {
 			.filter(r => r.available)
 			.map(r => r.conn);
 
-		const isBusy = (connId) => {
-			for (const [sessionId, running] of this.runningSessions) {
-				let conn = null;
-				if (running.type === 'agent' && running.instance) {
-					conn = running.instance.connection;
-				} else if (running.type === 'chat' && running.controller) {
-					conn = running.controller;
-				}
-				if (conn && conn.connectionId === connId) {
-					return true;
-				}
-			}
-			return false;
-		};
+		const isBusy = (connId) => this._isConnectionBusy(connId);
 
 		let nearOrder = [];
 		if (hintSize === 'tiny') {
@@ -1693,15 +1773,7 @@ class AIManager {
 			}
 		}
 
-		// Fallback to default connection
-		return parentConnectionId || AIConnections.defaultConnectionId;
-	}
 
-	/**
-	 * Switches the AI connection, re-initializes it, and updates the UI.
-	 * @param {string} connId - The connection config ID.
-	 */
-	async switchConnection(connId) {
 		if (!this.activeSession) return;
 		this.activeSession.connectionId = connId;
 		await workspaceClient.setSession(this.activeSession.id, this.activeSession);
@@ -2211,7 +2283,16 @@ class AIManager {
 
 			if (targetAgentMode) {
 				// Agent mode: standard performSummarization() is gated OFF here, so condense the latest completed-but-unsummarized task cycle into one cycle_summary instead — same boundary logic & idempotency guard as the manual "Summarize Cycle" path. No-op (no AI call) when there's no such cycle yet; sliding-window pruning in prepareMessagesForAI remains the hard cap either way, this just trades lost turns for a durable summary before they'd be pruned away forever.
-				const compacted = await this.historyManager.autoCompactAgentCycle(targetSession);
+				if (this._hasSeparateCompactionConnection(targetAI.connectionId)) {
+					// A separate (non-primary) connection is available — run the compaction in the BACKGROUND so the new prompt proceeds immediately instead of blocking on the summary AI call.
+					// 1. Synchronously insert a lightweight content-only seed (last model output, thoughts/tool-calls stripped) as a continuity anchor for the new cycle while the full compaction is in flight.
+					this.historyManager.seedCycleIfCompacting(targetSession);
+					// 2. Fire-and-forget the background compaction on the separate connection. When it completes it replaces the seed in-place with the real <compacted_cycle> summary. Safe no-op on any failure — the prompt proceeds without compacting.
+					this.historyManager.autoCompactAgentCycleAsync(targetSession).catch(e => console.error("Background cycle compaction failed:", e));
+				} else {
+					// No separate connection available — the compaction would contend with the primary connection the new prompt is about to use, so keep the awaited (synchronous) path.
+					const compacted = await this.historyManager.autoCompactAgentCycle(targetSession);
+				}
 			} else {
 				await this.historyManager.performSummarization(); // Await summarization before continuing (standard mode only).
 			}
@@ -2815,6 +2896,28 @@ class AIManager {
 			(msg) => msg.type === "user" || msg.type === "model" || msg.type === "tool_response"
 		);
 
+		// Helper to safely slice strings without splitting UTF-16 surrogate pairs (e.g. emojis)
+		const safeSlice = (str, start, end) => {
+			if (!str) return "";
+			let s = start !== undefined ? (start < 0 ? Math.max(0, str.length + start) : Math.min(str.length, start)) : 0;
+			let e = end !== undefined ? (end < 0 ? Math.max(0, str.length + end) : Math.min(str.length, end)) : str.length;
+			if (s > 0 && s < str.length && str.charCodeAt(s) >= 0xDC00 && str.charCodeAt(s) <= 0xDFFF) {
+				s++;
+			}
+			if (e > 0 && e <= str.length && str.charCodeAt(e - 1) >= 0xD800 && str.charCodeAt(e - 1) <= 0xDBFF) {
+				e--;
+			}
+			return str.slice(s, e);
+		};
+
+		const sanitizeSurrogates = (str) => {
+			if (typeof str !== 'string') return str;
+			if (typeof str.toWellFormed === 'function') {
+				return str.toWellFormed();
+			}
+			return str.replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, '\uFFFD');
+		};
+
 		// Distill messages to capture essential intent and action without bloating context
 		const distillMessage = (msg) => {
 			let content = msg.content || "";
@@ -2827,9 +2930,9 @@ class AIManager {
 			if (msg.type === "tool_response") {
 				// Truncate massive tool response outputs (e.g. huge file reads or directory listings)
 				if (content.length > 800) {
-					content = content.substring(0, 500) + "\n...[output truncated for summarization]...\n" + content.substring(content.length - 200);
+					content = safeSlice(content, 0, 500) + "\n...[output truncated for summarization]...\n" + safeSlice(content, -200);
 				}
-				return `[Tool Response]\n${content.trim()}`;
+				return sanitizeSurrogates(`[Tool Response]\n${content.trim()}`);
 			}
 
 			if (msg.role === "model") {
@@ -2848,47 +2951,44 @@ class AIManager {
 					
 					// Combine tool details with any accompanying text
 					const cleanText = content.replace(/<tool_call\s+name=["']([^"']+)["']\s*>[\s\S]*?<\/tool_call>/gi, '').trim();
-					return `[Assistant]\n${toolDetails}${cleanText ? `\n${cleanText}` : ''}`;
+					return sanitizeSurrogates(`[Assistant]\n${toolDetails}${cleanText ? `\n${cleanText}` : ''}`);
 				}
-				return `[Assistant]\n${content.trim()}`;
+				return sanitizeSurrogates(`[Assistant]\n${content.trim()}`);
 			}
 
-			return `[User]\n${content.trim()}`;
+			return sanitizeSurrogates(`[User]\n${content.trim()}`);
 		};
 
-		// Distill all messages in the cycle
+		if (eligibleMessages.length === 0) return "";
+
 		const distilledTurns = eligibleMessages.map(distillMessage).filter(Boolean);
+		if (distilledTurns.length === 0) return "";
 
-		// Determine target AI connection for summarization: prefer small/medium background connection
-		let summarizationAI = this.ai;
-		try {
-			const parentConnId = this.activeSession?.connectionId || "default-gemini";
-			const smallConnId = await this.selectConnectionForSubAgent("small", parentConnId);
-			if (smallConnId) {
-				const candidateAI = AIConnections.getInstance(smallConnId);
-				if (candidateAI && candidateAI.isConfigured()) {
-					summarizationAI = candidateAI;
-				}
-			}
-		} catch (e) {
-			console.warn("[Cycle Summary] Could not select smaller sub-agent connection, using current AI:", e);
-		}
+		// Select a connection for the summarization call. Prefer a *separate* (non-primary) connection so the
+		// compaction can run in the background without contending with the active prompt. Among the available
+		// non-busy connections, prefer the fastest one (highest average tokens/sec) so the summary arrives sooner;
+		// fall back to the size-based heuristic when telemetry is empty.
+		const primaryConnId = this.ai?.connectionId;
+		const summarizationConnId = await this._selectCompactionConnection(primaryConnId);
 
-		// Determine safe token budget for summarization (use 60% of model context window or fallback to 8000 tokens)
-		const maxTokens = (summarizationAI.MAX_CONTEXT_TOKENS || 8192);
+		const summarizationAI = AIConnections.getInstance(summarizationConnId) || this.ai;
+		const maxTokens = summarizationAI.MAX_CONTEXT_TOKENS || 8192;
+
 		const budgetTokens = Math.max(2000, Math.floor(maxTokens * 0.6));
 
-		// Function to perform a single AI summarization call without reasoning overhead
-		const runSummaryCall = async (contextText) => {
-			const prompt = `Please summarize the following agent task cycle.
-You must output your response in the following XML format:
+		// Concise, standalone system prompt for the summarization task.
+		// Replaces the full chat/agent system prompt (and tool schema) for this call.
+		const summarizationSystemPrompt = `You are a summarization assistant. Summarize the given agent task cycle into the following XML format:
 <title>A very concise, single-line, active-voice title summarizing the main outcome of the cycle (max 10 words)</title>
 <summary>
 Outline what the user requested, what implementation actions (file edits, creations, commands) the agent performed, and the final outcome/results. Keep the summary concise but descriptive of all changes.
 </summary>
+Output only the XML. Do not use any tools.`;
 
-Here is the task cycle to summarize:
-${contextText}`;
+		// Function to perform a single AI summarization call without reasoning overhead
+		const runSummaryCall = async (contextText) => {
+			const sanitizedText = sanitizeSurrogates(contextText);
+			const prompt = `Here is the task cycle to summarize:\n${sanitizedText}`;
 
 			let summaryResponse = "";
 			await new Promise((resolve, reject) => {
@@ -2901,13 +3001,13 @@ ${contextText}`;
 						onDone: () => resolve(),
 						onError: (error) => reject(error),
 					},
-					null,
-					{ disableReasoning: true } // Disable reasoning overhead
+					summarizationSystemPrompt,
+					{ disableReasoning: true, noTools: true } // Disable reasoning + tool schema
 				);
 			});
+
 			return summaryResponse;
 		};
-
 		let finalSummaryResponse = "";
 
 		try {
@@ -3189,60 +3289,6 @@ ${contextText}`;
 	_checkStreamingResponse(fullResponse, session = null) {
 		if (!fullResponse) return { shouldAbort: false, reason: "" };
 
-		const isReasoning = this.isKnownReasoningModel(session);
-
-		if (!isReasoning) {
-			// 1. Check if the first tool_call block has successfully closed
-			if (fullResponse.includes("</tool_call>")) {
-				const supportsJSONTools = this.ai && this.ai.supportsJSONTools;
-				if (!supportsJSONTools) {
-					return { shouldAbort: true, reason: "tool_call_closed" };
-				}
-			}
-
-			// 2. Count occurrences of thought-starts and tool-call-starts
-			let thoughtCount = 0;
-			// Count "<thought>"
-			let idx = 0;
-			while ((idx = fullResponse.indexOf("<thought>", idx)) !== -1) {
-				thoughtCount++;
-				idx += 9;
-			}
-			// Count "<think>"
-			idx = 0;
-			while ((idx = fullResponse.indexOf("<think>", idx)) !== -1) {
-				thoughtCount++;
-				idx += 7;
-			}
-			// Count "<|channel>thought"
-			idx = 0;
-			while ((idx = fullResponse.indexOf("<|channel>thought", idx)) !== -1) {
-				thoughtCount++;
-				idx += 17;
-			}
-
-			// Count "<tool_call"
-			let toolCallCount = 0;
-			idx = 0;
-			while ((idx = fullResponse.indexOf("<tool_call", idx)) !== -1) {
-				toolCallCount++;
-				idx += 10;
-			}
-
-			if (thoughtCount > 1) {
-				const supportsReasoning = this.ai && this.ai.supportsReasoning;
-				if (!supportsReasoning) {
-					return { shouldAbort: true, reason: "secondary_thought" };
-				}
-			}
-
-			if (toolCallCount > 1) {
-				const supportsParallelTools = this.ai && this.ai.supportsParallelTools;
-				if (!supportsParallelTools) {
-					return { shouldAbort: true, reason: "secondary_tool_call" };
-				}
-			}
-		}
 
 		// 3. Check for repeating output loops
 		const repCheck = this._detectRepetition(fullResponse);

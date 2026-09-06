@@ -1,7 +1,7 @@
 // ai-gemini.mjs
 import AI from './ai.mjs';
 import systemPrompt from "./geminiSystemPrompt.mjs"
-import { tools as cadenceTools, subAgentToolsList } from "./ai-manager-tools-schema.mjs";
+import { tools as cadenceTools, getToolsForSession } from "./ai-manager-tools-schema.mjs";
 
 class Gemini extends AI {
     constructor() {
@@ -982,13 +982,12 @@ class Gemini extends AI {
 
                 requestBody.contents = this._toGeminiContents(processedMessages);
                 
-                if (window.ui?.aiManager?.agentMode || (session && session.parentId)) {
-                    let filteredTools;
-                    if (session && session.parentId) {
-                        filteredTools = cadenceTools.filter(t => subAgentToolsList.includes(t.name));
-                    } else {
+                if (!(session && session.noTools) && (window.ui?.aiManager?.agentMode || (session && session.parentId))) {
+                    const isSubAgent = !!(session && session.parentId);
+                    let filteredTools = getToolsForSession(isSubAgent, this.supportsJSONTools);
+                    if (!isSubAgent) {
                         const isPlanning = window.ui?.aiManager?.planningMode === true;
-                        filteredTools = cadenceTools.filter(t => {
+                        filteredTools = filteredTools.filter(t => {
                             if (isPlanning && (t.name === "create_file" || t.name === "edit_file")) return false;
                             if (session && session.allowSubAgents === false && t.name === "create_sub_agent") return false;
                             if (session && session.allowRunCommand === false && (t.name === "run_command" || t.name === "exec_command")) return false;

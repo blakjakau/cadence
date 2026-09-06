@@ -1,7 +1,14 @@
 // ai-llamacpp.mjs
 import AI from './ai.mjs';
 import systemPrompt from "./llamacppSystemPrompt.mjs";
-import { tools as cadenceTools, subAgentToolsList } from "./ai-manager-tools-schema.mjs";
+import { getToolsForSession } from "./ai-manager-tools-schema.mjs";
+function sanitizeSurrogates(str) {
+    if (typeof str !== 'string') return str;
+    if (typeof str.toWellFormed === 'function') {
+        return str.toWellFormed();
+    }
+    return str.replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, '\uFFFD');
+}
 
 class LlamaCpp extends AI {
     constructor() {
@@ -149,14 +156,14 @@ class LlamaCpp extends AI {
         }
 
         if (activeSystemPrompt) {
-            formattedMessages.push({ role: "system", content: activeSystemPrompt });
+            formattedMessages.push({ role: "system", content: sanitizeSurrogates(activeSystemPrompt) });
         }
 
         let lastAssistantToolCalls = null;
 
         for (const msg of messages) {
             if (msg.type === 'file_context') {
-                formattedMessages.push({ role: "user", content: `--- File: ${msg.filename} ---\n\`\`\`${msg.language || ''}\n${msg.content}\n\`\`\`` });
+                formattedMessages.push({ role: "user", content: sanitizeSurrogates(`--- File: ${msg.filename} ---\n\`\`\`${msg.language || ''}\n${msg.content}\n\`\`\``) });
             } else if (msg.role === 'model') {
                 let toolCalls = msg.toolCalls || [];
                 
@@ -202,7 +209,7 @@ class LlamaCpp extends AI {
                     const validToolCalls = (Array.isArray(toolCalls) ? toolCalls : []).filter(tc => tc && typeof tc === 'object');
                     formattedMessages.push({
                         role: "assistant",
-                        content: textPart || null,
+                        content: textPart ? sanitizeSurrogates(textPart) : null,
                         tool_calls: validToolCalls.map(tc => {
                             const name = tc?.functionCall?.name || tc?.function?.name || tc?.name || "";
                             const rawArgs = tc?.functionCall?.args || tc?.functionCall?.arguments || tc?.function?.arguments || tc?.arguments || tc?.args || {};
@@ -212,13 +219,13 @@ class LlamaCpp extends AI {
                                 type: "function",
                                 function: {
                                     name: name,
-                                    arguments: argsStr
+                                    arguments: sanitizeSurrogates(argsStr)
                                 }
                             };
                         })
                     });
                 } else {
-                    formattedMessages.push({ role: "assistant", content: msg.content });
+                    formattedMessages.push({ role: "assistant", content: sanitizeSurrogates(msg.content) });
                 }
             } else if (msg.type === 'tool_response') {
                 const parts = msg.content.split(/\n\n---\n\n/);
@@ -241,15 +248,15 @@ class LlamaCpp extends AI {
                             role: "tool",
                             tool_call_id: toolCallId,
                             name: toolName,
-                            content: toolResponse
+                            content: sanitizeSurrogates(toolResponse)
                         });
                     } else {
                         // Fallback
-                        formattedMessages.push({ role: "user", content: part });
+                        formattedMessages.push({ role: "user", content: sanitizeSurrogates(part) });
                     }
                 }
             } else {
-                formattedMessages.push({ role: "user", content: msg.content });
+                formattedMessages.push({ role: "user", content: sanitizeSurrogates(msg.content) });
             }
         }
 
@@ -272,7 +279,7 @@ class LlamaCpp extends AI {
             let response = await fetch(`${this.config.server}/tokenize`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ content: textToTokenize })
+                body: JSON.stringify({ content: sanitizeSurrogates(textToTokenize) })
             });
             if (!response.ok) {
                 response = await fetch(`${this.config.server}/v1/tokenize`, {
@@ -348,27 +355,28 @@ class LlamaCpp extends AI {
                 }
             }
 
-            if ((window.ui?.aiManager?.agentMode || (session && session.parentId)) && cadenceTools && cadenceTools.length > 0) {
-                let filteredTools;
-                if (session && session.parentId) {
-                    filteredTools = cadenceTools.filter(t => subAgentToolsList.includes(t.name));
-                } else {
+            if (!(session && session.noTools) && (window.ui?.aiManager?.agentMode || (session && session.parentId))) {
+                const isSubAgent = !!(session && session.parentId);
+                let filteredTools = getToolsForSession(isSubAgent, this.supportsJSONTools);
+                if (!isSubAgent) {
                     const isPlanning = window.ui?.aiManager?.planningMode === true;
-                    filteredTools = cadenceTools.filter(t => {
+                    filteredTools = filteredTools.filter(t => {
                         if (isPlanning && (t.name === "create_file" || t.name === "edit_file")) return false;
                         if (session && session.allowSubAgents === false && t.name === "create_sub_agent") return false;
                         if (session && session.allowRunCommand === false && (t.name === "run_command" || t.name === "exec_command")) return false;
                         return true;
                     });
                 }
-                requestBody.tools = filteredTools.map(t => ({
-                    type: "function",
-                    function: {
-                        name: t.name,
-                        description: t.description,
-                        parameters: t.parameters
-                    }
-                }));
+                if (filteredTools.length > 0) {
+                    requestBody.tools = filteredTools.map(t => ({
+                        type: "function",
+                        function: {
+                            name: t.name,
+                            description: t.description,
+                            parameters: t.parameters
+                        }
+                    }));
+                }
             }
 
             const currentTokens = this.estimateTokens(messages);
