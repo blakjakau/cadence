@@ -1773,9 +1773,14 @@ class AIManager {
 			}
 		}
 
+		// Fallback: return first available connection or default
+		return connections[0]?.id || parentConnectionId || AIConnections.defaultConnectionId || "default-gemini";
+	}
 
+	async switchConnection(connId) {
 		if (!this.activeSession) return;
 		this.activeSession.connectionId = connId;
+		localStorage.setItem("cadence_default_connection_id", connId);
 		await workspaceClient.setSession(this.activeSession.id, this.activeSession);
 
 		const conn = AIConnections.getInstance(connId);
@@ -1799,6 +1804,14 @@ class AIManager {
 
 		this._updateAIInfoDisplay();
 		this._dispatchContextUpdate("ai_connection_switched");
+		if (this.sessionsManager?._broadcast) {
+			this.sessionsManager._broadcast('session_updated', {
+				sessionId: this.activeSession.id,
+				lastModified: this.activeSession.lastModified,
+				name: this.activeSession.name,
+				connectionId: connId
+			});
+		}
 		this.historyManager.render();
 		this._setButtonsDisabledState(this._isProcessing);
 		this._updatePromptAreaPlaceholder();
@@ -1873,7 +1886,7 @@ class AIManager {
 	_updateAIInfoDisplay() {
 		if (this.aiInfoDisplay) {
 			this.aiInfoDisplay.innerHTML = "";
-			const currentConnId = this.activeSession?.connectionId || AIConnections.defaultConnectionId;
+			const currentConnId = this.activeSession?.connectionId || localStorage.getItem("cadence_default_connection_id") || AIConnections.defaultConnectionId;
 			const connections = AIConnections.getConnections();
 			
 			connections.forEach(conn => {
@@ -1897,6 +1910,10 @@ class AIManager {
 				}
 				this.aiInfoDisplay.appendChild(option);
 			});
+
+			if (currentConnId) {
+				this.aiInfoDisplay.value = currentConnId;
+			}
 
 			const activeAi = this.ai;
 			if (activeAi && activeAi.isConfigured()) {
@@ -2032,6 +2049,14 @@ class AIManager {
 		this._setButtonsDisabledState(this._isProcessing);
 
 		this.panel.dispatchEvent(new CustomEvent("context-update", { detail: eventDetail }))
+
+		if (this.sessionsManager?._broadcast && this.activeSession && type !== "session_deleted" && type !== "session_closed" && type !== "tokens_updated") {
+			this.sessionsManager._broadcast('session_updated', {
+				sessionId: this.activeSession.id,
+				lastModified: this.activeSession.lastModified,
+				name: this.activeSession.name
+			});
+		}
 
 		if (this.activeSession && type !== "session_deleted" && type !== "session_closed" && type !== "tokens_updated") {
 			this.historyManager.updateMessageTokenCounts(this.activeSession).catch(err => {

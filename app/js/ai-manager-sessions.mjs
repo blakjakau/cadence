@@ -14,6 +14,89 @@ class AIManagerSessions {
 		this.activeSession = null; // The full active session object
 		this.promptIndex = -1; // Index for prompt history (Ctrl+Up/Down)
 		this._unsentPromptBuffer = null; // Stores unsubmitted prompt during history navigation
+
+		// Cross-tab synchronization via BroadcastChannel
+		this.instanceId = crypto.randomUUID();
+		this.broadcastChannel = typeof BroadcastChannel !== 'undefined' ? new BroadcastChannel('cadence_ai_sessions') : null;
+		if (this.broadcastChannel) {
+			this.broadcastChannel.onmessage = (e) => this._handleBroadcast(e.data);
+		}
+	}
+
+	_broadcast(action, data = {}) {
+		if (this.broadcastChannel) {
+			try {
+				this.broadcastChannel.postMessage({ action, senderId: this.instanceId, ...data, timestamp: Date.now() });
+			} catch (err) {
+				console.warn("[AIManagerSessions] Failed to post broadcast message:", err);
+			}
+		}
+	}
+
+	async _handleBroadcast(msg) {
+		if (!msg || !msg.action || msg.senderId === this.instanceId) return;
+
+		switch (msg.action) {
+			case 'session_updated':
+				if (msg.sessionId) {
+					const meta = this.allSessionMetadata.find(s => s.id === msg.sessionId);
+					if (meta) {
+						if (msg.lastModified) meta.lastModified = msg.lastModified;
+						if (msg.name) meta.name = msg.name;
+					}
+					// If this session is currently active and this tab is not actively processing, reload so it stays in sync
+					if (this.activeSessionId === msg.sessionId && !this.manager._isProcessing) {
+						try {
+							const updatedSession = await workspaceClient.getSession(msg.sessionId);
+							if (updatedSession) {
+								const { session: migratedSession } = SessionMigrator.migrate(updatedSession);
+								this.activeSession = migratedSession;
+								this.manager.historyManager.loadSessionMessages(migratedSession.messages, false);
+								this.manager._updateAIInfoDisplay();
+							}
+						} catch (e) {
+							console.warn("[AIManagerSessions] Cross-tab sync fetch failed:", e);
+						}
+					}
+				}
+				break;
+
+			case 'session_renamed':
+				if (msg.sessionId && msg.name) {
+					const meta = this.allSessionMetadata.find(s => s.id === msg.sessionId);
+					if (meta) meta.name = msg.name;
+					const tab = this.manager.sessionTabBar.tabs.find(t => t.config.id === msg.sessionId);
+					if (tab) tab.name = msg.name;
+					if (this.activeSessionId === msg.sessionId && this.activeSession) {
+						this.activeSession.name = msg.name;
+					}
+				}
+				break;
+
+			case 'session_deleted':
+				if (msg.sessionId) {
+					this.allSessionMetadata = this.allSessionMetadata.filter(s => s.id !== msg.sessionId);
+					const tab = this.manager.sessionTabBar.tabs.find(t => t.config.id === msg.sessionId);
+					if (tab) this.manager.sessionTabBar.remove(tab);
+					if (this.activeSessionId === msg.sessionId) {
+						this.activeSession = null;
+						this.activeSessionId = null;
+						if (this.allSessionMetadata.length > 0) {
+							const nextTab = this.manager.sessionTabBar.tabs.find(t => t.config.id === this.allSessionMetadata[0].id);
+							if (nextTab) nextTab.click();
+						}
+					}
+				}
+				break;
+
+			case 'session_created':
+				if (msg.meta && !this.allSessionMetadata.some(s => s.id === msg.meta.id)) {
+					this.allSessionMetadata.push(msg.meta);
+					const tab = this.manager.sessionTabBar.add({ name: msg.meta.name, id: msg.meta.id, defaultStatusIcon: 'developer_board' });
+					tab.on('dblclick', () => this.renameCurrentSession());
+				}
+				break;
+		}
 	}
 
 	/**
@@ -97,10 +180,7 @@ class AIManagerSessions {
 			? this.manager.config.defaultAllowRunCommand
 			: (localStorage.getItem("defaultAllowRunCommand") !== "false");
 
-		let defaultConnectionId = localStorage.getItem("cadence_default_connection_id");
-		if (!defaultConnectionId && window.ui?.aiManager?.connectionsManager) {
-			defaultConnectionId = window.ui.aiManager.connectionsManager.defaultConnectionId;
-		}
+		let defaultConnectionId = this.activeSession?.connectionId || this.manager?.aiInfoDisplay?.value || localStorage.getItem("cadence_default_connection_id") || AIConnections.defaultConnectionId || "default-gemini";
 
 		const now = Date.now();
 		const newSessionData = {
@@ -123,7 +203,9 @@ class AIManagerSessions {
 		};
 
 		await workspaceClient.setSession(newId, newSessionData);
-		this.allSessionMetadata.push({ id: newId, name: newName, createdAt: newSessionData.createdAt, lastModified: newSessionData.lastModified });
+		const newMeta = { id: newId, name: newName, createdAt: newSessionData.createdAt, lastModified: newSessionData.lastModified };
+		this.allSessionMetadata.push(newMeta);
+		this._broadcast('session_created', { meta: newMeta });
 
 		// Add the tab to the UI.
 		const newTab = this.manager.sessionTabBar.add({ name: newName, id: newId, defaultStatusIcon: 'developer_board' });
@@ -264,9 +346,18 @@ class AIManagerSessions {
 			this.activeSession.agentMode = this.manager.agentMode;
 			this.activeSession.planningMode = this.manager.planningMode;
 			this.activeSession.forgivenessMode = this.manager.forgivenessMode;
+			if (this.manager.aiInfoDisplay && this.manager.aiInfoDisplay.value) {
+				this.activeSession.connectionId = this.manager.aiInfoDisplay.value;
+			}
 			const currentSessionMeta = this.allSessionMetadata.find(s => s.id === this.activeSession.id);
 			if (currentSessionMeta) currentSessionMeta.lastModified = Date.now();
 			await workspaceClient.setSession(this.activeSession.id, this.activeSession);
+			this._broadcast('session_updated', {
+				sessionId: this.activeSession.id,
+				lastModified: this.activeSession.lastModified,
+				name: this.activeSession.name,
+				connectionId: this.activeSession.connectionId
+			});
 		}
 
 		// Load the new session's data: reuse running session object if it exists to maintain reference identity
@@ -295,6 +386,9 @@ class AIManagerSessions {
 		await this.repairDisconnectedSubAgents(newSessionData);
 
 		// Update manager's state
+		if (!newSessionData.connectionId) {
+			newSessionData.connectionId = localStorage.getItem("cadence_default_connection_id") || AIConnections.defaultConnectionId || "default-gemini";
+		}
 		this.activeSession = newSessionData;
 		this.activeSessionId = sessionId;
 		this.manager.agentMode = newSessionData.agentMode ?? (this.manager.config.defaultAgentMode ?? false);
@@ -421,6 +515,7 @@ class AIManagerSessions {
 
 		if (!hasModelResponse) {
 			await this._deleteSessionDataWithCascade(sessionId);
+			this._broadcast('session_deleted', { sessionId });
 			window.modal.toast("Empty session deleted.");
 		} else {
 			window.modal.toast("Chat session archived to history.");
@@ -455,6 +550,7 @@ class AIManagerSessions {
 
 		// Delete data
 		await this._deleteSessionDataWithCascade(sessionId);
+		this._broadcast('session_deleted', { sessionId });
 		window.modal.toast("Chat session permanently deleted.");
 		
 		if (sessionMeta) {
@@ -502,7 +598,40 @@ class AIManagerSessions {
 		let selectedSessions = new Set();
 
 		const contentContainer = document.createElement('div');
-		contentContainer.innerHTML = '<h1>Chat History</h1><p>Select a previous chat to reopen it.</p>';
+		contentContainer.innerHTML = `
+			<div class="history-header-row">
+				<div class="history-header-titles">
+					<h1>Chat History</h1>
+					<p>Select a previous chat to reopen it.</p>
+				</div>
+				<div class="history-db-stats-badge" id="history_db_stats" title="Embedded session database size on disk">
+					<ui-icon>storage</ui-icon>
+					<span>DB: <span class="db-stat-highlight db-size-val">--</span></span>
+					<span class="db-free-info" style="display:none; opacity: 0.7;">(<span class="db-free-val">--</span> free)</span>
+				</div>
+			</div>
+		`;
+
+		const updateHistoryDBStats = async () => {
+			try {
+				const stats = await workspaceClient.getDBStats();
+				const badge = contentContainer.querySelector('#history_db_stats');
+				if (badge && stats) {
+					const sizeEl = badge.querySelector('.db-size-val');
+					if (sizeEl) sizeEl.textContent = stats.sizeFormatted || "--";
+					const freeInfo = badge.querySelector('.db-free-info');
+					const freeEl = badge.querySelector('.db-free-val');
+					if (stats.freePageBytes > 0 && freeInfo && freeEl) {
+						freeEl.textContent = stats.freePageFormatted;
+						freeInfo.style.display = 'inline';
+					}
+					badge.title = `Database: ${stats.path}\nSize: ${stats.sizeFormatted} (${stats.sizeBytes.toLocaleString()} bytes)\nAvailable for reuse: ${stats.freePageFormatted} in freelist\nSessions: ${stats.sessionCount}`;
+				}
+			} catch (e) {
+				// Silently ignore if DB stats endpoint is unavailable
+			}
+		};
+		updateHistoryDBStats();
 		
 		const listContainer = document.createElement('div');
 		listContainer.style.height = '400px';
@@ -618,6 +747,7 @@ class AIManagerSessions {
 						const idx = historySessions.indexOf(session);
 						if (idx > -1) historySessions.splice(idx, 1);
 						renderList();
+						updateHistoryDBStats();
 					}
 				};
 				item.append(delBtn);
@@ -663,6 +793,7 @@ class AIManagerSessions {
 						isMultiSelectMode = false;
 						renderList();
 						renderActionBar();
+						updateHistoryDBStats();
 					}
 				};
 
@@ -803,6 +934,7 @@ class AIManagerSessions {
 				}
 
 				this.manager._dispatchContextUpdate("session_renamed");
+				this._broadcast('session_renamed', { sessionId: this.activeSession.id, name: newName });
 			}
 		} catch (e) {
 			console.error("Auto rename failed:", e);
@@ -835,6 +967,7 @@ class AIManagerSessions {
 			}
 
 			this.manager._dispatchContextUpdate("session_renamed");
+			this._broadcast('session_renamed', { sessionId: this.activeSession.id, name: trimmedName });
 		}
 	}
 }

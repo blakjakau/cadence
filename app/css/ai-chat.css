@@ -1677,6 +1677,54 @@
     color: var(--text-inverted, #ffffff) !important;
 }
 
+/* History Modal DB Stats Badge */
+.history-header-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 12px;
+}
+
+.history-header-titles {
+    flex: 1;
+}
+
+.history-header-titles h1 {
+    margin: 0 0 4px 0;
+    font-size: 1.4rem;
+}
+
+.history-header-titles p {
+    margin: 0;
+    color: var(--text-secondary);
+    font-size: 0.9rem;
+}
+
+.history-db-stats-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 10px;
+    border-radius: var(--borderRadius, 6px);
+    background-color: var(--bg-secondary);
+    border: 1px solid var(--border-color, rgba(255, 255, 255, 0.1));
+    font-size: 11px;
+    color: var(--text-secondary);
+    white-space: nowrap;
+    user-select: none;
+}
+
+.history-db-stats-badge ui-icon {
+    font-size: 14px;
+    color: var(--theme);
+}
+
+.history-db-stats-badge .db-stat-highlight {
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+
 
 
 

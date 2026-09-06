@@ -4,7 +4,7 @@
 build_for_linux() {
   echo "build for ... linux amd64"
   mkdir -p dist
-  GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o dist/cadence-linux-x64 .
+  PKG_CONFIG_PATH="$HOME/.pkgconfig:${PKG_CONFIG_PATH}" GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o dist/cadence-linux-x64 .
 }
 
 build_for_mac() {

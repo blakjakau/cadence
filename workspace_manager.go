@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"io/ioutil"
 	"log"
 	"net/http"
@@ -70,6 +71,14 @@ func initWorkspaceManager() {
 		log.Printf("Failed to create config dir: %v", err)
 	}
 
+	var errDB error
+	globalDB, errDB = openCadenceDB(configDir)
+	if errDB != nil {
+		log.Printf("[WorkspaceManager] Warning: failed to open CadenceDB: %v", errDB)
+	} else {
+		log.Printf("[WorkspaceManager] Initialized CadenceDB at %s", filepath.Join(configDir, "cadence.db"))
+	}
+
 	loadAppConfig()
 }
 
@@ -89,10 +98,23 @@ func loadAppConfig() {
 	configMutex.Lock()
 	defer configMutex.Unlock()
 
-	data, err := ioutil.ReadFile(getAppConfigPath())
-	if err == nil {
-		json.Unmarshal(data, &appConfig)
+	loaded := false
+	if globalDB != nil {
+		data, err := globalDB.GetAppConfig()
+		if err == nil && len(data) > 0 {
+			if err := json.Unmarshal(data, &appConfig); err == nil {
+				loaded = true
+			}
+		}
 	}
+
+	if !loaded {
+		data, err := ioutil.ReadFile(getAppConfigPath())
+		if err == nil {
+			json.Unmarshal(data, &appConfig)
+		}
+	}
+
 	if appConfig.Workspaces == nil {
 		appConfig.Workspaces = []string{"default"}
 	}
@@ -107,27 +129,11 @@ func saveAppConfigToDisk() {
 		log.Printf("Failed to marshal AppConfig: %v", err)
 		return
 	}
-	ioutil.WriteFile(getAppConfigPath(), data, 0644)
-}
 
-func triggerDebouncedDiskSave() {
-	workspaceMutex.Lock()
-	defer workspaceMutex.Unlock()
-
-	if debounceTimer != nil {
-		debounceTimer.Stop()
+	if globalDB != nil {
+		_ = globalDB.PutAppConfig(data)
 	}
-	// Write to disk 10 seconds after the last modification
-	debounceTimer = time.AfterFunc(10*time.Second, func() {
-		workspaceMutex.Lock()
-		defer workspaceMutex.Unlock()
-		for id, w := range workspaces {
-			data, err := json.MarshalIndent(w, "", "  ")
-			if err == nil {
-				ioutil.WriteFile(getWorkspacePath(id), data, 0644)
-			}
-		}
-	})
+	ioutil.WriteFile(getAppConfigPath(), data, 0644)
 }
 
 // HTTP Handlers
@@ -184,9 +190,20 @@ func workspaceHandler(w http.ResponseWriter, r *http.Request) {
 
 		if !exists {
 			ws = &Workspace{ID: id, Name: id}
-			data, err := ioutil.ReadFile(getWorkspacePath(id))
-			if err == nil {
-				json.Unmarshal(data, ws)
+			loaded := false
+			if globalDB != nil {
+				data, err := globalDB.GetWorkspace(id)
+				if err == nil && len(data) > 0 {
+					if err := json.Unmarshal(data, ws); err == nil {
+						loaded = true
+					}
+				}
+			}
+			if !loaded {
+				data, err := ioutil.ReadFile(getWorkspacePath(id))
+				if err == nil {
+					json.Unmarshal(data, ws)
+				}
 			}
 			workspaceMutex.Lock()
 			workspaces[id] = ws
@@ -196,8 +213,13 @@ func workspaceHandler(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(ws)
 	} else if r.Method == http.MethodPost {
+		data, err := ioutil.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
 		var newWs Workspace
-		if err := json.NewDecoder(r.Body).Decode(&newWs); err != nil {
+		if err := json.Unmarshal(data, &newWs); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
@@ -206,7 +228,13 @@ func workspaceHandler(w http.ResponseWriter, r *http.Request) {
 		workspaces[newWs.ID] = &newWs
 		workspaceMutex.Unlock()
 
-		triggerDebouncedDiskSave()
+		// Save immediately to CadenceDB for ACID persistence
+		if globalDB != nil {
+			if err := globalDB.PutWorkspace(newWs.ID, data); err != nil {
+				log.Printf("[WorkspaceManager] Failed to put workspace %s to DB: %v", newWs.ID, err)
+			}
+		}
+
 		w.WriteHeader(http.StatusOK)
 	} else if r.Method == http.MethodDelete {
 		if id == "" {
@@ -217,6 +245,9 @@ func workspaceHandler(w http.ResponseWriter, r *http.Request) {
 		delete(workspaces, id)
 		workspaceMutex.Unlock()
 
+		if globalDB != nil {
+			_ = globalDB.DeleteWorkspace(id)
+		}
 		os.Remove(getWorkspacePath(id))
 		w.WriteHeader(http.StatusOK)
 	} else {
@@ -237,6 +268,16 @@ func sessionHandler(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "Missing session ID", http.StatusBadRequest)
 			return
 		}
+		if globalDB != nil {
+			data, rev, err := globalDB.GetSession(id)
+			if err == nil {
+				w.Header().Set("Content-Type", "application/json")
+				w.Header().Set("X-Session-Revision", fmt.Sprintf("%d", rev))
+				w.Write(data)
+				return
+			}
+		}
+		// Fallback to legacy file read if not found in DB
 		path := getSessionPath(id)
 		sessionMutex.Lock()
 		data, err := ioutil.ReadFile(path)
@@ -266,6 +307,20 @@ func sessionHandler(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
+
+		if globalDB != nil {
+			rev, err := globalDB.PutSession(idFromQuery, data)
+			if err != nil {
+				log.Printf("[WorkspaceManager] Failed to put session %s to DB: %v", idFromQuery, err)
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			w.Header().Set("X-Session-Revision", fmt.Sprintf("%d", rev))
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+
+		// Fallback to disk write if DB not available
 		path := getSessionPath(idFromQuery)
 		sessionMutex.Lock()
 		ioutil.WriteFile(path, data, 0644)
@@ -275,6 +330,9 @@ func sessionHandler(w http.ResponseWriter, r *http.Request) {
 		if id == "" {
 			http.Error(w, "Missing session ID", http.StatusBadRequest)
 			return
+		}
+		if globalDB != nil {
+			_ = globalDB.DeleteSession(id)
 		}
 		path := getSessionPath(id)
 		sessionMutex.Lock()
@@ -297,6 +355,18 @@ func sessionsHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// First attempt instant in-memory index read via bbolt
+	if globalDB != nil {
+		sessions, err := globalDB.ListSessions()
+		if err == nil {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(sessions)
+			return
+		}
+		log.Printf("[WorkspaceManager] ListSessions from DB failed: %v, falling back to disk", err)
+	}
+
+	// Legacy fallback: scan directory files
 	files, err := ioutil.ReadDir(configDir)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -308,7 +378,7 @@ func sessionsHandler(w http.ResponseWriter, r *http.Request) {
 	defer sessionMutex.Unlock()
 
 	for _, f := range files {
-		if !f.IsDir() && strings.HasPrefix(f.Name(), "ai_session_") && strings.HasSuffix(f.Name(), ".json") {
+		if !f.IsDir() && strings.HasPrefix(f.Name(), "ai_session_") && strings.HasSuffix(f.Name(), ".json") && !strings.HasSuffix(f.Name(), ".bak") {
 			path := filepath.Join(configDir, f.Name())
 			data, err := ioutil.ReadFile(path)
 			if err == nil {
@@ -337,6 +407,32 @@ func sessionsHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(sessions)
 }
+
+func dbStatsHandler(w http.ResponseWriter, r *http.Request) {
+	if !checkRequestAuthorization(r) {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	if globalDB != nil {
+		stats, err := globalDB.GetDBStats()
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(stats)
+		return
+	}
+
+	http.Error(w, "Database not initialized", http.StatusServiceUnavailable)
+}
+
 
 type SyntaxCheckRequest struct {
 	Path    string `json:"path"`

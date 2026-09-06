@@ -103,6 +103,7 @@ func createServerMux() *http.ServeMux {
 	mux.HandleFunc("/api/workspace", workspaceHandler)
 	mux.HandleFunc("/api/session", sessionHandler)
 	mux.HandleFunc("/api/sessions", sessionsHandler)
+	mux.HandleFunc("/api/db-stats", dbStatsHandler)
 	mux.HandleFunc("/api/restart", restartHandler)
 	mux.HandleFunc("/api/stop", stopHandler)
 	mux.HandleFunc("/kill", installationHandler(killHandler))

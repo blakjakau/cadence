@@ -28,6 +28,35 @@ function updateIndexerStatus(data) {
 	}
 }
 
+async function updateDBStatus() {
+	const el = document.getElementById('db_status');
+	if (!el) return;
+	try {
+		const stats = await workspaceClient.getDBStats();
+		if (stats) {
+			let text = `DB: ${stats.sizeFormatted}`;
+			if (stats.freePageBytes > 0) {
+				text += ` (${stats.freePageFormatted} free)`;
+			}
+			el.textContent = text;
+			el.title = `Embedded Session Database (bbolt)\nLocation: ${stats.path}\nSize on disk: ${stats.sizeFormatted} (${stats.sizeBytes.toLocaleString()} bytes)\nFreelist for reuse: ${stats.freePageFormatted}\nActive sessions: ${stats.sessionCount}\nWorkspaces: ${stats.workspaceCount}\n\nClick to view chat history.`;
+			if (!el._hasClickHandler) {
+				el._hasClickHandler = true;
+				el.addEventListener('click', () => {
+					if (window.aiManager && window.aiManager.sessions) {
+						window.aiManager.sessions.showHistoryModal();
+					}
+				});
+			}
+		}
+	} catch (e) {
+		// Silently ignore if not ready
+	}
+}
+
+// Keep DB status fresh
+setInterval(updateDBStatus, 60000);
+
 conduitClient.on('indexer_status', (msg) => {
 	updateIndexerStatus(msg.data);
 });
@@ -47,6 +76,8 @@ conduitClient.on('connect', () => {
 			updateIndexerStatus(res.data);
 		}
 	}).catch(e => console.warn("Could not get initial index status:", e));
+
+	updateDBStatus();
 
 	// Proactively check for external modifications on all open tabs
 	const checkTabs = [...(leftTabs?.tabs || []), ...(rightTabs?.tabs || [])];
@@ -3622,16 +3653,24 @@ setTimeout(async () => {
 		if (aiSessionsMetadata) {
 			workspace.aiSessionsMetadata = aiSessionsMetadata.sessions
 			workspace.activeAiSessionId = aiSessionsMetadata.activeSessionId
-			// Debounce workspace saves, as they can happen on session switch, rename, delete
 			clearTimeout(ui.aiManager.saveWorkspaceTimeout)
-			ui.aiManager.saveWorkspaceTimeout = setTimeout(saveWorkspace, 1000)
+			const isStructuralChange = type === "session_switched" || type === "session_deleted" || type === "session_closed" || type === "session_renamed";
+			ui.aiManager.saveWorkspaceTimeout = setTimeout(saveWorkspace, isStructuralChange ? 50 : 500)
 		}
 
-		// 2. Save the full active session data to IndexedDB (on demand)
-		// This happens on message append, delete, summarization, or session switch
-		if (activeSessionData && activeSessionData.id) {
-			await workspaceClient.setSession(activeSessionData.id, activeSessionData)
-			console.debug(`AI session "${activeSessionData.name}" (${activeSessionData.id}) saved to backend.`)
+		// 2. Save the full active session data to backend (on demand)
+		// Skip types that already perform their own atomic persistence (tokens_updated, session_switched)
+		const alreadyPersisted = type === "tokens_updated" || type === "session_switched";
+		if (activeSessionData && activeSessionData.id && !alreadyPersisted) {
+			clearTimeout(ui.aiManager.saveActiveSessionTimeout);
+			ui.aiManager.saveActiveSessionTimeout = setTimeout(async () => {
+				try {
+					await workspaceClient.setSession(activeSessionData.id, activeSessionData);
+					console.debug(`AI session "${activeSessionData.name}" (${activeSessionData.id}) saved to backend.`);
+				} catch (err) {
+					console.warn(`Failed to save AI session "${activeSessionData.name}":`, err);
+				}
+			}, 100);
 		}
 	})
 
@@ -3821,5 +3860,23 @@ setTimeout(async () => {
 				currentEditor.focus()
 			}
 		})
+
+		// Flush pending workspace and active session draft before window unloads
+		const flushOnUnload = () => {
+			if (saveWorkspaceTimeout) {
+				clearTimeout(saveWorkspaceTimeout);
+				_saveWorkspace().catch(() => {});
+			}
+			if (window.ui?.aiManager?.sessionsManager?.activeSession && window.ui?.aiManager?.promptEditor) {
+				const currentPrompt = window.ui.aiManager.promptEditor.getValue();
+				if (currentPrompt !== undefined) {
+					const s = window.ui.aiManager.sessionsManager.activeSession;
+					s.promptInput = currentPrompt;
+					workspaceClient.setSession(s.id, s).catch(() => {});
+				}
+			}
+		};
+		window.addEventListener("beforeunload", flushOnUnload);
+		window.addEventListener("pagehide", flushOnUnload);
 	})
 })
