@@ -31,12 +31,13 @@ export const workspaceClient = {
     },
 
     async setWorkspace(workspace) {
+        const body = JSON.stringify(workspace);
         const res = await fetch(`${API_BASE}/workspace`, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json'
             },
-            body: JSON.stringify(workspace)
+            body: body
         });
         if (!res.ok) {
             throw new Error(`Failed to save workspace: ${res.statusText}`);
@@ -53,12 +54,22 @@ export const workspaceClient = {
     },
 
     async getSession(id) {
-        const res = await fetch(`${API_BASE}/session?id=${encodeURIComponent(id)}`);
-        if (!res.ok) {
-            if (res.status === 404) return undefined;
-            throw new Error(`Failed to fetch session: ${res.statusText}`);
+        try {
+            const res = await fetch(`${API_BASE}/session?id=${encodeURIComponent(id)}`);
+            if (!res.ok) {
+                if (res.status === 404) return undefined;
+                throw new Error(`Failed to fetch session: ${res.statusText}`);
+            }
+            const data = await res.json();
+            const rev = res.headers.get('X-Session-Revision');
+            if (rev && typeof data === 'object' && data !== null) {
+                data.revision = parseInt(rev, 10);
+            }
+            return data;
+        } catch (err) {
+            console.warn(`[workspaceClient] getSession failed for ${id}:`, err);
+            throw err;
         }
-        return await res.json();
     },
 
     async getSessions() {
@@ -71,15 +82,26 @@ export const workspaceClient = {
     },
 
     async setSession(id, data) {
-        const res = await fetch(`${API_BASE}/session?id=${encodeURIComponent(id)}`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify(data)
-        });
-        if (!res.ok) {
-            throw new Error(`Failed to save session: ${res.statusText}`);
+        try {
+            const body = JSON.stringify(data);
+            const res = await fetch(`${API_BASE}/session?id=${encodeURIComponent(id)}`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: body
+            });
+            if (!res.ok) {
+                throw new Error(`Failed to save session: ${res.statusText}`);
+            }
+            const rev = res.headers.get('X-Session-Revision');
+            if (rev && typeof data === 'object' && data !== null) {
+                data.revision = parseInt(rev, 10);
+            }
+            return res;
+        } catch (err) {
+            console.warn(`[workspaceClient] setSession failed for ${id}:`, err);
+            throw err;
         }
     },
 
@@ -90,6 +112,14 @@ export const workspaceClient = {
         if (!res.ok) {
             throw new Error(`Failed to delete session: ${res.statusText}`);
         }
+    },
+
+    async getDBStats() {
+        const res = await fetch(`${API_BASE}/db-stats?t=${Date.now()}`);
+        if (!res.ok) {
+            throw new Error(`Failed to fetch database stats: ${res.statusText}`);
+        }
+        return await res.json();
     },
 
     async checkSyntax(path, content) {
