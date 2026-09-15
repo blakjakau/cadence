@@ -460,7 +460,12 @@ export class AgentConfigPanel extends Block {
 	}
 
 	_buildConnectionsAccordion() {
-		this.connectionsAccordion = new UIAccordion("connections-pool", "Connection Pool", "hub", "#2da44e");
+		this.connectionsAccordion = new UIAccordion("connections-pool", "Connection Pool", "hub", "#2da44e", [{
+			className: "icon-button",
+			icon: "add",
+			title: "Add connection",
+			onClick: () => this.showConnectionModal()
+		}]);
 		const content = this.connectionsAccordion.content;
 		content.className = "accordion-content settings-content-wrapper connections-pool-wrapper";
 
@@ -470,18 +475,6 @@ export class AgentConfigPanel extends Block {
 		this.connListContainer.style.flexDirection = "column";
 		this.connListContainer.style.gap = "8px";
 		content.appendChild(this.connListContainer);
-
-		// FAB add connection
-		const fabContainer = document.createElement("div");
-		fabContainer.style.display = "flex";
-		fabContainer.style.justifyContent = "flex-end";
-		fabContainer.style.marginTop = "16px";
-		const addBtn = new Button("+ Connection");
-		addBtn.className = "theme-button primary";
-		addBtn.icon = "add";
-		addBtn.onclick = () => this.showConnectionModal();
-		fabContainer.appendChild(addBtn);
-		content.appendChild(fabContainer);
 
 		this.container.appendChild(this.connectionsAccordion);
 
@@ -494,7 +487,18 @@ export class AgentConfigPanel extends Block {
 		const defaultId = AIConnections.defaultConnectionId;
 
 		if (connections.length === 0) {
-			this.connListContainer.innerHTML = `<p style="color: var(--text-muted); text-align: center; font-size: 13px; margin: 12px 0;">No connections configured. Click "+ Connection" to create one.</p>`;
+			const empty = document.createElement("div");
+			empty.className = "empty-state";
+			const icon = document.createElement("ui-icon");
+			icon.textContent = "hub";
+			const text = document.createElement("span");
+			text.textContent = "No connections yet.";
+			const cta = new Button("Add connection");
+			cta.className = "variant-primary density-sm";
+			cta.icon = "add";
+			cta.onclick = () => this.showConnectionModal();
+			empty.append(icon, text, cta);
+			this.connListContainer.appendChild(empty);
 			return;
 		}
 
@@ -664,12 +668,14 @@ export class AgentConfigPanel extends Block {
 			editBtn.icon = "edit";
 			editBtn.className = "icon-button secondary";
 			editBtn.title = "Edit connection settings";
+			editBtn.setAttribute("aria-label", "Edit connection settings");
 			editBtn.onclick = () => this.showConnectionModal(conn);
 
 			const copyBtn = new Button("");
 			copyBtn.icon = "content_copy";
 			copyBtn.className = "icon-button secondary";
 			copyBtn.title = "Copy connection";
+			copyBtn.setAttribute("aria-label", "Copy connection");
 			copyBtn.onclick = () => {
 				const newConn = JSON.parse(JSON.stringify(conn));
 				newConn.id = `conn-${crypto.randomUUID()}`;
@@ -685,6 +691,7 @@ export class AgentConfigPanel extends Block {
 			deleteBtn.icon = "delete";
 			deleteBtn.className = "icon-button secondary danger";
 			deleteBtn.title = "Delete connection";
+			deleteBtn.setAttribute("aria-label", "Delete connection");
 			deleteBtn.onclick = () => {
 				const deleted = AIConnections.deleteConnection(conn.id);
 				if (deleted) {
@@ -1557,7 +1564,14 @@ export class AgentConfigPanel extends Block {
 
 		const connections = AIConnections.getConnections();
 		if (connections.length === 0) {
-			content.innerHTML = `<p style="color: var(--text-muted); text-align: center; font-size: 13px; margin: 12px 0;">No connections available for telemetry.</p>`;
+			const empty = document.createElement("div");
+			empty.className = "empty-state";
+			const icon = document.createElement("ui-icon");
+			icon.textContent = "insights";
+			const text = document.createElement("span");
+			text.textContent = "No connections available for telemetry.";
+			empty.append(icon, text);
+			content.appendChild(empty);
 			return;
 		}
 
@@ -1640,6 +1654,7 @@ export class AgentConfigPanel extends Block {
 			resetBtn.icon = "refresh";
 			resetBtn.className = "icon-button secondary";
 			resetBtn.title = `Reset telemetry for ${conn.name}`;
+			resetBtn.setAttribute("aria-label", `Reset telemetry for ${conn.name}`);
 			resetBtn.style.width = "24px";
 			resetBtn.style.height = "24px";
 			resetBtn.style.minWidth = "24px";
