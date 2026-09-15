@@ -1,6 +1,6 @@
 import { Block } from './element.mjs';
 import { Button } from './button.mjs';
-import { UIAccordion } from './session-artifacts-panel.mjs';
+import { UIAccordion } from './accordion.mjs';
 import AIConnections from '../ai-connections.mjs';
 import workspaceClient from '../workspace-client.mjs';
 import { openCommandPolicyReviewModal } from '../util/command-policy-review.mjs';

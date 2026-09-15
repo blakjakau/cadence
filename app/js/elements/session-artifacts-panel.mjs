@@ -3,84 +3,7 @@ import { Button } from './button.mjs';
 import conduitClient from '../conduit-client.mjs';
 import workspaceClient from '../workspace-client.mjs';
 import { openCommandPolicyReviewModal } from '../util/command-policy-review.mjs';
-
-export class UIAccordion extends Block {
-    constructor(sectionKey, titleText, iconText, iconColor = null, hasEditButton = false, editBtnClass = "") {
-        super();
-        this.sectionKey = sectionKey;
-        this.classList.add("accordion-item");
-        this.classList.add(`${sectionKey}-section`);
-
-        this.header = document.createElement("div");
-        this.header.className = "accordion-header";
-
-        const headerLeft = document.createElement("div");
-        headerLeft.className = "header-left";
-
-        const icon = document.createElement("ui-icon");
-        icon.textContent = iconText;
-        if (iconColor) icon.style.color = iconColor;
-
-        const titleSpan = document.createElement("span");
-        titleSpan.textContent = titleText;
-
-        headerLeft.appendChild(icon);
-        headerLeft.appendChild(titleSpan);
-        this.header.appendChild(headerLeft);
-
-        this.rightContainer = document.createElement("div");
-        this.rightContainer.className = "header-right";
-
-        this.editBtn = null;
-        if (hasEditButton) {
-            this.editBtn = new Button("Edit");
-            this.editBtn.className = `${editBtnClass} edit-btn`;
-            this.editBtn.icon = "edit";
-
-            this.rightContainer.appendChild(this.editBtn);
-        }
-
-        this.arrow = document.createElement("ui-icon");
-        this.arrow.className = "expand-arrow";
-        this.arrow.textContent = "expand_less";
-        this.rightContainer.appendChild(this.arrow);
-        this.header.appendChild(this.rightContainer);
-
-        this.content = document.createElement("div");
-        this.content.className = "accordion-content";
-
-        this.appendChild(this.header);
-        this.appendChild(this.content);
-
-        // Click handler to expand/collapse
-        this.header.onclick = (e) => {
-            if (e.target.closest("button") || e.target.closest(".header-actions")) return;
-            const session = (typeof this.getTargetSession === "function") ? this.getTargetSession() : ui.aiManager.activeSession;
-            if (!session) return;
-            session._accordionStates = session._accordionStates || { settings: false, plan: true, tasks: true, backups: true, scratchpad: true };
-
-            const isExpanded = this.classList.toggle("expanded");
-            session._accordionStates[this.sectionKey] = isExpanded;
-
-            this.applyState(isExpanded);
-        };
-    }
-
-    applyState(isExpanded) {
-        if (isExpanded) {
-            this.classList.add("expanded");
-            this.content.style.display = "";
-            this.arrow.style.transform = "rotate(0deg)";
-            this.arrow.textContent = "expand_less";
-        } else {
-            this.classList.remove("expanded");
-            this.content.style.display = "none";
-            this.arrow.style.transform = "rotate(180deg)";
-            this.arrow.textContent = "expand_more";
-        }
-    }
-}
-customElements.define("ui-accordion", UIAccordion);
+import { UIAccordion } from './accordion.mjs';
 
 export class SessionArtifactsPanel extends Block {
     constructor() {
@@ -426,7 +349,7 @@ export class SessionArtifactsPanel extends Block {
     }
 
     _buildPlanAccordion() {
-        this.planAccordion = new UIAccordion("plan", "Implementation Plan", "assignment", "#d19a66", true, "edit-plan-btn");
+        this.planAccordion = new UIAccordion("plan", "Implementation Plan", "assignment", "#d19a66", [{ className: "edit-plan-btn edit-btn", icon: "edit", title: "Edit plan" }]);
         this.planItem = this.planAccordion;
         this.planContentWrapper = this.planAccordion.content;
         this.planArrow = this.planAccordion.arrow;
@@ -497,7 +420,7 @@ export class SessionArtifactsPanel extends Block {
     }
 
     _buildTasksAccordion() {
-        this.tasksAccordion = new UIAccordion("tasks", "Task Checklist", "playlist_add_check", "#2da44e", true, "edit-tasks-btn");
+        this.tasksAccordion = new UIAccordion("tasks", "Task Checklist", "playlist_add_check", "#2da44e", [{ className: "edit-tasks-btn edit-btn", icon: "edit", title: "Edit tasks" }]);
         this.tasksItem = this.tasksAccordion;
         this.tasksContentWrapper = this.tasksAccordion.content;
         this.tasksArrow = this.tasksAccordion.arrow;
@@ -582,7 +505,7 @@ export class SessionArtifactsPanel extends Block {
     }
 
     _buildScratchpadAccordion() {
-        this.scratchpadAccordion = new UIAccordion("scratchpad", "Scratchpad", "sticky_note_2", "#e5a50a", true, "edit-scratchpad-btn");
+        this.scratchpadAccordion = new UIAccordion("scratchpad", "Scratchpad", "sticky_note_2", "#e5a50a", [{ className: "edit-scratchpad-btn edit-btn", icon: "edit", title: "Edit scratchpad" }]);
         this.scratchpadItem = this.scratchpadAccordion;
         this.scratchpadContentWrapper = this.scratchpadAccordion.content;
         this.scratchpadArrow = this.scratchpadAccordion.arrow;
