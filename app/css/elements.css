@@ -750,6 +750,30 @@ ui-menu ui-menu-item:hover {
     color: var(--text-primary);
 }
 
+ui-menu ui-menu-item:focus,
+ui-menu ui-menu-item:focus-visible {
+    outline: none;
+    background: var(--bg-secondary);
+    color: var(--text-primary);
+}
+
+ui-menu ui-menu-item[disabled] {
+    opacity: 0.45;
+    pointer-events: none;
+}
+
+/* Items that host a pop-out sub-menu get a caret on the right edge. */
+ui-menu ui-menu-item:has(> ui-menu)::after {
+    content: "▸";
+    position: absolute;
+    right: 10px;
+    top: 50%;
+    transform: translateY(-50%);
+    color: var(--text-muted);
+    font-size: 12px;
+    pointer-events: none;
+}
+
 ui-menu ui-menu-item ui-icon {
     float: left;
     width: 24px;

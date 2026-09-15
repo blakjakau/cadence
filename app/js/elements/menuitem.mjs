@@ -25,6 +25,8 @@ export class MenuItem extends Button {
 	connectedCallback() {
 		super.connectedCallback.apply(this)
 
+		this.setAttribute("tabindex", "-1")
+
 		this._icon.innerHTML = this.getAttribute("icon")
 		this._tag.innerHTML = this.getAttribute("keyTag")
 		this._tag.hook = "right"
