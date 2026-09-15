@@ -262,6 +262,7 @@ export class DiffViewPanel extends Block {
         }
         fabIcon.textContent = initialIcon;
         this.ratioFab.title = initialTitle;
+        this.ratioFab.setAttribute("aria-label", initialTitle);
         this.ratioFab.appendChild(fabIcon);
 
         this.ratioFab.onclick = (e) => {
@@ -290,6 +291,7 @@ export class DiffViewPanel extends Block {
             
             fabIcon.textContent = nextIcon;
             this.ratioFab.title = nextTitle;
+            this.ratioFab.setAttribute("aria-label", nextTitle);
 
             if (this.leftEditor) this.leftEditor.resize();
             if (this.rightEditor) this.rightEditor.resize();

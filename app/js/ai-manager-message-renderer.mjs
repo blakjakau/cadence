@@ -172,6 +172,7 @@ export default class AIManagerMessageRenderer {
                 pre.setAttribute("expanded", "");
                 expandCollapseButton.icon = "unfold_less";
                 expandCollapseButton.title = "Collapse code block";
+                expandCollapseButton.setAttribute("aria-label", "Collapse code block");
             } else {
                 pre.setAttribute("collapsed", "");
                 expandCollapseButton.icon = "unfold_more";
