@@ -92,12 +92,16 @@ class TerminalManager {
 		// Button to create a new terminal session
 		const newTerminalButton = new Button(""); // No text
 		newTerminalButton.icon = "add_circle";
+		newTerminalButton.title = "New terminal";
+		newTerminalButton.setAttribute("aria-label", "New terminal");
 		newTerminalButton.classList.add("new-terminal-button");
 		newTerminalButton.onclick = () => this.createNewTerminalSession();
 		newTerminalButton.showClose = false; // Hide close button for 'New Terminal' button
 
 		this.settingsButton = new Button("");
 		this.settingsButton.icon = "settings";
+		this.settingsButton.title = "Terminal settings";
+		this.settingsButton.setAttribute("aria-label", "Terminal settings");
 		this.settingsButton.classList.add("settings-button");
 		this.settingsButton.onclick = () => this.toggleSettingsPanel();
 		this.sessionTabBar.append(newTerminalButton, this.settingsButton);

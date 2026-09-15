@@ -130,6 +130,7 @@ export default class AIManagerMessageRenderer {
                 copyButton.classList.add("code-button")
                 copyButton.icon = "content_copy"
                 copyButton.title = "Copy code"
+                copyButton.setAttribute("aria-label", "Copy code")
                 copyButton.on("click", () => {
                     const code = codeElement ? codeElement.innerText : pre.innerText;
                     navigator.clipboard.writeText(code)
@@ -144,6 +145,7 @@ export default class AIManagerMessageRenderer {
                 insertButton.classList.add("code-button")
                 insertButton.icon = "input"
                 insertButton.title = "Insert into editor"
+                insertButton.setAttribute("aria-label", "Insert into editor")
                 insertButton.on("click", () => {
                     const code = codeElement ? codeElement.innerText : pre.innerText;
                     const event = new CustomEvent("insert-snippet", { detail: code })
@@ -174,6 +176,7 @@ export default class AIManagerMessageRenderer {
                 pre.setAttribute("collapsed", "");
                 expandCollapseButton.icon = "unfold_more";
                 expandCollapseButton.title = "Expand code block";
+                expandCollapseButton.setAttribute("aria-label", "Expand code block");
             }
 
             expandCollapseButton.on("click", () => {
@@ -181,15 +184,18 @@ export default class AIManagerMessageRenderer {
                     pre.removeAttribute("collapsed");
                     expandCollapseButton.icon = "unfold_more";
                     expandCollapseButton.title = "Expand code block";
+                    expandCollapseButton.setAttribute("aria-label", "Expand code block");
                 } else if (!pre.hasAttribute("expanded")) {
                     pre.setAttribute("expanded", "");
                     expandCollapseButton.icon = "unfold_less";
                     expandCollapseButton.title = "Collapse code block";
+                    expandCollapseButton.setAttribute("aria-label", "Collapse code block");
                 } else {
                     pre.removeAttribute("expanded");
                     pre.setAttribute("collapsed", "");
                     expandCollapseButton.icon = "unfold_more";
                     expandCollapseButton.title = "Expand code block";
+                    expandCollapseButton.setAttribute("aria-label", "Expand code block");
                 }
             });
             buttonContainer.append(expandCollapseButton)
@@ -218,15 +224,18 @@ export default class AIManagerMessageRenderer {
                 if (messageObject && messageObject.diffStatuses && messageObject.diffStatuses[index]) {
                     applyDiffButton.icon = "done";
                     applyDiffButton.title = "Diff applied successfully!";
+                    applyDiffButton.setAttribute("aria-label", "Diff applied successfully!");
 
                     pre.removeAttribute("expanded");
                     pre.setAttribute("collapsed", "");
                     expandCollapseButton.icon = "unfold_more";
                     expandCollapseButton.title = "Expand code block";
+                    expandCollapseButton.setAttribute("aria-label", "Expand code block");
 
                 } else {
                     applyDiffButton.icon = "merge";
                     applyDiffButton.title = "Apply diff to file";
+                    applyDiffButton.setAttribute("aria-label", "Apply diff to file");
                 }
 
                 applyDiffButton.on("click", async () => {
@@ -304,6 +313,7 @@ export default class AIManagerMessageRenderer {
                         applyDiffButton.classList.add("diff-apply-success");
                         applyDiffButton.icon = "done";
                         applyDiffButton.title = "Diff applied successfully!";
+                        applyDiffButton.setAttribute("aria-label", "Diff applied successfully!");
                         if (messageObject) {
                             messageObject.diffStatuses[index] = true;
                             if (srcSession) {

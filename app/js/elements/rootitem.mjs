@@ -14,6 +14,8 @@ export class RootItem extends Block {
         this.pinButton = new Button("");
         this.pinButton.className = 'root-pin-button';
         this.pinButton.setIcon(isPinned ? 'keep' : 'keep_off');
+        this.pinButton.title = isPinned ? 'Unpin' : 'Pin';
+        this.pinButton.setAttribute('aria-label', isPinned ? 'Unpin' : 'Pin');
         if (isPinned) this.pinButton.classList.add('pinned');
         this.pinButton.onclick = (e) => {
             e.stopPropagation();
@@ -69,6 +71,8 @@ export class RootItem extends Block {
     updatePinState(isPinned) {
         this.isPinned = isPinned;
         this.pinButton.setIcon(isPinned ? 'keep' : 'keep_off');
+        this.pinButton.title = isPinned ? 'Unpin' : 'Pin';
+        this.pinButton.setAttribute('aria-label', isPinned ? 'Unpin' : 'Pin');
         this.pinButton.classList.toggle('pinned', isPinned);
         this.classList.toggle('pinned', isPinned);
     }

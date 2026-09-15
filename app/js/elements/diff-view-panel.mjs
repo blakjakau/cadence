@@ -87,6 +87,7 @@ export class DiffViewPanel extends Block {
         this.prevBtn.className = "nav-btn";
         this.prevBtn.icon = "chevron_left";
         this.prevBtn.title = "Previous Edit";
+        this.prevBtn.setAttribute("aria-label", "Previous Edit");
 
         this.editCountSpan = document.createElement("span");
         this.editCountSpan.className = "diff-edit-count";
@@ -96,6 +97,7 @@ export class DiffViewPanel extends Block {
         this.nextBtn.className = "nav-btn";
         this.nextBtn.icon = "chevron_right";
         this.nextBtn.title = "Next Edit";
+        this.nextBtn.setAttribute("aria-label", "Next Edit");
 
         this.navContainer.appendChild(this.prevBtn);
         this.navContainer.appendChild(this.editCountSpan);

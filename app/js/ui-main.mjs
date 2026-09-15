@@ -673,6 +673,8 @@ const uiManager = {
 
 		installer.clear = new Button("")
 		installer.clear.icon = "close"
+		installer.clear.title = "Dismiss"
+		installer.clear.setAttribute("aria-label", "Dismiss")
 		installer.clear.style.cssText = `
         position:absolute;
         right:0px;

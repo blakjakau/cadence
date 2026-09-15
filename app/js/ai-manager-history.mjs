@@ -2444,6 +2444,7 @@ class AIManagerHistory {
 		editButton.classList.add("edit-history-button");
 		editButton.icon = "edit";
 		editButton.title = "Edit this prompt (prunes subsequent turns and copies into editor)";
+		editButton.setAttribute("aria-label", "Edit this prompt");
 		editButton.on("click", async (e) => {
 			e.stopPropagation();
 			if (this.manager._isProcessing) {
@@ -2466,6 +2467,7 @@ class AIManagerHistory {
 		}
 		replayButton.icon = "replay";
 		replayButton.title = "Replay this turn (prunes subsequent turns and regenerates unaltered)";
+		replayButton.setAttribute("aria-label", "Replay this turn");
 		replayButton.on("click", async (e) => {
 			e.stopPropagation();
 			const confirmed = await window.modal.confirm("Are you sure you want to replay from this turn? This will permanently delete all subsequent messages in this session and request a new response.", "Replay Turn");
@@ -2481,6 +2483,7 @@ class AIManagerHistory {
 		deleteButton.classList.add("delete-history-button");
 		deleteButton.icon = "delete";
 		deleteButton.title = "Delete this message (Ctrl+Click to delete this and all subsequent turns)";
+		deleteButton.setAttribute("aria-label", "Delete this message");
 		deleteButton.on("click", (e) => {
 			e.stopPropagation();
 			const pruneForward = e.ctrlKey || e.metaKey;

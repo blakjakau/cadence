@@ -804,6 +804,7 @@ class AIManagerSessions {
 				copyBtn.style.marginRight = '8px';
 				copyBtn.style.visibility = isMultiSelectMode ? 'hidden' : 'visible';
 				copyBtn.title = "Duplicate Chat";
+				copyBtn.setAttribute('aria-label', 'Duplicate Chat');
 				copyBtn.onclick = async (e) => {
 					e.stopPropagation();
 					if (isMultiSelectMode) return;
@@ -819,6 +820,8 @@ class AIManagerSessions {
 				delBtn.style.color = 'var(--text-secondary)';
 				delBtn.style.border = 'none';
 				delBtn.style.visibility = isMultiSelectMode ? 'hidden' : 'visible'; // Maintain layout width/height
+				delBtn.title = "Delete session";
+				delBtn.setAttribute('aria-label', 'Delete session');
 				delBtn.onclick = async (e) => {
 					e.stopPropagation(); // prevent item.onclick
 					if (isMultiSelectMode) return;
