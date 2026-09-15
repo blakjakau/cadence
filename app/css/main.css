@@ -46,6 +46,15 @@
     /* Fonts */
     --font-sans: system-ui, roboto, arial, sans;
     --font-mono: "roboto mono", monospace;
+    --font-family-mono: var(--font-mono);
+    --fontFamily-mono: var(--font-mono);
+
+    /* Font sizes */
+    --font-size-xs: 11px;
+    --font-size-sm: 12px;
+
+    /* Corner radius */
+    --radius: 6px;
 
     /* --- Light Mode Palette --- */
     --bg-primary: #d6d8da;
@@ -55,16 +64,41 @@
     --bg-code: #e3e5ee;
     --bg-terminal: #1e1e1e;
     --bg-modal: #fafafa;
+    --bg-card: #ffffff;
+    --bg-card-alt: #f2f3f5;
+    --bg-hover: #c9cbce;
+    --bg-input: rgba(0, 0, 0, 0.05);
+    --bg-tag: rgba(0, 0, 0, 0.08);
 
     --text-primary: #3a3a3a;
     --text-secondary: #5a5a5a;
     --text-muted: #7a7a7a;
     --text-inverted: #ffffff;
+    --text-color-rgb: 58, 58, 58;
+    --text-color-secondary: var(--text-secondary);
+    --text-color: var(--text-primary);
+    --text: var(--text-primary);
 
     --border-primary: #a9adb1;
     --border-secondary: #b8babf;
+    --border-color: var(--border-primary);
+    --border: var(--border-primary);
     --icon-color: #2b2b2b;
+    --ui-icon-color: var(--icon-color);
     --shadow-color: rgba(0, 0, 0, 0.1);
+
+    /* Accent & theme-derived colors */
+    --color-accent: #4f8cff;
+    --theme-light: #5c6bc0;
+    --theme-text-color: #ffffff;
+    --theme-text-color-light: rgba(255, 255, 255, 0.75);
+    --theme-block-background: var(--theme);
+    --theme-border-color: var(--theme-dark);
+
+    /* Semantic diff/status colors */
+    --green: #2e7d32;
+    --red: #c62828;
+    --high: #d32f2f;
 
     /* Highlight.js Colors for Light Mode (Chrome-inspired) */
     --hljs-bg: var(--bg-code);
@@ -77,6 +111,7 @@
     --hljs-string: #1a1aa6;
     --hljs-function: #0000a2;
     --hljs-variable: #318495;
+    --hljs-tag: var(--hljs-selector);
     --hljs-class: var(--hljs-text);
 }
 
@@ -636,16 +671,39 @@ ui-file-list {
     --bg-overlay: rgba(0, 0, 0, 0.5);
     --bg-code: rgba(0, 0, 0, 0.25);
     --bg-modal: var(--bg-tertiary);
+    --bg-card: #2a2d3d;
+    --bg-card-alt: #1f212e;
+    --bg-hover: #505c61;
+    --bg-input: rgba(255, 255, 255, 0.05);
+    --bg-tag: rgba(255, 255, 255, 0.12);
 
     --text-primary: #dadada;
     --text-secondary: #afafaf;
     --text-muted: #777777;
     /* Inverted text is for use on theme-colored backgrounds */
     --text-inverted: #ffffff;
+    --text-color-rgb: 218, 218, 218;
+    --text-color-secondary: var(--text-secondary);
+    --text-color: var(--text-primary);
+    --text: var(--text-primary);
     --border-primary: #555555;
     --border-secondary: #444444;
+    --border-color: var(--border-primary);
+    --border: var(--border-primary);
     --icon-color: #2b2b2b;
+    --ui-icon-color: var(--icon-color);
     --shadow-color: rgba(0, 0, 0, 0.25);
+
+    /* Accent & theme-derived colors (keep same accent, brighter theme for dark bg) */
+    --color-accent: #4f8cff;
+    --theme-light: #7986cb;
+    --theme-block-background: var(--theme);
+    --theme-border-color: var(--theme-dark);
+
+    /* Semantic diff/status colors — brighter for dark bg contrast */
+    --green: #81c784;
+    --red: #e57373;
+    --high: #e75c6a;
 
     /* Highlight.js Colors for Dark Mode (Code-inspired) */
     --hljs-bg: var(--bg-code);
@@ -658,6 +716,7 @@ ui-file-list {
     --hljs-string: #ccffbb;
     --hljs-function: #a6e22e;
     --hljs-variable: #a6e22e;
+    --hljs-tag: var(--hljs-selector);
     --hljs-class: var(--hljs-text);
 }
 

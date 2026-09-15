@@ -729,21 +729,21 @@
 }
 
 .model-turn-header .model-turn-summary code.turn-tool-chip.success {
-    background: rgba(45, 164, 78, 0.12);
-    color: #2da44e;
-    border-color: rgba(45, 164, 78, 0.25);
+    background: color-mix(in srgb, var(--color-success, #2da44e) 12%, transparent);
+    color: var(--color-success, #2da44e);
+    border-color: color-mix(in srgb, var(--color-success, #2da44e) 25%, transparent);
 }
 
 .model-turn-header .model-turn-summary code.turn-tool-chip.failed {
-    background: rgba(234, 67, 53, 0.12);
-    color: #ea4335;
-    border-color: rgba(234, 67, 53, 0.25);
+    background: color-mix(in srgb, var(--color-error, #ea4335) 12%, transparent);
+    color: var(--color-error, #ea4335);
+    border-color: color-mix(in srgb, var(--color-error, #ea4335) 25%, transparent);
 }
 
 .model-turn-header .model-turn-summary code.turn-tool-chip.pending {
-    background: rgba(209, 154, 102, 0.15);
-    color: #d19a66;
-    border-color: rgba(209, 154, 102, 0.25);
+    background: color-mix(in srgb, var(--color-warning-dark, #d19a66) 15%, transparent);
+    color: var(--color-warning-dark, #d19a66);
+    border-color: color-mix(in srgb, var(--color-warning-dark, #d19a66) 25%, transparent);
 }
 
 .model-turn-header .turn-tokens-container {
@@ -775,9 +775,9 @@
 }
 
 .model-turn-header .token-count-tag.tag-blue {
-    background: rgba(0, 137, 205, 0.12);
+    background: color-mix(in srgb, var(--theme, #0089cd) 12%, transparent);
     color: var(--theme, #0089cd);
-    border-color: rgba(0, 137, 205, 0.25);
+    border-color: color-mix(in srgb, var(--theme, #0089cd) 25%, transparent);
 }
 
 .model-turn-header .token-count-tag.tag-yellow {
@@ -925,23 +925,23 @@
 }
 
 .sub-agent-card-badge.running {
-    background: rgba(76, 175, 80, 0.15);
-    color: #4caf50;
+    background: color-mix(in srgb, var(--color-success, #4caf50) 15%, transparent);
+    color: var(--color-success, #4caf50);
 }
 
 .sub-agent-card-badge.completed {
-    background: rgba(33, 150, 243, 0.15);
-    color: #2196f3;
+    background: color-mix(in srgb, var(--theme, #2196f3) 15%, transparent);
+    color: var(--theme, #2196f3);
 }
 
 .sub-agent-card-badge.halted {
-    background: rgba(244, 67, 54, 0.15);
-    color: #f44336;
+    background: color-mix(in srgb, var(--color-error, #f44336) 15%, transparent);
+    color: var(--color-error, #f44336);
 }
 
 .sub-agent-card-badge.pending-query {
-    background: rgba(232, 163, 23, 0.2);
-    color: #e8a317;
+    background: color-mix(in srgb, var(--color-warning-dark, #e8a317) 20%, transparent);
+    color: var(--color-warning-dark, #e8a317);
     animation: badge-pulse-amber 1.5s infinite ease-in-out;
 }
 
@@ -952,9 +952,9 @@
 
 /* Sub-agent card highlight when there is a pending query */
 .sub-agent-trigger-card.has-pending-query {
-    border-color: rgba(232, 163, 23, 0.5);
-    border-left: 3px solid #e8a317;
-    background: linear-gradient(135deg, rgba(232, 163, 23, 0.06), var(--bg-card, rgba(255,255,255,0.04)));
+    border-color: color-mix(in srgb, var(--color-warning-dark, #e8a317) 50%, transparent);
+    border-left: 3px solid var(--color-warning-dark, #e8a317);
+    background: linear-gradient(135deg, color-mix(in srgb, var(--color-warning-dark, #e8a317) 6%, transparent), var(--bg-card, rgba(255,255,255,0.04)));
 }
 
 .sub-agent-card-desc {

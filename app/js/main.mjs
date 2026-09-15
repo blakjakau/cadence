@@ -11,6 +11,9 @@ import {
 } from "./elements/utils.mjs"
 import ui from "./ui-main.mjs" // Assuming ui-main.mjs handles its own import of Modal via elements.mjs
 import {
+	applyOmarchyPalette, clearOmarchyPalette, fetchOmarchyTheme,
+} from "./omarchy-theme.mjs"
+import {
 	Modal, ActionBar, Block, Button, ContentFill, CounterButton, Element, Effects, Effect,
 	FileItem, FileList, Icon, Inline, Input, Inner, MediaView, Panel, Ripple, TabBar, TabItem,
 	View, Menu, MenuItem, FileUploadList, actionBars, promptSaveFile, promptAddFolder,
@@ -838,23 +841,94 @@ const clearInjectedTheme = () => {
 	// Instead, CSS handles light/dark mode with pre-defined variables.
 }
 
+// Live system-theme tracking: while darkmode is "system", poll the backend in
+// case the user switches desktop theme (Omarchy palette, KDE/GNOME mode) so
+// Cadence follows along.
+let omarchyPollTimer = null
+let lastPaletteKey = "none"
+
+const paletteKey = (palette) => {
+	if (!palette || palette.detected !== true) return "none"
+	return `${palette.source || ""}|${palette.theme || ""}|${palette.mode || ""}|${JSON.stringify(palette.colors || {})}`
+}
+
+const stopOmarchyPolling = () => {
+	if (omarchyPollTimer) {
+		clearInterval(omarchyPollTimer)
+		omarchyPollTimer = null
+	}
+}
+
+// Applies the active system theme (if any) to the app palette and body
+// class. Falls back to the media query when no desktop theme is detected.
+// Skips pointless work when the theme hasn't changed since the last pass.
+const applySystemTheme = async (force = false) => {
+	if (app.darkmode !== "system") {
+		clearOmarchyPalette()
+		stopOmarchyPolling()
+		return
+	}
+
+	const palette = await fetchOmarchyTheme()
+	if (!palette) return // Backend unreachable — leave existing state alone.
+
+	const key = paletteKey(palette)
+	if (!force && lastPaletteKey === key) return
+
+	if (palette.detected) {
+		applyOmarchyPalette(palette)
+		if (palette.mode === "light") {
+			document.body.classList.remove("darkmode")
+		} else {
+			document.body.classList.add("darkmode")
+		}
+		startOmarchyPolling()
+	} else {
+		clearOmarchyPalette()
+		stopOmarchyPolling()
+		if (prefersDarkMode.matches) {
+			document.body.classList.add("darkmode")
+		} else {
+			document.body.classList.remove("darkmode")
+		}
+	}
+	lastPaletteKey = key
+	updateThemeAndMode(false) // refresh the dark/light toggle icon
+}
+
+const startOmarchyPolling = () => {
+	if (omarchyPollTimer) return
+	omarchyPollTimer = setInterval(async () => {
+		if (app.darkmode !== "system") {
+			stopOmarchyPolling()
+			return
+		}
+		await applySystemTheme()
+	}, 5000)
+}
+
 const execCommandSetDarkMode = (mode) => {
 	app.darkmode = mode
 
 	switch (mode) {
 		case "light":
+			clearOmarchyPalette()
+			stopOmarchyPolling()
 			document.body.classList.remove("darkmode")
 			break
 		case "dark":
+			clearOmarchyPalette()
+			stopOmarchyPolling()
 			document.body.classList.add("darkmode")
 			break
 		case "system":
+			// This only updates on initial load and system preference change
 			if (prefersDarkMode.matches) {
-				// This only updates on initial load and system preference change
 				document.body.classList.add("darkmode")
 			} else {
 				document.body.classList.remove("darkmode")
 			}
+			applySystemTheme(true)
 			break
 	}
 	saveAppConfig()

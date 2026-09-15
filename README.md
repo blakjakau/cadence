@@ -50,6 +50,29 @@ go run . -browser
 go run . -serve ./app
 ```
 
+### Optional: embedded native window (`-webview`)
+
+The default build does **not** embed a renderer, so it has no system UI
+library dependencies. It launches on Linux by opening Chromium in app mode,
+falling back to your default browser (`-browser`) or `-headless` server mode.
+
+If you want the lightweight embedded WebView window (`-webview`) instead,
+you must opt in at build time:
+
+```bash
+# Debian/Ubuntu dependencies
+sudo apt install libwebkit2gtk-4.0-dev libgtk-3-dev
+
+# Compile with the optional renderer
+go build -tags webview -o cadence .
+./cadence -webview
+```
+
+Without the `webview` build tag, `-webview` prints a friendly message and
+falls back to the default browser. This keeps the `webkit2gtk-4.0` /
+`gtk+-3.0` dependency explicit and opt-in rather than leaking it into every
+build and every run mode.
+
 Once it's running, the backend listens on `3022` (`3023` in dev mode).
 
 ## Status

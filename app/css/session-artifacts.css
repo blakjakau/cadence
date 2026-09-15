@@ -52,7 +52,7 @@ select.themed-select:hover {
 
 select.themed-select:focus {
     border-color: var(--theme, #303f9f);
-    box-shadow: 0 0 0 2px rgba(48, 63, 159, 0.25);
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--theme, #303f9f) 25%, transparent);
 }
 
 select.themed-select option {
@@ -83,7 +83,7 @@ select.themed-select option {
     animation: tab-shadow-pulse-blue 2s infinite ease-in-out, tab-bg-pulse-blue 2s infinite ease-in-out;
 }
 .ai-session-tabs ui-tab-item.tab-status-running .status-icon {
-    color: #0089cd !important;
+    color: var(--theme, #0089cd) !important;
 }
 
 .ai-session-tabs ui-tab-item.tab-status-halted[active] {
@@ -97,11 +97,11 @@ select.themed-select option {
 }
 
 .ai-session-tabs ui-tab-item.tab-status-completed {
-    box-shadow: inset 0 -3px 0 0 #2da44e;
+    box-shadow: inset 0 -3px 0 0 var(--color-success, #2da44e);
     transition: box-shadow 0.5s ease;
 }
 .ai-session-tabs ui-tab-item.tab-status-completed .status-icon {
-    color: #2da44e !important;
+    color: var(--color-success, #2da44e) !important;
 }
 
 .ai-session-tabs ui-tab-item.tab-status-pending-query[active] {
@@ -111,7 +111,7 @@ select.themed-select option {
     animation: tab-shadow-pulse-amber 1.2s infinite ease-in-out, tab-bg-pulse-amber 1.2s infinite ease-in-out;
 }
 .ai-session-tabs ui-tab-item.tab-status-pending-query .status-icon {
-    color: #e8a317 !important;
+    color: var(--color-warning-dark, #e8a317) !important;
 }
 
 /* --- Pending prompts list styles --- */
@@ -125,15 +125,15 @@ select.themed-select option {
 }
 
 @keyframes tab-shadow-pulse-blue {
-    0% { box-shadow: inset 0 -3px 0 0 #0089cd, 0 0 2px rgba(0, 137, 205, 0.2); }
-    50% { box-shadow: inset 0 -3px 0 0 #0089cd, 0 0 12px rgba(0, 137, 205, 0.8); }
-    100% { box-shadow: inset 0 -3px 0 0 #0089cd, 0 0 2px rgba(0, 137, 205, 0.2); }
+    0% { box-shadow: inset 0 -3px 0 0 var(--theme, #0089cd), 0 0 2px color-mix(in srgb, var(--theme, #0089cd) 20%, transparent); }
+    50% { box-shadow: inset 0 -3px 0 0 var(--theme, #0089cd), 0 0 12px color-mix(in srgb, var(--theme, #0089cd) 80%, transparent); }
+    100% { box-shadow: inset 0 -3px 0 0 var(--theme, #0089cd), 0 0 2px color-mix(in srgb, var(--theme, #0089cd) 20%, transparent); }
 }
 
 @keyframes tab-bg-pulse-blue {
-    0% { background-color: rgba(0, 137, 205, 0.05); }
-    50% { background-color: rgba(0, 137, 205, 0.2); }
-    100% { background-color: rgba(0, 137, 205, 0.05); }
+    0% { background-color: color-mix(in srgb, var(--theme, #0089cd) 5%, transparent); }
+    50% { background-color: color-mix(in srgb, var(--theme, #0089cd) 20%, transparent); }
+    100% { background-color: color-mix(in srgb, var(--theme, #0089cd) 5%, transparent); }
 }
 
 @keyframes tab-shadow-pulse-gold {
@@ -149,15 +149,15 @@ select.themed-select option {
 }
 
 @keyframes tab-shadow-pulse-amber {
-    0% { box-shadow: inset 0 -3px 0 0 #e8a317, 0 0 2px rgba(232, 163, 23, 0.2); }
-    50% { box-shadow: inset 0 -3px 0 0 #e8a317, 0 0 14px rgba(232, 163, 23, 0.9); }
-    100% { box-shadow: inset 0 -3px 0 0 #e8a317, 0 0 2px rgba(232, 163, 23, 0.2); }
+    0% { box-shadow: inset 0 -3px 0 0 var(--color-warning-dark, #e8a317), 0 0 2px color-mix(in srgb, var(--color-warning-dark, #e8a317) 20%, transparent); }
+    50% { box-shadow: inset 0 -3px 0 0 var(--color-warning-dark, #e8a317), 0 0 14px color-mix(in srgb, var(--color-warning-dark, #e8a317) 90%, transparent); }
+    100% { box-shadow: inset 0 -3px 0 0 var(--color-warning-dark, #e8a317), 0 0 2px color-mix(in srgb, var(--color-warning-dark, #e8a317) 20%, transparent); }
 }
 
 @keyframes tab-bg-pulse-amber {
-    0% { background-color: rgba(232, 163, 23, 0.05); }
-    50% { background-color: rgba(232, 163, 23, 0.3); }
-    100% { background-color: rgba(232, 163, 23, 0.05); }
+    0% { background-color: color-mix(in srgb, var(--color-warning-dark, #e8a317) 5%, transparent); }
+    50% { background-color: color-mix(in srgb, var(--color-warning-dark, #e8a317) 30%, transparent); }
+    100% { background-color: color-mix(in srgb, var(--color-warning-dark, #e8a317) 5%, transparent); }
 }
 
 @keyframes spin {

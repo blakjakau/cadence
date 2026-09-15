@@ -562,7 +562,7 @@ ui-file-list > .inner > * > label {
     font-size: 12px;
     height: 9px;
     padding: 4px; /* A label should have 4px of padding on all sides. */
-    color: #333;
+    color: var(--text-primary, #333);
     left: 0px;
     right: 0px;
     bottom: 0px;
@@ -1409,7 +1409,7 @@ ui-input input:focus {
 }
 
 .editor-header-bar.modified-external {
-    border-bottom: 1px solid #d97706;
+    border-bottom: 1px solid var(--color-warning-dark, #d97706);
 }
 
 /* --- Folder Picker Modal Styles --- */
@@ -1524,8 +1524,8 @@ ui-input input:focus {
 }
 
 .delete-confirm-btn-yes {
-    background: #ef4444 !important;
-    color: #fff !important;
+    background: var(--color-error, #ef4444) !important;
+    color: var(--text-inverted, #fff) !important;
     padding: 4px 10px !important;
     font-size: 11px !important;
     height: auto !important;

@@ -27,7 +27,7 @@ ui-diff-view-panel .diff-header {
 
 ui-diff-view-panel .diff-header ui-button {
     background: var(--theme-dark, rgba(0, 0, 0, 0.33));
-    color: #ffffff;
+    color: var(--text-inverted, #ffffff);
     border: none;
     min-height: 23px;
     height: 23px;
@@ -67,7 +67,7 @@ ui-diff-view-panel .diff-header-right {
 
 ui-diff-view-panel .diff-header-right ui-button.rollback {
     background: var(--theme-dark, rgba(0, 0, 0, 0.33));
-    color: #ffffff;
+    color: var(--text-inverted, #ffffff);
     border: none;
 }
 
@@ -79,8 +79,8 @@ ui-diff-view-panel .diff-header-right ui-button.cancel {
 }
 
 ui-diff-view-panel .diff-header-right ui-button.apply {
-    background: #2da44e;
-    color: #ffffff;
+    background: var(--color-success, #2da44e);
+    color: var(--text-inverted, #ffffff);
     border: none;
 }
 
@@ -227,13 +227,13 @@ ui-diff-view-panel .diff-ace-editor-right {
 
 ui-diff-view-panel .diff-marker-addition {
     position: absolute;
-    background-color: rgba(46, 160, 67, 0.18) !important;
+    background-color: color-mix(in srgb, var(--color-success, #2ea043) 18%, transparent) !important;
     z-index: 20;
 }
 
 ui-diff-view-panel .diff-marker-deletion {
     position: absolute;
-    background-color: rgba(248, 81, 73, 0.18) !important;
+    background-color: color-mix(in srgb, var(--color-error, #f85149) 18%, transparent) !important;
     z-index: 20;
 }
 
@@ -251,14 +251,14 @@ ui-diff-view-panel .diff-marker-empty {
 }
 
 ui-diff-view-panel .diff-gutter-addition {
-    background-color: rgba(46, 160, 67, 0.3) !important;
-    color: #2da44e !important;
+    background-color: color-mix(in srgb, var(--color-success, #2ea043) 30%, transparent) !important;
+    color: var(--color-success, #2da44e) !important;
     font-weight: bold;
 }
 
 ui-diff-view-panel .diff-gutter-deletion {
-    background-color: rgba(248, 81, 73, 0.3) !important;
-    color: #cf222e !important;
+    background-color: color-mix(in srgb, var(--color-error, #f85149) 30%, transparent) !important;
+    color: var(--color-error, #cf222e) !important;
     font-weight: bold;
 }
 
@@ -299,15 +299,15 @@ ui-diff-view-panel .diff-counter {
 }
 
 ui-diff-view-panel .diff-counter-delete {
-    background-color: rgba(248, 81, 73, 0.15);
-    color: #f85149;
-    border: 1px solid rgba(248, 81, 73, 0.2);
+    background-color: color-mix(in srgb, var(--color-error, #f85149) 15%, transparent);
+    color: var(--color-error, #f85149);
+    border: 1px solid color-mix(in srgb, var(--color-error, #f85149) 20%, transparent);
 }
 
 ui-diff-view-panel .diff-counter-add {
-    background-color: rgba(46, 160, 67, 0.15);
-    color: #3fb950;
-    border: 1px solid rgba(46, 160, 67, 0.2);
+    background-color: color-mix(in srgb, var(--color-success, #2ea043) 15%, transparent);
+    color: var(--color-success, #3fb950);
+    border: 1px solid color-mix(in srgb, var(--color-success, #2ea043) 20%, transparent);
 }
 
 ui-diff-view-panel .diff-line-spacer {
