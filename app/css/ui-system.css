@@ -1,0 +1,94 @@
+/* ui-system.css — canonical component styles for Phase-1 consistency.
+   Imported from main.css. All values resolve through theme tokens. */
+
+/* ---------- Buttons: variants & density ---------- */
+ui-button.variant-primary { background: var(--theme); color: var(--text-inverted); border: 1px solid var(--theme); }
+ui-button.variant-secondary { background: var(--theme-dark, rgba(0,0,0,.33)); color: var(--text-inverted); border: 1px solid var(--theme-dark, rgba(0,0,0,.33)); }
+ui-button.variant-ghost { background: transparent; color: inherit; border: 1px solid transparent; }
+ui-button.variant-danger { background: var(--color-error, #c00); color: var(--text-inverted); border: 1px solid var(--color-error, #c00); }
+ui-button.density-sm { min-height: var(--control-height-sm); line-height: var(--control-height-sm); padding: 0 6px; font-size: var(--font-size-xs); }
+ui-button.density-lg { padding: 10px 20px; font-size: var(--font-size-lg); }
+
+/* Legacy aliases — temporary, migrated away in a later phase; keep working meanwhile.
+   Note .theme-button is also applied to native <button> in some files, so it must stay class-scoped. */
+ui-button.primary { background: var(--theme); color: var(--text-inverted); border: 1px solid var(--theme); }
+ui-button.secondary { background: var(--theme-dark, rgba(0,0,0,.33)); color: var(--text-inverted); border: 1px solid var(--theme-dark, rgba(0,0,0,.33)); }
+ui-button.danger { background: var(--color-error, #c00); color: var(--text-inverted); border: 1px solid var(--color-error, #c00); }
+.theme-button { background-color: var(--theme); color: var(--text-inverted); border: 1px solid var(--theme); cursor: pointer; }
+.theme-button.secondary { background: var(--theme-dark, rgba(0,0,0,.33)); }
+
+/* Icon-only button (was previously undefined in CSS) */
+ui-button.icon-button {
+	width: var(--icon-btn-size); height: var(--icon-btn-size); min-height: var(--icon-btn-size);
+	padding: 0; display: inline-flex; align-items: center; justify-content: center;
+	background: transparent; border: 1px solid transparent; color: inherit; font-size: 18px;
+}
+ui-button.icon-button:hover { background: var(--bg-hover); }
+ui-button.icon-button.secondary { opacity: 0.75; }
+ui-button.icon-button.secondary:hover { opacity: 1; }
+ui-button.icon-button.danger, ui-button.icon-button.danger:hover { color: var(--color-error, #c00); opacity: 1; }
+
+/* ---------- Accordion (canonical — merged result of the two ai-artifacts.css blocks) ---------- */
+.accordion-item {
+	display: flex; flex-direction: column; width: 100%;
+	margin-bottom: 12px; break-inside: avoid;
+	border: 1px solid var(--border-primary); border-radius: var(--borderRadius);
+	overflow: hidden; background: var(--bg-primary);
+	transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+	box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+}
+.accordion-item:hover {
+	box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+	border-color: var(--theme) !important;
+}
+.accordion-header {
+	display: flex; align-items: center; justify-content: space-between;
+	background: var(--bg-secondary); cursor: pointer; user-select: none;
+	height: var(--menuHeight); min-height: var(--menuHeight);
+	box-sizing: border-box; padding: 0 16px !important;
+	transition: background-color 0.2s ease;
+}
+.accordion-header:hover {
+	background-color: color-mix(in srgb, var(--text-primary) 2%, var(--bg-secondary)) !important;
+}
+.accordion-item.expanded .accordion-header { border-bottom: none; }
+.accordion-content {
+	padding: 8px; border-top: 1px solid var(--border-primary);
+	background: var(--bg-primary);
+	max-height: 80vh; overflow-y: auto;
+	transition: opacity 0.2s ease;
+}
+
+/* ---------- Fields ---------- */
+.field { display: flex; align-items: center; gap: 8px; min-height: var(--control-height-md); flex-wrap: wrap; }
+.field-label { flex: 0 0 auto; font-size: var(--font-size-sm); font-weight: 600; color: var(--text-primary); }
+.field-control { flex: 1 1 auto; min-width: 0; }
+.field-control input, .field-control select {
+	width: 100%; height: var(--control-height-sm); padding: 4px 8px;
+	font-size: var(--font-size-sm); color: var(--text-primary);
+	border: 1px solid var(--border-primary); border-radius: var(--radius-sm);
+	background: var(--bg-input, var(--bg-secondary));
+	box-sizing: border-box;
+}
+.field-control input:focus, .field-control select:focus { outline: none; border-color: var(--theme); }
+.field-suffix { flex: 0 0 auto; display: flex; align-items: center; gap: 4px; }
+.field-desc { flex: 0 0 100%; font-size: var(--font-size-xs); color: var(--text-secondary); }
+.number-input { width: 65px; flex: 0 0 auto; }
+
+/* ---------- Tooltips (CSS-only, keyed off the title attribute) ---------- */
+ui-button[title]:hover::after,
+ui-button[title]:focus-visible::after {
+	content: attr(title);
+	position: absolute; bottom: calc(100% + 6px); left: 50%; transform: translateX(-50%);
+	white-space: nowrap; z-index: 120;
+	background: var(--bg-card, #2e383b); color: var(--text-primary);
+	padding: 4px 8px; border-radius: var(--radius-sm);
+	font-size: var(--font-size-xs); font-weight: 400; line-height: 1.3;
+	box-shadow: 0 2px 6px var(--shadow-color);
+	pointer-events: none;
+}
+
+/* ---------- Empty state ---------- */
+.empty-state { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 16px 8px; color: var(--text-muted); font-size: var(--font-size-sm); text-align: center; }
+.empty-state ui-icon { font-size: 32px; opacity: 0.5; }
+.empty-state .empty-state-actions { display: flex; gap: 8px; }
