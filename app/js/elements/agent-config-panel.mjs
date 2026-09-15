@@ -1566,7 +1566,7 @@ export class AgentConfigPanel extends Block {
 
 			const resetBtn = new Button("");
 			resetBtn.icon = "refresh";
-			resetBtn.className = "icon-button secondary";
+			resetBtn.className = "icon-button secondary danger";
 			resetBtn.title = `Reset telemetry for ${conn.name}`;
 			resetBtn.setAttribute("aria-label", `Reset telemetry for ${conn.name}`);
 			resetBtn.style.width = "24px";
@@ -1602,7 +1602,7 @@ export class AgentConfigPanel extends Block {
 		btnContainer.style.marginTop = "16px";
 
 		const clearBtn = new Button("Clear All Telemetry");
-		clearBtn.className = "theme-button secondary clear-telemetry-btn";
+		clearBtn.className = "variant-danger clear-telemetry-btn";
 		clearBtn.onclick = () => {
 			connections.forEach(conn => {
 				const inst = AIConnections.getInstance(conn.id);

@@ -1945,7 +1945,7 @@ class AIManagerHistory {
 		btnRow.style.justifyContent = "flex-end";
 
 		const denyBtn = new Button("Deny");
-		denyBtn.className = "theme-button danger";
+		denyBtn.className = "variant-danger";
 		denyBtn.onclick = async () => {
 			actions.style.display = "none";
 			message.status = "rejected";
