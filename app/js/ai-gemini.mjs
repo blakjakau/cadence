@@ -190,7 +190,8 @@ class Gemini extends AI {
         localStorage.setItem(`${keyId}_request_timestamps`, JSON.stringify(this.requestTimestamps));
     }
 
-    async _getAvailableModels() {
+    async _getAvailableModels(options = {}) {
+        const { strict = false } = options;
         const fallbackModels = [
             { value: "gemini-2.5-pro", label: "Gemini Pro (1M)", maxTokens: 1048576 },
             { value: "gemini-2.5-flash", label: "Gemini Flash (1M)", maxTokens: 1048576 },
@@ -198,6 +199,7 @@ class Gemini extends AI {
         ]; 
 
         if (!this.config.apiKey) {
+            if (strict) throw new Error("API Key is required");
             console.warn("[Gemini] API Key not set. Using fallback models.");
             const strippedFallbacks = fallbackModels.map(m => ({ ...m, value: this._stripModelPrefix(m.value) }));
             this._settingsSchema.model.enum = strippedFallbacks;
@@ -214,6 +216,7 @@ class Gemini extends AI {
             const response = await fetch(modelsApiUrl);
 
             if (!response.ok) {
+                if (strict) throw new Error(`Authentication failed (HTTP ${response.status}: ${response.statusText})`);
                 console.warn(`[Gemini] Failed to fetch models (Status: ${response.status}). Using fallback models. Response:`, response.statusText);
                 const strippedFallbacks = fallbackModels.map(m => ({ ...m, value: this._stripModelPrefix(m.value) }));
                 this._settingsSchema.model.enum = strippedFallbacks;
@@ -225,7 +228,8 @@ class Gemini extends AI {
 
             const data = await response.json();
             
-            if (!data.models || !Array.isArray(data.models)) {
+            if (!data.models || !Array.isArray(data.models) || data.models.length === 0) {
+                if (strict) throw new Error("No models returned by Gemini API");
                 console.warn("[Gemini] API returned unexpected data format. Using fallback models.", data);
                 const strippedFallbacks = fallbackModels.map(m => ({ ...m, value: this._stripModelPrefix(m.value) }));
                 this._settingsSchema.model.enum = strippedFallbacks;

@@ -31,7 +31,8 @@ ui-session-artifacts-panel ui-button[active]:not(.setting-cog-btn) {
     scrollbar-color: var(--border-primary) transparent;
 }
 
-select.themed-select {
+select.themed-select,
+input.themed-select {
     padding: 8px 12px;
     border-radius: var(--radius, 6px);
     border: 1px solid var(--border-primary, var(--border, #ccc));
@@ -40,17 +41,28 @@ select.themed-select {
     font-size: 13px;
     font-family: inherit;
     outline: none;
-    cursor: pointer;
     box-shadow: inset 0 1px 2px rgba(0,0,0,0.05);
     transition: border-color 0.2s, box-shadow 0.2s;
     width: 100%;
+    max-width: 100%;
+    box-sizing: border-box;
 }
 
-select.themed-select:hover {
+select.themed-select {
+    cursor: pointer;
+}
+
+input.themed-select {
+    cursor: text;
+}
+
+select.themed-select:hover,
+input.themed-select:hover {
     border-color: var(--theme, #303f9f);
 }
 
-select.themed-select:focus {
+select.themed-select:focus,
+input.themed-select:focus {
     border-color: var(--theme, #303f9f);
     box-shadow: 0 0 0 2px rgba(48, 63, 159, 0.25);
 }

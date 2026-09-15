@@ -66,8 +66,12 @@ class Claude extends AI {
         }
     }
 
-    async _getAvailableModels() {
+    async _getAvailableModels(options = {}) {
+        const { strict = false } = options;
         // Try to fetch models from the API, fall back to static list if it fails
+        if (strict && !this.config.apiKey) {
+            throw new Error("API Key is required");
+        }
         try {
             const response = await this._fetchWithRetry(`${this.config.server}/v1/models`, {
                 method: 'GET',
@@ -107,8 +111,16 @@ class Claude extends AI {
                     claudeModels = apiModels.length > 0 ? apiModels : fallbackClaudeModels;
                     return apiModels;
                 }
+            } else if (strict) {
+                throw new Error(`Authentication failed (HTTP ${response.status}: ${response.statusText})`);
             }
         } catch (error) {
+            if (strict) {
+                if (error && error.message && error.message.startsWith("Authentication failed")) {
+                    throw error;
+                }
+                throw new Error(`Failed to connect: ${error.message || error}`);
+            }
             console.log("[Claude] Could not fetch models from API, using fallback list:", error.message);
         }
         

@@ -7,6 +7,7 @@ import AIManagerSessions from "./ai-manager-sessions.mjs" // NEW: Sessions manag
 import workspaceClient from "./workspace-client.mjs"
 import agentTools from "./agent/agent-tools.mjs"
 import AIConnections from "./ai-connections.mjs"
+import { pruneCapabilities } from "./ai-probe.mjs"
 import { Agent } from "./agent/agent.mjs"
 
 import DiffHandler from "./tools/diff-handler.mjs"
@@ -129,6 +130,7 @@ class AIManager {
 		
 		// Listen for connection updates to redraw the Connection Selector
 		window.addEventListener('connections-changed', () => {
+			pruneCapabilities(AIConnections.getConnections().map(c => c.id));
 			this._updateAIInfoDisplay();
 			this._updatePromptAreaPlaceholder();
 			this.historyManager.render();
@@ -1701,7 +1703,7 @@ class AIManager {
 	 * @returns {boolean}
 	 */
 	_isPaidConnection(conn) {
-		return !!conn && (conn.provider === 'gemini' || conn.provider === 'claude');
+		return !!conn && (conn.provider === 'gemini' || conn.provider === 'claude' || conn.provider === 'openai');
 	}
 
 	/**
@@ -4117,7 +4119,7 @@ Output only the XML. Do not use any tools.`;
 
 	async loadSettings() {
 		const storedProvider = localStorage.getItem("aiProvider")
-		const supportedProviders = ["gemini", "llamacpp", "ollama", "claude"];
+		const supportedProviders = ["gemini", "llamacpp", "ollama", "claude", "openai"];
 		if (storedProvider && supportedProviders.includes(storedProvider)) {
 			this.aiProvider = storedProvider
 		}

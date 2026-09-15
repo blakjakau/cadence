@@ -746,10 +746,15 @@ const openWorkspace = (() => {
 			const currentProvider = ui.aiManager.aiProvider
 			updateFileListBackground()
 			if (ui.aiManager.ai) {
+				const stripLegacyApiKey = (cfg) => {
+					const copy = { ...(cfg || {}) }
+					delete copy.apiKey
+					return copy
+				}
 				if (workspace.aiConfig[currentProvider]) {
-					ui.aiManager.ai.setOptions(workspace.aiConfig[currentProvider], null, null, true, "workspace")
+					ui.aiManager.ai.setOptions(stripLegacyApiKey(workspace.aiConfig[currentProvider]), null, null, true, "workspace")
 				} else if (app.aiConfig[currentProvider]) {
-					ui.aiManager.ai.setOptions(app.aiConfig[currentProvider], null, null, false, "global")
+					ui.aiManager.ai.setOptions(stripLegacyApiKey(app.aiConfig[currentProvider]), null, null, false, "global")
 				} else {
 					// If no specific config for the current provider, reset to default for that provider
 					ui.aiManager.ai.setOptions({}, null, null, false, "global")
@@ -4026,8 +4031,13 @@ setTimeout(async () => {
 		// After appConfig is loaded and aiManager is initialized, apply global AI settings
 		const currentProvider = ui.aiManager.aiProvider
 		if (ui.aiManager.ai) {
+			const stripLegacyApiKey = (cfg) => {
+				const copy = { ...(cfg || {}) }
+				delete copy.apiKey
+				return copy
+			}
 			if (app.aiConfig[currentProvider]) {
-				ui.aiManager.ai.setOptions(app.aiConfig[currentProvider], null, null, false, "global")
+				ui.aiManager.ai.setOptions(stripLegacyApiKey(app.aiConfig[currentProvider]), null, null, false, "global")
 			} else {
 				// If no specific config for the current provider, reset to default for that provider
 				ui.aiManager.ai.setOptions({}, null, null, false, "global")
