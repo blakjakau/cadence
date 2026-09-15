@@ -374,8 +374,8 @@ ui-actionbar#menu > ui-inline:first-of-type {
     padding-right: 8px;
 }
 
-ui-actionbar#menu ui-inline:first-of-type img {
-    margin-top: -4px;
+ui-actionbar#menu ui-inline:first-of-type {
+    margin-top: 0;
 }
 
 ui-actionbar[slim]#leftTabs,
