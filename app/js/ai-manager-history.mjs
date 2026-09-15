@@ -1340,6 +1340,7 @@ class AIManagerHistory {
 			editBtn.className = "cycle-summary-action-btn";
 			editBtn.textContent = "edit";
 			editBtn.title = "Edit Title and Summary";
+			editBtn.setAttribute("aria-label", "Edit Title and Summary");
 			editBtn.onclick = async (e) => {
 				e.stopPropagation();
 				const currentTitle = message.title || summaryTitleText;
@@ -1373,6 +1374,7 @@ class AIManagerHistory {
 			regenBtn.className = "cycle-summary-action-btn";
 			regenBtn.textContent = "refresh";
 			regenBtn.title = "Regenerate Summary";
+			regenBtn.setAttribute("aria-label", "Regenerate Summary");
 			regenBtn.onclick = async (e) => {
 				e.stopPropagation();
 				const startId = message.cycleStartMsgId;
@@ -1778,6 +1780,7 @@ class AIManagerHistory {
 		const deleteIcon = new Icon();
 		deleteIcon.className = "delete-raw-item";
 		deleteIcon.title = "Delete this turn permanently";
+		deleteIcon.setAttribute("aria-label", "Delete this turn permanently");
 		deleteIcon.textContent = "delete";
 
 		const arrowIcon = new Icon();
