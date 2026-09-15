@@ -836,7 +836,13 @@ const openWorkspace = (() => {
 	}
 })()
 
-const prefersDarkMode = window.matchMedia("(prefers-color-scheme: dark)")
+const applyDarkModeClasses = (mode) => {
+	const body = document.body;
+	body.classList.remove("darkmode", "lightmode");
+	if (mode === "dark") body.classList.add("darkmode");
+	else if (mode === "light") body.classList.add("lightmode");
+	// "system": neither class; the @media (prefers-color-scheme) CSS handles it
+}
 
 const clearInjectedTheme = () => {
 	// This function is no longer needed as we're not dynamically injecting editor colors
@@ -845,32 +851,10 @@ const clearInjectedTheme = () => {
 
 const execCommandSetDarkMode = (mode) => {
 	app.darkmode = mode
-
-	switch (mode) {
-		case "light":
-			document.body.classList.remove("darkmode")
-			break
-		case "dark":
-			document.body.classList.add("darkmode")
-			break
-		case "system":
-			if (prefersDarkMode.matches) {
-				// This only updates on initial load and system preference change
-				document.body.classList.add("darkmode")
-			} else {
-				document.body.classList.remove("darkmode")
-			}
-			break
-	}
+	applyDarkModeClasses(mode)
 	saveAppConfig()
 	updateThemeAndMode(false) // Update menus, but don't save again
 }
-
-prefersDarkMode.addEventListener("change", () => {
-	if (app.darkmode === "system") {
-		execCommandSetDarkMode("system")
-	}
-})
 
 const updateThemeAndMode = (doSave = false) => {
 	ui.updateThemeAndMode()
@@ -4021,7 +4005,7 @@ setTimeout(async () => {
 			updateWorkspaceSelectors()
 		}
 
-		execCommandSetDarkMode(app.darkmode)
+		applyDarkModeClasses(app.darkmode || "system")
 
 		saveAppConfig()
 
