@@ -392,7 +392,7 @@ class AIManagerHistory {
 					};
 					const element = this._createExpanderMessageElement(sysMessage, -1);
 					if (element) {
-						element.style.border = "1px dashed var(--theme)";
+						element.classList.add("system-prompt-raw");
 						this.conversationArea.append(element);
 					}
 				}
@@ -1688,13 +1688,11 @@ class AIManagerHistory {
 			summary.innerHTML = `<ui-icon style="font-size: 14px; vertical-align: middle;">terminal</ui-icon> <code>$ ${this._escapeHtml(message.command)}</code> <span style="opacity: 0.8; font-weight: normal; margin-left: auto;">[${statusText}]</span>`;
 
 			const pre = document.createElement("pre");
+			pre.className = "tool-output-pre";
 			pre.style.maxHeight = "300px";
 			pre.style.overflowY = "auto";
 			pre.style.padding = "8px";
 			pre.style.margin = "4px 0 0 0";
-			pre.style.background = "#1e1e1e";
-			pre.style.color = "#d4d4d4";
-			pre.style.borderRadius = "4px";
 			
 			const code = document.createElement("code");
 			code.textContent = message.output || "(Waiting for output...)";

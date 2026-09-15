@@ -92,3 +92,7 @@ ui-button[title]:focus-visible::after {
 .empty-state { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 16px 8px; color: var(--text-muted); font-size: var(--font-size-sm); text-align: center; }
 .empty-state ui-icon { font-size: 32px; opacity: 0.5; }
 .empty-state .empty-state-actions { display: flex; gap: 8px; }
+
+/* ---------- Task 7 sweep: history panel ---------- */
+.chat-turn-expander.system-prompt-raw { border: 1px dashed var(--theme); }
+.tool-output-pre { background: #1e1e1e; color: #d4d4d4; border-radius: 4px; }

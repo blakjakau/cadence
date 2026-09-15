@@ -5,3 +5,44 @@
 @import "ai-controls.css";
 @import "ai-artifacts.css";
 @import "ai-animation.css";
+
+/* Phase-1 Task 7 sweep: sessions panel styles (moved from JS inline) */
+.history-list-container { border: 1px solid var(--border-color); border-radius: var(--radius); }
+.history-session-item { border-bottom: 1px solid var(--border-color); }
+.history-session-item:hover { background-color: color-mix(in srgb, var(--theme, #303f9f) 25%, transparent); }
+button.icon-button.history-item-action { background: transparent; border: none; color: var(--text-secondary); }
+ui-button.delete-selected-btn { background-color: var(--error-color, #d32f2f); color: white; }
+
+/* Phase-1 Task 7 sweep: plan-decision states (moved from JS inline) */
+.ai-implementation-plan-banner.plan-decision-accepted,
+.inline-implementation-plan-card.plan-decision-accepted {
+	background: rgba(45, 164, 78, 0.1); border-color: rgba(45, 164, 78, 0.25);
+}
+.ai-implementation-plan-banner.plan-decision-accepted .banner-left,
+.inline-implementation-plan-card.plan-decision-accepted .banner-left,
+.ai-implementation-plan-banner.plan-decision-accepted .banner-left ui-icon,
+.inline-implementation-plan-card.plan-decision-accepted .banner-left ui-icon,
+.ai-implementation-plan-banner.plan-decision-accepted .open-plan-btn,
+.inline-implementation-plan-card.plan-decision-accepted .open-plan-btn {
+	color: #2da44e;
+}
+.ai-implementation-plan-banner.plan-decision-accepted .open-plan-btn,
+.inline-implementation-plan-card.plan-decision-accepted .open-plan-btn {
+	border-color: #2da44e;
+}
+.ai-implementation-plan-banner.plan-decision-rejected,
+.inline-implementation-plan-card.plan-decision-rejected {
+	background: rgba(244, 67, 54, 0.08); border-color: rgba(244, 67, 54, 0.25);
+}
+.ai-implementation-plan-banner.plan-decision-rejected .banner-left,
+.inline-implementation-plan-card.plan-decision-rejected .banner-left,
+.ai-implementation-plan-banner.plan-decision-rejected .banner-left ui-icon,
+.inline-implementation-plan-card.plan-decision-rejected .banner-left ui-icon,
+.ai-implementation-plan-banner.plan-decision-rejected .open-plan-btn,
+.inline-implementation-plan-card.plan-decision-rejected .open-plan-btn {
+	color: var(--error-color, #f44336);
+}
+.ai-implementation-plan-banner.plan-decision-rejected .open-plan-btn,
+.inline-implementation-plan-card.plan-decision-rejected .open-plan-btn {
+	border-color: var(--error-color, #f44336);
+}

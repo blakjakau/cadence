@@ -173,17 +173,10 @@ export class DiffViewPanel extends Block {
         const cpLabel = document.createElement("span");
         cpLabel.className = "diff-checkpoint-label";
         cpLabel.textContent = "Compare to:";
-        cpLabel.style.fontSize = "11px";
-        cpLabel.style.color = "var(--text-muted, #888)";
 
         this.checkpointSelect = document.createElement("select");
         this.checkpointSelect.className = "diff-checkpoint-select";
         this.checkpointSelect.style.padding = "2px 6px";
-        this.checkpointSelect.style.borderRadius = "4px";
-        this.checkpointSelect.style.border = "1px solid var(--border)";
-        this.checkpointSelect.style.background = "var(--input-bg, #222)";
-        this.checkpointSelect.style.color = "var(--text-color, #eee)";
-        this.checkpointSelect.style.fontSize = "11px";
         this.checkpointSelect.style.cursor = "pointer";
 
         this.checkpointSelect.onchange = (e) => {
@@ -546,13 +539,13 @@ export class DiffViewPanel extends Block {
 
             if (this.diffViewMode === "split") {
                 this.rightPane.style.display = "";
-                this.leftPane.style.borderRight = "";
+                this.leftPane.classList.remove("no-split-border");
                 this.leftPane.style.width = "";
                 this.rightLabel.style.display = "";
                 if (this.ratioFab) this.ratioFab.style.display = "";
             } else {
                 this.rightPane.style.display = "none";
-                this.leftPane.style.borderRight = "none";
+                this.leftPane.classList.add("no-split-border");
                 this.leftPane.style.width = "100%";
                 this.rightLabel.style.display = "none";
                 if (this.ratioFab) this.ratioFab.style.display = "none";
@@ -1615,9 +1608,9 @@ function drawScrollbarMarkers(editor, rows, color) {
 
     rows.forEach(row => {
         const marker = document.createElement("div");
-        marker.className = "diff-scrollbar-marker";
+        marker.className = "diff-scrollbar-marker is-custom";
         marker.style.top = `${(row / totalRows) * 100}%`;
-        marker.style.backgroundColor = color;
+        marker.style.setProperty("--marker-color", color);
         overlay.appendChild(marker);
     });
 
@@ -1647,17 +1640,15 @@ function drawUnifiedScrollbarMarkers(editor, deletedRows, addedRows) {
 
     deletedRows.forEach(row => {
         const marker = document.createElement("div");
-        marker.className = "diff-scrollbar-marker";
+        marker.className = "diff-scrollbar-marker is-deletion";
         marker.style.top = `${(row / totalRows) * 100}%`;
-        marker.style.backgroundColor = "rgba(248, 81, 73, 0.85)";
         overlay.appendChild(marker);
     });
 
     addedRows.forEach(row => {
         const marker = document.createElement("div");
-        marker.className = "diff-scrollbar-marker";
+        marker.className = "diff-scrollbar-marker is-addition";
         marker.style.top = `${(row / totalRows) * 100}%`;
-        marker.style.backgroundColor = "rgba(46, 160, 67, 0.85)";
         overlay.appendChild(marker);
     });
 
