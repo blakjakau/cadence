@@ -288,33 +288,24 @@ export class AgentConfigPanel extends Block {
 
 		// Tavily API Key with test-then-save flow
 		const tavilyWrapper = document.createElement("div");
-		tavilyWrapper.style.display = "flex";
-		tavilyWrapper.style.flexDirection = "column";
-		tavilyWrapper.style.gap = "4px";
+		tavilyWrapper.className = "field";
 		const tavilyLabel = document.createElement("label");
-		tavilyLabel.style.fontWeight = "bold";
-		tavilyLabel.style.fontSize = "12px";
+		tavilyLabel.className = "field-label";
 		tavilyLabel.textContent = "Tavily API Key";
+		const tavilyControl = document.createElement("div");
+		tavilyControl.className = "field-control";
 		const tavilyInput = document.createElement("input");
 		tavilyInput.type = "password";
 		tavilyInput.id = "tavily-api-key";
-		tavilyInput.style.padding = "6px";
-		tavilyInput.style.borderRadius = "4px";
-		tavilyInput.style.border = "1px solid var(--border)";
-		tavilyInput.style.background = "var(--bg-input, rgba(0,0,0,0.1))";
-		tavilyInput.style.color = "var(--text)";
 		tavilyInput.value = localStorage.getItem("tavilyApiKey") || "";
+		tavilyControl.appendChild(tavilyInput);
 		const tavilyBtnRow = document.createElement("div");
-		tavilyBtnRow.style.display = "flex";
-		tavilyBtnRow.style.alignItems = "center";
-		tavilyBtnRow.style.gap = "8px";
+		tavilyBtnRow.className = "field-suffix";
 		const tavilyStatus = document.createElement("span");
-		tavilyStatus.style.fontSize = "11px";
-		tavilyStatus.style.fontStyle = "italic";
+		tavilyStatus.className = "field-desc";
 		const tavilyTestBtn = new Button("Test");
 		tavilyTestBtn.className = "theme-button secondary";
 		tavilyBtnRow.appendChild(tavilyTestBtn);
-		tavilyBtnRow.appendChild(tavilyStatus);
 		tavilyTestBtn.onclick = async () => {
 			const val = tavilyInput.value.trim();
 			if (!val) {
@@ -355,9 +346,10 @@ export class AgentConfigPanel extends Block {
 				tavilyTestBtn.className = "theme-button secondary";
 			}
 		};
-		tavilyWrapper.appendChild(tavilyLabel);
-		tavilyWrapper.appendChild(tavilyInput);
+		tavilyStatus.style.fontStyle = "italic";
+		tavilyWrapper.append(tavilyLabel, tavilyControl);
 		tavilyWrapper.appendChild(tavilyBtnRow);
+		tavilyWrapper.appendChild(tavilyStatus);
 		grid.appendChild(tavilyWrapper);
 	}
 
@@ -402,10 +394,12 @@ export class AgentConfigPanel extends Block {
 
 		// Focus selection dropdown
 		const focusWrapper = document.createElement("div");
-		focusWrapper.className = "toggle-row";
-		focusWrapper.style.display = "flex";
-		focusWrapper.style.flexDirection = "column";
-		focusWrapper.innerHTML = `<label style="font-weight: bold; font-size: 12px; margin-bottom: 4px;">AI Focus</label>`;
+		focusWrapper.className = "field";
+		const focusLabel = document.createElement("label");
+		focusLabel.className = "field-label";
+		focusLabel.textContent = "AI Focus";
+		const focusControl = document.createElement("div");
+		focusControl.className = "field-control";
 		const select = document.createElement("select");
 		select.className = "themed-select";
 
@@ -428,34 +422,30 @@ export class AgentConfigPanel extends Block {
 			config.specialization = select.value;
 			saveConfig();
 		};
-		focusWrapper.appendChild(select);
+		focusControl.appendChild(select);
+		focusWrapper.append(focusLabel, focusControl);
 		grid.appendChild(focusWrapper);
 
 		// Tech inputs
 		const createTextInput = (labelText, value, onChange) => {
 			const wrapper = document.createElement("div");
-			wrapper.style.display = "flex";
-			wrapper.style.flexDirection = "column";
-			wrapper.style.gap = "4px";
+			wrapper.className = "field";
 			const label = document.createElement("label");
-			label.style.fontWeight = "bold";
-			label.style.fontSize = "12px";
+			label.className = "field-label";
 			label.textContent = labelText;
+			const control = document.createElement("div");
+			control.className = "field-control";
 			const input = document.createElement("input");
 			input.type = "text";
-			input.style.padding = "6px";
-			input.style.borderRadius = "4px";
-			input.style.border = "1px solid var(--border)";
-			input.style.background = "var(--bg-input, rgba(0,0,0,0.1))";
-			input.style.color = "var(--text)";
 			input.value = value;
 			input.onchange = () => {
 				onChange(input.value);
 				saveConfig();
 			};
-			wrapper.appendChild(label);
-			wrapper.appendChild(input);
+			control.appendChild(input);
+			wrapper.append(label, control);
 			grid.appendChild(wrapper);
+			return { wrapper, input };
 		};
 
 		createTextInput("Preferred Technologies (comma-separated)", (config.technologies || []).join(", "), (val) => {
@@ -1256,12 +1246,18 @@ export class AgentConfigPanel extends Block {
 
 			if (cap.reasoning && cap.reasoning.accepted) {
 				const row = document.createElement("div");
-				row.style.display = "flex";
-				row.style.alignItems = "center";
-				row.style.gap = "6px";
+				row.className = "field";
 				const scheme = cap.reasoning.mode === "openrouter" ? "reasoning:effort" : cap.reasoning.mode === "o-series" ? "reasoning_effort" : "thinking budget";
 				const allowed = (cap.reasoning.effortAllowed || []).join(", ");
-				row.innerHTML = `<span style="font-size: 11px; color: var(--text-secondary);">Reasoning</span><span title="${"Supported scheme: " + scheme + (allowed ? " · Levels: " + allowed : "")}">🧠 ${cap.reasoning.mode === "openrouter" ? "OpenRouter scheme" : scheme}</span>`;
+				const rLabel = document.createElement("span");
+				rLabel.className = "field-label";
+				rLabel.style.fontSize = "var(--font-size-xs)";
+				rLabel.style.color = "var(--text-secondary)";
+				rLabel.textContent = "Reasoning";
+				const rValue = document.createElement("span");
+				rValue.title = `${"Supported scheme: " + scheme + (allowed ? " · Levels: " + allowed : "")}`;
+				rValue.textContent = `🧠 ${cap.reasoning.mode === "openrouter" ? "OpenRouter scheme" : scheme}`;
+				row.append(rLabel, rValue);
 				modelInfo.appendChild(row);
 			}
 
@@ -1270,17 +1266,15 @@ export class AgentConfigPanel extends Block {
 				if (!info) continue;
 				const meta = stateMeta(info.state);
 				const row = document.createElement("div");
-				row.style.display = "flex";
-				row.style.alignItems = "center";
+				row.className = "field";
 				row.style.justifyContent = "space-between";
-				row.style.gap = "6px";
 				const label = document.createElement("span");
 				label.textContent = key;
-				label.style.fontSize = "11px";
+				label.style.fontSize = "var(--font-size-xs)";
 				label.style.color = "var(--text-secondary)";
 				const value = document.createElement("span");
 				value.textContent = `${meta.icon} ${meta.label}`;
-				value.style.fontSize = "11px";
+				value.style.fontSize = "var(--font-size-xs)";
 				value.title = `${meta.tip} ${info.note || ""}`;
 				value.style.cursor = "help";
 				if (info.state === "locked") value.style.color = "var(--color-error, #dc3545)";
