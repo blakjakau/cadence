@@ -96,3 +96,56 @@ ui-button[title]:focus-visible::after {
 /* ---------- Task 7 sweep: history panel ---------- */
 .chat-turn-expander.system-prompt-raw { border: 1px dashed var(--theme); }
 .tool-output-pre { background: #1e1e1e; color: #d4d4d4; border-radius: 4px; }
+
+/* ---------- Task 7 sweep: agent-config panel ---------- */
+.agent-undo-toast { background-color: var(--theme-dark, #333); color: #fff; border-radius: var(--radius, 8px); font-size: 14px; }
+.agent-undo-toast button { background: var(--theme, #303f9f); color: #fff; border: none; border-radius: 4px; }
+.field-desc.is-muted { color: var(--text-muted, #888); }
+.field-desc.is-ok { color: #2da44e; }
+.field-desc.is-error { color: #dc3545; }
+.field-desc.is-hint { font-style: italic; }
+.panel-note { font-size: 12px; color: var(--text-secondary); margin-bottom: 14px; font-style: italic; line-height: 1.4; }
+.connection-item-row { border: 1px solid var(--border); border-radius: var(--radius, 6px); background: var(--bg-secondary, rgba(0,0,0,0.05)); }
+.connection-item-row.drag-over { border-top: 2px solid var(--theme); }
+.conn-drag-handle { color: var(--text-muted, #888); font-size: 16px; }
+.conn-star.is-default { color: var(--color-warning, #b58900); }
+.conn-star.is-muted { color: var(--text-muted, #888); }
+.conn-name { font-weight: bold; font-size: 13px; }
+.conn-size-chip { font-size: 9px; padding: 1px 5px; border-radius: 8px; font-weight: bold; text-transform: capitalize; display: inline-flex; align-items: center; }
+.conn-size-chip.size-tiny { background: rgba(108, 117, 125, 0.15); color: var(--text-secondary, #6c757d); }
+.conn-size-chip.size-small { background: rgba(45, 164, 78, 0.15); color: #2da44e; }
+.conn-size-chip.size-medium { background: rgba(9, 105, 218, 0.15); color: #0969da; }
+.conn-size-chip.size-large { background: rgba(219, 109, 40, 0.15); color: #db6d28; }
+.conn-size-chip.size-ultra { background: rgba(130, 80, 223, 0.15); color: #8250df; }
+.conn-info { font-size: 11px; color: var(--text-secondary); }
+.conn-info.is-error { color: var(--color-error, #dc3545); }
+.connection-tps-badge { font-size: 11px; color: var(--text-secondary); background: var(--bg-secondary, rgba(0,0,0,0.05)); border-radius: 4px; }
+.modal-text-input { border-radius: 4px; border: 1px solid var(--border); background: var(--bg-input); color: var(--text); }
+input.invalid { border: 1px solid #dc3545; box-shadow: 0 0 0 2px rgba(220, 53, 69, 0.25); }
+.field-hint { font-size: 10px; color: var(--text-secondary); margin-top: 2px; }
+.preset-icon { font-size: 13px; }
+.compact-select { font-size: 11px; }
+.model-placeholder { font-size: 12px; color: var(--text-muted, #888); font-style: italic; opacity: 0.7; padding: 4px 0; }
+.probe-panel { border: 1px solid var(--border); border-radius: 4px; font-size: 12px; background: var(--bg-secondary); }
+.test-status { border-radius: 4px; font-size: 12px; }
+.test-status.is-idle { background: var(--bg-secondary); border: 1px solid var(--border); color: var(--text); }
+.test-status.is-ok { background: rgba(45, 164, 78, 0.1); border: 1px solid rgba(45, 164, 78, 0.3); color: #2da44e; }
+.test-status.is-error { background: rgba(220, 53, 69, 0.1); border: 1px solid rgba(220, 53, 69, 0.3); color: #dc3545; }
+ui-button.theme-button.secondary.has-errors { border: 1px solid var(--color-error, #dc3545); color: var(--color-error, #dc3545); background: rgba(220, 53, 69, 0.1); }
+.family-badge { background: var(--bg-input); border: 1px solid var(--border); border-radius: 3px; font-size: 10px; }
+.preset-tag { font-size: 10px; opacity: 0.8; }
+.probe-status.is-ok { color: var(--text-secondary); }
+.probe-status.is-error { color: var(--color-error, #dc3545); }
+.probe-note { font-size: 11px; opacity: 0.8; }
+.field-label.field-label-xs { font-size: var(--font-size-xs); color: var(--text-secondary); }
+.param-label { font-size: var(--font-size-xs); color: var(--text-secondary); }
+.param-value { font-size: var(--font-size-xs); }
+.param-value.state-locked { color: var(--color-error, #dc3545); }
+.param-value.state-preset { color: #cba832; }
+.param-value.state-unverified { color: #888; }
+.param-sub { font-size: 10px; opacity: 0.7; }
+.telemetry-table { border-collapse: collapse; font-size: 12px; }
+.telemetry-table td { padding: 8px 4px; }
+.telemetry-table td.telemetry-actions { text-align: right; }
+.telemetry-row { border-bottom: 1px solid var(--border); }
+.clear-telemetry-btn { font-size: 11px; }

@@ -8,19 +8,16 @@ import { getCapability, setCapability, commitCapabilities, clearTransient, inves
 
 function showUndoToast(message, undoCallback) {
 	const toastEl = document.createElement('div');
+	toastEl.className = "agent-undo-toast";
 	toastEl.style.position = 'fixed';
 	toastEl.style.bottom = '20px';
 	toastEl.style.left = '50%';
 	toastEl.style.transform = 'translateX(-50%)';
-	toastEl.style.backgroundColor = 'var(--theme-dark, #333)';
-	toastEl.style.color = '#fff';
 	toastEl.style.padding = '12px 24px';
-	toastEl.style.borderRadius = 'var(--radius, 8px)';
 	toastEl.style.boxShadow = '0 4px 12px rgba(0,0,0,0.15)';
 	toastEl.style.zIndex = '99999';
 	toastEl.style.opacity = '0';
 	toastEl.style.transition = 'opacity 0.3s ease, transform 0.3s ease';
-	toastEl.style.fontSize = '14px';
 	toastEl.style.display = 'flex';
 	toastEl.style.alignItems = 'center';
 	toastEl.style.gap = '16px';
@@ -31,11 +28,7 @@ function showUndoToast(message, undoCallback) {
 
 	const undoBtn = document.createElement('button');
 	undoBtn.textContent = 'Undo';
-	undoBtn.style.background = 'var(--theme, #303f9f)';
-	undoBtn.style.color = '#fff';
-	undoBtn.style.border = 'none';
 	undoBtn.style.padding = '4px 12px';
-	undoBtn.style.borderRadius = '4px';
 	undoBtn.style.cursor = 'pointer';
 	undoBtn.onclick = () => {
 		undoCallback();
@@ -310,7 +303,8 @@ export class AgentConfigPanel extends Block {
 			const val = tavilyInput.value.trim();
 			if (!val) {
 				tavilyStatus.textContent = "Enter a key first.";
-				tavilyStatus.style.color = "var(--text-muted, #888)";
+				tavilyStatus.classList.remove("is-ok", "is-error");
+				tavilyStatus.classList.add("is-muted");
 				return;
 			}
 			tavilyTestBtn.disabled = true;
@@ -337,16 +331,18 @@ export class AgentConfigPanel extends Block {
 				tavilyTestBtn.className = "theme-button primary";
 				tavilyTestBtn.disabled = true;
 				tavilyStatus.textContent = "Key verified and saved.";
-				tavilyStatus.style.color = "#2da44e";
+				tavilyStatus.classList.remove("is-muted", "is-error");
+				tavilyStatus.classList.add("is-ok");
 			} catch (err) {
 				tavilyStatus.textContent = `Failed: ${err.message}`;
-				tavilyStatus.style.color = "#dc3545";
+				tavilyStatus.classList.remove("is-muted", "is-ok");
+				tavilyStatus.classList.add("is-error");
 				tavilyTestBtn.text = "Test";
 				tavilyTestBtn.disabled = false;
 				tavilyTestBtn.className = "theme-button secondary";
 			}
 		};
-		tavilyStatus.style.fontStyle = "italic";
+		tavilyStatus.classList.add("is-hint");
 		tavilyWrapper.append(tavilyLabel, tavilyControl);
 		tavilyWrapper.appendChild(tavilyBtnRow);
 		tavilyWrapper.appendChild(tavilyStatus);
@@ -358,11 +354,7 @@ export class AgentConfigPanel extends Block {
 		content.innerHTML = "";
 
 		const desc = document.createElement("p");
-		desc.style.fontSize = "12px";
-		desc.style.color = "var(--text-secondary)";
-		desc.style.marginBottom = "14px";
-		desc.style.fontStyle = "italic";
-		desc.style.lineHeight = "1.4";
+		desc.className = "panel-note";
 		desc.innerHTML = `<b>Note:</b> These customisation choices adjust instructions and focus guidelines for standard chat mode turns. They do <b>NOT</b> apply to agent execution steps or planning mode instructions.`;
 		content.appendChild(desc);
 
@@ -509,9 +501,6 @@ export class AgentConfigPanel extends Block {
 			item.style.justifyContent = "space-between";
 			item.style.alignItems = "center";
 			item.style.padding = "8px 12px";
-			item.style.border = "1px solid var(--border)";
-			item.style.borderRadius = "var(--radius, 6px)";
-			item.style.background = "var(--bg-secondary, rgba(0,0,0,0.05))";
 
 			// Left details
 			const left = document.createElement("div");
@@ -521,10 +510,9 @@ export class AgentConfigPanel extends Block {
 
 			// 2-bar/3-bar drag handle
 			const handle = document.createElement("ui-icon");
+			handle.className = "conn-drag-handle";
 			handle.textContent = "drag_handle";
 			handle.style.cursor = "grab";
-			handle.style.color = "var(--text-muted, #888)";
-			handle.style.fontSize = "16px";
 			handle.title = "Drag to reorder connection";
 			left.appendChild(handle);
 
@@ -550,14 +538,14 @@ export class AgentConfigPanel extends Block {
 			item.addEventListener("dragover", (e) => {
 				e.preventDefault();
 				e.dataTransfer.dropEffect = "move";
-				item.style.borderTop = "2px solid var(--theme)";
+				item.classList.add("drag-over");
 			});
 			item.addEventListener("dragleave", () => {
-				item.style.borderTop = "";
+				item.classList.remove("drag-over");
 			});
 			item.addEventListener("drop", (e) => {
 				e.preventDefault();
-				item.style.borderTop = "";
+				item.classList.remove("drag-over");
 				const draggedId = e.dataTransfer.getData("text/plain");
 				if (draggedId && draggedId !== conn.id) {
 					const list = AIConnections.getConnections();
@@ -574,8 +562,8 @@ export class AgentConfigPanel extends Block {
 			});
 
 			const star = document.createElement("ui-icon");
+			star.className = conn.id === defaultId ? "conn-star is-default" : "conn-star is-muted";
 			star.style.cursor = "pointer";
-			star.style.color = conn.id === defaultId ? "var(--color-warning, #b58900)" : "var(--text-muted, #888)";
 			star.textContent = conn.id === defaultId ? "star" : "star_border";
 			star.title = conn.id === defaultId ? "Default connection (starred)" : "Click to set as default connection";
 			star.onclick = () => {
@@ -593,43 +581,18 @@ export class AgentConfigPanel extends Block {
 			nameWrapper.style.gap = "8px";
 
 			const name = document.createElement("span");
-			name.style.fontWeight = "bold";
-			name.style.fontSize = "13px";
+			name.className = "conn-name";
 			name.textContent = conn.name;
 			nameWrapper.appendChild(name);
 
 			const size = conn.size || "medium";
 			const sizeChip = document.createElement("span");
-			sizeChip.style.fontSize = "9px";
-			sizeChip.style.padding = "1px 5px";
-			sizeChip.style.borderRadius = "8px";
-			sizeChip.style.fontWeight = "bold";
-			sizeChip.style.textTransform = "capitalize";
-			sizeChip.style.display = "inline-flex";
-			sizeChip.style.alignItems = "center";
-			
-			if (size === "tiny") {
-				sizeChip.style.background = "rgba(108, 117, 125, 0.15)";
-				sizeChip.style.color = "var(--text-secondary, #6c757d)";
-			} else if (size === "small") {
-				sizeChip.style.background = "rgba(45, 164, 78, 0.15)";
-				sizeChip.style.color = "#2da44e";
-			} else if (size === "medium") {
-				sizeChip.style.background = "rgba(9, 105, 218, 0.15)";
-				sizeChip.style.color = "#0969da";
-			} else if (size === "large") {
-				sizeChip.style.background = "rgba(219, 109, 40, 0.15)";
-				sizeChip.style.color = "#db6d28";
-			} else if (size === "ultra") {
-				sizeChip.style.background = "rgba(130, 80, 223, 0.15)";
-				sizeChip.style.color = "#8250df";
-			}
+			sizeChip.classList.add("conn-size-chip", `size-${size}`);
 			sizeChip.textContent = size;
 			nameWrapper.appendChild(sizeChip);
 
 			const info = document.createElement("span");
-			info.style.fontSize = "11px";
-			info.style.color = "var(--text-secondary)";
+			info.className = "conn-info";
 			info.textContent = `${conn.provider} - ${conn.config?.model || 'No model selected'}`;
 
 			text.appendChild(nameWrapper);
@@ -649,11 +612,7 @@ export class AgentConfigPanel extends Block {
 			const tpsLabel = document.createElement("span");
 			tpsLabel.className = "connection-tps-badge";
 			tpsLabel.dataset.connId = conn.id;
-			tpsLabel.style.fontSize = "11px";
-			tpsLabel.style.color = "var(--text-secondary)";
-			tpsLabel.style.background = "var(--bg-secondary, rgba(0,0,0,0.05))";
 			tpsLabel.style.padding = "2px 6px";
-			tpsLabel.style.borderRadius = "4px";
 			tpsLabel.style.marginRight = "4px";
 			tpsLabel.title = "Rolling 5-response average speed";
 			if (inst && inst.averageTokensPerSec > 0) {
@@ -716,7 +675,7 @@ export class AgentConfigPanel extends Block {
 						item.style.opacity = "";
 					}
 					info.textContent = `${conn.provider} - ${conn.config?.model || 'No model selected'}`;
-					info.style.color = "var(--text-secondary)";
+					info.classList.remove("is-error");
 					
 					// Automatically persist the resolved model path and n_ctx window details
 					AIConnections.save();
@@ -724,7 +683,7 @@ export class AgentConfigPanel extends Block {
 					// Failed - visually disable
 					item.style.opacity = "0.5";
 					info.textContent = `${conn.provider} - unavailable`;
-					info.style.color = "var(--color-error, #dc3545)";
+					info.classList.add("is-error");
 				});
 			}
 
@@ -781,11 +740,8 @@ export class AgentConfigPanel extends Block {
 		nameRow.innerHTML = `<label style="font-size: 11px; font-weight: bold; margin-bottom: 2px;">Connection Name</label>`;
 		const nameInput = document.createElement("input");
 		nameInput.type = "text";
+		nameInput.className = "modal-text-input";
 		nameInput.style.padding = "6px";
-		nameInput.style.borderRadius = "4px";
-		nameInput.style.border = "1px solid var(--border)";
-		nameInput.style.background = "var(--bg-input)";
-		nameInput.style.color = "var(--text)";
 		nameInput.value = conn ? conn.name : "";
 		nameRow.appendChild(nameInput);
 		form.appendChild(nameRow);
@@ -846,15 +802,15 @@ export class AgentConfigPanel extends Block {
 		presetWrap.style.gap = "4px";
 		presetWrap.style.flexShrink = "0";
 		const presetIcon = document.createElement("span");
+		presetIcon.className = "preset-icon";
 		presetIcon.textContent = "\u{1F527}";
-		presetIcon.style.fontSize = "13px";
 		presetIcon.style.cursor = "default";
 		presetIcon.title = "This model has known parameters. Apply a tuned preset.";
 		const presetSelect = document.createElement("select");
 		presetSelect.className = "themed-select";
 		presetSelect.dataset.probePreset = "preset";
+		presetSelect.classList.add("compact-select");
 		presetSelect.style.padding = "4px";
-		presetSelect.style.fontSize = "11px";
 		presetSelect.title = "Apply a tuned parameter preset";
 		["default", "coding", "planning"].forEach(p => {
 			const opt = document.createElement("option");
@@ -869,11 +825,7 @@ export class AgentConfigPanel extends Block {
 		modelDatalist.id = datalistId;
 		modelContainer.appendChild(modelDatalist);
 		const modelPlaceholder = document.createElement("div");
-		modelPlaceholder.style.fontSize = "12px";
-		modelPlaceholder.style.color = "var(--text-muted, #888)";
-		modelPlaceholder.style.fontStyle = "italic";
-		modelPlaceholder.style.opacity = "0.7";
-		modelPlaceholder.style.padding = "4px 0";
+		modelPlaceholder.className = "model-placeholder";
 		modelPlaceholder.textContent = "Test the connection to load available models";
 		modelContainer.appendChild(modelPlaceholder);
 		form.appendChild(modelContainer);
@@ -881,21 +833,17 @@ export class AgentConfigPanel extends Block {
 		// Model capability panel
 		const modelInfo = document.createElement("div");
 		modelInfo.dataset.probePanel = "modelInfo";
+		modelInfo.className = "probe-panel";
 		modelInfo.style.display = "none";
 		modelInfo.style.flexDirection = "column";
 		modelInfo.style.gap = "6px";
-		modelInfo.style.border = "1px solid var(--border)";
-		modelInfo.style.borderRadius = "4px";
 		modelInfo.style.padding = "8px";
-		modelInfo.style.fontSize = "12px";
-		modelInfo.style.background = "var(--bg-secondary)";
 		form.appendChild(modelInfo);
 
 		// Test status container
 		const testStatus = document.createElement("div");
+		testStatus.className = "test-status";
 		testStatus.style.padding = "8px";
-		testStatus.style.borderRadius = "4px";
-		testStatus.style.fontSize = "12px";
 		testStatus.style.display = "none";
 		form.appendChild(testStatus);
 
@@ -910,16 +858,13 @@ export class AgentConfigPanel extends Block {
 				wrapper.innerHTML = `<label style="font-size: 11px; font-weight: bold; margin-bottom: 2px;">${labelVal}</label>`;
 				const inp = document.createElement("input");
 				inp.type = isPassword ? "password" : "text";
+				inp.className = "modal-text-input";
 				inp.style.padding = "6px";
-				inp.style.borderRadius = "4px";
-				inp.style.border = "1px solid var(--border)";
-				inp.style.background = "var(--bg-input)";
-				inp.style.color = "var(--text)";
 				inp.value = value;
 				if (placeholder) inp.placeholder = placeholder;
 				if (hint) {
 					const hintEl = document.createElement("div");
-					hintEl.style.cssText = "font-size: 10px; color: var(--text-secondary); margin-top: 2px;";
+					hintEl.className = "field-hint";
 					hintEl.textContent = hint;
 					wrapper.appendChild(hintEl);
 				}
@@ -1224,29 +1169,24 @@ export class AgentConfigPanel extends Block {
 			familyLine.style.alignItems = "center";
 			const familyLabelEl = document.createElement("span");
 			const badge = document.createElement("span");
+			badge.className = "family-badge";
 			badge.textContent = cap.family ? familyLabel(cap.family) : familyLabel(guessFamilyFromUrl(currentConnConfig().config.server));
-			badge.style.background = "var(--bg-input)";
-			badge.style.border = "1px solid var(--border)";
-			badge.style.borderRadius = "3px";
 			badge.style.padding = "1px 6px";
-			badge.style.fontSize = "10px";
 			badge.style.fontWeight = "bold";
 			const presetTag = document.createElement("span");
+			presetTag.className = "preset-tag";
 			presetTag.textContent = cap.preset && cap.preset !== "default" ? `Preset: ${cap.preset}` : "Preset: Default";
-			presetTag.style.fontSize = "10px";
-			presetTag.style.opacity = "0.8";
 			familyLabelEl.append(badge, presetTag);
 			const probeStatus = document.createElement("span");
+			probeStatus.className = cap.probeOk ? "probe-status is-ok" : "probe-status is-error";
 			probeStatus.textContent = cap.probeOk ? `Probe OK in ${cap.latencyMs}ms` : `Probe failed: ${cap.error || "unknown"}`;
-			probeStatus.style.color = cap.probeOk ? "var(--text-secondary)" : "var(--color-error, #dc3545)";
 			familyLine.append(familyLabelEl, probeStatus);
 			modelInfo.appendChild(familyLine);
 
 			if (!cap.probeOk) {
 				const note = document.createElement("div");
+				note.className = "probe-note";
 				note.textContent = "Investigation could not reach the model. Check the connection details.";
-				note.style.fontSize = "11px";
-				note.style.opacity = "0.8";
 				modelInfo.appendChild(note);
 				return;
 			}
@@ -1257,9 +1197,7 @@ export class AgentConfigPanel extends Block {
 				const scheme = cap.reasoning.mode === "openrouter" ? "reasoning:effort" : cap.reasoning.mode === "o-series" ? "reasoning_effort" : "thinking budget";
 				const allowed = (cap.reasoning.effortAllowed || []).join(", ");
 				const rLabel = document.createElement("span");
-				rLabel.className = "field-label";
-				rLabel.style.fontSize = "var(--font-size-xs)";
-				rLabel.style.color = "var(--text-secondary)";
+				rLabel.className = "field-label field-label-xs";
 				rLabel.textContent = "Reasoning";
 				const rValue = document.createElement("span");
 				rValue.title = `${"Supported scheme: " + scheme + (allowed ? " · Levels: " + allowed : "")}`;
@@ -1276,23 +1214,18 @@ export class AgentConfigPanel extends Block {
 				row.className = "field";
 				row.style.justifyContent = "space-between";
 				const label = document.createElement("span");
+				label.className = "param-label";
 				label.textContent = key;
-				label.style.fontSize = "var(--font-size-xs)";
-				label.style.color = "var(--text-secondary)";
 				const value = document.createElement("span");
+				value.className = "param-value" + (info.state === "locked" ? " state-locked" : info.state === "preset" ? " state-preset" : info.state === "unverified" ? " state-unverified" : "");
 				value.textContent = `${meta.icon} ${meta.label}`;
-				value.style.fontSize = "var(--font-size-xs)";
 				value.title = `${meta.tip} ${info.note || ""}`;
 				value.style.cursor = "help";
-				if (info.state === "locked") value.style.color = "var(--color-error, #dc3545)";
-				else if (info.state === "preset") value.style.color = "#cba832";
-				else if (info.state === "unverified") value.style.color = "#888";
 				row.append(label, value);
 				if (info.state === "preset" && info.available) {
 					const sub = document.createElement("div");
+					sub.className = "param-sub";
 					sub.textContent = info.available.join(", ");
-					sub.style.fontSize = "10px";
-					sub.style.opacity = "0.7";
 					modelInfo.appendChild(sub);
 				}
 				modelInfo.appendChild(row);
@@ -1351,9 +1284,8 @@ export class AgentConfigPanel extends Block {
 				testBtn.disabled = true;
 				testBtn.text = "Testing...";
 				testStatus.style.display = "block";
-				testStatus.style.background = "var(--bg-secondary)";
-				testStatus.style.border = "1px solid var(--border)";
-				testStatus.style.color = "var(--text)";
+				testStatus.classList.remove("is-ok", "is-error");
+				testStatus.classList.add("is-idle");
 				testStatus.textContent = "Connecting to endpoint...";
 			}
 
@@ -1362,9 +1294,8 @@ export class AgentConfigPanel extends Block {
 				const result = await AIConnections.testConnection(connConf);
 
 				if (!silent) {
-					testStatus.style.background = "rgba(45, 164, 78, 0.1)";
-					testStatus.style.border = "1px solid rgba(45, 164, 78, 0.3)";
-					testStatus.style.color = "#2da44e";
+					testStatus.classList.remove("is-idle", "is-error");
+					testStatus.classList.add("is-ok");
 					const viaProbe = result.probe && result.probe.ok && (!result.models || result.models.length === 0);
 					testStatus.textContent = viaProbe
 						? `Connection check succeeded via live probe${result.probe.latencyMs ? ` (${result.probe.latencyMs}ms)` : ""}. Model list not available.`
@@ -1390,9 +1321,8 @@ export class AgentConfigPanel extends Block {
 				return true;
 			} catch (err) {
 				if (!silent) {
-					testStatus.style.background = "rgba(220, 53, 69, 0.1)";
-					testStatus.style.border = "1px solid rgba(220, 53, 69, 0.3)";
-					testStatus.style.color = "#dc3545";
+					testStatus.classList.remove("is-idle", "is-ok");
+					testStatus.classList.add("is-error");
 					testStatus.textContent = `Connection check failed: ${err.message}`;
 				}
 				lastPassedStr = "";
@@ -1416,9 +1346,8 @@ export class AgentConfigPanel extends Block {
 			const model = modelSelect.value;
 			if (!model) {
 				testStatus.style.display = "block";
-				testStatus.style.background = "var(--bg-secondary)";
-				testStatus.style.border = "1px solid var(--border)";
-				testStatus.style.color = "var(--text)";
+				testStatus.classList.remove("is-ok", "is-error");
+				testStatus.classList.add("is-idle");
 				testStatus.textContent = "Select a model to investigate.";
 				return;
 			}
@@ -1447,10 +1376,7 @@ export class AgentConfigPanel extends Block {
 		investigateBtn.onclick = runInvestigate;
 
 		const saveWithErrorsBtn = new Button("Save w/Errors");
-		saveWithErrorsBtn.className = "theme-button secondary";
-		saveWithErrorsBtn.style.border = "1px solid var(--color-error, #dc3545)";
-		saveWithErrorsBtn.style.color = "var(--color-error, #dc3545)";
-		saveWithErrorsBtn.style.background = "rgba(220, 53, 69, 0.1)";
+		saveWithErrorsBtn.className = "theme-button secondary has-errors";
 		saveWithErrorsBtn.hide();
 		saveWithErrorsBtn.onclick = () => doSave();
 
@@ -1495,19 +1421,16 @@ export class AgentConfigPanel extends Block {
 				const revertTo = key === "temperature" ? verifiedValues.temperature : verifiedValues.top_p;
 				if (revertTo === null) continue;
 				input.value = revertTo;
-				input.style.border = "1px solid #dc3545";
-				input.style.boxShadow = "0 0 0 2px rgba(220, 53, 69, 0.25)";
+				input.classList.add("invalid");
 				reverted = true;
 				setTimeout(() => {
-					input.style.border = "1px solid var(--border)";
-					input.style.boxShadow = "none";
+					input.classList.remove("invalid");
 				}, 2500);
 			}
 			if (reverted) {
 				testStatus.style.display = "block";
-				testStatus.style.background = "rgba(220, 53, 69, 0.1)";
-				testStatus.style.border = "1px solid rgba(220, 53, 69, 0.3)";
-				testStatus.style.color = "#dc3545";
+				testStatus.classList.remove("is-idle", "is-ok");
+				testStatus.classList.add("is-error");
 				testStatus.textContent = `Server rejected edited values (${Object.keys(params).join(", ")}); reverted to last verified values.`;
 				return false;
 			}
@@ -1576,9 +1499,8 @@ export class AgentConfigPanel extends Block {
 		}
 
 		const table = document.createElement("table");
+		table.className = "telemetry-table";
 		table.style.width = "100%";
-		table.style.borderCollapse = "collapse";
-		table.style.fontSize = "12px";
 		table.style.marginTop = "8px";
 
 		table.innerHTML = `
@@ -1605,10 +1527,8 @@ export class AgentConfigPanel extends Block {
 			const tr = document.createElement("tr");
 			tr.className = "telemetry-row";
 			tr.dataset.connId = conn.id;
-			tr.style.borderBottom = "1px solid var(--border)";
 
 			const nameTd = document.createElement("td");
-			nameTd.style.padding = "8px 4px";
 			nameTd.innerHTML = `
 				<div style="font-weight: bold;">${conn.name}</div>
 				<div style="font-size: 10px; color: var(--text-secondary);">${conn.provider} (${conn.config?.model || 'No model'})</div>
@@ -1616,39 +1536,33 @@ export class AgentConfigPanel extends Block {
 
 			const speedTd = document.createElement("td");
 			speedTd.className = "telemetry-speed";
-			speedTd.style.padding = "8px 4px";
 			const tps = inst.tokensPerSec;
 			const thinking = inst.secondsThinking;
 			speedTd.textContent = tps > 0 ? `${tps} t/s${thinking > 0 ? ` (${thinking}s think)` : ''}` : "-";
 
 			const avgSpeedTd = document.createElement("td");
 			avgSpeedTd.className = "telemetry-avg-speed";
-			avgSpeedTd.style.padding = "8px 4px";
 			const avgTps = inst.averageTokensPerSec;
 			avgSpeedTd.textContent = avgTps > 0 ? `${avgTps} t/s` : "-";
 
 			const volumeTd = document.createElement("td");
 			volumeTd.className = "telemetry-volume";
-			volumeTd.style.padding = "8px 4px";
 			const tpm = inst.tokensPerMin;
 			volumeTd.textContent = tpm > 0 ? `${tpm} t/min` : "-";
 
 			const rpmTd = document.createElement("td");
 			rpmTd.className = "telemetry-rpm";
-			rpmTd.style.padding = "8px 4px";
 			const rpm = inst.requestsPerMin;
 			rpmTd.textContent = rpm > 0 ? `${rpm} RPM` : "-";
 
 			const totalTd = document.createElement("td");
 			totalTd.className = "telemetry-total";
-			totalTd.style.padding = "8px 4px";
 			const totalIn = inst._totalTokensIn || 0;
 			const totalOut = inst._totalTokensOut || 0;
 			totalTd.textContent = (totalIn || totalOut) ? `${totalIn.toLocaleString()} / ${totalOut.toLocaleString()}` : "-";
 
 			const actionTd = document.createElement("td");
-			actionTd.style.padding = "8px 4px";
-			actionTd.style.textAlign = "right";
+			actionTd.className = "telemetry-actions";
 
 			const resetBtn = new Button("");
 			resetBtn.icon = "refresh";
@@ -1688,8 +1602,7 @@ export class AgentConfigPanel extends Block {
 		btnContainer.style.marginTop = "16px";
 
 		const clearBtn = new Button("Clear All Telemetry");
-		clearBtn.className = "theme-button secondary";
-		clearBtn.style.fontSize = "11px";
+		clearBtn.className = "theme-button secondary clear-telemetry-btn";
 		clearBtn.onclick = () => {
 			connections.forEach(conn => {
 				const inst = AIConnections.getInstance(conn.id);
