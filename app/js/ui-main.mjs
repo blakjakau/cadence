@@ -1,11 +1,13 @@
 import { FileList, Panel, Inline, Block, Button, TabBar, MediaView, Input, MenuItem, ActionBar, EditorHolder, IconTabBar, IconTab, SidebarPanel, extractFilenameAtColumn, findFileMatchesInIndex } from './elements.mjs';
 import { getIconForFileName } from './elements/utils.mjs';
+import { layout, syncCSSVars } from './layout.mjs';
 import TerminalManager from './terminal-manager.mjs'; // Import the new TerminalManager
 import conduitClient from './conduit-client.mjs';
 import { ConduitFileList } from './elements/conduit-filelist.mjs';
 import aiManager from './ai-manager.mjs';
 import ollama from './ai-ollama.mjs';
 import agentTools from './agent/agent-tools.mjs';
+import { getCachedOsTheme } from './os-theme.mjs';
 
 const defaultSettings = {
 	showGutter: true, //set to true to hide the line numbering
@@ -37,7 +39,7 @@ var darkmodeMenu, darkmodeSelect
 var openDir, themeModeToggle, toggleSplitViewBtn, scratchEditor, iconTabBar;
 var fileListBackground
 var currentEditor, currentTabs, currentMediaView
-var drawerLastHeight = window.innerHeight * 0.3;
+var drawerLastHeight = window.innerHeight * layout.drawerInitialHeightFraction;
 var currentSearchQuery = ""
 var currentSearchMatches = []
 var grepPending = false
@@ -83,7 +85,7 @@ const uiManager = {
 	_isDrawerTransitioningToClosed: false,
 
 	isDrawerOpen: () => {
-		return drawer && drawer.offsetHeight > 40 && !uiManager._isDrawerTransitioningToClosed;
+		return drawer && drawer.offsetHeight > layout.drawerOpenThreshold && !uiManager._isDrawerTransitioningToClosed;
 	},
 
 	toggleDrawer: (forceState) => {
@@ -106,7 +108,7 @@ const uiManager = {
 			if (isOpen) {
 				drawerLastHeight = drawer.offsetHeight - 4; // Subtract border/handle visual
 			}
-			drawer.style.height = "34px";
+			drawer.style.height = layout.drawerCollapsedHeight + "px";
 			const drawerToggle = document.querySelector("#drawerToggle");
 			if (drawerToggle) drawerToggle.icon = "expand_less";
 		}
@@ -120,6 +122,7 @@ const uiManager = {
 
 	create: (options = {}) => {
 
+		syncCSSVars();
 		document.documentElement.style.setProperty('--animRate', `${animRate}ms`);
 
 		const defaults = {
@@ -151,7 +154,7 @@ const uiManager = {
 
 		const getDrawerConstraints = () => {
 			const vh = window.innerHeight;
-			return { min: 34, max: vh * 0.8, default: 34 };
+			return { min: layout.drawerCollapsedHeight, max: vh * layout.drawerMaxFraction, default: layout.drawerCollapsedHeight };
 		};
 
 		const constrainDrawer = ()=>{
@@ -175,8 +178,8 @@ const uiManager = {
 			if(uiManager.isDrawerOpen()) {
 				// Handle Height Snap-back
 				const vh = window.innerHeight;
-				const minH = vh * 0.2;
-				const maxH = vh * 0.9;
+				const minH = vh * layout.drawerSnapMinFraction;
+				const maxH = vh * layout.drawerSnapMaxFraction;
 				let currentH = drawer.offsetHeight;
 	
 				if (currentH < minH) {
@@ -198,8 +201,8 @@ const uiManager = {
 		}
 		constrainHolders = () => {
 			void sidebar.offsetWidth
-			const minWidth = 350
-			const maxWidth = window.innerWidth - 300; // 50% of window width
+			const minWidth = layout.sidebarConstrainMin
+			const maxWidth = window.innerWidth - layout.sidebarConstrainPad; // 50% of window width
 
 
 			sidebar.removeEventListener("transitionend", constrainDrawer)
@@ -246,7 +249,7 @@ const uiManager = {
 				const w = mainContent.offsetWidth
 				let l = leftHolder.offsetWidth / w
 				let r = rightHolder.offsetWidth / w
-				l = Math.max(0.25, Math.min(0.75, l))
+				l = Math.max(layout.splitMinFraction, Math.min(layout.splitMaxFraction, l))
 				r = 1 - l
 				leftHolder.style.width = ((l) * 100) + "%"
 				rightHolder.style.width = ((r) * 100) + "%"
@@ -340,8 +343,8 @@ const uiManager = {
 		const terminalPanel = new SidebarPanel(); // Create a SidebarPanel to host the terminal
 		terminalPanel.setAttribute("id", "terminal-panel");
 		terminalPanel.style.top = "0"; // Leave 8px for the drawer resize handle
-		terminalPanel.style.bottom = "34px"; // Leave 34px for the bottom action bar overlap
-		terminalPanel.style.paddingBottom="34px"
+		terminalPanel.style.bottom = layout.statusHeight + "px"; // Leave room for the bottom action bar overlap
+		terminalPanel.style.paddingBottom = layout.statusHeight + "px"
 		terminalPanel.active = true;
 
 		window.terminalManager = TerminalManager; // Create the manager instance
@@ -359,8 +362,8 @@ const uiManager = {
 		sidebar.setAttribute("id", "sidebar")
 		sidebar.append(iconTabBar);
 		sidebar.append(sidebarPanelsContainer);
-		sidebar.minSize = 240
-		sidebar.maxSize = 2440
+		sidebar.minSize = layout.sidebarMinSize
+		sidebar.maxSize = layout.sidebarMaxSize
 
 
 		let currentTab
@@ -430,7 +433,7 @@ const uiManager = {
 		iconTabBar.activeTab = filesTab;
 		sidebar.resizable = "right"
 		sidebar.minSize = 40
-		let sidebarWidth = 350
+		let sidebarWidth = layout.sidebarDefaultWidth
 
 		menu = document.querySelector("#menu")
 		if (menu == null) {
@@ -537,7 +540,7 @@ const uiManager = {
 		rightHolder.style.right = "0px"
 		rightHolder.resizable = "left"
 		rightHolder.minSize = 0
-		rightHolder.maxSize = 2440
+		rightHolder.maxSize = layout.sidebarMaxSize
 
 
 		leftTabs.exclusiveDropType = "editor-tab"
@@ -547,7 +550,7 @@ const uiManager = {
 
 
 		sidebar.resizeListener((width) => {
-			const maxWidth = window.innerWidth * 0.8; // 50% of window width
+			const maxWidth = window.innerWidth * layout.sidebarMaxWindowFraction; // 50% of window width
 			// sidebar.style.transition = "none";
 			sidebarWidth = Math.min(width, maxWidth); // Constrain width
 			mainContent.style.transition = "none";
@@ -1821,8 +1824,13 @@ const uiManager = {
 
 			const prefersDarkMode = window.matchMedia('(prefers-color-scheme: dark)');
 
-			// Apply the darkmode class to the body based on app.darkmode setting
-			if (app.darkmode === 'dark' || (app.darkmode === 'system' && prefersDarkMode.matches)) {
+		// Apply the darkmode class to the body based on app.darkmode setting.
+		// When an OS theme is active, its palette mode wins over the media query.
+		const osTheme = app.darkmode === 'system' ? getCachedOsTheme() : null;
+		const isDark = osTheme
+			? osTheme.mode !== 'light'
+				: (app.darkmode === 'dark' || (app.darkmode === 'system' && prefersDarkMode.matches));
+			if (isDark) {
 				document.body.classList.add("darkmode");
 				darkmodeSelect.icon = "dark_mode";
 			} else {

@@ -191,6 +191,25 @@ func (wm *watcherManager) broadcastIndexerStatus(status interface{}) {
 	}
 }
 
+// broadcastTheme pushes an OS theme change to every connected websocket
+// client. The conduit client surfaces it as a "theme_changed" event; no
+// subscription is needed, mirroring broadcastIndexerStatus.
+func (wm *watcherManager) broadcastTheme(state systemThemeState) {
+	if wm == nil {
+		return
+	}
+	wm.mu.Lock()
+	defer wm.mu.Unlock()
+
+	resp := fileResponse{
+		Action: "theme_changed",
+		Data:   state,
+	}
+	for client := range wm.subscribers {
+		safeWriteJSON(client, resp)
+	}
+}
+
 // --- Main Handler ---
 
 // filesApiHandler routes requests to either REST or WebSocket handlers.

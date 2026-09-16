@@ -35,14 +35,14 @@
 }
 
 .agent-approval-card.approved {
-    border-left-color: #2da44e;
-    background: color-mix(in srgb, #2da44e 5%, var(--bg-secondary));
+    border-left-color: var(--color-success, #2da44e);
+    background: color-mix(in srgb, var(--color-success, #2da44e) 5%, var(--bg-secondary));
     box-shadow: none;
 }
 
 .agent-approval-card.rejected {
-    border-left-color: #cf222e;
-    background: color-mix(in srgb, #cf222e 5%, var(--bg-secondary));
+    border-left-color: var(--color-error, #cf222e);
+    background: color-mix(in srgb, var(--color-error, #cf222e) 5%, var(--bg-secondary));
     box-shadow: none;
 }
 
@@ -61,11 +61,11 @@
 }
 
 .agent-approval-card.approved .approval-header ui-icon {
-    color: #2da44e;
+    color: var(--color-success, #2da44e);
 }
 
 .agent-approval-card.rejected .approval-header ui-icon {
-    color: #cf222e;
+    color: var(--color-error, #cf222e);
 }
 
 .agent-approval-card .approval-path {
@@ -97,13 +97,13 @@
 }
 
 .agent-approval-card .diff-section.remove {
-    background: rgba(207, 34, 46, 0.08);
-    border-color: rgba(207, 34, 46, 0.15);
+    background: color-mix(in srgb, var(--color-error, #cf222e) 8%, transparent);
+    border-color: color-mix(in srgb, var(--color-error, #cf222e) 15%, transparent);
 }
 
 .agent-approval-card .diff-section.add {
-    background: rgba(45, 164, 78, 0.08);
-    border-color: rgba(45, 164, 78, 0.15);
+    background: color-mix(in srgb, var(--color-success, #2da44e) 8%, transparent);
+    border-color: color-mix(in srgb, var(--color-success, #2da44e) 15%, transparent);
 }
 
 .agent-approval-card .diff-label {
@@ -115,11 +115,11 @@
 }
 
 .agent-approval-card .diff-section.remove .diff-label {
-    color: #cf222e;
+    color: var(--color-error, #cf222e);
 }
 
 .agent-approval-card .diff-section.add .diff-label {
-    color: #2da44e;
+    color: var(--color-success, #2da44e);
 }
 
 .agent-approval-card pre {
@@ -172,9 +172,9 @@
 }
 
 .agent-tool-finished {
-    background: rgba(45, 164, 78, 0.05);
-    color: #2da44e;
-    border: 1px solid rgba(45, 164, 78, 0.1);
+    background: color-mix(in srgb, var(--color-success, #2da44e) 5%, transparent);
+    color: var(--color-success, #2da44e);
+    border: 1px solid color-mix(in srgb, var(--color-success, #2da44e) 10%, transparent);
 }
 
 .agent-tool-finished ui-icon {
@@ -241,12 +241,12 @@
 }
 
 .tool-call-status-badge.invoked {
-    background: rgba(45, 164, 78, 0.12);
-    color: #2da44e;
+    background: color-mix(in srgb, var(--color-success, #2da44e) 12%, transparent);
+    color: var(--color-success, #2da44e);
 }
 
 .tool-call-status-badge.failed {
-    background: rgba(234, 67, 53, 0.12);
+    background: color-mix(in srgb, var(--color-error, #ea4335) 12%, transparent);
     color: #ea4335;
 }
 
@@ -485,11 +485,11 @@
 }
 
 .agent-approval-card.approved .card-summary-header ui-icon {
-    color: #2da44e;
+    color: var(--color-success, #2da44e);
 }
 
 .agent-approval-card.rejected .card-summary-header ui-icon {
-    color: #cf222e;
+    color: var(--color-error, #cf222e);
 }
 
 .agent-approval-card .card-summary-header .summary-status {
@@ -497,11 +497,11 @@
 }
 
 .agent-approval-card.approved .card-summary-header .summary-status {
-    color: #2da44e;
+    color: var(--color-success, #2da44e);
 }
 
 .agent-approval-card.rejected .card-summary-header .summary-status {
-    color: #cf222e;
+    color: var(--color-error, #cf222e);
 }
 
 .agent-approval-card .card-summary-header .summary-path {
@@ -732,18 +732,18 @@
 
 /* Colored & Icon'd Premium Tab for Implementation Plan & Task List */
 ui-tab-item.plan-tasks-tab {
-    color: #2da44e !important;
+    color: var(--color-success, #2da44e) !important;
 }
 
 ui-tab-item.plan-tasks-tab[active="true"],
 ui-tab-item.plan-tasks-tab.active {
-    background-color: #2da44e !important;
+    background-color: var(--color-success, #2da44e) !important;
     color: #ffffff !important;
-    border-bottom: 2px solid #2da44e !important;
+    border-bottom: 2px solid var(--color-success, #2da44e) !important;
 }
 
 ui-tab-item.plan-tasks-tab .status-icon {
-    color: #2da44e !important;
+    color: var(--color-success, #2da44e) !important;
 }
 
 ui-tab-item.plan-tasks-tab[active="true"] .status-icon,
@@ -788,7 +788,7 @@ ui-tab-item.plan-tasks-tab.active .status-icon {
 }
 
 .plan-tasks-split-container .tasks-pane {
-    border-left: 3px solid #2da44e; /* Green border indicator for task checklist */
+    border-left: 3px solid var(--color-success, #2da44e); /* Green border indicator for task checklist */
 }
 
 .plan-tasks-split-container .pane-header {
@@ -840,7 +840,7 @@ ui-tab-item.plan-tasks-tab.active .status-icon {
 }
 
 .plan-tasks-split-container .tasks-pane .pane-header ui-icon {
-    color: #2da44e;
+    color: var(--color-success, #2da44e);
 }
 
 .plan-tasks-split-container .pane-content {
@@ -994,8 +994,8 @@ ui-tab-item.plan-tasks-tab.active .status-icon {
     padding: 10px 16px;
     margin: 4px 8px 12px 8px;
     background-color: var(--bg-primary);
-    background-image: linear-gradient(135deg, rgba(45, 164, 78, 0.15) 0%, rgba(45, 164, 78, 0.05) 100%);
-    border: 1px solid rgba(45, 164, 78, 0.3);
+    background-image: linear-gradient(135deg, color-mix(in srgb, var(--color-success, #2da44e) 15%, transparent) 0%, color-mix(in srgb, var(--color-success, #2da44e) 5%, transparent) 100%);
+    border: 1px solid color-mix(in srgb, var(--color-success, #2da44e) 30%, transparent);
     border-radius: var(--borderRadius, 6px);
     gap: 12px;
     z-index: 10;
@@ -1004,22 +1004,22 @@ ui-tab-item.plan-tasks-tab.active .status-icon {
 }
 
 .ai-implementation-plan-banner:hover {
-    border-color: rgba(45, 164, 78, 0.5);
-    background: linear-gradient(135deg, rgba(45, 164, 78, 0.2) 0%, rgba(45, 164, 78, 0.08) 100%);
+    border-color: color-mix(in srgb, var(--color-success, #2da44e) 50%, transparent);
+    background: linear-gradient(135deg, color-mix(in srgb, var(--color-success, #2da44e) 20%, transparent) 0%, color-mix(in srgb, var(--color-success, #2da44e) 8%, transparent) 100%);
 }
 
 .ai-implementation-plan-banner .banner-left {
     display: flex;
     align-items: center;
     gap: 10px;
-    color: #2da44e;
+    color: var(--color-success, #2da44e);
     font-weight: 500;
     font-size: 0.95em;
 }
 
 .ai-implementation-plan-banner .banner-left ui-icon {
     font-size: 1.3em;
-    color: #2da44e;
+    color: var(--color-success, #2da44e);
 }
 
 .ai-implementation-plan-banner .banner-actions {
@@ -1030,8 +1030,8 @@ ui-tab-item.plan-tasks-tab.active .status-icon {
 
 .ai-implementation-plan-banner .open-plan-btn {
     background: transparent;
-    color: #2da44e;
-    border: 1px solid rgba(45, 164, 78, 0.4);
+    color: var(--color-success, #2da44e);
+    border: 1px solid color-mix(in srgb, var(--color-success, #2da44e) 40%, transparent);
     padding: 5px 12px;
     border-radius: 4px;
     cursor: pointer;
@@ -1045,12 +1045,12 @@ ui-tab-item.plan-tasks-tab.active .status-icon {
 
 .ai-implementation-plan-banner .open-plan-btn ui-icon {
     font-size: 1.2em;
-    color: #2da44e;
+    color: var(--color-success, #2da44e);
 }
 
 .ai-implementation-plan-banner .open-plan-btn:hover {
-    background: rgba(45, 164, 78, 0.08);
-    border-color: rgba(45, 164, 78, 0.6);
+    background: color-mix(in srgb, var(--color-success, #2da44e) 8%, transparent);
+    border-color: color-mix(in srgb, var(--color-success, #2da44e) 60%, transparent);
     transform: translateY(-1px);
 }
 
@@ -1059,7 +1059,7 @@ ui-tab-item.plan-tasks-tab.active .status-icon {
 }
 
 .ai-implementation-plan-banner .proceed-plan-btn {
-    background: #2da44e;
+    background: var(--color-success, #2da44e);
     color: #ffffff;
     border: none;
     padding: 6px 14px;
@@ -1070,7 +1070,7 @@ ui-tab-item.plan-tasks-tab.active .status-icon {
     display: flex;
     align-items: center;
     gap: 6px;
-    box-shadow: 0 2px 4px rgba(45, 164, 78, 0.2);
+    box-shadow: 0 2px 4px color-mix(in srgb, var(--color-success, #2da44e) 20%, transparent);
     transition: all 0.25s ease;
 }
 
@@ -1081,7 +1081,7 @@ ui-tab-item.plan-tasks-tab.active .status-icon {
 
 .ai-implementation-plan-banner .proceed-plan-btn:hover {
     background: #2c974b;
-    box-shadow: 0 3px 6px rgba(45, 164, 78, 0.3);
+    box-shadow: 0 3px 6px color-mix(in srgb, var(--color-success, #2da44e) 30%, transparent);
     transform: translateY(-1px);
 }
 
@@ -1392,16 +1392,16 @@ ui-tab-item.plan-tasks-tab.active .status-icon {
     gap: 4px;
     font-size: 11px;
     font-weight: 600;
-    color: #2da44e;
-    background-color: rgba(45, 164, 78, 0.08);
+    color: var(--color-success, #2da44e);
+    background-color: color-mix(in srgb, var(--color-success, #2da44e) 8%, transparent);
     padding: 4px 8px;
     border-radius: 4px;
-    border: 1px solid rgba(45, 164, 78, 0.2);
+    border: 1px solid color-mix(in srgb, var(--color-success, #2da44e) 20%, transparent);
 }
 
 .rollback-badge-success ui-icon {
     font-size: 13px;
-    color: #2da44e;
+    color: var(--color-success, #2da44e);
 }
 
 @keyframes spin {
