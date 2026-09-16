@@ -1,25 +1,23 @@
 import { Block } from './element.mjs';
 import { Button } from './button.mjs';
-import { UIAccordion } from './session-artifacts-panel.mjs';
+import { UIAccordion } from './accordion.mjs';
 import AIConnections from '../ai-connections.mjs';
 import workspaceClient from '../workspace-client.mjs';
 import { openCommandPolicyReviewModal } from '../util/command-policy-review.mjs';
+import { getCapability, setCapability, commitCapabilities, clearTransient, investigateModel, probeChat, familyLabel, stateMeta, PROBE_PRESETS, guessFamilyFromUrl } from '../ai-probe.mjs';
 
 function showUndoToast(message, undoCallback) {
 	const toastEl = document.createElement('div');
+	toastEl.className = "agent-undo-toast";
 	toastEl.style.position = 'fixed';
 	toastEl.style.bottom = '20px';
 	toastEl.style.left = '50%';
 	toastEl.style.transform = 'translateX(-50%)';
-	toastEl.style.backgroundColor = 'var(--theme-dark, #333)';
-	toastEl.style.color = '#fff';
 	toastEl.style.padding = '12px 24px';
-	toastEl.style.borderRadius = 'var(--radius, 8px)';
 	toastEl.style.boxShadow = '0 4px 12px rgba(0,0,0,0.15)';
 	toastEl.style.zIndex = '99999';
 	toastEl.style.opacity = '0';
 	toastEl.style.transition = 'opacity 0.3s ease, transform 0.3s ease';
-	toastEl.style.fontSize = '14px';
 	toastEl.style.display = 'flex';
 	toastEl.style.alignItems = 'center';
 	toastEl.style.gap = '16px';
@@ -30,11 +28,7 @@ function showUndoToast(message, undoCallback) {
 
 	const undoBtn = document.createElement('button');
 	undoBtn.textContent = 'Undo';
-	undoBtn.style.background = 'var(--theme, #303f9f)';
-	undoBtn.style.color = '#fff';
-	undoBtn.style.border = 'none';
 	undoBtn.style.padding = '4px 12px';
-	undoBtn.style.borderRadius = '4px';
 	undoBtn.style.cursor = 'pointer';
 	undoBtn.onclick = () => {
 		undoCallback();
@@ -287,38 +281,30 @@ export class AgentConfigPanel extends Block {
 
 		// Tavily API Key with test-then-save flow
 		const tavilyWrapper = document.createElement("div");
-		tavilyWrapper.style.display = "flex";
-		tavilyWrapper.style.flexDirection = "column";
-		tavilyWrapper.style.gap = "4px";
+		tavilyWrapper.className = "field";
 		const tavilyLabel = document.createElement("label");
-		tavilyLabel.style.fontWeight = "bold";
-		tavilyLabel.style.fontSize = "12px";
+		tavilyLabel.className = "field-label";
 		tavilyLabel.textContent = "Tavily API Key";
+		const tavilyControl = document.createElement("div");
+		tavilyControl.className = "field-control";
 		const tavilyInput = document.createElement("input");
 		tavilyInput.type = "password";
 		tavilyInput.id = "tavily-api-key";
-		tavilyInput.style.padding = "6px";
-		tavilyInput.style.borderRadius = "4px";
-		tavilyInput.style.border = "1px solid var(--border)";
-		tavilyInput.style.background = "var(--bg-input, rgba(0,0,0,0.1))";
-		tavilyInput.style.color = "var(--text)";
 		tavilyInput.value = localStorage.getItem("tavilyApiKey") || "";
+		tavilyControl.appendChild(tavilyInput);
 		const tavilyBtnRow = document.createElement("div");
-		tavilyBtnRow.style.display = "flex";
-		tavilyBtnRow.style.alignItems = "center";
-		tavilyBtnRow.style.gap = "8px";
+		tavilyBtnRow.className = "field-suffix";
 		const tavilyStatus = document.createElement("span");
-		tavilyStatus.style.fontSize = "11px";
-		tavilyStatus.style.fontStyle = "italic";
+		tavilyStatus.className = "field-desc";
 		const tavilyTestBtn = new Button("Test");
 		tavilyTestBtn.className = "theme-button secondary";
 		tavilyBtnRow.appendChild(tavilyTestBtn);
-		tavilyBtnRow.appendChild(tavilyStatus);
 		tavilyTestBtn.onclick = async () => {
 			const val = tavilyInput.value.trim();
 			if (!val) {
 				tavilyStatus.textContent = "Enter a key first.";
-				tavilyStatus.style.color = "var(--text-muted, #888)";
+				tavilyStatus.classList.remove("is-ok", "is-error");
+				tavilyStatus.classList.add("is-muted");
 				return;
 			}
 			tavilyTestBtn.disabled = true;
@@ -345,18 +331,21 @@ export class AgentConfigPanel extends Block {
 				tavilyTestBtn.className = "theme-button primary";
 				tavilyTestBtn.disabled = true;
 				tavilyStatus.textContent = "Key verified and saved.";
-				tavilyStatus.style.color = "#2da44e";
+				tavilyStatus.classList.remove("is-muted", "is-error");
+				tavilyStatus.classList.add("is-ok");
 			} catch (err) {
 				tavilyStatus.textContent = `Failed: ${err.message}`;
-				tavilyStatus.style.color = "#dc3545";
+				tavilyStatus.classList.remove("is-muted", "is-ok");
+				tavilyStatus.classList.add("is-error");
 				tavilyTestBtn.text = "Test";
 				tavilyTestBtn.disabled = false;
 				tavilyTestBtn.className = "theme-button secondary";
 			}
 		};
-		tavilyWrapper.appendChild(tavilyLabel);
-		tavilyWrapper.appendChild(tavilyInput);
+		tavilyStatus.classList.add("is-hint");
+		tavilyWrapper.append(tavilyLabel, tavilyControl);
 		tavilyWrapper.appendChild(tavilyBtnRow);
+		tavilyWrapper.appendChild(tavilyStatus);
 		grid.appendChild(tavilyWrapper);
 	}
 
@@ -365,11 +354,7 @@ export class AgentConfigPanel extends Block {
 		content.innerHTML = "";
 
 		const desc = document.createElement("p");
-		desc.style.fontSize = "12px";
-		desc.style.color = "var(--text-secondary)";
-		desc.style.marginBottom = "14px";
-		desc.style.fontStyle = "italic";
-		desc.style.lineHeight = "1.4";
+		desc.className = "panel-note";
 		desc.innerHTML = `<b>Note:</b> These customisation choices adjust instructions and focus guidelines for standard chat mode turns. They do <b>NOT</b> apply to agent execution steps or planning mode instructions.`;
 		content.appendChild(desc);
 
@@ -401,10 +386,12 @@ export class AgentConfigPanel extends Block {
 
 		// Focus selection dropdown
 		const focusWrapper = document.createElement("div");
-		focusWrapper.className = "toggle-row";
-		focusWrapper.style.display = "flex";
-		focusWrapper.style.flexDirection = "column";
-		focusWrapper.innerHTML = `<label style="font-weight: bold; font-size: 12px; margin-bottom: 4px;">AI Focus</label>`;
+		focusWrapper.className = "field";
+		const focusLabel = document.createElement("label");
+		focusLabel.className = "field-label";
+		focusLabel.textContent = "AI Focus";
+		const focusControl = document.createElement("div");
+		focusControl.className = "field-control";
 		const select = document.createElement("select");
 		select.className = "themed-select";
 
@@ -427,34 +414,30 @@ export class AgentConfigPanel extends Block {
 			config.specialization = select.value;
 			saveConfig();
 		};
-		focusWrapper.appendChild(select);
+		focusControl.appendChild(select);
+		focusWrapper.append(focusLabel, focusControl);
 		grid.appendChild(focusWrapper);
 
 		// Tech inputs
 		const createTextInput = (labelText, value, onChange) => {
 			const wrapper = document.createElement("div");
-			wrapper.style.display = "flex";
-			wrapper.style.flexDirection = "column";
-			wrapper.style.gap = "4px";
+			wrapper.className = "field";
 			const label = document.createElement("label");
-			label.style.fontWeight = "bold";
-			label.style.fontSize = "12px";
+			label.className = "field-label";
 			label.textContent = labelText;
+			const control = document.createElement("div");
+			control.className = "field-control";
 			const input = document.createElement("input");
 			input.type = "text";
-			input.style.padding = "6px";
-			input.style.borderRadius = "4px";
-			input.style.border = "1px solid var(--border)";
-			input.style.background = "var(--bg-input, rgba(0,0,0,0.1))";
-			input.style.color = "var(--text)";
 			input.value = value;
 			input.onchange = () => {
 				onChange(input.value);
 				saveConfig();
 			};
-			wrapper.appendChild(label);
-			wrapper.appendChild(input);
+			control.appendChild(input);
+			wrapper.append(label, control);
 			grid.appendChild(wrapper);
+			return { wrapper, input };
 		};
 
 		createTextInput("Preferred Technologies (comma-separated)", (config.technologies || []).join(", "), (val) => {
@@ -469,7 +452,12 @@ export class AgentConfigPanel extends Block {
 	}
 
 	_buildConnectionsAccordion() {
-		this.connectionsAccordion = new UIAccordion("connections-pool", "Connection Pool", "hub", "#2da44e");
+		this.connectionsAccordion = new UIAccordion("connections-pool", "Connection Pool", "hub", "#2da44e", [{
+			className: "icon-button",
+			icon: "add",
+			title: "Add connection",
+			onClick: () => this.showConnectionModal()
+		}]);
 		const content = this.connectionsAccordion.content;
 		content.className = "accordion-content settings-content-wrapper connections-pool-wrapper";
 
@@ -479,18 +467,6 @@ export class AgentConfigPanel extends Block {
 		this.connListContainer.style.flexDirection = "column";
 		this.connListContainer.style.gap = "8px";
 		content.appendChild(this.connListContainer);
-
-		// FAB add connection
-		const fabContainer = document.createElement("div");
-		fabContainer.style.display = "flex";
-		fabContainer.style.justifyContent = "flex-end";
-		fabContainer.style.marginTop = "16px";
-		const addBtn = new Button("+ Connection");
-		addBtn.className = "theme-button primary";
-		addBtn.icon = "add";
-		addBtn.onclick = () => this.showConnectionModal();
-		fabContainer.appendChild(addBtn);
-		content.appendChild(fabContainer);
 
 		this.container.appendChild(this.connectionsAccordion);
 
@@ -503,7 +479,18 @@ export class AgentConfigPanel extends Block {
 		const defaultId = AIConnections.defaultConnectionId;
 
 		if (connections.length === 0) {
-			this.connListContainer.innerHTML = `<p style="color: var(--text-muted); text-align: center; font-size: 13px; margin: 12px 0;">No connections configured. Click "+ Connection" to create one.</p>`;
+			const empty = document.createElement("div");
+			empty.className = "empty-state";
+			const icon = document.createElement("ui-icon");
+			icon.textContent = "hub";
+			const text = document.createElement("span");
+			text.textContent = "No connections yet.";
+			const cta = new Button("Add connection");
+			cta.className = "variant-primary density-sm";
+			cta.icon = "add";
+			cta.onclick = () => this.showConnectionModal();
+			empty.append(icon, text, cta);
+			this.connListContainer.appendChild(empty);
 			return;
 		}
 
@@ -514,9 +501,6 @@ export class AgentConfigPanel extends Block {
 			item.style.justifyContent = "space-between";
 			item.style.alignItems = "center";
 			item.style.padding = "8px 12px";
-			item.style.border = "1px solid var(--border)";
-			item.style.borderRadius = "var(--radius, 6px)";
-			item.style.background = "var(--bg-secondary, rgba(0,0,0,0.05))";
 
 			// Left details
 			const left = document.createElement("div");
@@ -526,10 +510,9 @@ export class AgentConfigPanel extends Block {
 
 			// 2-bar/3-bar drag handle
 			const handle = document.createElement("ui-icon");
+			handle.className = "conn-drag-handle";
 			handle.textContent = "drag_handle";
 			handle.style.cursor = "grab";
-			handle.style.color = "var(--text-muted, #888)";
-			handle.style.fontSize = "16px";
 			handle.title = "Drag to reorder connection";
 			left.appendChild(handle);
 
@@ -555,14 +538,14 @@ export class AgentConfigPanel extends Block {
 			item.addEventListener("dragover", (e) => {
 				e.preventDefault();
 				e.dataTransfer.dropEffect = "move";
-				item.style.borderTop = "2px solid var(--theme)";
+				item.classList.add("drag-over");
 			});
 			item.addEventListener("dragleave", () => {
-				item.style.borderTop = "";
+				item.classList.remove("drag-over");
 			});
 			item.addEventListener("drop", (e) => {
 				e.preventDefault();
-				item.style.borderTop = "";
+				item.classList.remove("drag-over");
 				const draggedId = e.dataTransfer.getData("text/plain");
 				if (draggedId && draggedId !== conn.id) {
 					const list = AIConnections.getConnections();
@@ -579,8 +562,8 @@ export class AgentConfigPanel extends Block {
 			});
 
 			const star = document.createElement("ui-icon");
+			star.className = conn.id === defaultId ? "conn-star is-default" : "conn-star is-muted";
 			star.style.cursor = "pointer";
-			star.style.color = conn.id === defaultId ? "var(--color-warning, #b58900)" : "var(--text-muted, #888)";
 			star.textContent = conn.id === defaultId ? "star" : "star_border";
 			star.title = conn.id === defaultId ? "Default connection (starred)" : "Click to set as default connection";
 			star.onclick = () => {
@@ -598,43 +581,18 @@ export class AgentConfigPanel extends Block {
 			nameWrapper.style.gap = "8px";
 
 			const name = document.createElement("span");
-			name.style.fontWeight = "bold";
-			name.style.fontSize = "13px";
+			name.className = "conn-name";
 			name.textContent = conn.name;
 			nameWrapper.appendChild(name);
 
 			const size = conn.size || "medium";
 			const sizeChip = document.createElement("span");
-			sizeChip.style.fontSize = "9px";
-			sizeChip.style.padding = "1px 5px";
-			sizeChip.style.borderRadius = "8px";
-			sizeChip.style.fontWeight = "bold";
-			sizeChip.style.textTransform = "capitalize";
-			sizeChip.style.display = "inline-flex";
-			sizeChip.style.alignItems = "center";
-			
-			if (size === "tiny") {
-				sizeChip.style.background = "rgba(108, 117, 125, 0.15)";
-				sizeChip.style.color = "var(--text-secondary, #6c757d)";
-			} else if (size === "small") {
-				sizeChip.style.background = "rgba(45, 164, 78, 0.15)";
-				sizeChip.style.color = "#2da44e";
-			} else if (size === "medium") {
-				sizeChip.style.background = "rgba(9, 105, 218, 0.15)";
-				sizeChip.style.color = "#0969da";
-			} else if (size === "large") {
-				sizeChip.style.background = "rgba(219, 109, 40, 0.15)";
-				sizeChip.style.color = "#db6d28";
-			} else if (size === "ultra") {
-				sizeChip.style.background = "rgba(130, 80, 223, 0.15)";
-				sizeChip.style.color = "#8250df";
-			}
+			sizeChip.classList.add("conn-size-chip", `size-${size}`);
 			sizeChip.textContent = size;
 			nameWrapper.appendChild(sizeChip);
 
 			const info = document.createElement("span");
-			info.style.fontSize = "11px";
-			info.style.color = "var(--text-secondary)";
+			info.className = "conn-info";
 			info.textContent = `${conn.provider} - ${conn.config?.model || 'No model selected'}`;
 
 			text.appendChild(nameWrapper);
@@ -654,11 +612,7 @@ export class AgentConfigPanel extends Block {
 			const tpsLabel = document.createElement("span");
 			tpsLabel.className = "connection-tps-badge";
 			tpsLabel.dataset.connId = conn.id;
-			tpsLabel.style.fontSize = "11px";
-			tpsLabel.style.color = "var(--text-secondary)";
-			tpsLabel.style.background = "var(--bg-secondary, rgba(0,0,0,0.05))";
 			tpsLabel.style.padding = "2px 6px";
-			tpsLabel.style.borderRadius = "4px";
 			tpsLabel.style.marginRight = "4px";
 			tpsLabel.title = "Rolling 5-response average speed";
 			if (inst && inst.averageTokensPerSec > 0) {
@@ -673,12 +627,14 @@ export class AgentConfigPanel extends Block {
 			editBtn.icon = "edit";
 			editBtn.className = "icon-button secondary";
 			editBtn.title = "Edit connection settings";
+			editBtn.setAttribute("aria-label", "Edit connection settings");
 			editBtn.onclick = () => this.showConnectionModal(conn);
 
 			const copyBtn = new Button("");
 			copyBtn.icon = "content_copy";
 			copyBtn.className = "icon-button secondary";
 			copyBtn.title = "Copy connection";
+			copyBtn.setAttribute("aria-label", "Copy connection");
 			copyBtn.onclick = () => {
 				const newConn = JSON.parse(JSON.stringify(conn));
 				newConn.id = `conn-${crypto.randomUUID()}`;
@@ -694,6 +650,7 @@ export class AgentConfigPanel extends Block {
 			deleteBtn.icon = "delete";
 			deleteBtn.className = "icon-button secondary danger";
 			deleteBtn.title = "Delete connection";
+			deleteBtn.setAttribute("aria-label", "Delete connection");
 			deleteBtn.onclick = () => {
 				const deleted = AIConnections.deleteConnection(conn.id);
 				if (deleted) {
@@ -718,7 +675,7 @@ export class AgentConfigPanel extends Block {
 						item.style.opacity = "";
 					}
 					info.textContent = `${conn.provider} - ${conn.config?.model || 'No model selected'}`;
-					info.style.color = "var(--text-secondary)";
+					info.classList.remove("is-error");
 					
 					// Automatically persist the resolved model path and n_ctx window details
 					AIConnections.save();
@@ -726,7 +683,7 @@ export class AgentConfigPanel extends Block {
 					// Failed - visually disable
 					item.style.opacity = "0.5";
 					info.textContent = `${conn.provider} - unavailable`;
-					info.style.color = "var(--color-error, #dc3545)";
+					info.classList.add("is-error");
 				});
 			}
 
@@ -783,11 +740,8 @@ export class AgentConfigPanel extends Block {
 		nameRow.innerHTML = `<label style="font-size: 11px; font-weight: bold; margin-bottom: 2px;">Connection Name</label>`;
 		const nameInput = document.createElement("input");
 		nameInput.type = "text";
+		nameInput.className = "modal-text-input";
 		nameInput.style.padding = "6px";
-		nameInput.style.borderRadius = "4px";
-		nameInput.style.border = "1px solid var(--border)";
-		nameInput.style.background = "var(--bg-input)";
-		nameInput.style.color = "var(--text)";
 		nameInput.value = conn ? conn.name : "";
 		nameRow.appendChild(nameInput);
 		form.appendChild(nameRow);
@@ -828,33 +782,68 @@ export class AgentConfigPanel extends Block {
 		modelContainer.style.display = "none";
 		modelContainer.style.flexDirection = "column";
 		modelContainer.innerHTML = `<label style="font-size: 11px; font-weight: bold; margin-bottom: 2px;">Model Selection</label>`;
+		const modelRow = document.createElement("div");
+		modelRow.style.display = "flex";
+		modelRow.style.alignItems = "center";
+		modelRow.style.gap = "6px";
 		const datalistId = `cadence-model-options-${crypto.randomUUID()}`;
 		const modelSelect = document.createElement("input");
 		modelSelect.type = "text";
 		modelSelect.className = "themed-select";
 		modelSelect.autocomplete = "off";
 		modelSelect.spellcheck = false;
+		modelSelect.style.flex = "1";
 		modelSelect.placeholder = "Type to filter available models...";
 		modelSelect.setAttribute("list", datalistId);
-		modelContainer.appendChild(modelSelect);
+
+		const presetWrap = document.createElement("div");
+		presetWrap.style.display = "none";
+		presetWrap.style.alignItems = "center";
+		presetWrap.style.gap = "4px";
+		presetWrap.style.flexShrink = "0";
+		const presetIcon = document.createElement("span");
+		presetIcon.className = "preset-icon";
+		presetIcon.textContent = "\u{1F527}";
+		presetIcon.style.cursor = "default";
+		presetIcon.title = "This model has known parameters. Apply a tuned preset.";
+		const presetSelect = document.createElement("select");
+		presetSelect.className = "themed-select";
+		presetSelect.dataset.probePreset = "preset";
+		presetSelect.classList.add("compact-select");
+		presetSelect.style.padding = "4px";
+		presetSelect.title = "Apply a tuned parameter preset";
+		["default", "coding", "planning"].forEach(p => {
+			const opt = document.createElement("option");
+			opt.value = p;
+			opt.textContent = p === "default" ? "Default" : p.charAt(0).toUpperCase() + p.slice(1);
+			presetSelect.appendChild(opt);
+		});
+		presetWrap.append(presetIcon, presetSelect);
+		modelRow.append(modelSelect, presetWrap);
+		modelContainer.appendChild(modelRow);
 		const modelDatalist = document.createElement("datalist");
 		modelDatalist.id = datalistId;
 		modelContainer.appendChild(modelDatalist);
 		const modelPlaceholder = document.createElement("div");
-		modelPlaceholder.style.fontSize = "12px";
-		modelPlaceholder.style.color = "var(--text-muted, #888)";
-		modelPlaceholder.style.fontStyle = "italic";
-		modelPlaceholder.style.opacity = "0.7";
-		modelPlaceholder.style.padding = "4px 0";
+		modelPlaceholder.className = "model-placeholder";
 		modelPlaceholder.textContent = "Test the connection to load available models";
 		modelContainer.appendChild(modelPlaceholder);
 		form.appendChild(modelContainer);
 
+		// Model capability panel
+		const modelInfo = document.createElement("div");
+		modelInfo.dataset.probePanel = "modelInfo";
+		modelInfo.className = "probe-panel";
+		modelInfo.style.display = "none";
+		modelInfo.style.flexDirection = "column";
+		modelInfo.style.gap = "6px";
+		modelInfo.style.padding = "8px";
+		form.appendChild(modelInfo);
+
 		// Test status container
 		const testStatus = document.createElement("div");
+		testStatus.className = "test-status";
 		testStatus.style.padding = "8px";
-		testStatus.style.borderRadius = "4px";
-		testStatus.style.fontSize = "12px";
 		testStatus.style.display = "none";
 		form.appendChild(testStatus);
 
@@ -869,16 +858,13 @@ export class AgentConfigPanel extends Block {
 				wrapper.innerHTML = `<label style="font-size: 11px; font-weight: bold; margin-bottom: 2px;">${labelVal}</label>`;
 				const inp = document.createElement("input");
 				inp.type = isPassword ? "password" : "text";
+				inp.className = "modal-text-input";
 				inp.style.padding = "6px";
-				inp.style.borderRadius = "4px";
-				inp.style.border = "1px solid var(--border)";
-				inp.style.background = "var(--bg-input)";
-				inp.style.color = "var(--text)";
 				inp.value = value;
 				if (placeholder) inp.placeholder = placeholder;
 				if (hint) {
 					const hintEl = document.createElement("div");
-					hintEl.style.cssText = "font-size: 10px; color: var(--text-secondary); margin-top: 2px;";
+					hintEl.className = "field-hint";
 					hintEl.textContent = hint;
 					wrapper.appendChild(hintEl);
 				}
@@ -1013,7 +999,10 @@ export class AgentConfigPanel extends Block {
 		// Action buttons
 		const cancelBtn = new Button("Cancel");
 		cancelBtn.className = "cancel";
-		cancelBtn.onclick = () => modalObj.hide();
+		cancelBtn.onclick = () => {
+			clearTransient(workConnId);
+			modalObj.hide();
+		};
 
 		const testBtn = new Button("Test Connection");
 		testBtn.className = "theme-button secondary";
@@ -1040,10 +1029,10 @@ export class AgentConfigPanel extends Block {
 		};
 		bindBlurTest();
 		
-		const saveBtn = new Button("Save");
+		const saveBtn = new Button(conn ? "Save" : "Create");
 		saveBtn.className = "theme-button primary";
 
-		const newConnId = conn ? null : `conn-${crypto.randomUUID()}`;
+		const workConnId = conn ? conn.id : `conn-${crypto.randomUUID()}`;
 
 		const currentConnConfig = () => {
 			const configObj = {
@@ -1089,7 +1078,7 @@ export class AgentConfigPanel extends Block {
 				configObj.thinkingLevel = provSelect.thinkingInput.value;
 			}
 			return {
-				id: conn ? conn.id : newConnId,
+				id: workConnId,
 				name: nameInput.value || `${provSelect.value} connection`,
 				provider: provSelect.value,
 				size: sizeSelect.value,
@@ -1099,9 +1088,12 @@ export class AgentConfigPanel extends Block {
 
 		let baseConfigStr = "";
 		let lastPassedStr = "";
+		let lastFamily = "";
+		let verifiedValues = { temperature: null, top_p: null };
 
 		const showModelPlaceholder = () => {
-			modelSelect.style.display = "none";
+			modelSelect.style.display = "";
+			modelPlaceholder.textContent = "Test the connection to load available models, or type a model ID manually";
 			modelPlaceholder.style.display = "";
 			modelContainer.style.display = "flex";
 		};
@@ -1155,6 +1147,121 @@ export class AgentConfigPanel extends Block {
 			modelSelect.style.display = "";
 			modelPlaceholder.style.display = "none";
 			modelContainer.style.display = "flex";
+			refreshCapabilityPanel();
+		};
+
+		const capForCurrent = () => {
+			const conf = currentConnConfig();
+			return getCapability(workConnId, modelSelect.value, { server: conf.config.server });
+		};
+
+		const renderModelInfo = () => {
+			const cap = capForCurrent();
+			if (!cap) {
+				modelInfo.style.display = "none";
+				return;
+			}
+			modelInfo.style.display = "flex";
+			modelInfo.innerHTML = "";
+			const familyLine = document.createElement("div");
+			familyLine.style.display = "flex";
+			familyLine.style.justifyContent = "space-between";
+			familyLine.style.alignItems = "center";
+			const familyLabelEl = document.createElement("span");
+			const badge = document.createElement("span");
+			badge.className = "family-badge";
+			badge.textContent = cap.family ? familyLabel(cap.family) : familyLabel(guessFamilyFromUrl(currentConnConfig().config.server));
+			badge.style.padding = "1px 6px";
+			badge.style.fontWeight = "bold";
+			const presetTag = document.createElement("span");
+			presetTag.className = "preset-tag";
+			presetTag.textContent = cap.preset && cap.preset !== "default" ? `Preset: ${cap.preset}` : "Preset: Default";
+			familyLabelEl.append(badge, presetTag);
+			const probeStatus = document.createElement("span");
+			probeStatus.className = cap.probeOk ? "probe-status is-ok" : "probe-status is-error";
+			probeStatus.textContent = cap.probeOk ? `Probe OK in ${cap.latencyMs}ms` : `Probe failed: ${cap.error || "unknown"}`;
+			familyLine.append(familyLabelEl, probeStatus);
+			modelInfo.appendChild(familyLine);
+
+			if (!cap.probeOk) {
+				const note = document.createElement("div");
+				note.className = "probe-note";
+				note.textContent = "Investigation could not reach the model. Check the connection details.";
+				modelInfo.appendChild(note);
+				return;
+			}
+
+			if (cap.reasoning && cap.reasoning.accepted) {
+				const row = document.createElement("div");
+				row.className = "field";
+				const scheme = cap.reasoning.mode === "openrouter" ? "reasoning:effort" : cap.reasoning.mode === "o-series" ? "reasoning_effort" : "thinking budget";
+				const allowed = (cap.reasoning.effortAllowed || []).join(", ");
+				const rLabel = document.createElement("span");
+				rLabel.className = "field-label field-label-xs";
+				rLabel.textContent = "Reasoning";
+				const rValue = document.createElement("span");
+				rValue.title = `${"Supported scheme: " + scheme + (allowed ? " · Levels: " + allowed : "")}`;
+				rValue.textContent = `🧠 ${cap.reasoning.mode === "openrouter" ? "OpenRouter scheme" : scheme}`;
+				row.append(rLabel, rValue);
+				modelInfo.appendChild(row);
+			}
+
+			for (const key of ["temperature", "top_p", "top_k"]) {
+				const info = cap.params && cap.params[key];
+				if (!info) continue;
+				const meta = stateMeta(info.state);
+				const row = document.createElement("div");
+				row.className = "field";
+				row.style.justifyContent = "space-between";
+				const label = document.createElement("span");
+				label.className = "param-label";
+				label.textContent = key;
+				const value = document.createElement("span");
+				value.className = "param-value" + (info.state === "locked" ? " state-locked" : info.state === "preset" ? " state-preset" : info.state === "unverified" ? " state-unverified" : "");
+				value.textContent = `${meta.icon} ${meta.label}`;
+				value.title = `${meta.tip} ${info.note || ""}`;
+				value.style.cursor = "help";
+				row.append(label, value);
+				if (info.state === "preset" && info.available) {
+					const sub = document.createElement("div");
+					sub.className = "param-sub";
+					sub.textContent = info.available.join(", ");
+					modelInfo.appendChild(sub);
+				}
+				modelInfo.appendChild(row);
+			}
+		};
+
+		const refreshCapabilityPanel = () => {
+			const cap = capForCurrent();
+			const known = !!(cap && cap.params && Object.keys(cap.params).length > 0);
+			presetWrap.style.display = known ? "flex" : "none";
+			if (cap) {
+				presetSelect.value = cap.preset || "default";
+			}
+			renderModelInfo();
+		};
+
+		modelSelect.addEventListener("input", refreshCapabilityPanel);
+
+		presetSelect.onchange = () => {
+			const cap = capForCurrent();
+			if (!cap) return;
+			cap.preset = presetSelect.value;
+			setCapability(workConnId, modelSelect.value, cap);
+			const pp = PROBE_PRESETS[cap.preset];
+			if (pp) {
+				if (provSelect.tempInput && cap.params?.temperature?.state !== "locked") {
+					provSelect.tempInput.value = pp.temperature;
+				}
+				if (provSelect.topPInput && cap.params?.top_p?.state !== "locked") {
+					provSelect.topPInput.value = pp.top_p;
+				}
+				if (provSelect.thinkingInput) {
+					provSelect.thinkingInput.value = pp.thinkingLevel;
+				}
+			}
+			renderModelInfo();
 		};
 
 		const buildConnConf = () => {
@@ -1166,6 +1273,7 @@ export class AgentConfigPanel extends Block {
 		};
 
 		const doSave = () => {
+			commitCapabilities(workConnId);
 			AIConnections.saveConnection(buildConnConf());
 			modalObj.hide();
 			this.renderConnectionsList();
@@ -1176,9 +1284,8 @@ export class AgentConfigPanel extends Block {
 				testBtn.disabled = true;
 				testBtn.text = "Testing...";
 				testStatus.style.display = "block";
-				testStatus.style.background = "var(--bg-secondary)";
-				testStatus.style.border = "1px solid var(--border)";
-				testStatus.style.color = "var(--text)";
+				testStatus.classList.remove("is-ok", "is-error");
+				testStatus.classList.add("is-idle");
 				testStatus.textContent = "Connecting to endpoint...";
 			}
 
@@ -1187,11 +1294,16 @@ export class AgentConfigPanel extends Block {
 				const result = await AIConnections.testConnection(connConf);
 
 				if (!silent) {
-					testStatus.style.background = "rgba(45, 164, 78, 0.1)";
-					testStatus.style.border = "1px solid rgba(45, 164, 78, 0.3)";
-					testStatus.style.color = "#2da44e";
-					testStatus.textContent = "Connection check succeeded! Server reached and API key verified.";
+					testStatus.classList.remove("is-idle", "is-error");
+					testStatus.classList.add("is-ok");
+					const viaProbe = result.probe && result.probe.ok && (!result.models || result.models.length === 0);
+					testStatus.textContent = viaProbe
+						? `Connection check succeeded via live probe${result.probe.latencyMs ? ` (${result.probe.latencyMs}ms)` : ""}. Model list not available.`
+						: "Connection check succeeded! Server reached and API key verified.";
 				}
+
+				lastFamily = result.family || lastFamily || guessFamilyFromUrl(connConf.config.server);
+				connConf.config._family = lastFamily;
 
 				const models = result.models || (result.model ? [result.model] : []);
 				if (models.length > 0) {
@@ -1203,12 +1315,14 @@ export class AgentConfigPanel extends Block {
 
 				lastPassedStr = JSON.stringify(buildConnConf());
 				saveWithErrorsBtn.hide();
+				if (modelSelect.value) {
+					investigateBtn.show();
+				}
 				return true;
 			} catch (err) {
 				if (!silent) {
-					testStatus.style.background = "rgba(220, 53, 69, 0.1)";
-					testStatus.style.border = "1px solid rgba(220, 53, 69, 0.3)";
-					testStatus.style.color = "#dc3545";
+					testStatus.classList.remove("is-idle", "is-ok");
+					testStatus.classList.add("is-error");
 					testStatus.textContent = `Connection check failed: ${err.message}`;
 				}
 				lastPassedStr = "";
@@ -1222,32 +1336,127 @@ export class AgentConfigPanel extends Block {
 		};
 		testBtn.onclick = () => runTest(false);
 
+		const investigateBtn = new Button("Investigate");
+		investigateBtn.className = "theme-button secondary";
+		investigateBtn.icon = "\u{1F50D}";
+		investigateBtn.title = "Live-probe this model to discover parameter support and tuned presets";
+		investigateBtn.hide();
+
+		const runInvestigate = async () => {
+			const model = modelSelect.value;
+			if (!model) {
+				testStatus.style.display = "block";
+				testStatus.classList.remove("is-ok", "is-error");
+				testStatus.classList.add("is-idle");
+				testStatus.textContent = "Select a model to investigate.";
+				return;
+			}
+			investigateBtn.disabled = true;
+			investigateBtn.text = "Investigating...";
+			modelInfo.style.display = "flex";
+			modelInfo.innerHTML = `<span style="font-size: 11px; opacity: 0.8;">Probing ${model} for parameter support...</span>`;
+			try {
+				const conf = currentConnConfig();
+				const cap = await investigateModel({ ...conf.config, _family: lastFamily }, model);
+				if (!cap) return;
+				setCapability(workConnId, model, cap);
+				const tempVal = provSelect.tempInput ? parseFloat(provSelect.tempInput.value) : null;
+				const topPVal = provSelect.topPInput ? parseFloat(provSelect.topPInput.value) : null;
+				if (Number.isFinite(tempVal)) verifiedValues.temperature = tempVal;
+				if (Number.isFinite(topPVal)) verifiedValues.top_p = topPVal;
+				refreshCapabilityPanel();
+			} catch (err) {
+				modelInfo.innerHTML = `<span style="color: var(--color-error, #dc3545); font-size: 11px;">Investigation failed: ${err.message}</span>`;
+			} finally {
+				investigateBtn.disabled = false;
+				investigateBtn.text = "Investigate";
+				investigateBtn.icon = "\u{1F50D}";
+			}
+		};
+		investigateBtn.onclick = runInvestigate;
+
+		const saveWithErrorsBtn = new Button("Save w/Errors");
+		saveWithErrorsBtn.className = "theme-button secondary has-errors";
+		saveWithErrorsBtn.hide();
+		saveWithErrorsBtn.onclick = () => doSave();
+
+		const verifyEdits = async () => {
+			const conf = buildConnConf();
+			const model = conf.config.model;
+			if (!model) return true;
+			const cap = capForCurrent();
+			if (!cap || !cap.probeOk) return true;
+			const params = {};
+			const tempInput = provSelect.tempInput && cap.params?.temperature?.state !== "locked" ? provSelect.tempInput : null;
+			const topPInput = provSelect.topPInput && cap.params?.top_p?.state !== "locked" ? provSelect.topPInput : null;
+			if (tempInput && verifiedValues.temperature !== null) {
+				const v = parseFloat(tempInput.value);
+				if (Number.isFinite(v) && Math.abs(v - verifiedValues.temperature) > 1e-9) {
+					params.temperature = v;
+				}
+			}
+			if (topPInput && verifiedValues.top_p !== null) {
+				const v = parseFloat(topPInput.value);
+				if (Number.isFinite(v) && Math.abs(v - verifiedValues.top_p) > 1e-9) {
+					params.top_p = v;
+				}
+			}
+			if (Object.keys(params).length === 0) return true;
+			const probe = await probeChat({ ...conf.config, _family: cap.family }, { model, params });
+			if (probe.ok) {
+				if (params.temperature !== undefined) verifiedValues.temperature = params.temperature;
+				if (params.top_p !== undefined) verifiedValues.top_p = params.top_p;
+				return true;
+			}
+			const msg = (probe.errorMessage || probe.error || "").toLowerCase();
+			const rejectedKeys = ["temperature", "top_p"].filter(k => {
+				const plain = k === "top_p" ? "top_p" : k;
+				return params[k] !== undefined && (msg.includes(plain) || msg.includes(plain.replace("_", "")) || msg.includes("param"));
+			});
+			const fallback = rejectedKeys.length > 0 ? rejectedKeys : Object.keys(params);
+			let reverted = false;
+			for (const key of fallback) {
+				const input = key === "temperature" ? tempInput : topPInput;
+				if (!input) continue;
+				const revertTo = key === "temperature" ? verifiedValues.temperature : verifiedValues.top_p;
+				if (revertTo === null) continue;
+				input.value = revertTo;
+				input.classList.add("invalid");
+				reverted = true;
+				setTimeout(() => {
+					input.classList.remove("invalid");
+				}, 2500);
+			}
+			if (reverted) {
+				testStatus.style.display = "block";
+				testStatus.classList.remove("is-idle", "is-ok");
+				testStatus.classList.add("is-error");
+				testStatus.textContent = `Server rejected edited values (${Object.keys(params).join(", ")}); reverted to last verified values.`;
+				return false;
+			}
+			return true;
+		};
+
 		saveBtn.onclick = async () => {
 			const curConf = buildConnConf();
 			const curStr = JSON.stringify(curConf);
 			const needsAuth = ["gemini", "claude", "openai"].includes(curConf.provider);
 			const untouched = curStr === baseConfigStr || curStr === lastPassedStr;
 			if (untouched && (isEdit || !needsAuth || curConf.config.apiKey)) {
+				if (!(await verifyEdits())) return;
 				doSave();
 				return;
 			}
 			const passed = await runTest(false);
-			if (passed) {
-				doSave();
-			} else {
+			if (!passed) {
 				saveWithErrorsBtn.show();
+				return;
 			}
+			if (!(await verifyEdits())) return;
+			doSave();
 		};
 
-		const saveWithErrorsBtn = new Button("Save w/Errors");
-		saveWithErrorsBtn.className = "theme-button secondary";
-		saveWithErrorsBtn.style.border = "1px solid var(--color-error, #dc3545)";
-		saveWithErrorsBtn.style.color = "var(--color-error, #dc3545)";
-		saveWithErrorsBtn.style.background = "rgba(220, 53, 69, 0.1)";
-		saveWithErrorsBtn.hide();
-		saveWithErrorsBtn.onclick = () => doSave();
-
-		modalObj.actionBar.append(cancelBtn, testBtn, saveBtn, saveWithErrorsBtn);
+		modalObj.actionBar.append(cancelBtn, testBtn, investigateBtn, saveBtn, saveWithErrorsBtn);
 		modalObj.show();
 
 		// Preload saved model so an untouched modal can be saved without a test
@@ -1278,14 +1487,20 @@ export class AgentConfigPanel extends Block {
 
 		const connections = AIConnections.getConnections();
 		if (connections.length === 0) {
-			content.innerHTML = `<p style="color: var(--text-muted); text-align: center; font-size: 13px; margin: 12px 0;">No connections available for telemetry.</p>`;
+			const empty = document.createElement("div");
+			empty.className = "empty-state";
+			const icon = document.createElement("ui-icon");
+			icon.textContent = "insights";
+			const text = document.createElement("span");
+			text.textContent = "No connections available for telemetry.";
+			empty.append(icon, text);
+			content.appendChild(empty);
 			return;
 		}
 
 		const table = document.createElement("table");
+		table.className = "telemetry-table";
 		table.style.width = "100%";
-		table.style.borderCollapse = "collapse";
-		table.style.fontSize = "12px";
 		table.style.marginTop = "8px";
 
 		table.innerHTML = `
@@ -1312,10 +1527,8 @@ export class AgentConfigPanel extends Block {
 			const tr = document.createElement("tr");
 			tr.className = "telemetry-row";
 			tr.dataset.connId = conn.id;
-			tr.style.borderBottom = "1px solid var(--border)";
 
 			const nameTd = document.createElement("td");
-			nameTd.style.padding = "8px 4px";
 			nameTd.innerHTML = `
 				<div style="font-weight: bold;">${conn.name}</div>
 				<div style="font-size: 10px; color: var(--text-secondary);">${conn.provider} (${conn.config?.model || 'No model'})</div>
@@ -1323,44 +1536,39 @@ export class AgentConfigPanel extends Block {
 
 			const speedTd = document.createElement("td");
 			speedTd.className = "telemetry-speed";
-			speedTd.style.padding = "8px 4px";
 			const tps = inst.tokensPerSec;
 			const thinking = inst.secondsThinking;
 			speedTd.textContent = tps > 0 ? `${tps} t/s${thinking > 0 ? ` (${thinking}s think)` : ''}` : "-";
 
 			const avgSpeedTd = document.createElement("td");
 			avgSpeedTd.className = "telemetry-avg-speed";
-			avgSpeedTd.style.padding = "8px 4px";
 			const avgTps = inst.averageTokensPerSec;
 			avgSpeedTd.textContent = avgTps > 0 ? `${avgTps} t/s` : "-";
 
 			const volumeTd = document.createElement("td");
 			volumeTd.className = "telemetry-volume";
-			volumeTd.style.padding = "8px 4px";
 			const tpm = inst.tokensPerMin;
 			volumeTd.textContent = tpm > 0 ? `${tpm} t/min` : "-";
 
 			const rpmTd = document.createElement("td");
 			rpmTd.className = "telemetry-rpm";
-			rpmTd.style.padding = "8px 4px";
 			const rpm = inst.requestsPerMin;
 			rpmTd.textContent = rpm > 0 ? `${rpm} RPM` : "-";
 
 			const totalTd = document.createElement("td");
 			totalTd.className = "telemetry-total";
-			totalTd.style.padding = "8px 4px";
 			const totalIn = inst._totalTokensIn || 0;
 			const totalOut = inst._totalTokensOut || 0;
 			totalTd.textContent = (totalIn || totalOut) ? `${totalIn.toLocaleString()} / ${totalOut.toLocaleString()}` : "-";
 
 			const actionTd = document.createElement("td");
-			actionTd.style.padding = "8px 4px";
-			actionTd.style.textAlign = "right";
+			actionTd.className = "telemetry-actions";
 
 			const resetBtn = new Button("");
 			resetBtn.icon = "refresh";
-			resetBtn.className = "icon-button secondary";
+			resetBtn.className = "icon-button secondary danger";
 			resetBtn.title = `Reset telemetry for ${conn.name}`;
+			resetBtn.setAttribute("aria-label", `Reset telemetry for ${conn.name}`);
 			resetBtn.style.width = "24px";
 			resetBtn.style.height = "24px";
 			resetBtn.style.minWidth = "24px";
@@ -1394,8 +1602,7 @@ export class AgentConfigPanel extends Block {
 		btnContainer.style.marginTop = "16px";
 
 		const clearBtn = new Button("Clear All Telemetry");
-		clearBtn.className = "theme-button secondary";
-		clearBtn.style.fontSize = "11px";
+		clearBtn.className = "variant-danger clear-telemetry-btn";
 		clearBtn.onclick = () => {
 			connections.forEach(conn => {
 				const inst = AIConnections.getInstance(conn.id);

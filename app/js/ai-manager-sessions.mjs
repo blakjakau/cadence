@@ -351,44 +351,27 @@ class AIManagerSessions {
 		if (cards.length > 0) {
 			const latestCard = cards[cards.length - 1];
 			
-			// Dynamic colors based on decision
+			// Decision state via class (colors live in ai-manager.css)
+			latestCard.classList.add(isAccepted ? "plan-decision-accepted" : "plan-decision-rejected");
 			if (isAccepted) {
-				latestCard.style.background = "rgba(45, 164, 78, 0.1)";
-				latestCard.style.borderColor = "rgba(45, 164, 78, 0.25)";
 				const left = latestCard.querySelector('.banner-left');
 				if (left) {
-					left.style.color = "#2da44e";
 					const icon = left.querySelector('ui-icon');
 					if (icon) {
 						icon.innerText = "check_circle";
-						icon.style.color = "#2da44e";
 					}
 					const title = left.querySelector('span');
 					if (title) title.innerText = "Implementation Plan Accepted";
 				}
-				const btn = latestCard.querySelector('.open-plan-btn');
-				if (btn) {
-					btn.style.color = "#2da44e";
-					btn.style.borderColor = "#2da44e";
-				}
 			} else {
-				latestCard.style.background = "rgba(244, 67, 54, 0.08)";
-				latestCard.style.borderColor = "rgba(244, 67, 54, 0.25)";
 				const left = latestCard.querySelector('.banner-left');
 				if (left) {
-					left.style.color = "var(--error-color, #f44336)";
 					const icon = left.querySelector('ui-icon');
 					if (icon) {
 						icon.innerText = "cancel";
-						icon.style.color = "var(--error-color, #f44336)";
 					}
 					const title = left.querySelector('span');
 					if (title) title.innerText = "Implementation Plan Refined / Rejected";
-				}
-				const btn = latestCard.querySelector('.open-plan-btn');
-				if (btn) {
-					btn.style.color = "var(--error-color, #f44336)";
-					btn.style.borderColor = "var(--error-color, #f44336)";
 				}
 			}
 
@@ -774,10 +757,9 @@ class AIManagerSessions {
 		updateHistoryDBStats();
 		
 		const listContainer = document.createElement('div');
+		listContainer.className = "history-list-container";
 		listContainer.style.height = '400px';
 		listContainer.style.overflow = 'auto';
-		listContainer.style.border = '1px solid var(--border-color)';
-		listContainer.style.borderRadius = 'var(--radius)';
 		listContainer.style.marginTop = '10px';
 		listContainer.style.padding = '10px';
 		listContainer.style.userSelect = 'none'; // Prevent text selection on long press
@@ -785,21 +767,25 @@ class AIManagerSessions {
 		const renderList = () => {
 			listContainer.innerHTML = '';
 			if (historySessions.length === 0) {
-				listContainer.innerHTML = '<p style="color: var(--text-secondary); text-align: center; margin-top: 20px;">No chat history available.</p>';
+				const empty = document.createElement("div");
+				empty.className = "empty-state";
+				const icon = document.createElement("ui-icon");
+				icon.textContent = "history";
+				const text = document.createElement("span");
+				text.textContent = "No chat history available.";
+				empty.append(icon, text);
+				listContainer.appendChild(empty);
 				return;
 			}
 			historySessions.forEach(session => {
 				const item = document.createElement('div');
+				item.className = "history-session-item";
 				item.style.display = 'flex';
 				item.style.justifyContent = 'space-between';
 				item.style.alignItems = 'center';
 				item.style.padding = '8px';
-				item.style.borderBottom = '1px solid var(--border-color)';
 				item.style.transition = 'background-color 0.2s';
 				item.style.minHeight = '40px'; // Maintain height even if contents shift
-				
-				item.onmouseenter = () => item.style.backgroundColor = 'color-mix(in srgb, var(--theme, #303f9f) 25%, transparent)';
-				item.onmouseleave = () => item.style.backgroundColor = 'transparent';
 				
 				let pressTimer;
 				let longPressed = false;
@@ -857,13 +843,11 @@ class AIManagerSessions {
 
 				const copyBtn = document.createElement('button');
 				copyBtn.innerHTML = '<ui-icon>content_copy</ui-icon>';
-				copyBtn.className = 'icon-button';
-				copyBtn.style.background = 'transparent';
-				copyBtn.style.color = 'var(--text-secondary)';
-				copyBtn.style.border = 'none';
+				copyBtn.className = 'icon-button history-item-action';
 				copyBtn.style.marginRight = '8px';
 				copyBtn.style.visibility = isMultiSelectMode ? 'hidden' : 'visible';
 				copyBtn.title = "Duplicate Chat";
+				copyBtn.setAttribute('aria-label', 'Duplicate Chat');
 				copyBtn.onclick = async (e) => {
 					e.stopPropagation();
 					if (isMultiSelectMode) return;
@@ -874,11 +858,10 @@ class AIManagerSessions {
 
 				const delBtn = document.createElement('button');
 				delBtn.innerHTML = '<ui-icon>delete</ui-icon>';
-				delBtn.className = 'icon-button'; // Removed 'theme-button' to remove the border
-				delBtn.style.background = 'transparent';
-				delBtn.style.color = 'var(--text-secondary)';
-				delBtn.style.border = 'none';
+				delBtn.className = 'icon-button history-item-action'; // Removed 'theme-button' to remove the border
 				delBtn.style.visibility = isMultiSelectMode ? 'hidden' : 'visible'; // Maintain layout width/height
+				delBtn.title = "Delete session";
+				delBtn.setAttribute('aria-label', 'Delete session');
 				delBtn.onclick = async (e) => {
 					e.stopPropagation(); // prevent item.onclick
 					if (isMultiSelectMode) return;
@@ -910,9 +893,7 @@ class AIManagerSessions {
 			if (isMultiSelectMode) {
 				const deleteBtn = document.createElement('ui-button');
 				deleteBtn.textContent = 'Delete Selected';
-				deleteBtn.classList.add('danger'); // We'll add custom style below to ensure visibility
-				deleteBtn.style.backgroundColor = 'var(--error-color, #d32f2f)';
-				deleteBtn.style.color = 'white';
+				deleteBtn.classList.add('danger', 'delete-selected-btn'); // We'll add custom style below to ensure visibility
 				deleteBtn.onclick = async () => {
 					if (selectedSessions.size === 0) {
 						isMultiSelectMode = false;

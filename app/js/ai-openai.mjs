@@ -2,6 +2,7 @@
 import AI from './ai.mjs';
 import systemPrompt from "./openaiSystemPrompt.mjs";
 import { getToolsForSession } from "./ai-manager-tools-schema.mjs";
+import { getCapability, applyReasoningToBody, PROBE_PRESETS } from "./ai-probe.mjs";
 
 function sanitizeSurrogates(str) {
     if (typeof str !== 'string') return str;
@@ -317,15 +318,35 @@ class OpenAI extends AI {
                 tool_choice: "auto"
             };
 
-            if (this.config.top_k > 0) {
-                requestBody.top_k = this.config.top_k;
-            }
-
             const sessionLevel = session?.thinkingLevel;
             const level = (sessionLevel && sessionLevel !== 'auto') ? sessionLevel : (this.config.thinkingLevel || "medium");
+
+            const cap = getCapability(this.connectionId, this.config.model, { server: this.config.server });
+            if (cap) {
+                const tempState = cap.params?.temperature?.state;
+                const topPState = cap.params?.top_p?.state;
+                const topKState = cap.params?.top_k?.state;
+                if (tempState === 'locked') delete requestBody.temperature;
+                if (topPState === 'locked') delete requestBody.top_p;
+                if (cap.preset && PROBE_PRESETS[cap.preset]) {
+                    const presetParams = PROBE_PRESETS[cap.preset];
+                    if (tempState !== 'locked') requestBody.temperature = presetParams.temperature;
+                    if (topPState !== 'locked') requestBody.top_p = presetParams.top_p;
+                }
+                const capLevel = (cap.preset && PROBE_PRESETS[cap.preset] && !sessionLevel) ? PROBE_PRESETS[cap.preset].thinkingLevel : level;
+                applyReasoningToBody(requestBody, cap.reasoning, capLevel);
+            }
+
+            if (this.config.top_k > 0) {
+                const topKState = cap?.params?.top_k?.state;
+                if (topKState !== 'locked') {
+                    requestBody.top_k = this.config.top_k;
+                }
+            }
+
             const modelName = (this.config.model || "").toLowerCase();
             const isReasoningModel = this.supportsReasoning;
-            if (isReasoningModel && (modelName.includes('o1') || modelName.includes('o3'))) {
+            if (!cap && isReasoningModel && (modelName.includes('o1') || modelName.includes('o3'))) {
                 if (level === 'low' || level === 'medium' || level === 'high') {
                     requestBody.reasoning_effort = level;
                 }

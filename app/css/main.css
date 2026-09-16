@@ -1,3 +1,4 @@
+@import "ui-system.css";
 @import "editor.css";
 @import "diff-view.css";
 @import "session-artifacts.css";
@@ -113,6 +114,31 @@
     --hljs-variable: #318495;
     --hljs-tag: var(--hljs-selector);
     --hljs-class: var(--hljs-text);
+
+    /* Phase-1 theme tokens — must stay in sync (Phase 2 theme engine will own these) */
+    --bg-hover: rgba(0, 0, 0, 0.06);
+    --bg-card: #f0f1f3;
+    --bg-card-alt: #e8eaed;
+    --bg-tag: rgba(0, 0, 0, 0.06);
+    --bg-input: #eceef0;
+    --text-color: var(--text-primary);
+    --text-color-rgb: 58, 58, 58;
+    --text-color-secondary: var(--text-secondary);
+    --border-color: var(--border-primary);
+    --color-accent: var(--theme);
+    --theme-light: color-mix(in srgb, var(--theme) 60%, white);
+    --theme-text-color: var(--text-inverted);
+    --theme-text-color-light: var(--text-inverted);
+    --theme-block-background: var(--bg-card);
+    --theme-border-color: var(--border-primary);
+    --font-size-xs: 11px;
+    --font-size-sm: 12.5px;
+    --font-size-md: 13.5px;
+    --font-size-lg: 16px;
+    --radius-sm: 6px;
+    --control-height-sm: 26px;
+    --control-height-md: 34px;
+    --icon-btn-size: 28px;
 }
 
 a,
@@ -718,6 +744,64 @@ ui-file-list {
     --hljs-variable: #a6e22e;
     --hljs-tag: var(--hljs-selector);
     --hljs-class: var(--hljs-text);
+
+    /* Phase-1 theme tokens — dark values (must stay in sync with the media query) */
+    --bg-hover: rgba(255, 255, 255, 0.08);
+    --bg-card: #2e383b;
+    --bg-card-alt: #273033;
+    --bg-tag: rgba(255, 255, 255, 0.08);
+    --bg-input: #333d40;
+    --text-color: #dadada;
+    --text-color-rgb: 218, 218, 218;
+    --text-color-secondary: #afafaf;
+    --border-color: #555555;
+    --color-accent: var(--theme);
+    --theme-light: color-mix(in srgb, var(--theme) 60%, white);
+    --theme-text-color: #ffffff;
+    --theme-text-color-light: #ffffff;
+    --theme-block-background: #2e383b;
+    --theme-border-color: #555555;
+}
+
+/* CSS-native dark mode: applies when the OS prefers dark AND the user hasn't
+   pinned light mode. Values copied verbatim from `.darkmode` above — this block
+   must stay in sync (Phase 2 theme engine will own both). */
+@media (prefers-color-scheme: dark) {
+	body:not(.lightmode) {
+		--bg-primary: #384144;
+		--bg-secondary: #455155;
+		--bg-tertiary: #2a3235;
+		--bg-code: rgba(0, 0, 0, 0.25);
+		--bg-modal: var(--bg-tertiary);
+		--bg-hover: rgba(255, 255, 255, 0.08);
+		--bg-card: #2e383b;
+		--bg-card-alt: #273033;
+		--bg-tag: rgba(255, 255, 255, 0.08);
+		--bg-input: #333d40;
+		--text-primary: #dadada;
+		--text-secondary: #afafaf;
+		--text-muted: #777777;
+		--text-inverted: #ffffff;
+		--text-color: #dadada;
+		--text-color-rgb: 218, 218, 218;
+		--text-color-secondary: #afafaf;
+		--border-primary: #555555;
+		--border-secondary: #444444;
+		--border-color: #555555;
+		--icon-color: #2b2b2b;
+		--shadow-color: rgba(0, 0, 0, 0.25);
+		--hljs-bg: var(--bg-code);
+		--hljs-text: var(--text-primary);
+		--hljs-comment: #666666;
+		--hljs-keyword: #f92672;
+		--hljs-selector: #87df00;
+		--hljs-attribute: #85e4f5;
+		--hljs-number: #ae81ff;
+		--hljs-string: #ccffbb;
+		--hljs-function: #a6e22e;
+		--hljs-variable: #a6e22e;
+		--hljs-class: var(--hljs-text);
+	}
 }
 
 .darkmode,

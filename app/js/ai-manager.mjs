@@ -7,6 +7,7 @@ import AIManagerSessions from "./ai-manager-sessions.mjs" // NEW: Sessions manag
 import workspaceClient from "./workspace-client.mjs"
 import agentTools from "./agent/agent-tools.mjs"
 import AIConnections from "./ai-connections.mjs"
+import { pruneCapabilities } from "./ai-probe.mjs"
 import { Agent } from "./agent/agent.mjs"
 
 import DiffHandler from "./tools/diff-handler.mjs"
@@ -129,6 +130,7 @@ class AIManager {
 		
 		// Listen for connection updates to redraw the Connection Selector
 		window.addEventListener('connections-changed', () => {
+			pruneCapabilities(AIConnections.getConnections().map(c => c.id));
 			this._updateAIInfoDisplay();
 			this._updatePromptAreaPlaceholder();
 			this.historyManager.render();
@@ -548,23 +550,28 @@ class AIManager {
 		this.newSessionButton = new Button("");
 		this.newSessionButton.icon = "add_comment";
 		this.newSessionButton.title = "New Chat";
+		this.newSessionButton.setAttribute("aria-label", "New Chat");
 		this.newSessionButton.classList.add('new-session-button');
 		this.newSessionButton.on('click', () => this.createNewSession());
 
 		this.historyButton = new Button("");
 		this.historyButton.icon = "history";
 		this.historyButton.title = "Chat History";
+		this.historyButton.setAttribute("aria-label", "Chat History");
 		this.historyButton.classList.add('history-button');
 		this.historyButton.on('click', () => this.sessionsManager.showHistoryModal());
 
 		this.settingsButton = new Button("");
 		this.settingsButton.icon = "settings";
+		this.settingsButton.title = "Settings";
+		this.settingsButton.setAttribute("aria-label", "Settings");
 		this.settingsButton.classList.add("settings-button");
 		this.settingsButton.onclick = () => this.toggleSettingsPanel();
 
 		this.rawViewButton = new Button("");
 		this.rawViewButton.icon = "unfold_more";
 		this.rawViewButton.title = "Toggle Raw / Expander View";
+		this.rawViewButton.setAttribute("aria-label", "Toggle Raw / Expander View");
 		this.rawViewButton.classList.add("raw-view-button");
 		this.rawViewButton.onclick = () => this.toggleRawView();
 
@@ -572,12 +579,14 @@ class AIManager {
 		this.condensedViewButton = new Button("");
 		this.condensedViewButton.icon = "compress";
 		this.condensedViewButton.title = "Toggle Condensed / Detailed View (Shows current & previous turn only)";
+		this.condensedViewButton.setAttribute("aria-label", "Toggle Condensed / Detailed View (Shows current & previous turn only)");
 		this.condensedViewButton.classList.add("condensed-view-button");
 		this.condensedViewButton.onclick = () => this.toggleCondensedView();
 
 		this.glowAnimationButton = new Button("");
 		this.glowAnimationButton.icon = this.glowAnimationEnabled ? "blur_on" : "blur_off";
 		this.glowAnimationButton.title = this.glowAnimationEnabled ? "Disable Glowing Blob Animation" : "Enable Glowing Blob Animation";
+		this.glowAnimationButton.setAttribute("aria-label", this.glowAnimationEnabled ? "Disable Glowing Blob Animation" : "Enable Glowing Blob Animation");
 		this.glowAnimationButton.classList.add("glow-animation-button");
 		this.glowAnimationButton.classList.toggle("active", this.glowAnimationEnabled);
 		this.glowAnimationButton.onclick = () => this.toggleGlowAnimation();
@@ -2066,6 +2075,7 @@ class AIManager {
 		this.condensedViewMode = !this.condensedViewMode;
 		this.condensedViewButton.icon = this.condensedViewMode ? "compress" : "expand";
 		this.condensedViewButton.title = this.condensedViewMode ? "Switch to Detailed View" : "Switch to Condensed View (Current & Previous Turn Only)";
+		this.condensedViewButton.setAttribute("aria-label", this.condensedViewMode ? "Switch to Detailed View" : "Switch to Condensed View (Current & Previous Turn Only)");
 		this.condensedViewButton.classList.toggle("active", this.condensedViewMode);
 		this.historyManager.render();
 	}
@@ -2078,6 +2088,7 @@ class AIManager {
 		if (this.glowAnimationButton) {
 			this.glowAnimationButton.icon = this.glowAnimationEnabled ? "blur_on" : "blur_off";
 			this.glowAnimationButton.title = this.glowAnimationEnabled ? "Disable Glowing Blob Animation" : "Enable Glowing Blob Animation";
+			this.glowAnimationButton.setAttribute("aria-label", this.glowAnimationEnabled ? "Disable Glowing Blob Animation" : "Enable Glowing Blob Animation");
 			this.glowAnimationButton.classList.toggle("active", this.glowAnimationEnabled);
 		}
 

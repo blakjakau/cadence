@@ -14,7 +14,9 @@ export class SkillItem extends Block {
         // --- Pin button (left side, icon-only) ---
         this.pinButton = new Button("");
         this.pinButton.className = 'skill-pin-button';
-this.pinButton.setIcon(isPinned ? 'keep' : 'keep_off');
+        this.pinButton.setIcon(isPinned ? 'keep' : 'keep_off');
+        this.pinButton.title = isPinned ? 'Unpin' : 'Pin';
+        this.pinButton.setAttribute('aria-label', isPinned ? 'Unpin' : 'Pin');
         if (isPinned) this.pinButton.classList.add('pinned');
         this.pinButton.onclick = (e) => {
             e.stopPropagation();
@@ -130,7 +132,9 @@ this.pinButton.setIcon(isPinned ? 'keep' : 'keep_off');
 
     updatePinState(isPinned) {
         this.isPinned = isPinned;
-this.pinButton.setIcon(isPinned ? 'keep' : 'keep_off');
+        this.pinButton.setIcon(isPinned ? 'keep' : 'keep_off');
+        this.pinButton.title = isPinned ? 'Unpin' : 'Pin';
+        this.pinButton.setAttribute('aria-label', isPinned ? 'Unpin' : 'Pin');
         this.pinButton.classList.toggle('pinned', isPinned);
     }
 }

@@ -1272,38 +1272,6 @@ ui-tab-item.plan-tasks-tab.active .status-icon {
     border-radius: 3px;
 }
 
-.accordion-item {
-    transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
-    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
-}
-
-.accordion-item:hover {
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
-    border-color: var(--theme) !important;
-}
-
-.accordion-header {
-    height: var(--menuHeight);
-    min-height: var(--menuHeight);
-    box-sizing: border-box;
-    padding: 0 16px !important;
-    transition: background-color 0.2s ease;
-}
-
-.accordion-header:hover {
-    background-color: color-mix(in srgb, var(--text-primary) 2%, var(--bg-secondary)) !important;
-}
-
-.accordion-item.expanded .accordion-header {
-    border-bottom: none;
-}
-
-.accordion-content {
-    max-height: 80vh;
-    overflow-y: auto;
-    transition: opacity 0.2s ease;
-}
-
 .setting-row {
     transition: background-color 0.2s ease;
     padding: 4px 8px;
@@ -1434,28 +1402,6 @@ ui-editor-holder .artifacts-accordion-container .ace_editor,
     column-gap: 12px;
 }
 
-.accordion-item {
-    display: flex;
-    flex-direction: column;
-    width: 100%;
-    margin-bottom: 12px;
-    break-inside: avoid;
-    border: 1px solid var(--border-primary);
-    border-radius: var(--borderRadius);
-    overflow: hidden;
-    background: var(--bg-primary);
-}
-
-.accordion-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 12px 16px;
-    background: var(--bg-secondary);
-    cursor: pointer;
-    user-select: none;
-}
-
 .accordion-header .header-left {
     display: flex;
     align-items: center;
@@ -1495,16 +1441,6 @@ ui-editor-holder .artifacts-accordion-container .ace_editor,
 .accordion-header .expand-arrow {
     font-size: 16px;
     transition: transform 0.2s ease;
-}
-
-.accordion-item.expanded .accordion-header {
-    border-bottom: none;
-}
-
-.accordion-content {
-    padding: 8px;
-    border-top: 1px solid var(--border-primary);
-    background: var(--bg-primary);
 }
 
 .artifacts-accordion-container .settings-grid {

@@ -63,6 +63,17 @@ export class SkillPicker extends Block {
         const filtered = allSkills.filter(s => s.name.toLowerCase().includes(query));
 
         this.listContainer.innerHTML = '';
+        if (filtered.length === 0) {
+            const empty = document.createElement("div");
+            empty.className = "empty-state";
+            const icon = document.createElement("ui-icon");
+            icon.textContent = "library_books";
+            const text = document.createElement("span");
+            text.textContent = query ? `No skills match "${query}".` : "No skills available.";
+            empty.append(icon, text);
+            this.listContainer.appendChild(empty);
+            return;
+        }
         for (const skill of filtered) {
             const isPinned = this.aiManager.activeSession?.pinnedSkills?.includes(skill.name) || false;
             const item = new SkillItem(skill, isPinned);

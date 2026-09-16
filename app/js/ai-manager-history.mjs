@@ -397,7 +397,7 @@ class AIManagerHistory {
 					};
 					const element = this._createExpanderMessageElement(sysMessage, -1);
 					if (element) {
-						element.style.border = "1px dashed var(--theme)";
+						element.classList.add("system-prompt-raw");
 						this.conversationArea.append(element);
 					}
 				}
@@ -1350,6 +1350,7 @@ class AIManagerHistory {
 			editBtn.className = "cycle-summary-action-btn";
 			editBtn.textContent = "edit";
 			editBtn.title = "Edit Title and Summary";
+			editBtn.setAttribute("aria-label", "Edit Title and Summary");
 			editBtn.onclick = async (e) => {
 				e.stopPropagation();
 				const currentTitle = message.title || summaryTitleText;
@@ -1383,6 +1384,7 @@ class AIManagerHistory {
 			regenBtn.className = "cycle-summary-action-btn";
 			regenBtn.textContent = "refresh";
 			regenBtn.title = "Regenerate Summary";
+			regenBtn.setAttribute("aria-label", "Regenerate Summary");
 			regenBtn.onclick = async (e) => {
 				e.stopPropagation();
 				const startId = message.cycleStartMsgId;
@@ -1696,13 +1698,11 @@ class AIManagerHistory {
 			summary.innerHTML = `<ui-icon style="font-size: 14px; vertical-align: middle;">terminal</ui-icon> <code>$ ${this._escapeHtml(message.command)}</code> <span style="opacity: 0.8; font-weight: normal; margin-left: auto;">[${statusText}]</span>`;
 
 			const pre = document.createElement("pre");
+			pre.className = "tool-output-pre";
 			pre.style.maxHeight = "300px";
 			pre.style.overflowY = "auto";
 			pre.style.padding = "8px";
 			pre.style.margin = "4px 0 0 0";
-			pre.style.background = "#1e1e1e";
-			pre.style.color = "#d4d4d4";
-			pre.style.borderRadius = "4px";
 			
 			const code = document.createElement("code");
 			code.textContent = message.output || "(Waiting for output...)";
@@ -1788,6 +1788,7 @@ class AIManagerHistory {
 		const deleteIcon = new Icon();
 		deleteIcon.className = "delete-raw-item";
 		deleteIcon.title = "Delete this turn permanently";
+		deleteIcon.setAttribute("aria-label", "Delete this turn permanently");
 		deleteIcon.textContent = "delete";
 
 		const arrowIcon = new Icon();
@@ -1954,7 +1955,7 @@ class AIManagerHistory {
 		btnRow.style.justifyContent = "flex-end";
 
 		const denyBtn = new Button("Deny");
-		denyBtn.className = "theme-button danger";
+		denyBtn.className = "variant-danger";
 		denyBtn.onclick = async () => {
 			actions.style.display = "none";
 			message.status = "rejected";
@@ -2474,6 +2475,7 @@ class AIManagerHistory {
 		editButton.classList.add("edit-history-button");
 		editButton.icon = "edit";
 		editButton.title = "Edit this prompt (prunes subsequent turns and copies into editor)";
+		editButton.setAttribute("aria-label", "Edit this prompt");
 		editButton.on("click", async (e) => {
 			e.stopPropagation();
 			if (this.manager._isProcessing) {
@@ -2496,6 +2498,7 @@ class AIManagerHistory {
 		}
 		replayButton.icon = "replay";
 		replayButton.title = "Replay this turn (prunes subsequent turns and regenerates unaltered)";
+		replayButton.setAttribute("aria-label", "Replay this turn");
 		replayButton.on("click", async (e) => {
 			e.stopPropagation();
 			const confirmed = await window.modal.confirm("Are you sure you want to replay from this turn? This will permanently delete all subsequent messages in this session and request a new response.", "Replay Turn");
@@ -2511,6 +2514,7 @@ class AIManagerHistory {
 		deleteButton.classList.add("delete-history-button");
 		deleteButton.icon = "delete";
 		deleteButton.title = "Delete this message (Ctrl+Click to delete this and all subsequent turns)";
+		deleteButton.setAttribute("aria-label", "Delete this message");
 		deleteButton.on("click", (e) => {
 			e.stopPropagation();
 			const pruneForward = e.ctrlKey || e.metaKey;

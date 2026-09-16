@@ -1,5 +1,6 @@
 import { ContentFill, Block } from "./element.mjs";
 import { Button } from "./button.mjs";
+import { UIAccordion } from "./accordion.mjs";
 
 export class SettingsPanel extends ContentFill {
     constructor() {
@@ -16,54 +17,15 @@ export class SettingsPanel extends ContentFill {
         container.className = "artifacts-accordion-container";
         this.append(container);
 
-        const accordionItem = document.createElement("div");
-        accordionItem.className = "accordion-item expanded";
-
-        const header = document.createElement("div");
-        header.className = "accordion-header";
-
-        const headerLeft = document.createElement("div");
-        headerLeft.className = "header-left";
-
-        const icon = document.createElement("ui-icon");
-        icon.textContent = accordionIcon;
-        if (accordionColor) icon.style.color = accordionColor;
-
-        const titleSpan = document.createElement("span");
-        titleSpan.textContent = accordionTitle;
-
-        headerLeft.append(icon, titleSpan);
-        header.append(headerLeft);
-
-        const arrow = document.createElement("ui-icon");
-        arrow.className = "expand-arrow";
-        arrow.textContent = "expand_less";
-        header.append(arrow);
-
-        const content = document.createElement("div");
-        content.className = "accordion-content";
-        content.style.padding = "20px";
-
-        accordionItem.append(header, content);
-        container.append(accordionItem);
-
-        header.onclick = () => {
-            const isExpanded = accordionItem.classList.toggle("expanded");
-            if (isExpanded) {
-                content.style.display = "";
-                arrow.style.transform = "rotate(0deg)";
-                arrow.textContent = "expand_less";
-            } else {
-                content.style.display = "none";
-                arrow.style.transform = "rotate(180deg)";
-                arrow.textContent = "expand_more";
-            }
-        };
+        const accordion = new UIAccordion("settings", accordionTitle, accordionIcon, accordionColor, [], false);
+        accordion.content.style.padding = "20px";
+        accordion.applyState(true);
+        container.append(accordion);
 
         this._form = document.createElement('form');
         this._form.className = "settings-grid";
         this._form.addEventListener('submit', (e) => e.preventDefault());
-        content.append(this._form);
+        accordion.content.append(this._form);
 
         for (const item of schema) {
             const itemContainer = new Block();

@@ -79,7 +79,8 @@ export class FileBar extends Block {
         }
         const btn = new Button("");
         btn.icon = "folder_special";
-        btn.title = "Workspace Roots (all chats)";
+btn.title = "Workspace Roots (all chats)";
+        btn.setAttribute("aria-label", "Workspace Roots Filter");
         btn.className = "library-button";
         btn.onclick = onRootsClick;
         this.append(btn);
@@ -98,6 +99,7 @@ export class FileBar extends Block {
         const btn = new Button("");
         btn.icon = "library_books";
         btn.title = "Skill Library";
+		btn.setAttribute("aria-label", "Skill Library");
         btn.className = "library-button";
         btn.onclick = onLibraryClick;
         this.append(btn);
