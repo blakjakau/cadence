@@ -41,6 +41,8 @@ type Workspace struct {
 	ActiveAiSessionId  interface{}            `json:"activeAiSessionId,omitempty"`
 	OpenFolders        []string               `json:"openFolders,omitempty"`
 	ActiveSidebarTab   interface{}            `json:"activeSidebarTab,omitempty"`
+	// Workspace roots pinned at the top: available to all agents/chats.
+	PinnedRoots []string `json:"pinnedRoots,omitempty"`
 	// New fields for editor tab persistence
 	ActiveEditorTabHandle string               `json:"activeEditorTabHandle,omitempty"`
 	ActiveEditorSide      string               `json:"activeEditorSide,omitempty"`

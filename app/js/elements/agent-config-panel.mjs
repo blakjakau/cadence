@@ -285,33 +285,79 @@ export class AgentConfigPanel extends Block {
 		grid.className = "settings-grid";
 		content.appendChild(grid);
 
-		const createPasswordInputRow = (id, title, desc, key) => {
-			const wrapper = document.createElement("div");
-			wrapper.style.display = "flex";
-			wrapper.style.flexDirection = "column";
-			wrapper.style.gap = "4px";
-			const label = document.createElement("label");
-			label.style.fontWeight = "bold";
-			label.style.fontSize = "12px";
-			label.textContent = title;
-			const input = document.createElement("input");
-			input.type = "password";
-			input.id = id;
-			input.style.padding = "6px";
-			input.style.borderRadius = "4px";
-			input.style.border = "1px solid var(--border)";
-			input.style.background = "var(--bg-input, rgba(0,0,0,0.1))";
-			input.style.color = "var(--text)";
-			input.value = localStorage.getItem(key) || "";
-			input.onchange = () => {
-				localStorage.setItem(key, input.value);
-			};
-			wrapper.appendChild(label);
-			wrapper.appendChild(input);
-			grid.appendChild(wrapper);
+		// Tavily API Key with test-then-save flow
+		const tavilyWrapper = document.createElement("div");
+		tavilyWrapper.style.display = "flex";
+		tavilyWrapper.style.flexDirection = "column";
+		tavilyWrapper.style.gap = "4px";
+		const tavilyLabel = document.createElement("label");
+		tavilyLabel.style.fontWeight = "bold";
+		tavilyLabel.style.fontSize = "12px";
+		tavilyLabel.textContent = "Tavily API Key";
+		const tavilyInput = document.createElement("input");
+		tavilyInput.type = "password";
+		tavilyInput.id = "tavily-api-key";
+		tavilyInput.style.padding = "6px";
+		tavilyInput.style.borderRadius = "4px";
+		tavilyInput.style.border = "1px solid var(--border)";
+		tavilyInput.style.background = "var(--bg-input, rgba(0,0,0,0.1))";
+		tavilyInput.style.color = "var(--text)";
+		tavilyInput.value = localStorage.getItem("tavilyApiKey") || "";
+		const tavilyBtnRow = document.createElement("div");
+		tavilyBtnRow.style.display = "flex";
+		tavilyBtnRow.style.alignItems = "center";
+		tavilyBtnRow.style.gap = "8px";
+		const tavilyStatus = document.createElement("span");
+		tavilyStatus.style.fontSize = "11px";
+		tavilyStatus.style.fontStyle = "italic";
+		const tavilyTestBtn = new Button("Test");
+		tavilyTestBtn.className = "theme-button secondary";
+		tavilyBtnRow.appendChild(tavilyTestBtn);
+		tavilyBtnRow.appendChild(tavilyStatus);
+		tavilyTestBtn.onclick = async () => {
+			const val = tavilyInput.value.trim();
+			if (!val) {
+				tavilyStatus.textContent = "Enter a key first.";
+				tavilyStatus.style.color = "var(--text-muted, #888)";
+				return;
+			}
+			tavilyTestBtn.disabled = true;
+			tavilyTestBtn.text = "Testing\u2026";
+			tavilyStatus.textContent = "";
+			try {
+				const res = await fetch("https://api.tavily.com/search", {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({
+						api_key: val,
+						query: "test",
+						max_results: 1,
+						include_answer: false
+					})
+				});
+				if (!res.ok) {
+					const errBody = await res.text().catch(() => "");
+					throw new Error(`API ${res.status}: ${errBody || res.statusText}`);
+				}
+				await res.json();
+				localStorage.setItem("tavilyApiKey", val);
+				tavilyTestBtn.text = "Saved";
+				tavilyTestBtn.className = "theme-button primary";
+				tavilyTestBtn.disabled = true;
+				tavilyStatus.textContent = "Key verified and saved.";
+				tavilyStatus.style.color = "#2da44e";
+			} catch (err) {
+				tavilyStatus.textContent = `Failed: ${err.message}`;
+				tavilyStatus.style.color = "#dc3545";
+				tavilyTestBtn.text = "Test";
+				tavilyTestBtn.disabled = false;
+				tavilyTestBtn.className = "theme-button secondary";
+			}
 		};
-
-		createPasswordInputRow("tavily-api-key", "Tavily API Key", "Enter your Tavily API key to enable high-quality research capabilities.", "tavilyApiKey");
+		tavilyWrapper.appendChild(tavilyLabel);
+		tavilyWrapper.appendChild(tavilyInput);
+		tavilyWrapper.appendChild(tavilyBtnRow);
+		grid.appendChild(tavilyWrapper);
 	}
 
 	renderCustomisationAccordion() {
@@ -713,10 +759,17 @@ export class AgentConfigPanel extends Block {
 		provRow.innerHTML = `<label style="font-size: 11px; font-weight: bold; margin-bottom: 2px;">Provider</label>`;
 		const provSelect = document.createElement("select");
 		provSelect.className = "themed-select";
-		["gemini", "llamacpp", "ollama", "claude"].forEach(p => {
+		const providerLabels = {
+			gemini: "Gemini",
+			llamacpp: "Llama.cpp",
+			ollama: "Ollama",
+			claude: "Claude",
+			openai: "OpenAI / OpenRouter (Generic)"
+		};
+		["gemini", "llamacpp", "ollama", "claude", "openai"].forEach(p => {
 			const opt = document.createElement("option");
 			opt.value = p;
-			opt.textContent = p.charAt(0).toUpperCase() + p.slice(1);
+			opt.textContent = providerLabels[p] || p.charAt(0).toUpperCase() + p.slice(1);
 			if (conn && conn.provider === p) opt.selected = true;
 			provSelect.appendChild(opt);
 		});
@@ -775,9 +828,26 @@ export class AgentConfigPanel extends Block {
 		modelContainer.style.display = "none";
 		modelContainer.style.flexDirection = "column";
 		modelContainer.innerHTML = `<label style="font-size: 11px; font-weight: bold; margin-bottom: 2px;">Model Selection</label>`;
-		const modelSelect = document.createElement("select");
+		const datalistId = `cadence-model-options-${crypto.randomUUID()}`;
+		const modelSelect = document.createElement("input");
+		modelSelect.type = "text";
 		modelSelect.className = "themed-select";
+		modelSelect.autocomplete = "off";
+		modelSelect.spellcheck = false;
+		modelSelect.placeholder = "Type to filter available models...";
+		modelSelect.setAttribute("list", datalistId);
 		modelContainer.appendChild(modelSelect);
+		const modelDatalist = document.createElement("datalist");
+		modelDatalist.id = datalistId;
+		modelContainer.appendChild(modelDatalist);
+		const modelPlaceholder = document.createElement("div");
+		modelPlaceholder.style.fontSize = "12px";
+		modelPlaceholder.style.color = "var(--text-muted, #888)";
+		modelPlaceholder.style.fontStyle = "italic";
+		modelPlaceholder.style.opacity = "0.7";
+		modelPlaceholder.style.padding = "4px 0";
+		modelPlaceholder.textContent = "Test the connection to load available models";
+		modelContainer.appendChild(modelPlaceholder);
 		form.appendChild(modelContainer);
 
 		// Test status container
@@ -792,7 +862,7 @@ export class AgentConfigPanel extends Block {
 			specContainer.innerHTML = "";
 			const provider = provSelect.value;
 
-			const createInput = (labelVal, value, isPassword = false) => {
+			const createInput = (labelVal, value, isPassword = false, placeholder = "", hint = "") => {
 				const wrapper = document.createElement("div");
 				wrapper.style.display = "flex";
 				wrapper.style.flexDirection = "column";
@@ -805,6 +875,13 @@ export class AgentConfigPanel extends Block {
 				inp.style.background = "var(--bg-input)";
 				inp.style.color = "var(--text)";
 				inp.value = value;
+				if (placeholder) inp.placeholder = placeholder;
+				if (hint) {
+					const hintEl = document.createElement("div");
+					hintEl.style.cssText = "font-size: 10px; color: var(--text-secondary); margin-top: 2px;";
+					hintEl.textContent = hint;
+					wrapper.appendChild(hintEl);
+				}
 				wrapper.appendChild(inp);
 				specContainer.appendChild(wrapper);
 				return inp;
@@ -891,10 +968,40 @@ export class AgentConfigPanel extends Block {
 				const defServer = "https://api.anthropic.com";
 				const srv = conn && conn.provider === "claude" ? conn.config.server : defServer;
 				const key = conn && conn.provider === "claude" ? conn.config.apiKey : "";
-				const maxTurns = conn && conn.provider === "claude" ? (conn.config.maxTurns !== undefined ? conn.config.maxTurns : 50) : 50;
+				const maxTurns = conn && conn.provider === "claude" ? (conn.config.maxTurns || 0) : 0;
 				provSelect.serverInput = createInput("Anthropic API Server", srv);
 				provSelect.keyInput = createInput("Anthropic API Key", key, true);
 				provSelect.maxTurnsInput = createInput("Max Agent Turns (0 for unlimited)", maxTurns);
+			} else if (provider === "openai") {
+				const defServer = "https://api.openai.com/v1";
+				const srv = conn && conn.provider === "openai" ? conn.config.server : defServer;
+				const key = conn && conn.provider === "openai" ? conn.config.apiKey : "";
+				const temp = conn && conn.provider === "openai" ? (conn.config.temperature !== undefined ? conn.config.temperature : 0.7) : 0.7;
+				const topP = conn && conn.provider === "openai" ? (conn.config.top_p !== undefined ? conn.config.top_p : 1.0) : 1.0;
+				const topK = conn && conn.provider === "openai" ? (conn.config.top_k !== undefined ? conn.config.top_k : 0) : 0;
+				const maxTokens = conn && conn.provider === "openai" ? (conn.config.maxTokens || 4096) : 4096;
+				const maxTurns = conn && conn.provider === "openai" ? (conn.config.maxTurns || 0) : 0;
+				const thinking = conn && conn.provider === "openai" ? (conn.config.thinkingLevel || "medium") : "medium";
+				provSelect.serverInput = createInput(
+					"API Server (OpenAI, OpenRouter, or compatible)",
+					srv,
+					false,
+					"https://openrouter.ai/api/v1",
+					"OpenRouter: https://openrouter.ai/api/v1 · OpenAI: https://api.openai.com/v1"
+				);
+				provSelect.keyInput = createInput("API Key", key, true);
+				provSelect.tempInput = createInput("Temperature", temp);
+				provSelect.topPInput = createInput("Top P", topP);
+				provSelect.topKInput = createInput("Top K (0 for default)", topK);
+				provSelect.maxTokensInput = createInput("Max Tokens (per response)", maxTokens);
+				provSelect.maxTurnsInput = createInput("Max Agent Turns (0 for unlimited)", maxTurns);
+				provSelect.thinkingInput = createSelect("Thinking Level", thinking, [
+					{ value: "off", label: "Off" },
+					{ value: "low", label: "Low" },
+					{ value: "medium", label: "Medium" },
+					{ value: "high", label: "High" },
+					{ value: "unlimited", label: "Unlimited" }
+				]);
 			}
 		};
 
@@ -927,12 +1034,16 @@ export class AgentConfigPanel extends Block {
 		buildSpecInputs = () => {
 			originalBuildSpecInputs();
 			bindBlurTest();
+			modelSelect.value = "";
+			modelDatalist.innerHTML = "";
+			showModelPlaceholder();
 		};
 		bindBlurTest();
 		
 		const saveBtn = new Button("Save");
 		saveBtn.className = "theme-button primary";
-		saveBtn.disabled = !isEdit;
+
+		const newConnId = conn ? null : `conn-${crypto.randomUUID()}`;
 
 		const currentConnConfig = () => {
 			const configObj = {
@@ -960,19 +1071,25 @@ export class AgentConfigPanel extends Block {
 				configObj.n_ctx = parseInt(provSelect.nctxInput.value) || 0;
 			}
 			if (provSelect.topKInput) {
-				configObj.top_k = parseInt(provSelect.topKInput.value) || 40;
+				const v = parseInt(provSelect.topKInput.value);
+				configObj.top_k = Number.isFinite(v) ? v : (provSelect.value === "openai" ? 0 : 40);
 			}
 			if (provSelect.topPInput) {
-				configObj.top_p = parseFloat(provSelect.topPInput.value) || 0.9;
+				const v = parseFloat(provSelect.topPInput.value);
+				configObj.top_p = Number.isFinite(v) ? v : (provSelect.value === "openai" ? 1.0 : 0.9);
 			}
 			if (provSelect.tempInput) {
-				configObj.temperature = parseFloat(provSelect.tempInput.value) !== undefined ? parseFloat(provSelect.tempInput.value) : 0.7;
+				const v = parseFloat(provSelect.tempInput.value);
+				configObj.temperature = Number.isFinite(v) ? v : 0.7;
+			}
+			if (provSelect.maxTokensInput) {
+				configObj.maxTokens = parseInt(provSelect.maxTokensInput.value) || 4096;
 			}
 			if (provSelect.thinkingInput) {
 				configObj.thinkingLevel = provSelect.thinkingInput.value;
 			}
 			return {
-				id: conn ? conn.id : `conn-${crypto.randomUUID()}`,
+				id: conn ? conn.id : newConnId,
 				name: nameInput.value || `${provSelect.value} connection`,
 				provider: provSelect.value,
 				size: sizeSelect.value,
@@ -980,77 +1097,170 @@ export class AgentConfigPanel extends Block {
 			};
 		};
 
-		testBtn.onclick = async () => {
-			testBtn.disabled = true;
-			testBtn.text = "Testing...";
-			testStatus.style.display = "block";
-			testStatus.style.background = "var(--bg-secondary)";
-			testStatus.style.border = "1px solid var(--border)";
-			testStatus.style.color = "var(--text)";
-			testStatus.textContent = "Connecting to endpoint...";
+		let baseConfigStr = "";
+		let lastPassedStr = "";
 
-			try {
-				const connConf = currentConnConfig();
-				const result = await AIConnections.testConnection(connConf);
-				
-				testStatus.style.background = "rgba(45, 164, 78, 0.1)";
-				testStatus.style.border = "1px solid rgba(45, 164, 78, 0.3)";
-				testStatus.style.color = "#2da44e";
-				testStatus.textContent = "Connection check succeeded! Successfully reached server.";
-
-				// Populate model selections if models are returned
-				const models = result.models || (result.model ? [result.model] : []);
-				if (models.length > 0) {
-					modelSelect.innerHTML = "";
-					models.forEach(m => {
-						const opt = document.createElement("option");
-						opt.value = m;
-						opt.textContent = m;
-						if (conn && conn.config.model === m) opt.selected = true;
-						modelSelect.appendChild(opt);
-					});
-					modelContainer.style.display = "flex";
-				} else {
-					modelContainer.style.display = "none";
-				}
-
-				saveBtn.disabled = false;
-			} catch (err) {
-				testStatus.style.background = "rgba(220, 53, 69, 0.1)";
-				testStatus.style.border = "1px solid rgba(220, 53, 69, 0.3)";
-				testStatus.style.color = "#dc3545";
-				testStatus.textContent = `Connection check failed: ${err.message}`;
-				saveBtn.disabled = true;
-			} finally {
-				testBtn.disabled = false;
-				testBtn.text = "Test Connection";
-			}
+		const showModelPlaceholder = () => {
+			modelSelect.style.display = "none";
+			modelPlaceholder.style.display = "";
+			modelContainer.style.display = "flex";
 		};
 
-		saveBtn.onclick = () => {
+		const sortModels = models => {
+			const providerOf = id => {
+				const slash = id.indexOf("/");
+				return slash === -1 ? "" : id.slice(0, slash);
+			};
+			const modelOf = id => {
+				const slash = id.indexOf("/");
+				return slash === -1 ? id : id.slice(slash + 1);
+			};
+			return [...models].sort((a, b) => {
+				const pa = providerOf(a).toLowerCase();
+				const pb = providerOf(b).toLowerCase();
+				if (pa !== pb) {
+					if (pa === "") return 1;
+					if (pb === "") return -1;
+					return pa < pb ? -1 : pa > pb ? 1 : 0;
+				}
+				const ma = modelOf(a).toLowerCase();
+				const mb = modelOf(b).toLowerCase();
+				if (ma !== mb) return ma < mb ? -1 : 1;
+				return a < b ? -1 : a > b ? 1 : 0;
+			});
+		};
+
+		const populateModelList = (models, selected) => {
+			const valid = models.filter(m => typeof m === "string" && m.trim());
+			const sorted = sortModels(valid);
+			modelDatalist.innerHTML = "";
+			sorted.forEach(m => {
+				const opt = document.createElement("option");
+				opt.value = m;
+				opt.textContent = m;
+				modelDatalist.appendChild(opt);
+			});
+			if (selected && !sorted.some(m => m.toLowerCase() === selected.toLowerCase())) {
+				sorted.unshift(selected);
+				const opt = document.createElement("option");
+				opt.value = selected;
+				opt.textContent = selected;
+				modelDatalist.prepend(opt);
+			}
+			if (selected) {
+				modelSelect.value = selected;
+			} else {
+				modelSelect.value = sorted[0] || "";
+			}
+			modelSelect.style.display = "";
+			modelPlaceholder.style.display = "none";
+			modelContainer.style.display = "flex";
+		};
+
+		const buildConnConf = () => {
 			const connConf = currentConnConfig();
 			if (modelSelect.value) {
 				connConf.config.model = modelSelect.value;
 			}
-			AIConnections.saveConnection(connConf);
+			return connConf;
+		};
+
+		const doSave = () => {
+			AIConnections.saveConnection(buildConnConf());
 			modalObj.hide();
 			this.renderConnectionsList();
 		};
 
-		modalObj.actionBar.append(cancelBtn, testBtn, saveBtn);
+		const runTest = async (silent = false) => {
+			if (!silent) {
+				testBtn.disabled = true;
+				testBtn.text = "Testing...";
+				testStatus.style.display = "block";
+				testStatus.style.background = "var(--bg-secondary)";
+				testStatus.style.border = "1px solid var(--border)";
+				testStatus.style.color = "var(--text)";
+				testStatus.textContent = "Connecting to endpoint...";
+			}
+
+			try {
+				const connConf = currentConnConfig();
+				const result = await AIConnections.testConnection(connConf);
+
+				if (!silent) {
+					testStatus.style.background = "rgba(45, 164, 78, 0.1)";
+					testStatus.style.border = "1px solid rgba(45, 164, 78, 0.3)";
+					testStatus.style.color = "#2da44e";
+					testStatus.textContent = "Connection check succeeded! Server reached and API key verified.";
+				}
+
+				const models = result.models || (result.model ? [result.model] : []);
+				if (models.length > 0) {
+					const prev = modelSelect.value || (conn && conn.config.model);
+					populateModelList(models, prev);
+				} else {
+					showModelPlaceholder();
+				}
+
+				lastPassedStr = JSON.stringify(buildConnConf());
+				saveWithErrorsBtn.hide();
+				return true;
+			} catch (err) {
+				if (!silent) {
+					testStatus.style.background = "rgba(220, 53, 69, 0.1)";
+					testStatus.style.border = "1px solid rgba(220, 53, 69, 0.3)";
+					testStatus.style.color = "#dc3545";
+					testStatus.textContent = `Connection check failed: ${err.message}`;
+				}
+				lastPassedStr = "";
+				return false;
+			} finally {
+				if (!silent) {
+					testBtn.disabled = false;
+					testBtn.text = "Test Connection";
+				}
+			}
+		};
+		testBtn.onclick = () => runTest(false);
+
+		saveBtn.onclick = async () => {
+			const curConf = buildConnConf();
+			const curStr = JSON.stringify(curConf);
+			const needsAuth = ["gemini", "claude", "openai"].includes(curConf.provider);
+			const untouched = curStr === baseConfigStr || curStr === lastPassedStr;
+			if (untouched && (isEdit || !needsAuth || curConf.config.apiKey)) {
+				doSave();
+				return;
+			}
+			const passed = await runTest(false);
+			if (passed) {
+				doSave();
+			} else {
+				saveWithErrorsBtn.show();
+			}
+		};
+
+		const saveWithErrorsBtn = new Button("Save w/Errors");
+		saveWithErrorsBtn.className = "theme-button secondary";
+		saveWithErrorsBtn.style.border = "1px solid var(--color-error, #dc3545)";
+		saveWithErrorsBtn.style.color = "var(--color-error, #dc3545)";
+		saveWithErrorsBtn.style.background = "rgba(220, 53, 69, 0.1)";
+		saveWithErrorsBtn.hide();
+		saveWithErrorsBtn.onclick = () => doSave();
+
+		modalObj.actionBar.append(cancelBtn, testBtn, saveBtn, saveWithErrorsBtn);
 		modalObj.show();
 
-		// If editing, preload model selection directly and trigger test automatically
+		// Preload saved model so an untouched modal can be saved without a test
 		if (isEdit && conn.config.model) {
-			const opt = document.createElement("option");
-			opt.value = conn.config.model;
-			opt.textContent = conn.config.model;
-			opt.selected = true;
-			modelSelect.appendChild(opt);
-			modelContainer.style.display = "flex";
-			
-			// Automatically test to refresh models list
-			testBtn.onclick();
+			populateModelList([conn.config.model], conn.config.model);
+		} else {
+			showModelPlaceholder();
+		}
+		baseConfigStr = JSON.stringify(buildConnConf());
+
+		// Non-gating silent model refresh; preserves the current selection
+		if (isEdit && conn.config.apiKey) {
+			runTest(true);
 		}
 	}
 

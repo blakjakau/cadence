@@ -11,6 +11,9 @@ import {
 } from "./elements/utils.mjs"
 import ui from "./ui-main.mjs" // Assuming ui-main.mjs handles its own import of Modal via elements.mjs
 import {
+	applyOmarchyPalette, clearOmarchyPalette, fetchOmarchyTheme,
+} from "./omarchy-theme.mjs"
+import {
 	Modal, ActionBar, Block, Button, ContentFill, CounterButton, Element, Effects, Effect,
 	FileItem, FileList, Icon, Inline, Input, Inner, MediaView, Panel, Ripple, TabBar, TabItem,
 	View, Menu, MenuItem, FileUploadList, actionBars, promptSaveFile, promptAddFolder,
@@ -134,7 +137,6 @@ window.ui = ui
 window.modal = Modal // Assign the singleton instance
 window.code = {
 	version: (() => {
-		const last = "0.8.0"
 		fetch("/version.json")
 			.then(async (response) => {
 				if (response.ok) {
@@ -145,7 +147,7 @@ window.code = {
 				}
 			})
 			.catch((e) => console.warn("Failed to fetch version.json", e))
-		return last
+		return ""
 	})(),
 }
 
@@ -188,6 +190,8 @@ const workspace = {
 	// NEW: AI session metadata and active session ID
 	aiSessionsMetadata: [], // Array of {id, name, createdAt, lastModified}
 	activeAiSessionId: null, // The ID of the currently active AI session
+	// Global workspace roots pinned at the top: available to ALL agents/chats.
+	pinnedRoots: [],
 }
 
 // workspace state managment
@@ -677,6 +681,8 @@ const openWorkspace = (() => {
 
 			workspace.name = load.name || "default"
 			workspace.folders = load.folders || []
+			// Restore globally pinned roots so they remain available to all agents/chats.
+			workspace.pinnedRoots = load.pinnedRoots || []
 			workspace.files = load.files || []
 			try {
 				const cadenceResp = await conduitClient.wsRead(".cadence")
@@ -746,10 +752,15 @@ const openWorkspace = (() => {
 			const currentProvider = ui.aiManager.aiProvider
 			updateFileListBackground()
 			if (ui.aiManager.ai) {
+				const stripLegacyApiKey = (cfg) => {
+					const copy = { ...(cfg || {}) }
+					delete copy.apiKey
+					return copy
+				}
 				if (workspace.aiConfig[currentProvider]) {
-					ui.aiManager.ai.setOptions(workspace.aiConfig[currentProvider], null, null, true, "workspace")
+					ui.aiManager.ai.setOptions(stripLegacyApiKey(workspace.aiConfig[currentProvider]), null, null, true, "workspace")
 				} else if (app.aiConfig[currentProvider]) {
-					ui.aiManager.ai.setOptions(app.aiConfig[currentProvider], null, null, false, "global")
+					ui.aiManager.ai.setOptions(stripLegacyApiKey(app.aiConfig[currentProvider]), null, null, false, "global")
 				} else {
 					// If no specific config for the current provider, reset to default for that provider
 					ui.aiManager.ai.setOptions({}, null, null, false, "global")
@@ -838,23 +849,94 @@ const clearInjectedTheme = () => {
 	// Instead, CSS handles light/dark mode with pre-defined variables.
 }
 
+// Live system-theme tracking: while darkmode is "system", poll the backend in
+// case the user switches desktop theme (Omarchy palette, KDE/GNOME mode) so
+// Cadence follows along.
+let omarchyPollTimer = null
+let lastPaletteKey = "none"
+
+const paletteKey = (palette) => {
+	if (!palette || palette.detected !== true) return "none"
+	return `${palette.source || ""}|${palette.theme || ""}|${palette.mode || ""}|${JSON.stringify(palette.colors || {})}`
+}
+
+const stopOmarchyPolling = () => {
+	if (omarchyPollTimer) {
+		clearInterval(omarchyPollTimer)
+		omarchyPollTimer = null
+	}
+}
+
+// Applies the active system theme (if any) to the app palette and body
+// class. Falls back to the media query when no desktop theme is detected.
+// Skips pointless work when the theme hasn't changed since the last pass.
+const applySystemTheme = async (force = false) => {
+	if (app.darkmode !== "system") {
+		clearOmarchyPalette()
+		stopOmarchyPolling()
+		return
+	}
+
+	const palette = await fetchOmarchyTheme()
+	if (!palette) return // Backend unreachable — leave existing state alone.
+
+	const key = paletteKey(palette)
+	if (!force && lastPaletteKey === key) return
+
+	if (palette.detected) {
+		applyOmarchyPalette(palette)
+		if (palette.mode === "light") {
+			document.body.classList.remove("darkmode")
+		} else {
+			document.body.classList.add("darkmode")
+		}
+		startOmarchyPolling()
+	} else {
+		clearOmarchyPalette()
+		stopOmarchyPolling()
+		if (prefersDarkMode.matches) {
+			document.body.classList.add("darkmode")
+		} else {
+			document.body.classList.remove("darkmode")
+		}
+	}
+	lastPaletteKey = key
+	updateThemeAndMode(false) // refresh the dark/light toggle icon
+}
+
+const startOmarchyPolling = () => {
+	if (omarchyPollTimer) return
+	omarchyPollTimer = setInterval(async () => {
+		if (app.darkmode !== "system") {
+			stopOmarchyPolling()
+			return
+		}
+		await applySystemTheme()
+	}, 5000)
+}
+
 const execCommandSetDarkMode = (mode) => {
 	app.darkmode = mode
 
 	switch (mode) {
 		case "light":
+			clearOmarchyPalette()
+			stopOmarchyPolling()
 			document.body.classList.remove("darkmode")
 			break
 		case "dark":
+			clearOmarchyPalette()
+			stopOmarchyPolling()
 			document.body.classList.add("darkmode")
 			break
 		case "system":
+			// This only updates on initial load and system preference change
 			if (prefersDarkMode.matches) {
-				// This only updates on initial load and system preference change
 				document.body.classList.add("darkmode")
 			} else {
 				document.body.classList.remove("darkmode")
 			}
+			applySystemTheme(true)
 			break
 	}
 	saveAppConfig()
@@ -4026,8 +4108,13 @@ setTimeout(async () => {
 		// After appConfig is loaded and aiManager is initialized, apply global AI settings
 		const currentProvider = ui.aiManager.aiProvider
 		if (ui.aiManager.ai) {
+			const stripLegacyApiKey = (cfg) => {
+				const copy = { ...(cfg || {}) }
+				delete copy.apiKey
+				return copy
+			}
 			if (app.aiConfig[currentProvider]) {
-				ui.aiManager.ai.setOptions(app.aiConfig[currentProvider], null, null, false, "global")
+				ui.aiManager.ai.setOptions(stripLegacyApiKey(app.aiConfig[currentProvider]), null, null, false, "global")
 			} else {
 				// If no specific config for the current provider, reset to default for that provider
 				ui.aiManager.ai.setOptions({}, null, null, false, "global")

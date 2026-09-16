@@ -4,17 +4,19 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
+	"io/fs"
 	"log"
 	"net"
 	"net/http"
 	"os"
 	"os/exec"
-	"runtime"
-	"sync/atomic"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -25,19 +27,25 @@ func runCadenceServer(block bool) {
 	if installUserFlag {
 		msg, err := InstallUser()
 		log.Println(msg)
-		if err != nil { os.Exit(1) }
+		if err != nil {
+			os.Exit(1)
+		}
 		os.Exit(0)
 	}
 	if installServiceFlag {
 		msg, err := InstallService()
 		log.Println(msg)
-		if err != nil { os.Exit(1) }
+		if err != nil {
+			os.Exit(1)
+		}
 		os.Exit(0)
 	}
 	if uninstallFlag {
 		msg, err := Uninstall()
 		log.Println(msg)
-		if err != nil { os.Exit(1) }
+		if err != nil {
+			os.Exit(1)
+		}
 		os.Exit(0)
 	} else if len(flag.Args()) > 0 && flag.Args()[0] == "kill" {
 		log.Println("Shutting down Cadence via command line kill command.")
@@ -48,7 +56,11 @@ func runCadenceServer(block bool) {
 		fileAPIRoot = rootFlag
 	} else {
 		homeDir, err := os.UserHomeDir()
-		if err == nil { fileAPIRoot = homeDir } else { fileAPIRoot = "." }
+		if err == nil {
+			fileAPIRoot = homeDir
+		} else {
+			fileAPIRoot = "."
+		}
 	}
 	go fileWatcher.run()
 	updateLastActivity()
@@ -56,7 +68,7 @@ func runCadenceServer(block bool) {
 		go startIdleShutdownManager(60 * time.Minute)
 	}
 	startTime = time.Now()
-	
+
 	initWorkspaceManager() // Initialize workspace persistence
 
 	mux := createServerMux()
@@ -99,6 +111,7 @@ func createServerMux() *http.ServeMux {
 	mux.HandleFunc("/up", upcheckHandler)
 	mux.HandleFunc("/files", filesApiHandler)
 	mux.HandleFunc("/api/config", appConfigHandler)
+	mux.HandleFunc("/api/omarchy-theme", systemThemeHandler)
 	mux.HandleFunc("/api/check-syntax", checkSyntaxHandler)
 	mux.HandleFunc("/api/workspace", workspaceHandler)
 	mux.HandleFunc("/api/session", sessionHandler)
@@ -165,7 +178,7 @@ func parseFlags() {
 	flag.BoolVar(&noIdleShutdownFlag, "no-idle-shutdown", true, "Disable automatic shutdown due to inactivity. Recommended for services.")
 	flag.StringVar(&serveFlag, "serve", "", "Serve live static files from this directory instead of embedded assets.")
 	flag.BoolVar(&browserFlag, "browser", false, "Open in the default browser instead of a native window.")
-	flag.BoolVar(&webviewFlag, "webview", false, "Open using the lightweight webview_go renderer.")
+	flag.BoolVar(&webviewFlag, "webview", false, "Open using the lightweight webview_go renderer (requires a -tags webview build; needs webkit2gtk-4.0).")
 	flag.BoolVar(&headlessFlag, "headless", false, "Run in headless mode (no UI or browser launch).")
 	flag.Parse()
 
@@ -199,19 +212,36 @@ func initLogging() {
 }
 
 // Global variables remain accessible
-const version = "0.1.2"
+// version is read from the embedded app/version.json so the server log, the
+// /up health check, and the web UI all share the single tracked number.
+var version = func() string {
+	appFS := getAppFS()
+	data, err := fs.ReadFile(appFS, "version.json")
+	if err != nil {
+		log.Printf("WARNING: could not read version.json from embedded assets: %v", err)
+		return "0.0.0"
+	}
+	var meta struct {
+		Version string `json:"version"`
+	}
+	if err := json.Unmarshal(data, &meta); err != nil || meta.Version == "" {
+		log.Printf("WARNING: version.json did not contain a usable version")
+		return "0.0.0"
+	}
+	return meta.Version
+}()
 var port = "3022"
 var allowedOrigins = map[string]bool{
 	"https://cadence.jakbox.dev": true,
 	"https://cadence.jakbox.net": true,
-	"https://code.jakbox.dev": true,
-	"https://code.jakbox.net": true,
-	"http://localhost:8083":  true,
-	"http://localhost:3022":  true,
-	"http://localhost:3023":  true,
-	"http://localhost":       true,
-	"http://127.0.0.1:3022": true,
-	"http://127.0.0.1:3023": true,
+	"https://code.jakbox.dev":    true,
+	"https://code.jakbox.net":    true,
+	"http://localhost:8083":      true,
+	"http://localhost:3022":      true,
+	"http://localhost:3023":      true,
+	"http://localhost":           true,
+	"http://127.0.0.1:3022":      true,
+	"http://127.0.0.1:3023":      true,
 }
 var rootFlag string
 var serveFlag string
@@ -229,6 +259,7 @@ var requiredAPIKey string
 var isCompiledBuild bool
 var fileAPIRoot string
 var lastActivityTimestamp atomic.Int64
+
 // (Keep all your other helper functions like updateLastActivity, etc., here too)
 // --- Helper Functions ---
 func getIsCompiled() {
@@ -249,6 +280,7 @@ func activityMiddleware(next http.Handler) http.Handler {
 		next.ServeHTTP(w, r)
 	})
 }
+
 // corsMiddleware adds the necessary headers to handle CORS requests.
 func corsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

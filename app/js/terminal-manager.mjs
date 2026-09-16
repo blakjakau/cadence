@@ -291,12 +291,16 @@ class TerminalManager {
 			}
 		}
 
-		// 4. Root of the currently active AI session (first pinned root)
+		// 4. Root of the currently active AI session (first effective root)
 		if (!dir) {
 			const activeAISession = window.ui?.aiManager?.activeSession;
-			const aiRoot = activeAISession?.pinnedRoots?.[0];
-			if (aiRoot && typeof aiRoot === 'string') {
-				dir = aiRoot;
+			const aiManager = window.ui?.aiManager;
+			if (aiManager && activeAISession) {
+				const effectiveFolders = aiManager.getEffectiveWorkspaceFolders(activeAISession);
+				const aiRoot = effectiveFolders[0];
+				if (aiRoot && typeof aiRoot === 'string') {
+					dir = aiRoot;
+				}
 			}
 		}
 

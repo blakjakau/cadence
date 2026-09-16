@@ -301,25 +301,43 @@ class AIManager {
 
 	getEffectiveWorkspaceFolders(session = null) {
 		const allFolders = window.workspace?.folders || [];
-		if (allFolders.length === 0) return [];
 
 		const targetSession = session || this.activeSession;
-		const pinnedRoots = targetSession?.pinnedRoots || [];
-		if (pinnedRoots.length > 0) {
-			const filtered = allFolders.filter(f => {
+
+		// 1. Global pins: pinned at the top, available to all agents/chats.
+		const globalPins = window.workspace?.pinnedRoots || [];
+
+		// 2. Per-chat workspaces added via Settings & Artifacts.
+		const chatWorkspaces = targetSession?.workspaces || [];
+
+		// 3. Legacy session pins (pre-refactor sessions keep their scoped roots).
+		const legacyPins = targetSession?.pinnedRoots || [];
+
+		const allPins = [...globalPins, ...chatWorkspaces, ...legacyPins];
+		if (allPins.length === 0) return [];
+
+		const seen = new Set();
+		const resolved = [];
+
+		for (const pin of allPins) {
+			const normPin = pin.replace(/\\/g, '/').replace(/\/+$/, '');
+			const namePin = normPin.split('/').filter(Boolean).pop() || normPin;
+			if (seen.has(normPin) || seen.has(namePin)) continue;
+			seen.add(normPin);
+			seen.add(namePin);
+
+			const match = allFolders.find(f => {
 				const normF = f.replace(/\\/g, '/').replace(/\/+$/, '');
 				const nameF = normF.split('/').filter(Boolean).pop() || normF;
-				return pinnedRoots.some(p => {
-					const normP = p.replace(/\\/g, '/').replace(/\/+$/, '');
-					const nameP = normP.split('/').filter(Boolean).pop() || normP;
-					return normF === normP || normF.endsWith('/' + normP) || nameF === nameP;
-				});
+				return normF === normPin || normF.endsWith('/' + normPin) || nameF === namePin;
 			});
-			if (filtered.length > 0) return filtered;
-			return pinnedRoots;
+
+			// Only roots that resolve to an actually-open folder are available to the agent.
+			// Pinned-but-unavailable roots are surfaced as warning chips in the UI instead.
+			if (match) resolved.push(match);
 		}
 
-		return allFolders;
+		return resolved;
 	}
 
 	async _loadAllParsedSkills(session = null) {
@@ -649,9 +667,9 @@ class AIManager {
 				const norm = matchingFolder.replace(/\\/g, '/').replace(/\/+$/, '');
 				const rootName = norm.split('/').filter(Boolean).pop() || matchingFolder;
 
-				if (this.activeSession.pinnedRoots) {
-					this.activeSession.pinnedRoots = this.activeSession.pinnedRoots.filter(r => r !== rootPath && r !== rootName);
-					await workspaceClient.setSession(this.activeSession.id, this.activeSession);
+				if (window.workspace && window.workspace.pinnedRoots) {
+					window.workspace.pinnedRoots = window.workspace.pinnedRoots.filter(r => r !== rootPath && r !== rootName);
+					await workspaceClient.setWorkspace(window.workspace);
 				}
 				// Always remove the chip from the bar
 				this.fileBar.remove(`rootchip-${rootPath}`);
@@ -1701,7 +1719,7 @@ class AIManager {
 	 * @returns {boolean}
 	 */
 	_isPaidConnection(conn) {
-		return !!conn && (conn.provider === 'gemini' || conn.provider === 'claude');
+		return !!conn && (conn.provider === 'gemini' || conn.provider === 'claude' || conn.provider === 'openai');
 	}
 
 	/**
@@ -2133,11 +2151,12 @@ class AIManager {
 			? this.sessionsManager.activeSession
 			: await workspaceClient.getSession(sessionId);
 
-		// Resolve target directory: first pinned root, else default workspace root
+		// Resolve target directory: first effective root, else default workspace root
 		let dir = "";
-		const pinnedRoot = session?.pinnedRoots?.[0];
-		if (pinnedRoot && typeof pinnedRoot === "string") {
-			dir = pinnedRoot;
+		const effectiveFolders = this.getEffectiveWorkspaceFolders(session);
+		const firstRoot = effectiveFolders[0];
+		if (firstRoot && typeof firstRoot === "string") {
+			dir = firstRoot;
 		} else {
 			const rawFolder = window.workspace?.folders?.[0];
 			dir = typeof rawFolder === 'string' ? rawFolder : (rawFolder?.path || rawFolder?.name || "");
@@ -4117,7 +4136,7 @@ Output only the XML. Do not use any tools.`;
 
 	async loadSettings() {
 		const storedProvider = localStorage.getItem("aiProvider")
-		const supportedProviders = ["gemini", "llamacpp", "ollama", "claude"];
+		const supportedProviders = ["gemini", "llamacpp", "ollama", "claude", "openai"];
 		if (storedProvider && supportedProviders.includes(storedProvider)) {
 			this.aiProvider = storedProvider
 		}

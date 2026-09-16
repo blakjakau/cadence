@@ -3,12 +3,14 @@ import Ollama from "./ai-ollama.mjs";
 import Claude from "./ai-claude.mjs";
 import Gemini from "./ai-gemini.mjs";
 import LlamaCpp from "./ai-llamacpp.mjs";
+import OpenAI from "./ai-openai.mjs";
 
 const PROVIDERS = {
 	ollama: Ollama,
 	claude: Claude,
 	gemini: Gemini,
-	llamacpp: LlamaCpp
+	llamacpp: LlamaCpp,
+	openai: OpenAI
 };
 
 class AIConnections {
@@ -156,7 +158,7 @@ class AIConnections {
 			if (!testInstance.config.apiKey) {
 				throw new Error("API Key is required");
 			}
-			const models = await testInstance._getAvailableModels();
+			const models = await testInstance._getAvailableModels({ strict: true });
 			if (!models || models.length === 0) {
 				throw new Error("Failed to fetch available Gemini models");
 			}
@@ -175,9 +177,20 @@ class AIConnections {
 			if (!testInstance.config.apiKey) {
 				throw new Error("API Key is required");
 			}
-			const models = await testInstance._getAvailableModels();
+			const models = await testInstance._getAvailableModels({ strict: true });
 			if (!models || models.length === 0) {
 				throw new Error("Failed to fetch available Claude models");
+			}
+			return {
+				models: models.map(m => m.value)
+			};
+		} else if (connConfig.provider === "openai") {
+			if (!testInstance.config.apiKey) {
+				throw new Error("API Key is required");
+			}
+			const models = await testInstance._getAvailableModels({ strict: true });
+			if (!models || models.length === 0) {
+				throw new Error("Failed to fetch available OpenAI-compatible models");
 			}
 			return {
 				models: models.map(m => m.value)
@@ -189,7 +202,12 @@ class AIConnections {
 	saveConnection(conn) {
 		const index = this.connections.findIndex(c => c.id === conn.id);
 		if (index !== -1) {
-			this.connections[index] = conn;
+			const existing = this.connections[index];
+			this.connections[index] = {
+				...existing,
+				...conn,
+				config: { ...existing.config, ...conn.config }
+			};
 		} else {
 			this.connections.push(conn);
 		}

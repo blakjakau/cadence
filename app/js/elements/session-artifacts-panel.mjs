@@ -3,6 +3,7 @@ import { Button } from './button.mjs';
 import conduitClient from '../conduit-client.mjs';
 import workspaceClient from '../workspace-client.mjs';
 import { openCommandPolicyReviewModal } from '../util/command-policy-review.mjs';
+import { promptAddFolder } from './file-dialogs.mjs';
 
 export class UIAccordion extends Block {
     constructor(sectionKey, titleText, iconText, iconColor = null, hasEditButton = false, editBtnClass = "") {
@@ -57,7 +58,7 @@ export class UIAccordion extends Block {
             if (e.target.closest("button") || e.target.closest(".header-actions")) return;
             const session = (typeof this.getTargetSession === "function") ? this.getTargetSession() : ui.aiManager.activeSession;
             if (!session) return;
-            session._accordionStates = session._accordionStates || { settings: false, plan: true, tasks: true, backups: true, scratchpad: true };
+            session._accordionStates = session._accordionStates || { settings: false, plan: true, tasks: true, backups: true, scratchpad: true, workspaces: true };
 
             const isExpanded = this.classList.toggle("expanded");
             session._accordionStates[this.sectionKey] = isExpanded;
@@ -102,16 +103,19 @@ export class SessionArtifactsPanel extends Block {
         // 1. Session Settings Accordion
         this._buildSettingsAccordion();
 
-        // 2. Edit History & Rollbacks Accordion
+        // 2. Workspaces Accordion
+        this._buildWorkspacesAccordion();
+
+        // 3. Edit History & Rollbacks Accordion
         this._buildBackupsAccordion();
 
-        // 3. Scratchpad Accordion
+        // 4. Scratchpad Accordion
         this._buildScratchpadAccordion();
 
-        // 4. Task Checklist Accordion
+        // 5. Task Checklist Accordion
         this._buildTasksAccordion();
 
-        // 5. Implementation Plan Accordion
+        // 6. Implementation Plan Accordion
         this._buildPlanAccordion();
 
         // Point every accordion's expand/collapse state at the source (not active) session.
@@ -121,6 +125,7 @@ export class SessionArtifactsPanel extends Block {
         this.scratchpadAccordion.getTargetSession = accTarget;
         this.tasksAccordion.getTargetSession = accTarget;
         this.planAccordion.getTargetSession = accTarget;
+        this.workspacesAccordion.getTargetSession = accTarget;
     }
 
     // Returns the session this panel is currently targeting (the source session of the
@@ -425,6 +430,166 @@ export class SessionArtifactsPanel extends Block {
         }
     }
 
+    _buildWorkspacesAccordion() {
+        this.workspacesAccordion = new UIAccordion("workspaces", "Workspaces", "folder_copy", "var(--theme)");
+        this.workspacesItem = this.workspacesAccordion;
+        this.workspacesContentWrapper = this.workspacesAccordion.content;
+        this.workspacesArrow = this.workspacesAccordion.arrow;
+
+        this.workspacesContentWrapper.classList.add("accordion-content", "workspaces-content-wrapper");
+
+        const intro = document.createElement("p");
+        intro.className = "workspaces-intro";
+        intro.innerHTML = "Workspaces scoped to this chat are available to this agent. Roots pinned at the top of the app are available to every chat.";
+        this.workspacesContentWrapper.appendChild(intro);
+
+        // Global pinned roots (workspace-level) - read-only reference
+        const globalHeading = document.createElement("div");
+        globalHeading.className = "workspaces-group-heading";
+        globalHeading.textContent = "Pinned globally (all chats)";
+        this.workspacesContentWrapper.appendChild(globalHeading);
+
+        this.globalWorkspacesList = document.createElement("div");
+        this.globalWorkspacesList.className = "workspaces-list global-workspaces-list";
+        this.workspacesContentWrapper.appendChild(this.globalWorkspacesList);
+
+        // This chat's own workspaces
+        const chatHeading = document.createElement("div");
+        chatHeading.className = "workspaces-group-heading";
+        chatHeading.textContent = "This chat";
+        this.workspacesContentWrapper.appendChild(chatHeading);
+
+        this.chatWorkspacesList = document.createElement("div");
+        this.chatWorkspacesList.className = "workspaces-list chat-workspaces-list";
+        this.workspacesContentWrapper.appendChild(this.chatWorkspacesList);
+
+        const addRow = document.createElement("div");
+        addRow.className = "workspaces-add-row";
+        this.addWorkspaceBtn = new Button("Add Workspace");
+        this.addWorkspaceBtn.icon = "create_new_folder";
+        this.addWorkspaceBtn.className = "themed";
+        addRow.appendChild(this.addWorkspaceBtn);
+        this.workspacesContentWrapper.appendChild(addRow);
+
+        this.addWorkspaceBtn.onclick = async (e) => {
+            if (e) e.stopPropagation();
+            const session = this._getTargetSession();
+            if (!session) return;
+            const path = await promptAddFolder();
+            if (!path) return;
+            if (!session.workspaces) session.workspaces = [];
+            if (!session.workspaces.includes(path)) {
+                session.workspaces.push(path);
+                session.lastModified = Date.now();
+                await workspaceClient.setSession(session.id, session);
+                // Make sure this folder is also open in the workspace so the agent can reach it.
+                const ws = window.workspace;
+                const normPath = (p) => (p || "").replace(/\\/g, '/').replace(/\/+$/, '');
+                if (ws && Array.isArray(ws.folders) && !ws.folders.some(f => normPath(f) === normPath(path))) {
+                    ws.folders.push(path);
+                    await workspaceClient.setWorkspace(ws);
+                    if (window.conduit) window.conduit.wsSetActiveRoots(ws.folders).catch(err => console.warn(err));
+                    if (window.ui?.fileList?.refreshFolders) window.ui.fileList.refreshFolders();
+                }
+                this.renderWorkspaces();
+            } else {
+                window.modal.toast("That workspace is already scoped to this chat.");
+            }
+        };
+
+        this.container.appendChild(this.workspacesAccordion);
+    }
+
+    renderWorkspaces() {
+        const session = this._getTargetSession();
+        if (!session) return;
+
+        const availableFolders = window.workspace?.folders || [];
+
+        // --- Global pinned roots (read-only) ---
+        const globalPins = window.workspace?.pinnedRoots || [];
+        this.globalWorkspacesList.innerHTML = "";
+        if (globalPins.length === 0) {
+            const empty = document.createElement("span");
+            empty.className = "workspaces-empty";
+            empty.textContent = "No roots pinned globally. Use the Roots Filter in the top bar to pin workspaces for all chats.";
+            this.globalWorkspacesList.appendChild(empty);
+        } else {
+            for (const rootPath of globalPins) {
+                const norm = rootPath.replace(/\\/g, '/').replace(/\/+$/, '');
+                const rootName = norm.split('/').filter(Boolean).pop() || rootPath;
+                const available = availableFolders.some(f => {
+                    const nf = f.replace(/\\/g, '/').replace(/\/+$/, '');
+                    return nf === norm || nf.endsWith('/' + norm) || nf.split('/').filter(Boolean).pop() === rootName;
+                });
+                const row = document.createElement("div");
+                row.className = "workspace-row" + (available ? "" : " unavailable");
+                const icon = document.createElement("ui-icon");
+                icon.textContent = "lock";
+                icon.title = "Pinned globally - available to all chats";
+                const nameSpan = document.createElement("span");
+                nameSpan.className = "workspace-name";
+                nameSpan.textContent = rootName;
+                nameSpan.title = rootPath;
+                const statusSpan = document.createElement("span");
+                statusSpan.className = "workspace-status";
+                statusSpan.textContent = available ? "global" : "unavailable";
+                row.append(icon, nameSpan, statusSpan);
+                this.globalWorkspacesList.appendChild(row);
+            }
+        }
+
+        // --- This chat's workspaces ---
+        const legacyChatPins = Array.isArray(session.pinnedRoots) ? session.pinnedRoots : [];
+        const chatWorkspacesRaw = session.workspaces || [];
+        const chatWorkspaces = [...new Set([...chatWorkspacesRaw, ...legacyChatPins.filter(p => !chatWorkspacesRaw.includes(p))])];
+        this.chatWorkspacesList.innerHTML = "";
+        if (chatWorkspaces.length === 0) {
+            const empty = document.createElement("span");
+            empty.className = "workspaces-empty";
+            empty.textContent = "No chat-specific workspaces. Click 'Add Workspace' to scope one to this chat.";
+            this.chatWorkspacesList.appendChild(empty);
+        } else {
+            for (const rootPath of chatWorkspaces) {
+                const norm = rootPath.replace(/\\/g, '/').replace(/\/+$/, '');
+                const rootName = norm.split('/').filter(Boolean).pop() || rootPath;
+                const available = availableFolders.some(f => {
+                    const nf = f.replace(/\\/g, '/').replace(/\/+$/, '');
+                    return nf === norm || nf.endsWith('/' + norm) || nf.split('/').filter(Boolean).pop() === rootName;
+                });
+                const row = document.createElement("div");
+                row.className = "workspace-row" + (available ? "" : " unavailable");
+                const icon = document.createElement("ui-icon");
+                icon.textContent = available ? "folder" : "warning";
+                const nameSpan = document.createElement("span");
+                nameSpan.className = "workspace-name";
+                nameSpan.textContent = rootName;
+                nameSpan.title = rootPath;
+                const removeBtn = new Button("Remove");
+                removeBtn.icon = "close";
+                removeBtn.className = "secondary workspace-remove-btn";
+                removeBtn.onclick = async (e) => {
+                    e.stopPropagation();
+                    if (Array.isArray(session.workspaces)) {
+                        session.workspaces = session.workspaces.filter(w => w !== rootPath);
+                    }
+                    if (Array.isArray(session.pinnedRoots)) {
+                        const normRoot = rootPath.replace(/\\/g, '/').replace(/\/+$/, '');
+                        session.pinnedRoots = session.pinnedRoots.filter(p => {
+                            const np = (p || "").replace(/\\/g, '/').replace(/\/+$/, '');
+                            return np !== normRoot && np !== rootPath && p !== rootPath && np.split('/').filter(Boolean).pop() !== rootPath.split('/').filter(Boolean).pop();
+                        });
+                    }
+                    session.lastModified = Date.now();
+                    await workspaceClient.setSession(session.id, session);
+                    this.renderWorkspaces();
+                };
+                row.append(icon, nameSpan, removeBtn);
+                this.chatWorkspacesList.appendChild(row);
+            }
+        }
+    }
+
     _buildPlanAccordion() {
         this.planAccordion = new UIAccordion("plan", "Implementation Plan", "assignment", "#d19a66", true, "edit-plan-btn");
         this.planItem = this.planAccordion;
@@ -713,6 +878,7 @@ export class SessionArtifactsPanel extends Block {
         if (this.container.querySelector(".plan-tasks-empty")) {
             this.container.innerHTML = "";
             this.container.appendChild(this.settingsItem);
+            this.container.appendChild(this.workspacesItem);
             this.container.appendChild(this.backupsItem);
             this.container.appendChild(this.scratchpadItem);
             this.container.appendChild(this.tasksItem);
@@ -720,13 +886,16 @@ export class SessionArtifactsPanel extends Block {
         }
 
         // Restore accordion expanded states
-        session._accordionStates = session._accordionStates || { settings: false, plan: true, tasks: true, backups: true, scratchpad: true };
-        
+        session._accordionStates = session._accordionStates || { settings: false, plan: true, tasks: true, backups: true, scratchpad: true, workspaces: true };
+
         this.settingsAccordion.applyState(session._accordionStates.settings !== false);
         this.planAccordion.applyState(session._accordionStates.plan !== false);
         this.tasksAccordion.applyState(session._accordionStates.tasks !== false);
         this.backupsAccordion.applyState(session._accordionStates.backups !== false);
         this.scratchpadAccordion.applyState(session._accordionStates.scratchpad !== false);
+        this.workspacesAccordion.applyState(session._accordionStates.workspaces !== false);
+
+        this.renderWorkspaces();
 
         // Update checkbox toggles and numeric inputs
         this.agentModeCheckbox.checked = session.agentMode ?? (ui.aiManager.config?.defaultAgentMode ?? false);

@@ -67,8 +67,6 @@ class AgentTools {
 
     _getEffectiveWorkspaceFolders(sourceId = null) {
         const allFolders = window.workspace?.folders || [];
-        if (allFolders.length === 0) return [];
-
         try {
             const aiManager = window.ui?.aiManager;
             const session = this._resolveSession(sourceId);
@@ -77,25 +75,39 @@ class AgentTools {
                 return aiManager.getEffectiveWorkspaceFolders(session);
             }
 
-            const pinnedRoots = session?.pinnedRoots || [];
-            if (pinnedRoots.length > 0) {
-                const filtered = allFolders.filter(f => {
+            // Fallback mirrors AIManager.getEffectiveWorkspaceFolders.
+            const globalPins = window.workspace?.pinnedRoots || [];
+            const chatWorkspaces = session?.workspaces || [];
+            const legacyPins = session?.pinnedRoots || [];
+            const allPins = [...globalPins, ...chatWorkspaces, ...legacyPins];
+            if (allPins.length === 0) return [];
+
+            const seen = new Set();
+            const resolved = [];
+
+            for (const pin of allPins) {
+                const normPin = pin.replace(/\\/g, '/').replace(/\/+$/, '');
+                const namePin = normPin.split('/').filter(Boolean).pop() || normPin;
+                if (seen.has(normPin) || seen.has(namePin)) continue;
+                seen.add(normPin);
+                seen.add(namePin);
+
+                const match = allFolders.find(f => {
                     const normF = f.replace(/\\/g, '/').replace(/\/+$/, '');
                     const nameF = normF.split('/').filter(Boolean).pop() || normF;
-                    return pinnedRoots.some(p => {
-                        const normP = p.replace(/\\/g, '/').replace(/\/+$/, '');
-                        const nameP = normP.split('/').filter(Boolean).pop() || normP;
-                        return normF === normP || normF.endsWith('/' + normP) || nameF === nameP;
-                    });
+                    return normF === normPin || normF.endsWith('/' + normPin) || nameF === namePin;
                 });
-                if (filtered.length > 0) return filtered;
-                return pinnedRoots;
+
+                // Only roots that resolve to an actually-open folder are available to the agent.
+                if (match) resolved.push(match);
             }
+
+            return resolved;
         } catch (e) {
-            console.warn("[AgentTools] Error resolving pinned roots:", e);
+            console.warn("[AgentTools] Error resolving effective workspace folders:", e);
         }
 
-        return allFolders;
+        return [];
     }
 
     _resolveAndValidatePath(targetPath, sourceId = null) {
@@ -3611,7 +3623,8 @@ Snippet: ${r.content || r.snippet || ""}`;
             planningMode: false,
             forgivenessMode: parentSession.forgivenessMode ?? false,
             connectionId: selectedConnectionId,
-            pinnedRoots: parentSession.pinnedRoots || []
+            pinnedRoots: parentSession.pinnedRoots || [],
+            workspaces: parentSession.workspaces || [],
         };
 
         // Save session files to IndexedDB

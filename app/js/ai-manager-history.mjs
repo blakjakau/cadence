@@ -143,14 +143,19 @@ class AIManagerHistory {
 	populateFileBar() {
 		if (!this.manager.fileBar) return;
 		this.manager.fileBar.clear();
-		// 1. Add pinned root chips
-		const pinnedRoots = this.manager.activeSession?.pinnedRoots || [];
+		// 1. Add pinned root chips (global workspace pins, available to all agents)
+		const pinnedRoots = window.workspace?.pinnedRoots || [];
 		const workspaceFolders = window.workspace?.folders || [];
 		for (const rootPath of pinnedRoots) {
 			const matchingFolder = workspaceFolders.find(f => f === rootPath) || rootPath;
 			const norm = matchingFolder.replace(/\\/g, '/').replace(/\/+$/, '');
 			const rootName = norm.split('/').filter(Boolean).pop() || matchingFolder;
-			this.manager.fileBar.addRoot({ name: rootName, path: matchingFolder, id: `rootchip-${rootPath}` });
+			const chip = this.manager.fileBar.addRoot({ name: rootName, path: matchingFolder, id: `rootchip-${rootPath}` });
+			// Mark roots that are no longer open/available in the workspace so the user knows there's an issue.
+			if (!workspaceFolders.includes(rootPath)) {
+				chip.setAttribute("unavailable", "");
+				chip.setAttribute('title', `${matchingFolder} (no longer open in workspace)`);
+			}
 		}
 		// 2. Add pinned skill chips
 		const pinnedSkills = this.manager.activeSession?.pinnedSkills || [];

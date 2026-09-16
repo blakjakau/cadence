@@ -35,6 +35,7 @@ yarn-error.log*
 
 # Go
 /cadence
+/cadence-app
 /conduit
 /conduit-server
 /.cadence/
