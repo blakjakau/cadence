@@ -1855,3 +1855,112 @@ ui-editor-holder .artifacts-accordion-container .ace_editor,
     color: #fecaca !important;
 }
 
+/* --- Workspaces Accordion --- */
+.artifacts-accordion-container .workspaces-content-wrapper {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    padding: 14px 16px;
+}
+
+.artifacts-accordion-container .workspaces-intro {
+    font-size: 11.5px;
+    line-height: 1.5;
+    color: var(--text-secondary);
+    margin: 0;
+}
+
+.artifacts-accordion-container .workspaces-group-heading {
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--text-secondary);
+    margin-top: 4px;
+}
+
+.artifacts-accordion-container .workspaces-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.artifacts-accordion-container .workspace-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-primary);
+    border-radius: var(--borderRadius);
+}
+
+.artifacts-accordion-container .workspace-row ui-icon {
+    flex-shrink: 0;
+    font-size: 16px;
+    color: var(--theme);
+}
+
+.artifacts-accordion-container .workspace-row.unavailable ui-icon {
+    color: var(--color-warning, #e5a50a);
+}
+
+.artifacts-accordion-container .workspace-row.unavailable {
+    border-color: color-mix(in srgb, var(--color-warning, #e5a50a) 55%, var(--border-primary));
+    background: color-mix(in srgb, var(--color-warning, #e5a50a) 8%, var(--bg-secondary));
+}
+
+.artifacts-accordion-container .workspace-name {
+    flex: 1;
+    min-width: 0;
+    font-family: var(--font-mono);
+    font-size: 12.5px;
+    color: var(--text-primary);
+    text-overflow: ellipsis;
+    overflow: hidden;
+    white-space: nowrap;
+}
+
+.artifacts-accordion-container .workspace-status {
+    flex-shrink: 0;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--text-secondary);
+}
+
+.artifacts-accordion-container .workspace-row.unavailable .workspace-status {
+    color: var(--color-warning, #e5a50a);
+}
+
+.artifacts-accordion-container .workspace-remove-btn {
+    flex-shrink: 0;
+    padding: 2px 8px;
+    font-size: 11px;
+}
+
+.artifacts-accordion-container .workspaces-add-row {
+    margin-top: 4px;
+}
+
+.artifacts-accordion-container .workspaces-add-row ui-button {
+    width: 100%;
+}
+
+.artifacts-accordion-container .workspaces-empty {
+    font-size: 11.5px;
+    color: var(--text-secondary);
+    font-style: italic;
+}
+
+/* Root chips: warn when the pinned root is no longer open/available in the workspace */
+ui-rootchip[unavailable] {
+    border-color: var(--color-warning, #e5a50a) !important;
+    background: color-mix(in srgb, var(--color-warning, #e5a50a) 12%, var(--bg-secondary, #1e1e1e)) !important;
+}
+
+ui-rootchip[unavailable] .root-chip-icon,
+ui-rootchip[unavailable] span {
+    color: var(--color-warning, #e5a50a) !important;
+}
+

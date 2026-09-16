@@ -277,7 +277,9 @@ class AIManagerSessions {
 			allowSubAgents: defaultSubAgents,
 			allowRunCommand: defaultRunCommand,
 			pinnedSkills: [],
-			pinnedRoots: [...(this.activeSession?.pinnedRoots || [])],
+			// Chat-scoped workspaces: these roots are available to this chat only.
+			// Globally pinned roots live on the workspace object and apply to all chats.
+			workspaces: [],
 		};
 
 		await workspaceClient.setSession(newId, newSessionData);
@@ -508,6 +510,64 @@ class AIManagerSessions {
 
 		this.manager._dispatchContextUpdate("session_switched");
 		this.manager.promptEditor.focus(); // Ensure focus returns to the prompt editor after a switch
+
+		// Attempt to re-add any chat-scoped workspaces that are no longer open in the workspace.
+		this._reAddSessionWorkspaces(session);
+	}
+
+	async _reAddSessionWorkspaces(session) {
+		if (!session || !Array.isArray(session.workspaces) || session.workspaces.length === 0) return;
+
+		const workspace = window.workspace;
+		if (!workspace || !Array.isArray(workspace.folders)) return;
+
+		const normPath = (p) => (p || "").replace(/\\/g, '/').replace(/\/+$/, '');
+		const isOpen = (path) => workspace.folders.some(f => normPath(f) === normPath(path));
+
+		const missing = session.workspaces.filter(w => !isOpen(w));
+		if (missing.length === 0) return;
+
+		const restored = [];
+		const unavailable = [];
+
+		for (const ws of missing) {
+			try {
+				const resp = await window.conduit.wsList(ws);
+				const stillExists = resp && !resp.error;
+				if (stillExists) {
+					workspace.folders.push(ws);
+					restored.push(ws);
+				} else {
+					unavailable.push(ws);
+				}
+			} catch (err) {
+				console.warn("[AIManagerSessions] Failed to check workspace:", ws, err);
+				unavailable.push(ws);
+			}
+		}
+
+		if (restored.length > 0) {
+			try {
+				await workspaceClient.setWorkspace(workspace);
+				if (window.conduit) {
+					window.conduit.wsSetActiveRoots(workspace.folders).catch(e => console.warn(e));
+				}
+				if (window.ui?.fileList?.refreshFolders) window.ui.fileList.refreshFolders();
+			} catch (err) {
+				console.warn("[AIManagerSessions] Failed to persist restored workspaces:", err);
+			}
+		}
+
+		if (unavailable.length > 0) {
+			const names = unavailable.map(ws => normPath(ws).split('/').filter(Boolean).pop() || ws).join(", ");
+			console.warn("[AIManagerSessions] Workspaces no longer available:", unavailable);
+			if (window.modal?.notice) {
+				window.modal.notice(
+					`Some workspaces scoped to this chat are no longer available:<br><small>${unavailable.map(ws => `<code>${ws}</code>`).join('<br>')}</small>`,
+					"Missing Workspaces"
+				);
+			}
+		}
 	}
 
 	async repairDisconnectedSubAgents(session) {
