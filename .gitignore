@@ -39,3 +39,20 @@ yarn-error.log*
 /conduit
 /conduit-server
 /.cadence/
+
+# Python (RAG sidecar tools/rag_index.py + tools/rag_query.py)
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# RAG sidecar (Qdrant mirror) — no repo artifacts by design:
+# index lives in the Qdrant Docker named volume (qdrant_storage), embeddings
+# come from LM Studio over HTTP. tools/*.py write nothing to the repo
+# (resumability is via the Qdrant skip-test, not a state file), so there is
+# nothing to ignore beyond the Python cache entries above. Do NOT add the
+# collection data here; it never touches disk in this repo.
+
+# LSP (opencode "lsp": true) — servers install under ~/.cache / project
+# .opencode/node_modules (already ignored via .opencode/.gitignore).
