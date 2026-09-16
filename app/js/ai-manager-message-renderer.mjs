@@ -1290,11 +1290,10 @@ export default class AIManagerMessageRenderer {
         if (!message) return "";
 
         let outputTokens = 0;
-        if (this.aiManager.activeAI) {
+        let thoughtTokens = 0;
+        const activeAI = this.aiManager.ai;
+        if (activeAI) {
             let fullOutputText = content || message.content || "";
-            if (message.thought && !fullOutputText.includes(message.thought)) {
-                fullOutputText += "\n" + message.thought;
-            }
             if (message.toolCalls && message.toolCalls.length > 0) {
                 for (const tc of message.toolCalls) {
                     const callObj = tc.functionCall || tc;
@@ -1304,7 +1303,10 @@ export default class AIManagerMessageRenderer {
                     }
                 }
             }
-            outputTokens = this.aiManager.activeAI.estimateTokens([{ role: 'assistant', content: fullOutputText }]);
+            outputTokens = activeAI.estimateTokens([{ role: 'assistant', content: fullOutputText }]);
+            if (message.thought) {
+                thoughtTokens = activeAI.estimateTokens([{ role: 'assistant', content: message.thought }]);
+            }
         } else if (typeof message.tokenCount === 'number') {
             outputTokens = message.tokenCount;
         }
@@ -1318,8 +1320,8 @@ export default class AIManagerMessageRenderer {
                 if (nextMessage && nextMessage.type === "tool_response") {
                     if (typeof nextMessage.tokenCount === 'number') {
                         inputTokens = nextMessage.tokenCount;
-                    } else if (this.aiManager.activeAI) {
-                        inputTokens = this.aiManager.activeAI.estimateTokens([nextMessage]);
+                    } else if (activeAI) {
+                        inputTokens = activeAI.estimateTokens([nextMessage]);
                     }
                 }
             }
@@ -1335,13 +1337,17 @@ export default class AIManagerMessageRenderer {
         const outClass = getTokenColorClass(outputTokens);
         const outTag = `<span class="token-count-tag ${outClass}" title="Output tokens: ${outputTokens}">${outputTokens}</span>`;
 
+        const cotTag = thoughtTokens > 0
+            ? `<span class="token-count-tag tag-purple" title="Chain-of-thought tokens: ${thoughtTokens}">${thoughtTokens}</span><span class="turn-tokens-sep">|</span>`
+            : "";
+
         if (inputTokens !== null) {
             const inClass = getTokenColorClass(inputTokens);
             const inTag = `<span class="token-count-tag ${inClass}" title="Tool result input tokens: ${inputTokens}">${inputTokens}</span>`;
-            return `${inTag}<span class="turn-tokens-sep">|</span>${outTag}`;
+            return `${inTag}<span class="turn-tokens-sep">|</span>${cotTag}${outTag}`;
         }
 
-        return outTag;
+        return `${cotTag}${outTag}`;
     }
 
     inferLanguageFromDiff(diffContent) {
