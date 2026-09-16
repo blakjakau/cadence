@@ -714,8 +714,10 @@ Snippet: ${r.content || r.snippet || ""}`;
                 const session = openTab.config.session;
                 const edits = this.editBuffer[resolvedPath]?.edits || [];
                 content = this._getCleanContentOfSession(session, edits);
-            } else if (hasPendingDeferredEdits && window.ui?.fileList?.open) {
-                // If deferred validation edits exist but tab wasn't actively open, load from session
+            } else if (hasPendingDeferredEdits && this._shouldOpenEditsForReview(sourceId) && window.ui?.fileList?.open) {
+                // If deferred validation edits exist but tab wasn't actively open, load from session.
+                // Only open the file when "Open Edits for Review" is enabled; otherwise fall through
+                // and read from disk so the tab is never opened as a side effect of a read_file call.
                 await window.ui.fileList.open(resolvedPath, resolvedPath);
                 openTab = this._findOpenTab(resolvedPath);
                 if (openTab && openTab.config.session) {

@@ -221,7 +221,9 @@
     margin-bottom: 8px;
     width: fit-content;
     max-width: 85%;
-    display: block;
+    display: flex;
+    align-items: center;
+    gap: 6px;
 }
 
 .prompt-pill {
@@ -232,73 +234,72 @@
     word-wrap: break-word;
 }
 
-.delete-history-button {
-    background-color: var(--theme-dark);
-    color: var(--text-inverted);
-    border: none;
-    border-radius: 50%;
-    width: 24px;
-    height: 24px;
-    min-width: 24px;
-    min-height: 24px;
-    display: flex;
-    justify-content: center;
-    align-items: center;
-    cursor: pointer;
-    padding: 0;
-    position: absolute;
-    top: -4px;
-    right: -4px;
-    opacity: 0;
-    transition: opacity 0.2s ease-in-out, background-color 0.2s ease-in-out;
-    box-shadow: 0 1px 3px var(--shadow-color);
-    z-index: 1;
-}
-
-.replay-history-button {
-    background-color: var(--theme-dark);
-    color: var(--text-inverted);
-    border: none;
-    border-radius: 50%;
-    width: 24px;
-    height: 24px;
-    min-width: 24px;
-    min-height: 24px;
-    display: flex;
-    justify-content: center;
-    align-items: center;
-    cursor: pointer;
-    padding: 0;
-    position: absolute;
-    top: -4px;
-    right: 24px;
-    opacity: 0;
-    transition: opacity 0.2s ease-in-out, background-color 0.2s ease-in-out;
-    box-shadow: 0 1px 3px var(--shadow-color);
-    z-index: 1;
-}
-
+/* Turn action buttons are icon-only (no bubble) */
+.delete-history-button,
+.replay-history-button,
 .edit-history-button {
-    background-color: var(--theme-dark);
-    color: var(--text-inverted);
     border: none;
-    border-radius: 50%;
-    width: 24px;
-    height: 24px;
-    min-width: 24px;
-    min-height: 24px;
+    min-height: 0;
+    padding: 0;
     display: flex;
     justify-content: center;
     align-items: center;
     cursor: pointer;
+    flex-shrink: 0;
+    transition: color 0.2s ease-in-out;
+}
+
+/* Hover-reveal action buttons (model turn headers + user prompt pills) */
+.turn-actions-wrapper {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    flex-shrink: 0;
+}
+
+.turn-actions-wrapper .turn-actions-ellipsis {
+    font-size: 16px;
+    color: var(--text-secondary);
+    cursor: pointer;
+}
+
+.turn-actions-buttons {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    max-width: 0;
+    overflow: hidden;
+    transition: max-width 0.2s ease;
+    flex-shrink: 0;
+}
+
+.turn-actions-wrapper:hover .turn-actions-buttons {
+    max-width: 120px;
+}
+
+/* Icon-only button sizing + colors */
+.turn-actions-buttons ui-button {
+    min-height: 0;
     padding: 0;
-    position: absolute;
-    top: -4px;
-    right: 52px;
-    opacity: 0;
-    transition: opacity 0.2s ease-in-out, background-color 0.2s ease-in-out;
-    box-shadow: 0 1px 3px var(--shadow-color);
-    z-index: 1;
+}
+
+.turn-actions-buttons ui-button ui-icon {
+    font-size: 16px;
+    height: 1.4em;
+    line-height: 1.4em;
+    max-width: 1.4em;
+}
+
+.prompt-pill-wrapper .turn-actions-buttons ui-button {
+    color: var(--text-inverted);
+}
+
+.prompt-pill-wrapper .turn-actions-ellipsis {
+    color: var(--text-inverted);
+}
+
+.model-turn-header .turn-actions-buttons ui-button {
+    color: var(--text-secondary);
 }
 
 /* ACE Editor read-only state, specifically for the prompt editor */
@@ -309,22 +310,12 @@
 }
 
 .delete-history-button:hover {
-    background-color: var(--color-error);
+    color: var(--color-error);
 }
 
 .replay-history-button:hover,
 .edit-history-button:hover {
-    background-color: var(--theme);
-}
-
-.prompt-pill-wrapper:hover .delete-history-button,
-.prompt-pill-wrapper:hover .replay-history-button,
-.prompt-pill-wrapper:hover .edit-history-button,
-.context-file-wrapper:hover .delete-history-button,
-.response-block:hover .delete-history-button,
-.system-message-block:hover .delete-history-button,
-.task-state-block:hover .delete-history-button {
-    opacity: 1;
+    color: var(--theme);
 }
 
 .context-file-wrapper {
@@ -798,37 +789,16 @@
     border-color: rgba(220, 38, 38, 0.25);
 }
 
+.model-turn-header .token-count-tag.tag-purple {
+    background: rgba(139, 92, 246, 0.15);
+    color: #8b5cf6;
+    border-color: rgba(139, 92, 246, 0.25);
+}
+
 .model-turn-header .replay-turn-btn,
 .model-turn-header .delete-turn-btn {
-    opacity: 0;
-    transition: opacity 0.15s ease;
     cursor: pointer;
-    font-size: 15px;
     color: var(--text-secondary);
-}
-
-.model-turn-header .replay-turn-btn {
-    margin-left: auto;
-    margin-right: 4px;
-}
-
-.model-turn-header .delete-turn-btn {
-    margin-left: 0;
-}
-
-.model-turn-header:hover .replay-turn-btn,
-.model-turn-header:hover .delete-turn-btn {
-    opacity: 0.7;
-}
-
-.model-turn-header .replay-turn-btn:hover {
-    opacity: 1;
-    color: var(--theme, #0089cd);
-}
-
-.model-turn-header .delete-turn-btn:hover {
-    opacity: 1;
-    color: var(--color-error, #e06c75);
 }
 
 .model-turn-content {

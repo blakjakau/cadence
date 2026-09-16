@@ -814,7 +814,10 @@ class AIManagerHistory {
 			const deleteButton = this._createSingleDeleteButton(messageId);
 			deleteButton.classList.add("delete-turn-btn");
 
-			header.append(expandIcon, summarySpan, tokensSpan, replayButton, deleteButton);
+			const { wrapper: actionsWrapper, buttons: actionsButtons } = this._createTurnActionsWrapper();
+			actionsButtons.append(replayButton, deleteButton);
+
+			header.append(expandIcon, summarySpan, tokensSpan, actionsWrapper);
 
 			// Content Body
 			const contentDiv = new Block();
@@ -1136,14 +1139,13 @@ class AIManagerHistory {
 			messageBlock.innerHTML = this.md.render(message.content);
 			wrapper.append(messageBlock);
 
-			const editButton = this._createSingleEditButton(message.id);
-			wrapper.append(editButton);
+			const { wrapper: actionsWrapper, buttons: actionsButtons } = this._createTurnActionsWrapper();
 
-			const replayButton = this._createSingleReplayButton(message.id);
-			wrapper.append(replayButton);
+			actionsButtons.append(this._createSingleEditButton(message.id));
+			actionsButtons.append(this._createSingleReplayButton(message.id));
+			actionsButtons.append(this._createSingleDeleteButton(message.id));
 
-			const deleteButton = this._createSingleDeleteButton(message.id);
-			wrapper.append(deleteButton);
+			wrapper.append(actionsWrapper);
 			element = wrapper;
 
 		} else if (message.type === "model" || message.type === "error") {
@@ -1174,7 +1176,10 @@ class AIManagerHistory {
 			const deleteButton = this._createSingleDeleteButton(message.id);
 			deleteButton.classList.add("delete-turn-btn");
 
-			header.append(expandIcon, summarySpan, tokensSpan, replayButton, deleteButton);
+			const { wrapper: actionsWrapper, buttons: actionsButtons } = this._createTurnActionsWrapper();
+			actionsButtons.append(replayButton, deleteButton);
+
+			header.append(expandIcon, summarySpan, tokensSpan, actionsWrapper);
 
 			// Content Body
 			const contentDiv = new Block();
@@ -2439,6 +2444,26 @@ class AIManagerHistory {
 		this.manager._dispatchContextUpdate("task_state_updated");
 	}
 
+	/**
+	 * Creates a turn actions wrapper: an always-visible vertical ellipsis followed by
+	 * a collapsible button container (edit/replay/delete). Buttons expand on hover of the wrapper.
+	 * @returns {{wrapper: HTMLElement, buttons: HTMLElement}}
+	 */
+	_createTurnActionsWrapper() {
+		const wrapper = new Inline();
+		wrapper.className = "turn-actions-wrapper";
+
+		const ellipsis = new Icon();
+		ellipsis.className = "turn-actions-ellipsis";
+		ellipsis.textContent = "more_vert";
+
+		const buttons = new Inline();
+		buttons.className = "turn-actions-buttons";
+
+		wrapper.append(ellipsis, buttons);
+		return { wrapper, buttons };
+	}
+
 	_createSingleEditButton(messageId) {
 		const editButton = new Button();
 		editButton.classList.add("edit-history-button");
@@ -2639,14 +2664,19 @@ class AIManagerHistory {
 			if (!userElement.querySelector(".delete-history-button")) {
 				const userPromptIndex = this.chatHistory.findIndex(msg => msg.id === userMessage.id);
 				if (userPromptIndex !== -1) { // Check that message is still in history
-					const editButton = this._createSingleEditButton(userMessage.id);
-					userElement.append(editButton);
-
-					const replayButton = this._createSingleReplayButton(userMessage.id);
-					userElement.append(replayButton);
-
-					const deleteButton = this._createSingleDeleteButton(userMessage.id);
-					userElement.append(deleteButton);
+					let actionsWrapper = userElement.querySelector(".turn-actions-wrapper");
+					let actionsButtons;
+					if (!actionsWrapper) {
+						const created = this._createTurnActionsWrapper();
+						actionsWrapper = created.wrapper;
+						actionsButtons = created.buttons;
+						userElement.append(actionsWrapper);
+					} else {
+						actionsButtons = actionsWrapper.querySelector(".turn-actions-buttons");
+					}
+					actionsButtons.append(this._createSingleEditButton(userMessage.id));
+					actionsButtons.append(this._createSingleReplayButton(userMessage.id));
+					actionsButtons.append(this._createSingleDeleteButton(userMessage.id));
 				}
 			}
 		}
