@@ -40,6 +40,14 @@ yarn-error.log*
 /conduit-server
 /.cadence/
 
+# Agentic workspace symlinks
+AGENTS.md
+opencode.jsonc
+.opencode/
+
+# RAG/LSD tools
+tools/
+
 # Python (RAG sidecar tools/rag_index.py + tools/rag_query.py)
 __pycache__/
 *.pyc
