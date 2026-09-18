@@ -1339,10 +1339,51 @@ const uiManager = {
 					runGrep(val)
 					break
 				case "find":
-					// 	if(prev) { return currentEditor.findPrevious({needle: val}); }
-					// 	if(next) { return currentEditor.findNext({needle: val}); }
-					currentEditor.find("")
-					currentEditor.find(val)
+					// Search the editor and show results in omnibar panel
+					const matches = []
+					const searchVal = val
+					const editorValue = currentEditor.getValue()
+					try {
+						const regex = new RegExp(searchVal, "gsim")
+						let match
+						while ((match = regex.exec(editorValue)) !== null) {
+							matches.push({
+								row: match.index,
+								text: match[0],
+								range: currentEditor.session.doc.indexToPosition(match.index)
+							})
+						}
+					} catch (e) {
+						console.warn("incomplete or invalid regex find pattern")
+					}
+					// Show results in omnibar panel
+					omni.results.show()
+					omni.results.empty()
+					omni.resultItem = null
+					let counter = 0
+					for (const m of matches) {
+						const result = new Block()
+						if (counter === 0) result.classList.add("active")
+						result.itemIndex = counter
+						result.addEventListener("click", () => {
+							currentEditor.selection.setRange(m.range)
+							omni.results.hide()
+						})
+						result.addEventListener("pointerover", () => {
+							for (let node of omni.results.children) {
+								node.classList.remove("active")
+							}
+							result.classList.add("active")
+							omni.resultItemIndex = result.itemIndex
+						})
+						counter++
+						const escapedText = m.text.replace(/&/g, "&").replace(/</g, "<").replace(/>/g, ">")
+						result.innerHTML = `<code>${escapedText}</code>`
+						omni.results.append(result)
+					}
+					if (matches.length === 0) {
+						omni.results.hide()
+					}
 					break
 			}
 		}
