@@ -171,7 +171,7 @@ const app = {
 	rendererOptions: null,
 	enableLiveAutocompletion: null,
 	keyboardHandler: null,
-	darkmode: "system",
+	theme: "system",
 	aiConfig: {},
 	systemPromptConfig: {}, // NEW: For generic system prompt settings
 }
@@ -871,7 +871,7 @@ const stopOmarchyPolling = () => {
 // class. Falls back to the media query when no desktop theme is detected.
 // Skips pointless work when the theme hasn't changed since the last pass.
 const applySystemTheme = async (force = false) => {
-	if (app.darkmode !== "system") {
+	if (app.theme !== "system") {
 		clearOmarchyPalette()
 		stopOmarchyPolling()
 		return
@@ -907,16 +907,16 @@ const applySystemTheme = async (force = false) => {
 const startOmarchyPolling = () => {
 	if (omarchyPollTimer) return
 	omarchyPollTimer = setInterval(async () => {
-		if (app.darkmode !== "system") {
-			stopOmarchyPolling()
-			return
+if (app.theme !== "system") {
+		stopOmarchyPolling()
+		return
 		}
 		await applySystemTheme()
 	}, 5000)
 }
 
 const execCommandSetDarkMode = (mode) => {
-	app.darkmode = mode
+	app.theme = mode
 
 	switch (mode) {
 		case "light":
@@ -944,7 +944,7 @@ const execCommandSetDarkMode = (mode) => {
 }
 
 prefersDarkMode.addEventListener("change", () => {
-	if (app.darkmode === "system") {
+	if (app.theme === "system") {
 		execCommandSetDarkMode("system")
 	}
 })
@@ -4038,7 +4038,7 @@ setTimeout(async () => {
 			}
 		}
 
-		app.darkmode = stored?.darkmode || "system"
+		app.theme = stored?.theme || "system"
 		app.sessionOptions = stored?.sessionOptions || null
 		app.rendererOptions = stored?.rendererOptions || null
 		app.enableLiveAutocompletion = stored?.enableLiveAutocompletion || null
@@ -4098,7 +4098,7 @@ setTimeout(async () => {
 			updateWorkspaceSelectors()
 		}
 
-		execCommandSetDarkMode(app.darkmode)
+		execCommandSetDarkMode(app.theme)
 
 		saveAppConfig()
 

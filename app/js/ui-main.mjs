@@ -1824,12 +1824,12 @@ const uiManager = {
 
 			const prefersDarkMode = window.matchMedia('(prefers-color-scheme: dark)');
 
-			// Apply the darkmode class to the body based on app.darkmode setting.
+			// Apply the darkmode class to the body based on app.theme setting.
 			// When Omarchy is active, its palette mode wins over the media query.
-			const omarchy = app.darkmode === 'system' ? getCachedOmarchyTheme() : null;
+			const omarchy = app.theme === 'system' ? getCachedOmarchyTheme() : null;
 			const isDark = omarchy
 				? omarchy.mode !== 'light'
-				: (app.darkmode === 'dark' || (app.darkmode === 'system' && prefersDarkMode.matches));
+				: (app.theme === 'dark' || (app.theme === 'system' && prefersDarkMode.matches));
 			if (isDark) {
 				document.body.classList.add("darkmode");
 				darkmodeSelect.icon = "dark_mode";
@@ -1839,7 +1839,7 @@ const uiManager = {
 			}
 
 			// Set the 'done' icon for the currently selected mode in the menu
-			const selectedMenuItem = darkmodeMenu.querySelector(`[args='${app.darkmode}']`);
+			const selectedMenuItem = darkmodeMenu.querySelector(`[args='${app.theme}']`);
 			if (selectedMenuItem) {
 				selectedMenuItem.icon = "done";
 			}
