@@ -1,4 +1,4 @@
-import { Block } from './element.mjs';
+import { Block, Inline } from './element.mjs';
 import { Button } from './button.mjs';
 import conduitClient from '../conduit-client.mjs';
 import workspaceClient from '../workspace-client.mjs';
@@ -33,9 +33,10 @@ export class UIAccordion extends Block {
 
         this.editBtn = null;
         if (hasEditButton) {
-            this.editBtn = new Button("Edit");
+            this.editBtn = new Button("");
             this.editBtn.className = `${editBtnClass} edit-btn`;
             this.editBtn.icon = "edit";
+            this.editBtn.title = "Edit contents";
 
             this.rightContainer.appendChild(this.editBtn);
         }
@@ -93,6 +94,12 @@ export class SessionArtifactsPanel extends Block {
         this.planEditorInstance = null;
         this.tasksEditorInstance = null;
         this.scratchpadEditorInstance = null;
+
+        // Scratchpad version-history viewing state.
+        //   null  = live / "Newest" (the current, uncommitted scratchpad content)
+        //   0..n-1 = index into session.scratchpadVersions (0 = oldest recorded)
+        this.scratchpadViewingIndex = null;
+        this._scratchpadViewSessionId = null;
 
         // Build the outer scroll container programmatically
         this.container = document.createElement("div");
@@ -440,6 +447,34 @@ export class SessionArtifactsPanel extends Block {
 
         this.container.appendChild(this.planAccordion);
 
+        // Cancel button (hidden unless the plan is being edited).
+        // Hides the editor and restores the current plan without
+        // persisting any changes.
+        this.cancelPlanBtn = new Button("");
+        this.cancelPlanBtn.className = "clear-btn cancel-plan-btn";
+        this.cancelPlanBtn.icon = "close";
+        this.cancelPlanBtn.title = "Cancel edit and restore the current plan";
+        this.cancelPlanBtn.hidden = true;
+        this.planAccordion.rightContainer.insertBefore(this.cancelPlanBtn, this.planAccordion.arrow);
+
+        this.cancelPlanBtn.onclick = (e) => {
+            if (e) e.stopPropagation();
+            const session = this._getTargetSession();
+            if (!session || !this.planEditorInstance) return;
+
+            this.planEditorInstance.destroy();
+            this.planEditorInstance = null;
+
+            this.planContent.innerHTML = session.implementationPlan
+                ? ui.aiManager.md.render(session.implementationPlan)
+                : `<span class="empty-state">No implementation plan defined. Cadence will outline one once active.</span>`;
+
+            this.planBtn.text = "Edit";
+            this.planBtn.icon = "edit";
+            this.planBtn.className = "edit-plan-btn";
+            this.cancelPlanBtn.hidden = true;
+        };
+
         this.planBtn.onclick = async (e) => {
             if (e) e.stopPropagation();
             const session = this._getTargetSession();
@@ -464,6 +499,7 @@ export class SessionArtifactsPanel extends Block {
                 this.planContent.appendChild(editorDiv);
 
                 this.planEditorInstance = window.ace.edit(editorDiv);
+                this.cancelPlanBtn.hidden = false;
                 const theme = window.leftEdit?.renderer?.getTheme() || "ace/theme/tomorrow_night";
                 this.planEditorInstance.setTheme(theme);
                 this.planEditorInstance.session.setMode("ace/mode/markdown");
@@ -492,6 +528,7 @@ export class SessionArtifactsPanel extends Block {
                 this.planBtn.text = "Edit";
                 this.planBtn.icon = "edit";
                 this.planBtn.className = "edit-plan-btn";
+                this.cancelPlanBtn.hidden = true;
             }
         };
     }
@@ -510,6 +547,34 @@ export class SessionArtifactsPanel extends Block {
         this.tasksContentWrapper.appendChild(this.tasksContent);
 
         this.container.appendChild(this.tasksAccordion);
+
+        // Cancel button (hidden unless the task checklist is being edited).
+        // Hides the editor and restores the current task list without
+        // persisting any changes.
+        this.cancelTasksBtn = new Button("");
+        this.cancelTasksBtn.className = "clear-btn cancel-tasks-btn";
+        this.cancelTasksBtn.icon = "close";
+        this.cancelTasksBtn.title = "Cancel edit and restore the current task list";
+        this.cancelTasksBtn.hidden = true;
+        this.tasksAccordion.rightContainer.insertBefore(this.cancelTasksBtn, this.tasksAccordion.arrow);
+
+        this.cancelTasksBtn.onclick = (e) => {
+            if (e) e.stopPropagation();
+            const session = this._getTargetSession();
+            if (!session || !this.tasksEditorInstance) return;
+
+            this.tasksEditorInstance.destroy();
+            this.tasksEditorInstance = null;
+
+            this.tasksContent.innerHTML = session.taskList
+                ? ui.aiManager.md.render(session.taskList)
+                : `<span class="empty-state">No task list defined. Cadence will build one once active.</span>`;
+
+            this.tasksBtn.text = "Edit";
+            this.tasksBtn.icon = "edit";
+            this.tasksBtn.className = "edit-tasks-btn";
+            this.cancelTasksBtn.hidden = true;
+        };
 
         this.tasksBtn.onclick = async (e) => {
             if (e) e.stopPropagation();
@@ -534,6 +599,7 @@ export class SessionArtifactsPanel extends Block {
                 this.tasksContent.appendChild(editorDiv);
 
                 this.tasksEditorInstance = window.ace.edit(editorDiv);
+                this.cancelTasksBtn.hidden = false;
                 const theme = window.leftEdit?.renderer?.getTheme() || "ace/theme/tomorrow_night";
                 this.tasksEditorInstance.setTheme(theme);
                 this.tasksEditorInstance.session.setMode("ace/mode/markdown");
@@ -562,6 +628,7 @@ export class SessionArtifactsPanel extends Block {
                 this.tasksBtn.text = "Edit";
                 this.tasksBtn.icon = "edit";
                 this.tasksBtn.className = "edit-tasks-btn";
+                this.cancelTasksBtn.hidden = true;
             }
         };
     }
@@ -588,9 +655,24 @@ export class SessionArtifactsPanel extends Block {
         this.scratchpadArrow = this.scratchpadAccordion.arrow;
         this.scratchpadBtn = this.scratchpadAccordion.editBtn;
 
-        this.clearScratchpadBtn = new Button("Clear");
+        // History toggle button (next to Edit/Clear in the accordion header).
+        // Toggles the `history-open` class on the content wrapper, which reveals
+        // the collapsible version-history section (see CSS .scratchpad-history).
+            this.historyScratchpadBtn = new Button("");
+        this.historyScratchpadBtn.className = "clear-btn history-scratchpad-btn";
+        this.historyScratchpadBtn.icon = "history";
+        this.historyScratchpadBtn.title = "Show / hide scratchpad version history";
+        this.historyScratchpadBtn.onclick = (e) => {
+            if (e) e.stopPropagation();
+            this.scratchpadContentWrapper.classList.toggle("history-open");
+            this._renderScratchpadHistory();
+        };
+        this.scratchpadAccordion.rightContainer.insertBefore(this.historyScratchpadBtn, this.scratchpadArrow);
+
+        this.clearScratchpadBtn = new Button("");
         this.clearScratchpadBtn.className = "clear-btn clear-scratchpad-btn";
         this.clearScratchpadBtn.icon = "delete_sweep";
+        this.clearScratchpadBtn.title = "Clear scratchpad";
         this.scratchpadAccordion.rightContainer.insertBefore(this.clearScratchpadBtn, this.scratchpadArrow);
 
         this.clearScratchpadBtn.onclick = async (e) => {
@@ -601,6 +683,8 @@ export class SessionArtifactsPanel extends Block {
             const confirmed = await window.modal.confirm("Are you sure you want to clear the scratchpad notes?", "Clear Scratchpad");
             if (!confirmed) return;
 
+            // Snapshot the current content before the destructive clear.
+            this._recordScratchpadVersion(session, "clear");
             delete session.scratchpad;
             delete session.scratchpadTokenCount;
             session.lastModified = Date.now();
@@ -618,9 +702,50 @@ export class SessionArtifactsPanel extends Block {
             if (window.modal?.toast) {
                 window.modal.toast("Scratchpad cleared.");
             }
+
+            this.scratchpadViewingIndex = null;
+            this._scratchpadViewSessionId = null;
+            this._setScratchpadEditUI(false);
+            this._renderScratchpadHistory();
+        };
+
+        // Cancel button (hidden unless the scratchpad is being edited).
+        // Hides the editor and restores the existing "live" scratchpad for the
+        // session without persisting any changes.
+        this.cancelScratchpadBtn = new Button("");
+        this.cancelScratchpadBtn.className = "clear-btn cancel-scratchpad-btn";
+        this.cancelScratchpadBtn.icon = "close";
+        this.cancelScratchpadBtn.title = "Cancel edit and restore the live scratchpad";
+        this.cancelScratchpadBtn.hidden = true;
+        this.scratchpadAccordion.rightContainer.insertBefore(this.cancelScratchpadBtn, this.scratchpadArrow);
+
+        this.cancelScratchpadBtn.onclick = (e) => {
+            if (e) e.stopPropagation();
+            const session = this._getTargetSession();
+            if (!session || !this.scratchpadEditorInstance) return;
+
+            this.scratchpadEditorInstance.destroy();
+            this.scratchpadEditorInstance = null;
+            this.scratchpadBtn.text = "Edit";
+            this.scratchpadBtn.icon = "edit";
+            this.scratchpadBtn.className = "edit-scratchpad-btn";
+
+            this.scratchpadViewingIndex = null;
+            this._scratchpadViewSessionId = null;
+            this.scratchpadContent.innerHTML = session.scratchpad
+                ? ui.aiManager.md.render(session.scratchpad)
+                : `<span class="empty-state">No scratchpad notes recorded. Cadence will keep notes here.</span>`;
+            this._setScratchpadEditUI(false);
+            this._renderScratchpadHistory();
         };
 
         this.scratchpadContentWrapper.classList.add("scratchpad-content-wrapper");
+
+        // Collapsible version-history section (hidden unless .history-open on the wrapper).
+        // Placed before the content pane so history sits above the live notes.
+        this.scratchpadHistory = document.createElement("div");
+        this.scratchpadHistory.className = "scratchpad-history";
+        this.scratchpadContentWrapper.appendChild(this.scratchpadHistory);
 
         this.scratchpadContent = document.createElement("div");
         this.scratchpadContent.className = "pane-content markdown-body scratchpad-content";
@@ -637,6 +762,7 @@ export class SessionArtifactsPanel extends Block {
                 this.scratchpadBtn.text = "Save";
                 this.scratchpadBtn.icon = "save";
                 this.scratchpadBtn.className = "apply";
+                this._setScratchpadEditUI(true);
 
                 const currentHeight = this.scratchpadContent.offsetHeight;
                 const rawMarkdown = session.scratchpad || "";
@@ -650,9 +776,10 @@ export class SessionArtifactsPanel extends Block {
                 editorDiv.style.position = "relative";
                 this.scratchpadContent.appendChild(editorDiv);
 
-                this.scratchpadEditorInstance = window.ace.edit(editorDiv);
-                const theme = window.leftEdit?.renderer?.getTheme() || "ace/theme/tomorrow_night";
-                this.scratchpadEditorInstance.setTheme(theme);
+        this.scratchpadEditorInstance = window.ace.edit(editorDiv);
+        const theme = window.leftEdit?.renderer?.getTheme() || "ace/theme/tomorrow_night";
+        this.scratchpadEditorInstance.setTheme(theme);
+
                 this.scratchpadEditorInstance.session.setMode("ace/mode/markdown");
                 this.scratchpadEditorInstance.setValue(rawMarkdown, -1);
                 this.scratchpadEditorInstance.setFontSize(12);
@@ -669,6 +796,8 @@ export class SessionArtifactsPanel extends Block {
                     return;
                 }
 
+                // Snapshot the previous content before overwriting (replace is destructive).
+                this._recordScratchpadVersion(session, "replace");
                 if (newValue.trim()) {
                     session.scratchpad = newValue.trim();
                 } else {
@@ -692,6 +821,7 @@ export class SessionArtifactsPanel extends Block {
                 this.scratchpadBtn.text = "Edit";
                 this.scratchpadBtn.icon = "edit";
                 this.scratchpadBtn.className = "edit-scratchpad-btn";
+                this._setScratchpadEditUI(false);
             }
         };
     }
@@ -775,6 +905,22 @@ export class SessionArtifactsPanel extends Block {
             this.scratchpadBtn.className = "edit-scratchpad-btn";
         }
 
+        // Keep the cancel button hidden whenever we are NOT in scratchpad edit mode
+        // (i.e. when the editor instance is not open), regardless of prior state.
+        if (this.cancelScratchpadBtn) {
+            this.cancelScratchpadBtn.hidden = !this.scratchpadEditorInstance;
+        }
+        // Keep the plan and tasks cancel buttons in sync with their editor states.
+        if (this.cancelPlanBtn) {
+            this.cancelPlanBtn.hidden = !this.planEditorInstance;
+        }
+        if (this.cancelTasksBtn) {
+            this.cancelTasksBtn.hidden = !this.tasksEditorInstance;
+        }
+
+        // Render the scratchpad version-history section (pager + version rows).
+        this._renderScratchpadHistory(session);
+
         // Render modified file backups list using programmatic DOM manipulation
         this.backupsList.innerHTML = "";
 
@@ -834,12 +980,6 @@ export class SessionArtifactsPanel extends Block {
         } else {
             const undoAllContainer = document.createElement("div");
             undoAllContainer.className = "undo-all-container";
-            undoAllContainer.style.display = "flex";
-            undoAllContainer.style.justifyContent = "space-between";
-            undoAllContainer.style.alignItems = "center";
-            undoAllContainer.style.padding = "4px 8px 8px 8px";
-            undoAllContainer.style.borderBottom = "1px solid var(--border)";
-            undoAllContainer.style.marginBottom = "8px";
 
             const setMilestoneBtn = new Button("Set Milestone");
             setMilestoneBtn.icon = "flag";
@@ -1227,7 +1367,421 @@ export class SessionArtifactsPanel extends Block {
     } finally {
         this.isUpdating = false;
     }
-}
+    }
+
+    /**
+     * Toggles the scratchpad edit-mode UI. Entering edit mode hides the version
+     * history and the clear button (to give the editor room) and reveals the
+     * cancel button; exiting edit mode shows history/clear and hides cancel.
+     * @param {boolean} isEditing - True when entering edit mode.
+     */
+    _setScratchpadEditUI(isEditing) {
+        if (this.historyScratchpadBtn) this.historyScratchpadBtn.hidden = isEditing;
+        if (this.clearScratchpadBtn) this.clearScratchpadBtn.hidden = isEditing;
+        if (this.cancelScratchpadBtn) this.cancelScratchpadBtn.hidden = !isEditing;
+        if (isEditing && this.scratchpadContentWrapper) {
+            this.scratchpadContentWrapper.classList.remove("history-open");
+        }
+    }
+
+    /**
+     * Records a snapshot of the session's current scratchpad content into its
+     * version history before a destructive overwrite (replace/clear). Mirrors the
+     * agent-tool helper: deduplicates identical content and caps the history at 25.
+     * @param {Object} session - The session object.
+     * @param {string} mode - The operation that triggered the snapshot ('replace' | 'clear').
+     */
+    _recordScratchpadVersion(session, mode) {
+        if (!session.scratchpad) return; // nothing to preserve
+        if (!Array.isArray(session.scratchpadVersions)) {
+            session.scratchpadVersions = [];
+        }
+        const last = session.scratchpadVersions[session.scratchpadVersions.length - 1];
+        if (last && last.content === session.scratchpad) return; // dedup
+        session.scratchpadVersions.push({
+            version: (last?.version || 0) + 1,
+            timestamp: Date.now(),
+            mode: mode,
+            content: session.scratchpad
+        });
+        if (session.scratchpadVersions.length > 25) {
+            session.scratchpadVersions.splice(0, session.scratchpadVersions.length - 25);
+        }
+    }
+
+    /**
+     * Renders the collapsible scratchpad version-history section: a sticky header
+     * with a Prev/Next pager, the live ("Newest") tile, and one row per recorded
+     * version (newest-first). Also drives the read-only viewing banner in the
+     * main content area.
+     * @param {Object} [session] - Session to render; defaults to the target session.
+     */
+    _renderScratchpadHistory(session = null) {
+        const target = session || this._getTargetSession();
+        if (!target) return;
+
+        // Reset viewing state if it points at a version from a different session.
+        if (this._scratchpadViewSessionId && this._scratchpadViewSessionId !== target.id) {
+            this.scratchpadViewingIndex = null;
+            this._scratchpadViewSessionId = null;
+        }
+
+        const versions = Array.isArray(target.scratchpadVersions) ? target.scratchpadVersions : [];
+
+        // --- Main content area: read-only viewing banner vs. live content. ---
+        if (this.scratchpadViewingIndex !== null && versions[this.scratchpadViewingIndex]) {
+            const v = versions[this.scratchpadViewingIndex];
+            this.scratchpadContent.innerHTML =
+                `<div class="scratchpad-viewing-banner"><ui-icon>history</ui-icon> Viewing version ${v.version} (read-only)</div>` +
+                (v.content ? ui.aiManager.md.render(v.content) : `<span class="empty-state">Empty version.</span>`);
+        } else if (this.scratchpadViewingIndex === null && !this.scratchpadEditorInstance) {
+            // Keep the "Viewing..." indicator visible when the history panel is open
+            // even while the live (current) scratchpad is active, for consistency with
+            // the "Viewing version N (read-only)" banner shown for recorded versions.
+            const liveBanner = this.scratchpadContentWrapper?.classList.contains("history-open")
+                ? `<div class="scratchpad-viewing-banner"><ui-icon>history</ui-icon> Viewing live</div>`
+                : "";
+            this.scratchpadContent.innerHTML =
+                liveBanner +
+                (target.scratchpad
+                    ? ui.aiManager.md.render(target.scratchpad)
+                    : `<span class="empty-state">No scratchpad notes recorded. Cadence will keep notes here.</span>`);
+        }
+
+        // --- Build the history list. ---
+        const section = this.scratchpadHistory;
+        section.innerHTML = "";
+
+        const header = document.createElement("div");
+        header.className = "scratchpad-history-header";
+
+        const title = new Inline();
+        title.className = "scratchpad-history-title";
+        title.textContent = `Version History (${versions.length})`;
+        header.appendChild(title);
+
+        // Prev / Next pager. Position 0 = "Newest" (live), position i+1 = versions[i].
+        // The list renders top-to-bottom as: live (Newest) -> versions[n-1] (newest
+        // recorded) -> ... -> versions[0] (oldest).
+        //   chevron_left  (prev)  steps UP the list toward live; wraps to the oldest
+        //   entry when at live.
+        //   chevron_right (next)  steps DOWN the list toward oldest; wraps to live
+        //   when at the oldest entry.
+        // Navigation wraps around the full list (no hard stops at either end).
+        const pager = document.createElement("div");
+        pager.className = "scratchpad-history-pager";
+
+        const atNewest = this.scratchpadViewingIndex === null;
+
+        const prevBtn = new Button();
+        prevBtn.icon = "chevron_left";
+        prevBtn.className = "scratchpad-pager-btn";
+        prevBtn.title = "Previous (toward live, wraps to oldest)";
+        if (versions.length === 0) prevBtn.setAttribute("disabled", "");
+        prevBtn.onclick = (e) => {
+            if (e) e.stopPropagation();
+            if (prevBtn.hasAttribute("disabled")) return;
+            this._navigateScratchpadHistory(-1);
+        };
+
+        const nextBtn = new Button();
+        nextBtn.icon = "chevron_right";
+        nextBtn.className = "scratchpad-pager-btn";
+        nextBtn.title = "Next (toward oldest, wraps to live)";
+        if (versions.length === 0) nextBtn.setAttribute("disabled", "");
+        nextBtn.onclick = (e) => {
+            if (e) e.stopPropagation();
+            if (nextBtn.hasAttribute("disabled")) return;
+            this._navigateScratchpadHistory(1);
+        };
+
+        const posLabel = new Inline();
+        posLabel.className = "scratchpad-history-pos";
+        if (atNewest) {
+            posLabel.textContent = "Viewing live";
+        } else {
+            posLabel.textContent = `Viewing v${versions[this.scratchpadViewingIndex].version}`;
+        }
+
+        pager.appendChild(prevBtn);
+        pager.appendChild(posLabel);
+        pager.appendChild(nextBtn);
+        header.appendChild(pager);
+
+        section.appendChild(header);
+
+        const formatTime = (ts) => {
+            const diff = Date.now() - ts;
+            if (diff < 60000) return "Just now";
+            const mins = Math.floor(diff / 60000);
+            if (mins < 60) return `${mins}m ago`;
+            const hours = Math.floor(mins / 60);
+            if (hours < 24) return `${hours}h ago`;
+            return new Date(ts).toLocaleDateString();
+        };
+
+        // Hover-reveal action buttons (vertical ellipsis + icon buttons), mirroring the
+        // turn-actions layout in ai-manager-history.mjs.
+        const createVersionActions = (viewBtn, restoreBtn = null, deleteBtn = null) => {
+            const actions = document.createElement("div");
+            actions.className = "scratchpad-version-actions";
+
+            const ellipsis = document.createElement("ui-icon");
+            ellipsis.className = "version-actions-ellipsis";
+            ellipsis.textContent = "more_vert";
+
+            const buttons = document.createElement("div");
+            buttons.className = "version-actions-buttons";
+            buttons.appendChild(viewBtn);
+            if (restoreBtn) buttons.appendChild(restoreBtn);
+            if (deleteBtn) buttons.appendChild(deleteBtn);
+
+            actions.append(ellipsis, buttons);
+            return actions;
+        };
+
+        // "Newest" tile: represents the live scratchpad content (viewingIndex null).
+        const newestViewBtn = new Button();
+        newestViewBtn.icon = "visibility";
+        newestViewBtn.className = "scratchpad-version-view";
+        newestViewBtn.title = "View live scratchpad";
+        newestViewBtn.onclick = (e) => {
+            if (e) e.stopPropagation();
+            this.scratchpadViewingIndex = null;
+            this._scratchpadViewSessionId = null;
+            this._renderScratchpadHistory();
+        };
+
+        const newestRow = document.createElement("div");
+        newestRow.className = "scratchpad-version-row scratchpad-version-row-newest";
+        if (atNewest) newestRow.classList.add("viewing");
+        newestRow.title = "View the live (current) scratchpad content";
+        newestRow.onclick = (e) => {
+            if (e) e.stopPropagation();
+            this.scratchpadViewingIndex = null;
+            this._scratchpadViewSessionId = null;
+            this._renderScratchpadHistory();
+        };
+
+        const newestMeta = document.createElement("div");
+        newestMeta.className = "scratchpad-version-meta";
+
+        const newestNum = new Inline();
+        newestNum.className = "scratchpad-version-num";
+        newestNum.textContent = "Newest";
+        newestMeta.appendChild(newestNum);
+
+        const newestTime = new Inline();
+        newestTime.className = "scratchpad-version-time";
+        newestTime.textContent = "live";
+        newestMeta.appendChild(newestTime);
+
+        const newestSnippet = new Inline();
+        newestSnippet.className = "scratchpad-version-snippet";
+        newestSnippet.textContent = (target.scratchpad || "").trim().slice(0, 120) || "(empty)";
+        newestMeta.appendChild(newestSnippet);
+
+        newestRow.appendChild(newestMeta);
+        newestRow.appendChild(createVersionActions(newestViewBtn));
+        section.appendChild(newestRow);
+
+        if (versions.length === 0) {
+            const empty = document.createElement("div");
+            empty.className = "scratchpad-history-empty";
+            empty.textContent = "No previous versions recorded yet.";
+            section.appendChild(empty);
+            return;
+        }
+
+        // Render newest-first: the newest recorded version sits at the top (right
+        // after the live item) and the oldest at the bottom.
+        for (let idx = versions.length - 1; idx >= 0; idx--) {
+            const v = versions[idx];
+            const viewBtn = new Button();
+            viewBtn.icon = "visibility";
+            viewBtn.className = "scratchpad-version-view";
+            viewBtn.title = `View version ${v.version}`;
+            viewBtn.onclick = (e) => {
+                if (e) e.stopPropagation();
+                this.scratchpadViewingIndex = idx;
+                this._scratchpadViewSessionId = target.id;
+                this._renderScratchpadHistory();
+            };
+
+            const restoreBtn = new Button();
+            restoreBtn.icon = "restore_page";
+            restoreBtn.className = "scratchpad-version-restore";
+            restoreBtn.title = `Restore version ${v.version}`;
+            restoreBtn.onclick = (e) => {
+                if (e) e.stopPropagation();
+                this._restoreScratchpadVersion(idx);
+            };
+
+            const deleteBtn = new Button();
+            deleteBtn.icon = "delete";
+            deleteBtn.className = "scratchpad-version-delete";
+            deleteBtn.title = `Delete version ${v.version}`;
+            deleteBtn.onclick = (e) => {
+                if (e) e.stopPropagation();
+                this._deleteScratchpadVersion(idx);
+            };
+
+            const row = document.createElement("div");
+            row.className = "scratchpad-version-row";
+            if (this.scratchpadViewingIndex === idx) row.classList.add("viewing");
+            row.title = `View version ${v.version}`;
+            row.onclick = (e) => {
+                if (e) e.stopPropagation();
+                this.scratchpadViewingIndex = idx;
+                this._scratchpadViewSessionId = target.id;
+                this._renderScratchpadHistory();
+            };
+
+            const meta = document.createElement("div");
+            meta.className = "scratchpad-version-meta";
+
+            const vNum = new Inline();
+            vNum.className = "scratchpad-version-num";
+            vNum.textContent = `v${v.version}`;
+            meta.appendChild(vNum);
+
+            const ts = new Inline();
+            ts.className = "scratchpad-version-time";
+            ts.textContent = formatTime(v.timestamp);
+            meta.appendChild(ts);
+
+            const snippet = new Inline();
+            snippet.className = "scratchpad-version-snippet";
+            snippet.textContent = (v.content || "").trim().slice(0, 120) || "(empty)";
+            meta.appendChild(snippet);
+
+            row.appendChild(meta);
+            row.appendChild(createVersionActions(viewBtn, restoreBtn, deleteBtn));
+            section.appendChild(row);
+        }
+    }
+
+    /**
+     * Moves the viewed version by `delta` (positive = older / toward the oldest
+     * entry, negative = newer / toward "Newest"). "Newest" (live) is represented
+     * by `null` and sits at position 0; versions[i] sits at position i+1. The
+     * position wraps around the full list so the ends are never dead ends:
+     * stepping past live lands on the oldest entry, and stepping past the oldest
+     * entry lands back on live. Re-renders the read-only view and history list.
+     * @param {number} delta - -1 (prev, toward live) or +1 (next, toward oldest).
+     */
+    _navigateScratchpadHistory(delta) {
+        const session = this._getTargetSession();
+        const versions = Array.isArray(session?.scratchpadVersions) ? session.scratchpadVersions : [];
+        if (versions.length === 0) return;
+
+        // Map current viewing state to a 1-based position (Newest = 0).
+        const pos = this.scratchpadViewingIndex === null ? 0 : this.scratchpadViewingIndex + 1;
+        const total = versions.length + 1; // live + all recorded versions
+        let nextPos = (pos + delta) % total;
+        if (nextPos < 0) nextPos += total;
+
+        if (nextPos === 0) {
+            this.scratchpadViewingIndex = null;
+            this._scratchpadViewSessionId = null;
+        } else {
+            this.scratchpadViewingIndex = nextPos - 1;
+            this._scratchpadViewSessionId = session.id;
+        }
+        this._renderScratchpadHistory();
+    }
+
+    /**
+     * Restores the chosen version to the live scratchpad. The current content is
+     * first pushed onto the version stack (so nothing is lost), then the chosen
+     * content becomes the active scratchpad and is persisted.
+     * @param {number} idx - Index into session.scratchpadVersions.
+     */
+    async _restoreScratchpadVersion(idx) {
+        const session = this._getTargetSession();
+        const versions = Array.isArray(session?.scratchpadVersions) ? session.scratchpadVersions : [];
+        if (idx < 0 || idx >= versions.length) return;
+        const chosen = versions[idx];
+
+        // Push the current live content onto the stack so the restore itself is
+        // reversible (keeps prior history intact).
+        this._recordScratchpadVersion(session, "replace");
+
+        session.scratchpad = chosen.content;
+        delete session.scratchpadTokenCount;
+        session.lastModified = Date.now();
+        await workspaceClient.setSession(session.id, session);
+
+        // Return to the live view and refresh.
+        this.scratchpadViewingIndex = null;
+        this._scratchpadViewSessionId = null;
+        if (window.modal?.toast) {
+            window.modal.toast(`Restored scratchpad to version ${chosen.version}.`);
+        }
+        await this.update(session);
+    }
+
+    /**
+     * Permanently deletes a recorded scratchpad version. Confirms with the user
+     * first (deletion is irreversible). If the deleted version is the one
+     * currently being viewed, the view resets to the live scratchpad.
+     * @param {number} idx - Index into session.scratchpadVersions.
+     */
+    async _deleteScratchpadVersion(idx) {
+        const session = this._getTargetSession();
+        const versions = Array.isArray(session?.scratchpadVersions) ? session.scratchpadVersions : [];
+        if (idx < 0 || idx >= versions.length) return;
+        const chosen = versions[idx];
+
+        const confirmed = await window.modal.confirm(
+            `Delete version ${chosen.version}? This cannot be undone.`,
+            "Delete Version"
+        );
+        if (!confirmed) return;
+
+        // Remove the entry and renumber the remaining versions so the "vN"
+        // labels stay contiguous and stable after deletion.
+        session.scratchpadVersions = versions
+            .filter((_, i) => i !== idx)
+            .map((v, i) => ({ ...v, version: i + 1 }));
+
+        // Reconcile the viewing index against the renumbered list. The delete
+        // shifted every entry after `idx` up by one, so an index that was valid
+        // before may now point at the wrong (newer) version.
+        if (this.scratchpadViewingIndex !== null) {
+            const newLength = session.scratchpadVersions.length;
+            if (this.scratchpadViewingIndex === idx) {
+                // Viewing the deleted version — fall back to the nearest surviving
+                // item (the one just before it, or the first one if none exists).
+                this.scratchpadViewingIndex = idx > 0 ? idx - 1 : 0;
+            } else if (this.scratchpadViewingIndex > idx) {
+                // Shifted up by one: the same logical version is now one slot lower.
+                this.scratchpadViewingIndex -= 1;
+            }
+            // viewingIndex < idx is unchanged and stays valid.
+
+            // Guard against an out-of-range index (e.g. deleting the only version
+            // while viewing it) so the render never dereferences a missing entry.
+            if (this.scratchpadViewingIndex >= newLength) {
+                this.scratchpadViewingIndex = newLength > 0 ? newLength - 1 : null;
+            }
+        }
+
+        // If we ended up viewing a recorded version, make sure it's pinned to
+        // this session (already set when the index was assigned, but keep it in
+        // sync in case the session changed).
+        if (this.scratchpadViewingIndex !== null) {
+            this._scratchpadViewSessionId = session.id;
+        }
+
+        session.lastModified = Date.now();
+        await workspaceClient.setSession(session.id, session);
+
+        if (window.modal?.toast) {
+            window.modal.toast(`Deleted scratchpad version ${chosen.version}.`);
+        }
+        await this.update(session);
+    }
 }
 
 customElements.define("ui-session-artifacts-panel", SessionArtifactsPanel);
