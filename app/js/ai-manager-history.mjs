@@ -3345,6 +3345,36 @@ class AIManagerHistory {
 		}
 	}
 
+	/**
+	 * Builds a single markdown "compacted history" block from all non-seed cycle_summary
+	 * messages in chronological order. Every cycle gets a "## <title>" line; the last
+	 * MAX_DIRECT_CYCLE_SUMMARIES cycles additionally include their full summary content.
+	 * Older cycles are title-only.
+	 *
+	 * Returns the markdown string, or null when there are no real (non-seed) summaries.
+	 */
+	_buildCompactedHistoryMarkdown(sessionMessages) {
+		const summaries = (sessionMessages || []).filter(
+			(msg) => msg && msg.type === "cycle_summary" && !msg.isSeed
+		);
+		if (summaries.length === 0) return null;
+
+		const n = summaries.length;
+		const directCount = Math.min(MAX_DIRECT_CYCLE_SUMMARIES, n);
+		const lines = ["# Compacted History"];
+		for (let i = 0; i < n; i++) {
+			const s = summaries[i];
+			let title = s.title || "";
+			if (!title && s.content) title = s.content.split(/[.\n]/)[0].trim();
+			if (!title) title = "Completed Task";
+			lines.push(`** ${title} **`);
+			if (i >= n - directCount && s.content && s.content.trim()) {
+				lines.push(s.content.trim());
+			}
+		}
+		return lines.join("\n");
+	}
+
 	prepareMessagesForAI(sessionObj = null) {
 		const targetSession = sessionObj || this.manager.activeSession;
 		const isAgentMode = targetSession ? (targetSession.agentMode ?? this.manager.agentMode) : this.manager.agentMode;
@@ -3361,67 +3391,66 @@ class AIManagerHistory {
 		);
 
 		// Pruning gate: Substitute completed cycles with summaries.
-		// Recency windowing: Provide full <compacted_cycle> details for the last MAX_DIRECT_CYCLE_SUMMARIES (e.g. 3).
-		// Any older completed cycles are condensed into a single high-level <historical_milestones> bullet index.
+		// All non-seed cycle summaries are collapsed into a SINGLE markdown "compacted history" turn:
+		// every cycle gets a "## title" line; the last MAX_DIRECT_CYCLE_SUMMARIES cycles also carry
+		// their full summary content. Older cycles are title-only. The raw turns covered by the
+		// summaries are still spliced out (collapsed) so nothing is double-sent.
+		const compactedMarkdown = this._buildCompactedHistoryMarkdown(chatHistory);
 		const summaries = chatHistory.filter(msg => msg.type === "cycle_summary");
 		if (summaries.length > 0) {
-			const directSummariesThreshold = Math.max(0, summaries.length - MAX_DIRECT_CYCLE_SUMMARIES);
-			const olderSummaries = summaries.slice(0, directSummariesThreshold);
-			const recentSummariesSet = new Set(summaries.slice(directSummariesThreshold).map(s => s.id));
+			// Every cycle_summary (seed or not) covers a raw span [cycleStartMsgId .. cycleEndMsgId]
+			// that has been summarized. The seed's comment explicitly notes these spans exist so
+			// prepareMessagesForAI can "hide the covered span." So we collapse (drop) the raw turns
+			// for EVERY summary, and only emit the single compacted_history turn (titles for all
+			// non-seed summaries, content for the last MAX_DIRECT_CYCLE_SUMMARIES) in its place.
+			const n = chatHistory.length;
+			const covered = new Array(n).fill(false);
 
-			let milestonesBlock = "";
-			if (olderSummaries.length > 0) {
-				const milestoneLines = olderSummaries.map((s, idx) => {
-					const title = s.title || (s.content ? s.content.split(/[.\n]/)[0].trim() : "Completed Task");
-					return `- Milestone ${idx + 1}: ${title}`;
-				}).join('\n');
-				milestonesBlock = `<historical_milestones>\n${milestoneLines}\n</historical_milestones>`;
+			// Find each summary's [startIdx .. endIdx] raw span in the original array and mark
+			// those raw turns as covered. This applies to seeds as well: a seed's span exists
+			// precisely so the in-flight cycle is hidden from the prompt.
+			for (let i = 0; i < n; i++) {
+				const msg = chatHistory[i];
+				if (msg.type !== "cycle_summary") continue;
+				if (msg.cycleStartMsgId && msg.cycleEndMsgId) {
+					const startIdx = chatHistory.findIndex(m => m.id === msg.cycleStartMsgId);
+					const endIdx = chatHistory.findIndex(m => m.id === msg.cycleEndMsgId);
+					if (startIdx === -1 || endIdx === -1) continue;
+					const lo = Math.min(startIdx, endIdx);
+					const hi = Math.max(startIdx, endIdx);
+					for (let k = lo; k <= hi; k++) {
+						covered[k] = true;
+					}
+				}
 			}
 
 			let newChatHistory = [];
-			let milestonesInjected = false;
-			let i = 0;
-			while (i < chatHistory.length) {
+			let compactedPlaced = false;
+
+			for (let i = 0; i < n; i++) {
 				const msg = chatHistory[i];
+
+				// A summary object (seed or not) is never sent; it only marks a span to collapse.
+				// When we hit the FIRST non-seed summary, emit the single compacted_history turn
+				// in its place (the raw turns it covers were already marked covered above and
+				// are dropped by the check below).
 				if (msg.type === "cycle_summary") {
-					const startId = msg.cycleStartMsgId;
-					const endId = msg.cycleEndMsgId;
-					if (startId && endId) {
-						const startIdx = newChatHistory.findIndex(m => m.id === startId);
-						const replaceStartIdx = startIdx !== -1 ? startIdx : 0;
-						
-						if (recentSummariesSet.has(msg.id)) {
-							// Recent summary: provide full detailed <compacted_cycle>
-							const cycleTitle = msg.title || "Completed Task";
-							newChatHistory.splice(replaceStartIdx, newChatHistory.length - replaceStartIdx, {
-								id: msg.id,
-								role: "user",
-								type: "cycle_summary",
-								content: `<compacted_cycle title="${cycleTitle}">\n${msg.content}\n</compacted_cycle>`,
-								timestamp: msg.timestamp,
-								...(typeof msg.tokenCount === 'number' ? { tokenCount: msg.tokenCount } : {})
-							});
-						} else {
-							// Older summary: remove raw turns from history, and inject the condensed milestones block once at the head
-							if (!milestonesInjected && milestonesBlock) {
-								newChatHistory.splice(replaceStartIdx, newChatHistory.length - replaceStartIdx, {
-									id: "historical-milestones-summary",
-									role: "user",
-									type: "cycle_summary",
-									content: milestonesBlock,
-									timestamp: msg.timestamp
-								});
-								milestonesInjected = true;
-							} else {
-								newChatHistory.splice(replaceStartIdx, newChatHistory.length - replaceStartIdx);
-							}
-						}
-						i++;
-						continue;
+					if (!msg.isSeed && !compactedPlaced && compactedMarkdown) {
+						newChatHistory.push({
+							id: msg.id,
+							role: "system",
+							type: "compacted_history",
+							content: compactedMarkdown,
+							timestamp: msg.timestamp
+						});
+						compactedPlaced = true;
 					}
+					continue;
 				}
-				newChatHistory.push(msg);
-				i++;
+				// Raw turn: keep only if it isn't part of a summarized span.
+				if (!covered[i]) {
+					newChatHistory.push(msg);
+				}
 			}
 			chatHistory = newChatHistory;
 		}
@@ -3653,6 +3682,13 @@ class AIManagerHistory {
 				const keepIds = new Set();
 				userPrompts.forEach(m => keepIds.add(m.id));
 				recentHistory.forEach(m => keepIds.add(m.id));
+				// Evergreen exemption: the compacted_history turn carries the entire
+				// summary history (all cycle titles + last-3 summaries) and must never be
+				// pruned out of the window, or the AI loses the context of every cycle
+				// that has already run.
+				dialogueHistory.forEach(m => {
+					if (m && m.type === "compacted_history") keepIds.add(m.id);
+				});
 				
 				const newDialogueHistory = [];
 				let lastKeptIndex = -1;

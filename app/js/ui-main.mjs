@@ -279,7 +279,7 @@ const uiManager = {
 		fileList = new FileList();
 		uiManager.fileList = fileList;
 
-		iconTabBar = new IconTabBar();
+iconTabBar = new IconTabBar();
 
 		const filesTab = new IconTab('folder');
 		searchTab = new IconTab('find_in_page');
@@ -2210,9 +2210,11 @@ const uiManager = {
 }
 
 setTimeout(() => {
-	leftEdit.on("ready", () => {
-		uiManager.updateThemeAndMode()
-	})
+	if (leftEdit) {
+		leftEdit.on("ready", () => {
+			uiManager.updateThemeAndMode()
+		})
+	}
 })
 
 uiManager.defaultSettings = defaultSettings
