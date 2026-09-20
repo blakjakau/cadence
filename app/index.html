@@ -39,6 +39,7 @@
     <script type="text/javascript">window.elements=window.__ui</script>
 	<script type="text/javascript">
 		const isLocalServer = window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1" || window.location.hostname.endsWith(".localhost");
+		const notSupported = []
 		
 		/* Only show the page if we have support for File System Access API (not needed in Local mode) */
 		if(!('showDirectoryPicker' in window) && !isLocalServer) { notSupported.push("FilesAPI"); }
@@ -248,6 +249,8 @@
 	<ui-menu id="ai_tab_context" onclick="(e)=>console.log(e)">
 		<ui-menu-item command="rename" icon="edit">Rename</ui-menu-item>
 		<ui-menu-item command="copy" icon="arrow_split">Fork</ui-menu-item>
+		<ui-menu-split></ui-menu-split>
+		<ui-menu-item command="preview" icon="text_format">Preview History</ui-menu-item>
 		<ui-menu-split></ui-menu-split>
 		<ui-menu-item command="terminal" icon="terminal">Open Terminal Here</ui-menu-item>
 		<ui-menu-split></ui-menu-split>

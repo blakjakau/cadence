@@ -269,7 +269,8 @@ export class EditorHolder extends Panel {
     async updateNoticeBar(tab) {
         if (!tab || !tab.config || tab.config.viewMode === "diff" || 
             tab.config.path === "plan_tasks" || tab.config.path === "agent_config" || 
-            tab.config.path === "workspace_settings" || tab.config.path === "terminal_settings" || tab.config.path === "editor_settings") {
+            tab.config.path === "workspace_settings" || tab.config.path === "terminal_settings" || 
+            tab.config.path === "editor_settings" || tab.config.path === "history_preview") {
             this.editorHeaderBar.style.display = "none";
             this.editorElement.style.top = "";
             this.editorElement.style.height = "";

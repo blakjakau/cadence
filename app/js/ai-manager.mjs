@@ -8,6 +8,7 @@ import workspaceClient from "./workspace-client.mjs"
 import agentTools from "./agent/agent-tools.mjs"
 import AIConnections from "./ai-connections.mjs"
 import { Agent } from "./agent/agent.mjs"
+import { SessionMigrator } from "./sessions/session-migrator.mjs"
 
 import DiffHandler from "./tools/diff-handler.mjs"
 import AgentBackup from "./agent/agent-backup.mjs"
@@ -522,6 +523,8 @@ class AIManager {
 					this.sessionsManager.closeSessionTab(sessionId, tab);
 				} else if (action === "delete") {
 					this.sessionsManager.deleteSession(sessionId, tab);
+				} else if (action === "preview") {
+					this.previewSessionHistory(sessionId);
 				}
 			};
 		}
@@ -2120,6 +2123,60 @@ class AIManager {
 
 	async switchSession(sessionId) {
 		return this.sessionsManager.switchSession(sessionId);
+	}
+
+	/**
+	 * Opens the "Preview History" file tab: a read-only, markdown-mode ace editor
+	 * in the main editor tab bar (leftTabs) that shows exactly the compacted
+	 * history this session would send to the AI — the "## title" of every
+	 * non-seed cycle summary, plus the summary content of the last
+	 * MAX_DIRECT_CYCLE_SUMMARIES cycles. Being a real editor tab, it keeps the
+	 * AI session panel visible on screen at the same time.
+	 * @param {string} sessionId - The AI session ID (from the session tab context menu).
+	 */
+	async previewSessionHistory(sessionId) {
+		// Resolve the session's messages. Prefer the in-memory active session (authoritative
+		// for this tab); otherwise fetch from the workspace DB.
+		let session;
+		if (sessionId === this.sessionsManager.activeSessionId && this.sessionsManager.activeSession) {
+			session = this.sessionsManager.activeSession;
+		} else {
+			session = await workspaceClient.getSession(sessionId);
+		}
+
+		let markdown;
+		if (session) {
+			// Migrate to the current schema so cycle_summary fields are normalized,
+			// exactly as switchSession() does before building the prompt.
+			try {
+				// Migrate in-memory to the current schema so cycle_summary fields are
+				// normalized, exactly as switchSession() does before building the prompt.
+				// We do NOT persist: the preview is a read-only operation.
+				const { session: migratedSession } = SessionMigrator.migrate(session);
+				session = migratedSession;
+			} catch (e) {
+				console.warn("[AIManager] Failed to migrate preview session:", e);
+			}
+			const messages = session?.messages || [];
+			const built = this.historyManager._buildCompactedHistoryMarkdown(messages);
+			// Dev aid: preview uses the IDENTICAL builder as prepareMessagesForAI, so
+			// this string is byte-for-byte what the AI prompt receives for compacted history.
+			console.debug("[AIManager] PreviewHistory (identical to AI prompt compacted_history):", built ?? "(none)");
+			markdown = built ?? "# Compacted History\n\n*No compacted history yet.*\n\nCompacted history appears once agent-mode cycles have been summarized.";
+		} else {
+			markdown = "# Compacted History\n\n*Could not load this session's history.*";
+		}
+
+		const ui = window.ui;
+		if (!ui?.openHistoryPreviewTab) {
+			console.warn("[AIManager] openHistoryPreviewTab not available yet.");
+			return;
+		}
+
+		// Open (or reuse) the read-only "History preview" file tab in the main
+		// editor. It is an unsaved in-memory markdown tab, so the AI session panel
+		// and the preview are visible at the same time.
+		ui.openHistoryPreviewTab(markdown);
 	}
 
 	/**

@@ -1903,6 +1903,66 @@ const openAgentConfig = (targetEditor = leftEdit) => {
 	if (!restoreInProgress) tab.click()
 }
 
+/**
+ * Opens (or reuses) the read-only "History preview" file tab in the main editor.
+ * It is an unsaved in-memory tab (no path/handle) rendered in markdown mode,
+ * so the AI session panel and the preview can both be visible at once.
+ * @param {string} markdown - The compacted-history markdown (built by ai-manager).
+ * @param {string} [tabId="history_preview"] - Stable id used for reuse.
+ */
+const openHistoryPreviewTab = (markdown = "", targetEditor = leftEdit) => {
+	const tabPath = "history_preview";
+
+	{
+		let tab = leftTabs.tabs.find(t => t.config?.path === tabPath)
+		if (tab) {
+			// Discard the previous in-memory session before swapping it out.
+			if (tab.config.session && typeof tab.config.session.destroy === "function") {
+				tab.config.session.destroy()
+			}
+			const newSession = ace.createEditSession(markdown, "ace/mode/markdown")
+			newSession.baseValue = markdown
+			newSession.setOption("wrap", "free")
+			newSession.setOption("indentedSoftWrap", false)
+			newSession.setOption("readOnly", true)
+			tab.config.session = newSession
+			if (!restoreInProgress) tab.click()
+			return
+		}
+	}
+
+	// Always target the left editor (the file-tab preview lives in the main pane).
+	const tab = leftTabs.add({
+		name: "History preview",
+		path: tabPath,
+		mode: { mode: "ace/mode/markdown" },
+		session: null,
+		side: "left",
+		handle: "",
+		folder: "",
+		fileModified: false,
+		defaultStatusIcon: "text_format",
+	})
+
+	// Set the (in-memory) session BEFORE clicking so updateEditorUI() renders
+	// it in the text branch (setSession + focus) instead of a special view.
+	const previewSession = ace.createEditSession(markdown, "ace/mode/markdown")
+	previewSession.baseValue = markdown
+	previewSession.setOption("wrap", "free")
+	previewSession.setOption("indentedSoftWrap", false)
+	previewSession.setOption("readOnly", true)
+	tab.config.session = previewSession
+	targetEditor.setSession(previewSession)
+	execCommandEditorOptions()
+
+	// Cosmetic class so CSS can style the preview tab distinctively. It is a
+	// disposable, read-only, unsaved in-memory view; its standard close handler
+	// (closeTab) is safe to use since it has no real file to observe.
+	tab.classList.add("preview-tab")
+
+	if (!restoreInProgress) tab.click()
+}
+
 const openDiffTab = (filePath, backupId, targetEditor = leftEdit) => {
 	const clean = (p) => p ? p.replace(/\\/g, '/') : '';
 	const normPath = clean(filePath);
@@ -1953,6 +2013,7 @@ ui.openWorkspaceSettings = openWorkspaceSettings
 ui.openTerminalSettings = openTerminalSettings
 ui.openEditorSettings = openEditorSettings
 ui.openDiffTab = openDiffTab
+ui.openHistoryPreviewTab = openHistoryPreviewTab
 
 const openFileHandle = async (handle, knownPath = null, targetEditor = currentEditor) => {
 	let path = typeof handle === "string" ? handle : handle.path || knownPath

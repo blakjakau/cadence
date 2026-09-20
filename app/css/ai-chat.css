@@ -17,7 +17,7 @@
     overflow-y: auto;
     padding: 8px;
     display: block;
-    scroll-behavior: smooth;
+    /*scroll-behavior: smooth;*/
     margin-bottom: 4px;
     transition: padding-bottom 0.4s cubic-bezier(0.4, 0, 0.2, 1);
 }
