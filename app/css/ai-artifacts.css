@@ -1299,7 +1299,7 @@ ui-tab-item.plan-tasks-tab.active .status-icon {
 }
 
 .accordion-content {
-    max-height: 80vh;
+    max-height: 75vh;
     overflow-y: auto;
     transition: opacity 0.2s ease;
 }
@@ -1490,6 +1490,255 @@ ui-editor-holder .artifacts-accordion-container .ace_editor,
 .accordion-header button.clear-btn:hover {
     background: var(--bg-secondary);
     color: var(--text-primary);
+}
+
+.accordion-header button.clear-btn.active {
+    background: var(--theme);
+    color: #ffffff;
+    border-color: var(--theme);
+}
+
+/* The clear-scratchpad action is destructive: danger-colored to signal it,
+   matching the version-delete destructive styling. */
+.accordion-header button.clear-scratchpad-btn {
+    color: var(--danger, #e53935);
+}
+
+.accordion-header button.clear-scratchpad-btn:hover {
+    color: var(--danger, #e53935);
+}
+
+/* Scratchpad version history */
+.scratchpad-content-wrapper {
+    overflow-y: auto;
+    scrollbar-width: thin;
+    scrollbar-color: var(--border-primary) transparent;
+}
+
+.scratchpad-content {
+    max-height: 70vh;
+    overflow-y: auto;
+    scrollbar-width: thin;
+    scrollbar-color: var(--border-primary) transparent;
+}
+
+.scratchpad-history {
+    display: none;
+    margin-top: 8px;
+    border: 1px solid var(--border-primary);
+    border-radius: var(--borderRadius);
+    background: var(--bg-secondary);
+    max-height: 30vh;
+    overflow-y: auto;
+    scrollbar-width: thin;
+    scrollbar-color: var(--border-primary) transparent;
+}
+
+.scratchpad-content-wrapper.history-open .scratchpad-history {
+    display: block;
+}
+
+.scratchpad-history-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 6px 10px;
+    border-bottom: 1px solid var(--border-primary);
+    background: var(--bg-primary);
+    position: sticky;
+    top: 0;
+    z-index: 1;
+}
+
+.scratchpad-content-wrapper.history-open .scratchpad-content {
+    max-height: 40vh;
+    min-height: 40vh;
+}
+
+.scratchpad-history-title {
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    color: var(--text-secondary);
+}
+
+.scratchpad-history-pager {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.scratchpad-pager-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 24px;
+    height: 24px;
+    padding: 0;
+    font-size: 11px;
+    cursor: pointer;
+    border-radius: var(--borderRadius);
+    border: 1px solid var(--border-primary);
+    background: var(--bg-primary);
+    color: var(--text-secondary);
+}
+
+.scratchpad-pager-btn:hover {
+    background: var(--bg-secondary);
+    color: var(--text-primary);
+}
+
+.scratchpad-pager-btn[disabled] {
+    opacity: 0.35;
+    cursor: not-allowed;
+    pointer-events: none;
+}
+
+.scratchpad-history-pos {
+    font-size: 10.5px;
+    font-weight: 600;
+    color: var(--text-secondary);
+    min-width: 52px;
+    text-align: center;
+}
+
+.scratchpad-history-empty {
+    padding: 10px 12px;
+    font-size: 12px;
+    color: var(--text-secondary);
+}
+
+.scratchpad-version-row {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 8px 10px;
+    border-bottom: 1px solid var(--border-primary);
+    cursor: pointer;
+}
+
+.scratchpad-version-row:last-child {
+    border-bottom: none;
+}
+
+.scratchpad-version-row:hover {
+    background: var(--bg-primary);
+}
+
+.scratchpad-version-row.viewing {
+    background: color-mix(in srgb, var(--theme) 8%, transparent);
+}
+
+.scratchpad-version-row-newest .scratchpad-version-num {
+    color: var(--theme);
+}
+
+.scratchpad-version-row-newest .scratchpad-version-time {
+    font-style: italic;
+}
+
+.scratchpad-version-meta {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    flex: 1;
+    white-space: nowrap;
+}
+
+.scratchpad-version-num {
+    font-size: 11px;
+    font-weight: 700;
+    color: var(--text-primary);
+}
+
+.scratchpad-version-time {
+    font-size: 10.5px;
+    color: var(--text-secondary);
+}
+
+.scratchpad-version-snippet {
+    font-size: 11.5px;
+    color: var(--text-primary);
+    font-family: var(--font-mono);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    min-width: 0;
+}
+
+/* Hover-reveal version actions: always-visible vertical ellipsis, icon buttons expand on hover.
+   Mirrors the .turn-actions-* pattern in ai-chat.css. */
+.scratchpad-version-actions {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    flex-shrink: 0;
+}
+
+.scratchpad-version-actions .version-actions-ellipsis {
+    font-size: 15px;
+    color: var(--text-secondary);
+    cursor: pointer;
+}
+
+.scratchpad-version-actions .version-actions-buttons {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    max-width: 0;
+    overflow: hidden;
+    transition: max-width 0.2s ease;
+    flex-shrink: 0;
+}
+
+/* Reveal the action buttons when hovering the ellipsis (not the whole row). */
+.scratchpad-version-actions:hover .version-actions-buttons {
+    max-width: 80px;
+}
+
+.scratchpad-version-actions .version-actions-buttons ui-button {
+    min-height: 0;
+    padding: 0;
+    color: var(--text-secondary);
+}
+
+.scratchpad-version-actions .version-actions-buttons ui-button:hover {
+    color: var(--text-primary);
+}
+
+.scratchpad-version-actions .version-actions-buttons ui-icon {
+    font-size: 15px;
+    height: 1.4em;
+    line-height: 1.4em;
+    max-width: 1.4em;
+}
+
+/* Delete is destructive: red on hover to signal it. */
+.scratchpad-version-actions .version-actions-buttons .scratchpad-version-delete:hover {
+    color: var(--danger, #e53935);
+}
+
+.scratchpad-viewing-banner {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 10px;
+    margin-bottom: 8px;
+    font-size: 11.5px;
+    font-weight: 600;
+    color: var(--text-primary);
+    border: 1px dashed var(--theme);
+    border-radius: var(--borderRadius);
+    background: color-mix(in srgb, var(--theme) 8%, transparent);
+}
+
+.scratchpad-viewing-banner ui-icon {
+    font-size: 14px;
+    color: var(--theme);
 }
 
 .accordion-header .expand-arrow {

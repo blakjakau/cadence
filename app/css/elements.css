@@ -101,6 +101,16 @@ ui-button-counter {
     white-space: nowrap;
 }
 
+/* Re-assert display:none on the hidden attribute for custom elements.
+   The base rule above forces display:inline-block, which outranks the UA
+   [hidden]{display:none} rule, so a .hidden=true custom element would
+   otherwise remain visible. */
+    ui-button[hidden],
+    ui-file-item[hidden],
+    ui-button-counter[hidden] {
+        display: none !important;
+    }
+
 ui-button-counter {
     padding: 0 16px;
 }
