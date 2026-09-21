@@ -1,7 +1,7 @@
 import { Block } from './element.mjs';
 import { Button } from './button.mjs';
 import { UIAccordion } from './session-artifacts-panel.mjs';
-import AIConnections from '../ai-connections.mjs';
+import AIConnections, { PREFILL_OPTIONS, resolvePrefillTokens } from '../ai-connections.mjs';
 import workspaceClient from '../workspace-client.mjs';
 import { openCommandPolicyReviewModal } from '../util/command-policy-review.mjs';
 
@@ -261,8 +261,6 @@ export class AgentConfigPanel extends Block {
 		};
 
 		createNumberInputRow("default-auto-rollback-threshold", "Auto-Rollback Failure Count", "Number of consecutive failed edits before rolling back the file (default 3).", "defaultAutoRollbackThreshold", "3", 1, 10);
-		createNumberInputRow("default-max-prefill", "Max Context Pre-fill (%)", "Default upper threshold before context culling triggers (default 80).", "contextPrefillMaxPercentage", "80", 20, 100);
-		createNumberInputRow("default-min-prefill", "Min Context Pre-fill (%)", "Default cull target when max pre-fill is triggered (default 40).", "contextPrefillMinPercentage", "40", 10, 100);
 		createNumberInputRow("max-sub-agents", "Max Sub-Agents", "Maximum number of parallel sub-agents the main agent is permitted to spawn.", "maxSubAgents", "3", 1, 20);
 
 		this.container.appendChild(this.defaultsAccordion);
@@ -896,6 +894,30 @@ export class AgentConfigPanel extends Block {
 				provSelect.keyInput = createInput("Anthropic API Key", key, true);
 				provSelect.maxTurnsInput = createInput("Max Agent Turns (0 for unlimited)", maxTurns);
 			}
+
+			// Context pre-fill bounds (all providers). Absolute token selects;
+			// options exceeding the provider's n_ctx are hidden, "none" always visible.
+			const prefillNCtx = (() => {
+				if (provider === "llamacpp" && provSelect.nctxInput) {
+					const liveNctx = parseInt(provSelect.nctxInput.value) || 0;
+					if (liveNctx > 0) return liveNctx;
+				}
+				return AIConnections.connectionContextSize(conn);
+			})();
+
+			const createPrefillSelect = (labelVal, value) => {
+				let stored = value || "none";
+				if (prefillNCtx > 0 && resolvePrefillTokens(stored) > prefillNCtx) {
+					stored = "none"; // stored bound no longer fits the context window
+				}
+				const opts = prefillNCtx > 0
+					? PREFILL_OPTIONS.filter(o => !o.tokens || o.tokens <= prefillNCtx)
+					: PREFILL_OPTIONS;
+				return createSelect(labelVal, stored, opts);
+			};
+
+			provSelect.minPrefillInput = createPrefillSelect("Min Context Pre-fill", conn ? conn.minPrefill : "none");
+			provSelect.maxPrefillInput = createPrefillSelect("Max Context Pre-fill", conn ? conn.maxPrefill : "none");
 		};
 
 		provSelect.onchange = buildSpecInputs;
@@ -971,13 +993,20 @@ export class AgentConfigPanel extends Block {
 			if (provSelect.thinkingInput) {
 				configObj.thinkingLevel = provSelect.thinkingInput.value;
 			}
-			return {
+			const out = {
 				id: conn ? conn.id : `conn-${crypto.randomUUID()}`,
 				name: nameInput.value || `${provSelect.value} connection`,
 				provider: provSelect.value,
 				size: sizeSelect.value,
 				config: configObj
 			};
+			if (provSelect.minPrefillInput && provSelect.minPrefillInput.value !== "none") {
+				out.minPrefill = provSelect.minPrefillInput.value;
+			}
+			if (provSelect.maxPrefillInput && provSelect.maxPrefillInput.value !== "none") {
+				out.maxPrefill = provSelect.maxPrefillInput.value;
+			}
+			return out;
 		};
 
 		testBtn.onclick = async () => {
@@ -1032,6 +1061,20 @@ export class AgentConfigPanel extends Block {
 			if (modelSelect.value) {
 				connConf.config.model = modelSelect.value;
 			}
+
+			// Validate prefill bounds: min must not exceed max.
+			const minTok = resolvePrefillTokens(connConf.minPrefill);
+			const maxTok = resolvePrefillTokens(connConf.maxPrefill);
+			if (minTok !== null && maxTok !== null && minTok > maxTok) {
+				connConf.maxPrefill = connConf.minPrefill;
+				provSelect.maxPrefillInput.value = connConf.minPrefill;
+				testStatus.style.display = "block";
+				testStatus.style.background = "rgba(255, 193, 7, 0.1)";
+				testStatus.style.border = "1px solid rgba(255, 193, 7, 0.4)";
+				testStatus.style.color = "#d39e00";
+				testStatus.textContent = `Min pre-fill (${connConf.minPrefill}) exceeds max pre-fill — max adjusted to ${connConf.minPrefill}. Saving now.`;
+			}
+
 			AIConnections.saveConnection(connConf);
 			modalObj.hide();
 			this.renderConnectionsList();

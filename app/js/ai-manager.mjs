@@ -81,8 +81,6 @@ class AIManager {
 		this.config = {
 			summarizeThreshold: parseInt(localStorage.getItem("summarizeThreshold") || "85"),
 			summarizeTargetPercentage: parseInt(localStorage.getItem("summarizeTargetPercentage") || "50"),
-			contextPrefillMinPercentage: parseInt(localStorage.getItem("contextPrefillMinPercentage") || "40"),
-			contextPrefillMaxPercentage: parseInt(localStorage.getItem("contextPrefillMaxPercentage") || "80"),
 			defaultAgentMode: localStorage.getItem("defaultAgentMode") === "true",
 			defaultPlanningMode: localStorage.getItem("defaultPlanningMode") !== "false",
 			defaultForgivenessMode: localStorage.getItem("aiForgivenessMode") === "true",

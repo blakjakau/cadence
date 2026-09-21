@@ -274,9 +274,7 @@ export class SessionArtifactsPanel extends Block {
             return input;
         };
 
-        this.autoRollbackThresholdInput = createNumberRow("accordion-auto-rollback-threshold", "Auto-Rollback Failure Count", "Consecutive failed edits before auto-rollback is triggered.", 3, 1, 10);
-        this.maxContextPrefillInput = createNumberRow("accordion-max-prefill", "Max Context Pre-fill (%)", "Sliding window upper threshold before culling triggers.", 80, 5, 95);
-        this.minContextPrefillInput = createNumberRow("accordion-min-prefill", "Min Context Pre-fill (%)", "Sliding window cull target when max pre-fill is triggered.", 40, 1, 90);
+            this.autoRollbackThresholdInput = createNumberRow("accordion-auto-rollback-threshold", "Auto-Rollback Failure Count", "Consecutive failed edits before auto-rollback is triggered.", 3, 1, 10);
 
         this.container.appendChild(this.settingsAccordion);
 
@@ -391,29 +389,6 @@ export class SessionArtifactsPanel extends Block {
             }
         });
 
-        this.minContextPrefillInput.addEventListener("change", async (e) => {
-            let val = parseInt(e.target.value);
-            if (isNaN(val) || val < 1) val = 1;
-            if (val > 90) val = 90;
-            e.target.value = val;
-            const session = this._getTargetSession();
-            if (session) {
-                session.contextPrefillMinPercentage = val;
-                await workspaceClient.setSession(session.id, session);
-            }
-        });
-
-        this.maxContextPrefillInput.addEventListener("change", async (e) => {
-            let val = parseInt(e.target.value);
-            if (isNaN(val) || val < 5) val = 5;
-            if (val > 95) val = 95;
-            e.target.value = val;
-            const session = this._getTargetSession();
-            if (session) {
-                session.contextPrefillMaxPercentage = val;
-                await workspaceClient.setSession(session.id, session);
-            }
-        });
     }
 
     _updateOpenEditsReviewState(isForgiveness, sessionOpenEdits) {
@@ -868,9 +843,7 @@ export class SessionArtifactsPanel extends Block {
         this.allowRunCommandCheckbox.checked = session.allowRunCommand !== false;
         this.autoMilestonesCheckbox.checked = session.autoMilestones ?? (ui.aiManager.config?.defaultAutoMilestones !== false);
         this.autoRollbackCheckbox.checked = session.autoRollbackOnFailures ?? (ui.aiManager.config?.defaultAutoRollbackOnFailures === true);
-        this.autoRollbackThresholdInput.value = session.autoRollbackFailureThreshold ?? (ui.aiManager.config?.defaultAutoRollbackThreshold || 3);
-        this.minContextPrefillInput.value = session.contextPrefillMinPercentage ?? (ui.aiManager.config?.contextPrefillMinPercentage || 40);
-        this.maxContextPrefillInput.value = session.contextPrefillMaxPercentage ?? (ui.aiManager.config?.contextPrefillMaxPercentage || 80);
+            this.autoRollbackThresholdInput.value = session.autoRollbackFailureThreshold ?? (ui.aiManager.config?.defaultAutoRollbackThreshold || 3);
 
         // Render implementation plan content if not editing
         if (!this.planEditorInstance) {

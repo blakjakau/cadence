@@ -4,6 +4,7 @@ import { Block, Button, Inline, Icon } from "./elements.mjs"
 import DEFAULT_WELCOME_MESSAGE_MARKDOWN from "./ai-manager-setup-guide.mjs"
 import workspaceClient from "./workspace-client.mjs"
 import { getAgentDirectives } from "./ai-manager-agent-prompt.mjs"
+import AIConnections, { resolvePrefillTokens } from "./ai-connections.mjs"
 import agentTools from "./agent/agent-tools.mjs"
 import { Agent } from "./agent/agent.mjs"
 	import { normalizePolicy, mergePolicies, evaluateCommand, segmentMatchesRule, segmentPrograms, subChipsFor } from "./util/command-rules.mjs"
@@ -3616,11 +3617,14 @@ class AIManagerHistory {
 		// Advanced Dialogue Pruning in Agent Mode (Dynamic sliding window with cache-friendly head tracking)
 		if (isAgentMode) {
 			const maxContextTokens = this.ai?.MAX_CONTEXT_TOKENS || 8192;
-			const minPct = targetSession?.contextPrefillMinPercentage ?? (this.manager.config?.contextPrefillMinPercentage || 40);
-			const maxPct = targetSession?.contextPrefillMaxPercentage ?? (this.manager.config?.contextPrefillMaxPercentage || 80);
+			// Prefill bounds now come from the session's connection (absolute token
+			// selects). Unset/"none" falls back to legacy 40%/80% of n_ctx.
+			const conn = AIConnections.getConnection(targetSession?.connectionId || AIConnections.defaultConnectionId);
+			const minTok = resolvePrefillTokens(conn?.minPrefill) ?? Math.floor(maxContextTokens * 0.4);
+			const maxTok = resolvePrefillTokens(conn?.maxPrefill) ?? Math.floor(maxContextTokens * 0.8);
 
-			const minTargetLimit = Math.max(1000, Math.floor(maxContextTokens * (minPct / 100)) - extraTokens);
-			const maxTargetLimit = Math.max(1000, Math.floor(maxContextTokens * (maxPct / 100)) - extraTokens);
+			const minTargetLimit = Math.max(1000, minTok - extraTokens);
+			const maxTargetLimit = Math.max(minTargetLimit, maxTok - extraTokens); // sanity: max can't fall below min
 
 			const n = dialogueHistory.length;
 			const userPrompts = dialogueHistory.filter(msg => msg.type === "user");

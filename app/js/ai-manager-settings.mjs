@@ -72,8 +72,6 @@ class AIManagerSettings {
             "use-workspace-settings": useWorkspaceSettings,
             summarizeThreshold: aiManager.config.summarizeThreshold,
             summarizeTargetPercentage: aiManager.config.summarizeTargetPercentage,
-            contextPrefillMinPercentage: aiManager.config.contextPrefillMinPercentage ?? 40,
-            contextPrefillMaxPercentage: aiManager.config.contextPrefillMaxPercentage ?? 80,
             defaultAgentMode: aiManager.config.defaultAgentMode,
             defaultPlanningMode: aiManager.config.defaultPlanningMode,
             defaultAllowSubAgents: aiManager.config.defaultAllowSubAgents ?? true,
@@ -107,8 +105,6 @@ class AIManagerSettings {
             { type: "checkbox", id: "defaultAutoMilestones", label: "Default Auto-Milestones on 'done' for New Chats" },
             { type: "checkbox", id: "defaultAutoRollbackOnFailures", label: "Auto-Rollback on Repeated Edit Failures" },
             { type: "number", id: "defaultAutoRollbackThreshold", label: "Auto-Rollback Edit Failure Threshold" },
-            { type: "number", id: "contextPrefillMinPercentage", label: "Default Min Context Pre-fill Limit (%)" },
-            { type: "number", id: "contextPrefillMaxPercentage", label: "Default Max Context Pre-fill Limit (%)" },
             { type: "number", id: "summarizeThreshold", label: "Summarize History When Context Reaches (%)" },
             { type: "number", id: "summarizeTargetPercentage", label: "Percentage of Old History to Summarize" },
             { type: "heading", label: "Prompt Customisation" },
@@ -208,10 +204,8 @@ class AIManagerSettings {
 
         // --- Save Generic Settings (Summarization, Context Limits, Defaults) ---
         aiManager.config.summarizeThreshold = parseInt(values.summarizeThreshold);
-        aiManager.config.summarizeTargetPercentage = parseInt(values.summarizeTargetPercentage);
-        aiManager.config.contextPrefillMinPercentage = parseInt(values.contextPrefillMinPercentage) || 40;
-        aiManager.config.contextPrefillMaxPercentage = parseInt(values.contextPrefillMaxPercentage) || 80;
-        aiManager.config.defaultAgentMode = !!values.defaultAgentMode;
+            aiManager.config.summarizeTargetPercentage = parseInt(values.summarizeTargetPercentage);
+            aiManager.config.defaultAgentMode = !!values.defaultAgentMode;
         aiManager.config.defaultPlanningMode = !!values.defaultPlanningMode;
         aiManager.config.defaultAllowSubAgents = !!values.defaultAllowSubAgents;
         aiManager.config.defaultAllowRunCommand = !!values.defaultAllowRunCommand;
@@ -219,10 +213,8 @@ class AIManagerSettings {
         aiManager.config.defaultAutoRollbackOnFailures = !!values.defaultAutoRollbackOnFailures;
         aiManager.config.defaultAutoRollbackThreshold = parseInt(values.defaultAutoRollbackThreshold) || 3;
         localStorage.setItem("summarizeThreshold", aiManager.config.summarizeThreshold);
-        localStorage.setItem("summarizeTargetPercentage", aiManager.config.summarizeTargetPercentage);
-        localStorage.setItem("contextPrefillMinPercentage", aiManager.config.contextPrefillMinPercentage);
-        localStorage.setItem("contextPrefillMaxPercentage", aiManager.config.contextPrefillMaxPercentage);
-        localStorage.setItem("defaultAgentMode", aiManager.config.defaultAgentMode);
+            localStorage.setItem("summarizeTargetPercentage", aiManager.config.summarizeTargetPercentage);
+            localStorage.setItem("defaultAgentMode", aiManager.config.defaultAgentMode);
         localStorage.setItem("defaultPlanningMode", aiManager.config.defaultPlanningMode);
         localStorage.setItem("defaultAllowSubAgents", aiManager.config.defaultAllowSubAgents);
         localStorage.setItem("defaultAllowRunCommand", aiManager.config.defaultAllowRunCommand);
