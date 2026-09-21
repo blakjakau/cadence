@@ -39,6 +39,7 @@
     <script type="text/javascript">window.elements=window.__ui</script>
 	<script type="text/javascript">
 		const isLocalServer = window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1" || window.location.hostname.endsWith(".localhost");
+		const notSupported = [];
 		
 		/* Only show the page if we have support for File System Access API (not needed in Local mode) */
 		if(!('showDirectoryPicker' in window) && !isLocalServer) { notSupported.push("FilesAPI"); }
