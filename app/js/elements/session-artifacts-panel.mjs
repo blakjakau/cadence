@@ -275,8 +275,8 @@ export class SessionArtifactsPanel extends Block {
         };
 
         this.autoRollbackThresholdInput = createNumberRow("accordion-auto-rollback-threshold", "Auto-Rollback Failure Count", "Consecutive failed edits before auto-rollback is triggered.", 3, 1, 10);
-        this.maxContextPrefillInput = createNumberRow("accordion-max-prefill", "Max Context Pre-fill (%)", "Sliding window upper threshold before culling triggers.", 80, 20, 98);
-        this.minContextPrefillInput = createNumberRow("accordion-min-prefill", "Min Context Pre-fill (%)", "Sliding window cull target when max pre-fill is triggered.", 40, 10, 90);
+        this.maxContextPrefillInput = createNumberRow("accordion-max-prefill", "Max Context Pre-fill (%)", "Sliding window upper threshold before culling triggers.", 80, 5, 95);
+        this.minContextPrefillInput = createNumberRow("accordion-min-prefill", "Min Context Pre-fill (%)", "Sliding window cull target when max pre-fill is triggered.", 40, 1, 90);
 
         this.container.appendChild(this.settingsAccordion);
 
@@ -393,7 +393,7 @@ export class SessionArtifactsPanel extends Block {
 
         this.minContextPrefillInput.addEventListener("change", async (e) => {
             let val = parseInt(e.target.value);
-            if (isNaN(val) || val < 10) val = 10;
+            if (isNaN(val) || val < 1) val = 1;
             if (val > 90) val = 90;
             e.target.value = val;
             const session = this._getTargetSession();
@@ -405,8 +405,8 @@ export class SessionArtifactsPanel extends Block {
 
         this.maxContextPrefillInput.addEventListener("change", async (e) => {
             let val = parseInt(e.target.value);
-            if (isNaN(val) || val < 20) val = 20;
-            if (val > 98) val = 98;
+            if (isNaN(val) || val < 5) val = 5;
+            if (val > 95) val = 95;
             e.target.value = val;
             const session = this._getTargetSession();
             if (session) {
