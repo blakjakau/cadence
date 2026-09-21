@@ -20,7 +20,7 @@ type AppConfig struct {
 	SessionOptions           map[string]interface{} `json:"sessionOptions,omitempty"`
 	RendererOptions          map[string]interface{} `json:"rendererOptions,omitempty"`
 	EnableLiveAutocompletion interface{}            `json:"enableLiveAutocompletion,omitempty"` // bool or int
-	Darkmode                 string                 `json:"darkmode,omitempty"`
+	Theme                    string                 `json:"theme,omitempty"`
 	AiConfig                 map[string]interface{} `json:"aiConfig,omitempty"`
 	SystemPromptConfig       map[string]interface{} `json:"systemPromptConfig,omitempty"`
 	Workspace                string                 `json:"workspace,omitempty"`

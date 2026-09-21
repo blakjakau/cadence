@@ -1366,7 +1366,10 @@ const uiManager = {
 						if (counter === 0) result.classList.add("active")
 						result.itemIndex = counter
 						result.addEventListener("click", () => {
-							currentEditor.selection.setRange(m.range)
+							currentEditor.selection.setRange({
+								start: m.range,
+								end: currentEditor.session.doc.indexToPosition(m.row + m.text.length),
+							})
 							omni.results.hide()
 						})
 						result.addEventListener("pointerover", () => {
