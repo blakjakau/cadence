@@ -119,12 +119,12 @@ Note: The active model does not support native function calling/tools. Tools are
     if (supportsNativeTools) {
         coreRules = `
 ${toolCallingRule}
-- ALWAYS consider the most efficient tool choices for the task
-- File Modifications: \`edit_file\` for existing files (single \`search\`/\`replace\` pair or \`edits\` array); \`create_file\` only for new files. Smallest viable change per edit; on a failed match, \`read_file\` the region and retry.
+- ALWAYS prefer direct tools over running commands
+- File Modifications: Smallest viable change per edit; on a failed match, \`read_file\` the source section and retry.
 - Scratchpad: Use \`scratchpad_write\` to keep concise notes/discoveries (max 4KB, Markdown, supports \`mode: 'append'\` or \`'replace'\`) evergreen in context across turns without risk of eviction. Use \`scratchpad_clear\` to wipe.
 - Checkpoints & Rollbacks: \`checkpoint\` after a verified sub-step; \`rollback_file\`/\`rollback_cycle\` to undo.
 - External Knowledge: For time-sensitive info use \`research\`/\`web_fetch\` (codebase tools first; \`web_fetch\` supports \`no_summary: true\`, \`grep\`, and \`startLine\`/\`lineCount\` for exact remote code or content). Date: ${new Intl.DateTimeFormat('en-US', { dateStyle: 'medium' }).format(new Date())}.
-- Context Limits: Context evctions are strictly managed by the system. Explore via ${isSubAgent ? "\`read_file_outline\`/\`search_in_file\`" : "\`find_file\`/\`read_file_outline\`/\`search_in_file\`"}; read targeted sections, never whole files; small atomic edits. Commit important notes to concisely your scratchpad.
+- Context Limits: Context evctions are strictly managed by the system. Explore via ${isSubAgent ? "\`read_file_outline\`/\`search_in_file\`" : "\`find_file\`/\`read_file_outline\`/\`search_in_file\`"}; read targeted sections, never whole files; small atomic edits. Commit important notes to concisely your scratchpad to avoid loss
 `;
     } else {
         coreRules = `
@@ -161,8 +161,7 @@ ${hasPlan?"The host maintains your plan and task list when provided":""}
 - For complex, multi-file or architectural changes, you are encouraged to call \`create_implementation_plan\` (and optional \`tasks\`) or \`update_task_list\` to outline your roadmap. For localized or straightforward changes, you may proceed directly with code edits.
 ${hasTasks?"- Call \`complete_task\` with the task name as you finish each task. DO NOT rewrite the full task list just to check a box. ":""}
 ${hasTasks?"- When all tasks and objectives are satisfied, call the \`done\` tool.":""}
-- Call \`create_sub_agent\` to delegate discrete exploration, search, or research tasks to specialized sub-agents to keep your main context clean.
-- Avoid rambling or repetitive content outputs`;
+- Call \`create_sub_agent\` to delegate discrete exploration, search, or research tasks to specialized sub-agents to keep your main context clean.`;
     }
 
     let verificationSection = "";
@@ -177,7 +176,7 @@ ${hasTasks?"- When all tasks and objectives are satisfied, call the \`done\` too
         } else {
             verificationSection = `
 # Verification & Completion Protocol
-- Syntax validation is automatically enforce when using \`edit_file\` or \`create_file\`
+- Syntax validation and code style is automatically enforced when using \`edit_file\` or \`create_file\`
 - As appropriate verify edits with \`run_command\` for any applicable unit tests; re-read the edited sections before \`done\`
 `;
         }

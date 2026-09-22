@@ -3292,7 +3292,7 @@ class AIManager {
 		const summarizationSystemPrompt = `You are a summarization assistant. Summarize the given agent task cycle into the following XML format:
 <title>A very concise, single-line, active-voice title summarizing the main outcome of the cycle (max 10 words)</title>
 <summary>
-Outline what the user requested, what implementation actions (file edits, creations, commands) the agent performed, and the final outcome/results. Keep the summary concise but descriptive of all changes.
+Outline what the user requested, what implementation actions (file edits, creations, commands) the agent (Cadence) performed, and the final outcome/results. Keep the summary concise but descriptive of all changes. Write the summary in the first person, as Cadence.
 </summary>
 Output only the XML. Do not use any tools.`;
 

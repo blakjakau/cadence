@@ -68,6 +68,20 @@ class LlamaCpp extends AI {
         return this.config.server !== "";
     }
 
+    get supportsParallelTools() {
+        if (this.serverSupportsTools) {
+	        const model = (this.config.model || "").toLowerCase();
+	        return model.includes('r1') 
+	        	|| model.includes('reasoning') 
+	        	|| model.includes('deepseek') 
+	        	|| model.includes('think') 
+	        	|| model.includes("gemma-4")
+	        	|| model.includes('qwen')
+	        	|| model.includes('ornith');
+	        return true;
+        }
+    }
+    
     get supportsJSONTools() {
         if (this.serverSupportsTools !== undefined) {
             return this.serverSupportsTools;
