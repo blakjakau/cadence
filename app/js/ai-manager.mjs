@@ -252,7 +252,7 @@ class AIManager {
 
 		if (hints.length > 0) {
 			const compiledHints = hints.join("\n\n---\n\n");
-			basePrompt += `\n\n=== PROJECT SPECIFIC HINTS FROM THE USER ===\n\n${compiledHints}\n=================================================`;
+			basePrompt += `\n\n=== AGENT HINTS FOR CADENCE ===\n\n${compiledHints}\n================================`;
 		}
 
 		// Skills interpreter: load and match active skills based on user's query
@@ -286,7 +286,7 @@ class AIManager {
 			}
 
 			for (const skill of activeSkills.values()) {
-				basePrompt += `\n\n=== ACTIVE SKILL: ${skill.name} ===\n\n${skill.body}\n===================================`;
+				basePrompt += `\n\n=== ACTIVE SKILL: ${skill.name} ===\n\n${skill.body}\n================================`;
 				if (this.fileBar) {
 					this.fileBar.addSkill({ name: skill.name, id: `skillchip-${skill.name}` });
 				}

@@ -3002,7 +3002,9 @@ class AIManagerHistory {
 		}
 
 		if (session.scratchpad && typeof session.scratchpadTokenCount !== 'number') {
-			const textToTokenize = `=== CADENCE'S SCRATCHPAD ===\n${session.scratchpad}\n===================================`;
+			// Prefix with [SYSTEM] so the note reads as system-injected context, not a user instruction
+			// (trailing array-internal system messages degrade to user turns on most providers).
+			const textToTokenize = `[SYSTEM]\n=== CADENCE'S SCRATCHPAD ===\n${session.scratchpad}\n================================`;
 			const count = await this.ai.tokenize(textToTokenize);
 			if (typeof count === 'number') {
 				session.scratchpadTokenCount = count;
@@ -3458,14 +3460,14 @@ class AIManagerHistory {
 				if (taskList) sections.push(`TASK LIST:\n${taskList}`);
 				extraTokens += this.ai.estimateTokens([{
 					role: "system",
-					content: `=== EVERGREEN PLAN & TASKS ===:\n${sections.join("\n\n")}\n===================================`,
+					content: `=== EVERGREEN PLAN & TASKS ===:\n${sections.join("\n\n")}\n================================`,
 					tokenCount: targetSession.evergreenPlanTaskTokenCount
 				}]);
 			}
 			if (targetSession?.scratchpad) {
 				extraTokens += this.ai.estimateTokens([{
 					role: "system",
-					content: `=== CADENCE'S SCRATCHPAD ===\n${targetSession.scratchpad}\n===================================`,
+					content: `[SYSTEM]\n=== CADENCE'S SCRATCHPAD ===\n${targetSession.scratchpad}\n================================`,
 					tokenCount: targetSession.scratchpadTokenCount
 				}]);
 			}
@@ -3499,7 +3501,7 @@ class AIManagerHistory {
 			});
 
 			if (directivesText) {
-				extraTokens += this.ai.estimateTokens(directivesText);
+				extraTokens += this.ai.estimateTokens(`[SYSTEM]\n${directivesText}`);
 			}
 		}
 
@@ -3912,7 +3914,7 @@ class AIManagerHistory {
 		if (isAgentMode && targetSession?.scratchpad) {
 			contextForAI.push({
 				role: "system",
-				content: `=== CADENCE'S SCRATCHPAD ===\n${targetSession.scratchpad}\n===================================`,
+				content: `[SYSTEM]\n=== CADENCE'S SCRATCHPAD ===\n${targetSession.scratchpad}\n================================`,
 				tokenCount: targetSession.scratchpadTokenCount
 			});
 		}
@@ -3940,9 +3942,11 @@ class AIManagerHistory {
 			if (directivesText) {
 				// Pushed last (after the scratchpad) so the directives are the final turn the model sees.
 				// A push at the very end never splits a model tool call from its tool response.
+				// [SYSTEM] prefix makes provenance explicit: trailing array-internal system messages
+				// degrade to user turns on most providers, so this prevents reading it as a user instruction.
 				contextForAI.push({
 					role: "system",
-					content: directivesText
+					content: `[SYSTEM]\n${directivesText}`
 				});
 			}
 		}
