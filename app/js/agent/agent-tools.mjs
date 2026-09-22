@@ -1722,10 +1722,8 @@ Snippet: ${r.content || r.snippet || ""}`;
                 this.fileFailureCounts[resolvedPath] = (this.fileFailureCounts[resolvedPath] || 0) + 1;
                 const failCount = this.fileFailureCounts[resolvedPath];
 
-                const targetSessionId = sourceId || window.ui?.aiManager?.activeSessionId;
                 const aiManager = window.ui?.aiManager;
-                const session = (targetSessionId && aiManager?.runningSessions?.get(targetSessionId)?.instance?.session)
-                    || (targetSessionId === aiManager?.activeSessionId ? aiManager?.activeSession : null);
+                const session = this._resolveSession(sourceId);
 
                 const shouldAutoRollback = session?.autoRollbackOnFailures ?? (aiManager?.config?.defaultAutoRollbackOnFailures === true);
                 const threshold = session?.autoRollbackFailureThreshold ?? (aiManager?.config?.defaultAutoRollbackThreshold || 3);
@@ -3084,10 +3082,7 @@ Snippet: ${r.content || r.snippet || ""}`;
      */
     async rollbackFile(path, target = "cycle_start", sourceId = null) {
         try {
-            const targetSessionId = sourceId || window.ui?.aiManager?.activeSessionId;
-            const aiManager = window.ui?.aiManager;
-            const session = (targetSessionId && aiManager?.runningSessions?.get(targetSessionId)?.instance?.session)
-                || (targetSessionId === aiManager?.activeSessionId ? aiManager?.activeSession : null);
+            const session = this._resolveSession(sourceId);
 
             if (!session) {
                 throw new Error("No active session found.");
@@ -3225,10 +3220,7 @@ Snippet: ${r.content || r.snippet || ""}`;
      */
     async rollbackCycle(target = "cycle_start", sourceId = null) {
         try {
-            const targetSessionId = sourceId || window.ui?.aiManager?.activeSessionId;
-            const aiManager = window.ui?.aiManager;
-            const session = (targetSessionId && aiManager?.runningSessions?.get(targetSessionId)?.instance?.session)
-                || (targetSessionId === aiManager?.activeSessionId ? aiManager?.activeSession : null);
+            const session = this._resolveSession(sourceId);
 
             if (!session || !session.modifiedFiles) {
                 return "Notice: No modified files found in this session.";
