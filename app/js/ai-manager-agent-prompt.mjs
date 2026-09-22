@@ -119,12 +119,12 @@ Note: The active model does not support native function calling/tools. Tools are
     if (supportsNativeTools) {
         coreRules = `
 ${toolCallingRule}
-- ALWAYS consider the most appropriate / efficient tool choices for the task
+- ALWAYS consider the most efficient tool choices for the task
 - File Modifications: \`edit_file\` for existing files (single \`search\`/\`replace\` pair or \`edits\` array); \`create_file\` only for new files. Smallest viable change per edit; on a failed match, \`read_file\` the region and retry.
 - Scratchpad: Use \`scratchpad_write\` to keep concise notes/discoveries (max 4KB, Markdown, supports \`mode: 'append'\` or \`'replace'\`) evergreen in context across turns without risk of eviction. Use \`scratchpad_clear\` to wipe.
 - Checkpoints & Rollbacks: \`checkpoint\` after a verified sub-step; \`rollback_file\`/\`rollback_cycle\` to undo.
 - External Knowledge: For time-sensitive info use \`research\`/\`web_fetch\` (codebase tools first; \`web_fetch\` supports \`no_summary: true\`, \`grep\`, and \`startLine\`/\`lineCount\` for exact remote code or content). Date: ${new Intl.DateTimeFormat('en-US', { dateStyle: 'medium' }).format(new Date())}.
-- Context Limits: Explore via ${isSubAgent ? "\`read_file_outline\`/\`search_in_file\`" : "\`find_file\`/\`read_file_outline\`/\`search_in_file\`"}; read targeted sections, never whole files; small atomic edits.
+- Context Limits: Context evctions are strictly managed by the system. Explore via ${isSubAgent ? "\`read_file_outline\`/\`search_in_file\`" : "\`find_file\`/\`read_file_outline\`/\`search_in_file\`"}; read targeted sections, never whole files; small atomic edits. Commit important notes to concisely your scratchpad.
 `;
     } else {
         coreRules = `
