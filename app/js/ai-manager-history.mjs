@@ -2943,8 +2943,7 @@ class AIManagerHistory {
 			for (const msg of session.messages) {
 				delete msg.tokenCount;
 			}
-			delete session.implementationPlanTokenCount;
-			delete session.taskListTokenCount;
+			delete session.evergreenPlanTaskTokenCount;
 			delete session.scratchpadTokenCount;
 			session.tokenizedForProvider = this.ai.providerId;
 			updated = true;
@@ -2986,32 +2985,24 @@ class AIManagerHistory {
 			}
 		}
 
-		if (session.implementationPlan && typeof session.implementationPlanTokenCount !== 'number') {
-			const textToTokenize = `EVERGREEN IMPLEMENTATION PLAN:\n${session.implementationPlan}`;
+		// Combined evergreen plan & task list token count (single system turn: `EVERGREEN PLAN & TASKS:` with whichever sections exist)
+		if ((session.implementationPlan || session.taskList) && typeof session.evergreenPlanTaskTokenCount !== 'number') {
+			const sections = [];
+			if (session.implementationPlan) sections.push(`IMPLEMENTATION PLAN:\n${session.implementationPlan}`);
+			if (session.taskList) sections.push(`TASK LIST:\n${session.taskList}`);
+			const textToTokenize = `EVERGREEN PLAN & TASKS:\n${sections.join("\n\n")}`;
 			const count = await this.ai.tokenize(textToTokenize);
 			if (typeof count === 'number') {
-				session.implementationPlanTokenCount = count;
+				session.evergreenPlanTaskTokenCount = count;
 				updated = true;
 			}
-		} else if (!session.implementationPlan && session.implementationPlanTokenCount !== undefined) {
-			delete session.implementationPlanTokenCount;
-			updated = true;
-		}
-
-		if (session.taskList && typeof session.taskListTokenCount !== 'number') {
-			const textToTokenize = `EVERGREEN TASK LIST:\n${session.taskList}`;
-			const count = await this.ai.tokenize(textToTokenize);
-			if (typeof count === 'number') {
-				session.taskListTokenCount = count;
-				updated = true;
-			}
-		} else if (!session.taskList && session.taskListTokenCount !== undefined) {
-			delete session.taskListTokenCount;
+		} else if (!session.implementationPlan && !session.taskList && session.evergreenPlanTaskTokenCount !== undefined) {
+			delete session.evergreenPlanTaskTokenCount;
 			updated = true;
 		}
 
 		if (session.scratchpad && typeof session.scratchpadTokenCount !== 'number') {
-			const textToTokenize = `EVERGREEN SCRATCHPAD NOTES:\n${session.scratchpad}`;
+			const textToTokenize = `=== CADENCE'S SCRATCHPAD ===\n${session.scratchpad}\n===================================`;
 			const count = await this.ai.tokenize(textToTokenize);
 			if (typeof count === 'number') {
 				session.scratchpadTokenCount = count;
@@ -3456,27 +3447,25 @@ class AIManagerHistory {
 			chatHistory = newChatHistory;
 		}
 
-		// Calculate extra tokens of evergreen plan, task list, directives, task state, and system prompt
+		// Calculate extra tokens of evergreen plan & tasks (combined turn), scratchpad, directives, task state, and system prompt
 		let extraTokens = 0;
 		if (isAgentMode) {
-			if (targetSession?.implementationPlan) {
+			const plan = targetSession?.implementationPlan;
+			const taskList = targetSession?.taskList;
+			if (plan || taskList) {
+				const sections = [];
+				if (plan) sections.push(`IMPLEMENTATION PLAN:\n${plan}`);
+				if (taskList) sections.push(`TASK LIST:\n${taskList}`);
 				extraTokens += this.ai.estimateTokens([{
 					role: "system",
-					content: `EVERGREEN IMPLEMENTATION PLAN:\n${targetSession.implementationPlan}`,
-					tokenCount: targetSession.implementationPlanTokenCount
-				}]);
-			}
-			if (targetSession?.taskList) {
-				extraTokens += this.ai.estimateTokens([{
-					role: "system",
-					content: `EVERGREEN TASK LIST:\n${targetSession.taskList}`,
-					tokenCount: targetSession.taskListTokenCount
+					content: `=== EVERGREEN PLAN & TASKS ===:\n${sections.join("\n\n")}\n===================================`,
+					tokenCount: targetSession.evergreenPlanTaskTokenCount
 				}]);
 			}
 			if (targetSession?.scratchpad) {
 				extraTokens += this.ai.estimateTokens([{
 					role: "system",
-					content: `EVERGREEN SCRATCHPAD NOTES:\n${targetSession.scratchpad}`,
+					content: `=== CADENCE'S SCRATCHPAD ===\n${targetSession.scratchpad}\n===================================`,
 					tokenCount: targetSession.scratchpadTokenCount
 				}]);
 			}
@@ -3792,27 +3781,19 @@ class AIManagerHistory {
 		// We always want the Task State to be the very first thing the AI sees.
 		const contextForAI = [];
 
-		// NEW: Prepend evergreen plan and task checklist at the top of AI context in Agent Mode
+		// NEW: Prepend the combined evergreen plan & task checklist (single system turn) at the top of AI context in Agent Mode.
+		// Scratchpad notes are appended just before the # Current Directives (framed with explicit delimiters), so the directives remain the final turn.
 		if (isAgentMode) {
-			if (targetSession?.implementationPlan) {
+			const plan = targetSession?.implementationPlan;
+			const taskList = targetSession?.taskList;
+			if (plan || taskList) {
+				const sections = [];
+				if (plan) sections.push(`IMPLEMENTATION PLAN:\n${plan}`);
+				if (taskList) sections.push(`TASK LIST:\n${taskList}`);
 				contextForAI.push({
 					role: "system",
-					content: `EVERGREEN IMPLEMENTATION PLAN:\n${targetSession.implementationPlan}`,
-					tokenCount: targetSession.implementationPlanTokenCount
-				});
-			}
-			if (targetSession?.taskList) {
-				contextForAI.push({
-					role: "system",
-					content: `EVERGREEN TASK LIST:\n${targetSession.taskList}`,
-					tokenCount: targetSession.taskListTokenCount
-				});
-			}
-			if (targetSession?.scratchpad) {
-				contextForAI.push({
-					role: "system",
-					content: `EVERGREEN SCRATCHPAD NOTES:\n${targetSession.scratchpad}`,
-					tokenCount: targetSession.scratchpadTokenCount
+					content: `EVERGREEN PLAN & TASKS:\n${sections.join("\n\n")}`,
+					tokenCount: targetSession.evergreenPlanTaskTokenCount
 				});
 			}
 		}
@@ -3926,6 +3907,16 @@ class AIManagerHistory {
 			}
 		});
 
+		// Append the evergreen scratchpad notes just before the current directives, framed with explicit delimiters
+		// so it reads as our own working notes rather than a user instruction; the directives stay the final turn.
+		if (isAgentMode && targetSession?.scratchpad) {
+			contextForAI.push({
+				role: "system",
+				content: `=== CADENCE'S SCRATCHPAD ===\n${targetSession.scratchpad}\n===================================`,
+				tokenCount: targetSession.scratchpadTokenCount
+			});
+		}
+
 		if (isAgentMode && contextForAI.length > 0) {
 			const hasPlan = !!targetSession?.implementationPlan;
 			const hasTasks = !!targetSession?.taskList;
@@ -3947,23 +3938,9 @@ class AIManagerHistory {
 			});
 
 			if (directivesText) {
-				// Find a safe insertion index that doesn't split a model tool call and its tool response.
-				let insertIdx = contextForAI.length - 1;
-				while (insertIdx > 0) {
-					const currentMsg = contextForAI[insertIdx];
-					const prevMsg = contextForAI[insertIdx - 1];
-					
-					// A tool response starts with "[Tool Response: " or has type tool_response
-					const isToolResponse = currentMsg && (currentMsg.type === "tool_response" || (currentMsg.content && currentMsg.content.startsWith("[Tool Response:")));
-					const prevIsModelWithTools = prevMsg && prevMsg.role === "model" && prevMsg.toolCalls && prevMsg.toolCalls.length > 0;
-					
-					if (isToolResponse || prevIsModelWithTools) {
-						insertIdx--;
-					} else {
-						break;
-					}
-				}
-				contextForAI.splice(insertIdx, 0, {
+				// Pushed last (after the scratchpad) so the directives are the final turn the model sees.
+				// A push at the very end never splits a model tool call from its tool response.
+				contextForAI.push({
 					role: "system",
 					content: directivesText
 				});
