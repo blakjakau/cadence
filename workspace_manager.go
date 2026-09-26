@@ -345,6 +345,91 @@ func sessionHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// sessionArchiveHandler serves the per-session archive record (compacted cycle
+// spans moved out of the main session record).
+//
+//	GET  /api/session-archive?id=<session> -> archive doc {spans:[...]}, or 404 if none.
+//	POST /api/session-archive?id=<session> with body
+//	     {"removeMsgIds":[...], "startMsgId":"...", "endMsgId":"...", "markSummaryId":"..."}
+//	     -> atomically moves the raw messages out of the main session record into the
+//	        archive record, optionally marking the originating cycle_summary archived.
+//	        Responds with {"archived": <count moved>}.
+func sessionArchiveHandler(w http.ResponseWriter, r *http.Request) {
+	if !checkRequestAuthorization(r) {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	id := r.URL.Query().Get("id")
+	if id == "" {
+		http.Error(w, "Missing session ID", http.StatusBadRequest)
+		return
+	}
+	if globalDB == nil {
+		http.Error(w, "DB not available", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Cache-Control", "no-store, no-cache, must-revalidate")
+
+	if r.Method == http.MethodGet {
+		data, err := globalDB.GetSessionArchive(id)
+		if err != nil && !os.IsNotExist(err) {
+			log.Printf("[WorkspaceManager] Failed to get archive for session %s: %v", id, err)
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		// No archive yet for this session — treat as an empty record.
+		if data == nil {
+			data = []byte(`{"spans":[]}`)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(data)
+		return
+	}
+
+	if r.Method == http.MethodPost {
+		body, err := ioutil.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		var req struct {
+			RemoveMsgIDs  []string `json:"removeMsgIds"`
+			StartMsgID    string   `json:"startMsgId"`
+			EndMsgID      string   `json:"endMsgId"`
+			MarkSummaryID string   `json:"markSummaryId"`
+		}
+		if err := json.Unmarshal(body, &req); err != nil {
+			http.Error(w, `invalid request body: `+err.Error(), http.StatusBadRequest)
+			return
+		}
+		if len(req.RemoveMsgIDs) == 0 {
+			http.Error(w, "No removeMsgIds provided", http.StatusBadRequest)
+			return
+		}
+
+		archivedIDs, err := globalDB.ArchiveCycleSpan(id, req.RemoveMsgIDs, req.MarkSummaryID)
+		if err != nil {
+			if os.IsNotExist(err) {
+				http.Error(w, "Session not found", http.StatusNotFound)
+				return
+			}
+			log.Printf("[WorkspaceManager] Failed to archive span for session %s: %v", id, err)
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"archived": len(archivedIDs),
+			"ids":      archivedIDs,
+		})
+		return
+	}
+
+	http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+}
+
 func sessionsHandler(w http.ResponseWriter, r *http.Request) {
 	if !checkRequestAuthorization(r) {
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)

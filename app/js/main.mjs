@@ -43,8 +43,8 @@ async function updateDBStatus() {
 			if (!el._hasClickHandler) {
 				el._hasClickHandler = true;
 				el.addEventListener('click', () => {
-					if (window.aiManager && window.aiManager.sessions) {
-						window.aiManager.sessions.showHistoryModal();
+					if (window?.ui?.aiManager?.historyButton) {
+						window.ui.aiManager.historyButton.click();
 					}
 				});
 			}

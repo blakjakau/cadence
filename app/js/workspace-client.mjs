@@ -116,6 +116,42 @@ export const workspaceClient = {
         }
     },
 
+    // Fetch the per-session archive record (compacted cycle spans moved out of
+    // the main session record). Returns the doc {spans:[...]} or null when the
+    // session has no archived spans yet (404/empty).
+    async getSessionArchive(id) {
+        const res = await fetch(`${API_BASE}/session-archive?id=${encodeURIComponent(id)}&t=${Date.now()}`, {
+            cache: 'no-store'
+        });
+        if (res.status === 404) return null;
+        if (!res.ok) {
+            throw new Error(`Failed to fetch session archive: ${res.statusText}`);
+        }
+        const data = await res.json();
+        return (data && data.spans && data.spans.length) ? data : null;
+    },
+
+    // Atomically move the raw messages for removeMsgIds out of the main session
+    // record into the archive record, optionally marking markSummaryId's
+    // cycle_summary as archived. Returns {archived, ids}.
+    async archiveCycleSpan(id, { removeMsgIds, markSummaryId }) {
+        const body = JSON.stringify({
+            removeMsgIds,
+            markSummaryId: markSummaryId || ''
+        });
+        const res = await fetch(`${API_BASE}/session-archive?id=${encodeURIComponent(id)}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: body
+        });
+        if (!res.ok) {
+            let msg = res.statusText;
+            try { msg = await res.text(); } catch (e) { /* keep statusText */ }
+            throw new Error(`Failed to archive cycle span: ${msg}`);
+        }
+        return await res.json();
+    },
+
     async getDBStats() {
         const res = await fetch(`${API_BASE}/db-stats?t=${Date.now()}`);
         if (!res.ok) {

@@ -1101,11 +1101,14 @@ export class Agent {
 										cycleStartMsgId: messages[cycleStartIdx].id,
 										cycleEndMsgId: messages[endIdx].id
 									};
-									session.messages.splice(endIdx + 1, 0, summaryMessage);
-									session.lastModified = Date.now();
-									await workspaceClient.setSession(session.id, session);
-									
-									if (aiManager.isSessionViewed(session.id)) {
+								session.messages.splice(endIdx + 1, 0, summaryMessage);
+								session.lastModified = Date.now();
+								await workspaceClient.setSession(session.id, session);
+
+								// Best-effort: move the raw span out of the main record into the archive (never fails the compaction).
+								await aiManager.historyManager._archiveCycleSpan(session, summaryMessage);
+
+								if (aiManager.isSessionViewed(session.id)) {
 										aiManager.historyManager.render();
 										if (aiManager.conversationArea) {
 											aiManager.scrollToBottom(true);

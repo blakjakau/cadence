@@ -480,6 +480,16 @@ class AIManagerSessions {
 		// Update the rest of the UI based on the new data
 		this.manager.historyManager.loadSessionMessages(this.activeSession.messages, false);
 
+		// JIT backfill: split legacy compacted spans out of the main record into the
+		// per-session archive (fire-and-forget). Skips sessions with a running agent,
+		// since those rewrite `messages` concurrently and will archive on their next
+		// compaction. switchSession is the single funnel for all load paths (initial
+		// page load + tab switch), so this one hook covers everything.
+		if (!this.externalRunningSessions.has(sessionId) && !this.manager.runningSessions.has(sessionId)) {
+			void this.manager.historyManager.backfillArchives(this.activeSession).catch(err =>
+				console.warn("[AIManagerSessions] Archive backfill failed:", err));
+		}
+
 		this.manager.promptEditor.setValue(this.activeSession.promptInput || "", -1);
 		this.promptIndex = (this.activeSession.promptHistory?.length || 0);
 		this.manager._resizePromptArea();

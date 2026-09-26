@@ -16,10 +16,11 @@ import (
 )
 
 var (
-	bucketSessionsData = []byte("sessions_data")
-	bucketSessionsMeta = []byte("sessions_meta")
-	bucketWorkspaces   = []byte("workspaces")
-	bucketAppConfig    = []byte("app_config")
+	bucketSessionsData   = []byte("sessions_data")
+	bucketSessionsMeta   = []byte("sessions_meta")
+	bucketSessionArchives = []byte("session_archives")
+	bucketWorkspaces      = []byte("workspaces")
+	bucketAppConfig       = []byte("app_config")
 	keyAppConfig       = []byte("config")
 	keyMigrationMarker = []byte("migration_v1_done")
 )
@@ -55,7 +56,7 @@ func openCadenceDB(dir string) (*CadenceDB, error) {
 
 	// Ensure all required buckets exist
 	err = db.Update(func(tx *bolt.Tx) error {
-		for _, bName := range [][]byte{bucketSessionsData, bucketSessionsMeta, bucketWorkspaces, bucketAppConfig} {
+		for _, bName := range [][]byte{bucketSessionsData, bucketSessionsMeta, bucketSessionArchives, bucketWorkspaces, bucketAppConfig} {
 			if _, err := tx.CreateBucketIfNotExists(bName); err != nil {
 				return fmt.Errorf("failed to create bucket %s: %w", string(bName), err)
 			}
@@ -338,6 +339,7 @@ func (c *CadenceDB) DeleteSession(id string) error {
 	return c.db.Update(func(tx *bolt.Tx) error {
 		bData := tx.Bucket(bucketSessionsData)
 		bMeta := tx.Bucket(bucketSessionsMeta)
+		bArchives := tx.Bucket(bucketSessionArchives)
 
 		if bData != nil {
 			_ = bData.Delete([]byte(id))
@@ -345,8 +347,231 @@ func (c *CadenceDB) DeleteSession(id string) error {
 		if bMeta != nil {
 			_ = bMeta.Delete([]byte(id))
 		}
+		if bArchives != nil {
+			_ = bArchives.Delete([]byte(id))
+		}
 		return nil
 	})
+}
+
+// GetSessionArchive returns the raw archive document for a session (the JSON
+// spans record that holds compacted cycle spans), or os.ErrNotExist when the
+// session has no archived spans yet.
+func (c *CadenceDB) GetSessionArchive(id string) ([]byte, error) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	var data []byte
+	err := c.db.View(func(tx *bolt.Tx) error {
+		bArchives := tx.Bucket(bucketSessionArchives)
+		if bArchives == nil {
+			return fmt.Errorf("session archive bucket not found")
+		}
+		v := bArchives.Get([]byte(id))
+		if v == nil {
+			return os.ErrNotExist
+		}
+		data = make([]byte, len(v))
+		copy(data, v)
+		return nil
+	})
+	return data, err
+}
+
+// PutSessionArchive stores the archive document for a session.
+func (c *CadenceDB) PutSessionArchive(id string, data []byte) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	return c.db.Update(func(tx *bolt.Tx) error {
+		bArchives := tx.Bucket(bucketSessionArchives)
+		if bArchives == nil {
+			return fmt.Errorf("session archive bucket not found")
+		}
+		return bArchives.Put([]byte(id), data)
+	})
+}
+
+// archiveSpan is a single compacted cycle's raw messages stored in the
+// per-session archive record.
+type archiveSpan struct {
+	StartMsgID string                   `json:"startMsgId"`
+	EndMsgID   string                   `json:"endMsgId"`
+	Messages   []map[string]interface{} `json:"messages"`
+}
+
+// archiveDoc is the per-session archive record (one bbolt key per session):
+// an append-only list of compacted cycle spans.
+type archiveDoc struct {
+	Spans []archiveSpan `json:"spans"`
+}
+
+// ArchiveCycleSpan atomically moves the raw messages whose IDs are in msgIDs
+// out of the session's main record into the per-session archive record. Both
+// writes happen in a single bbolt transaction so a crash mid-move never loses
+// messages. The operation is idempotent: if the span (identified by its
+// first/last message IDs) is already archived it is skipped and the main
+// record is left untouched. The moved message IDs are returned so the caller
+// can confirm exactly what moved (nil when nothing was moved).
+// summaryID is an optional cycle_summary message ID: when non-empty, the
+// summary's `archived` flag is set to true in the same transaction (so the
+// summary card can show an "archived" state). It is independent of the span
+// move — the summary is always kept in the main record.
+func (c *CadenceDB) ArchiveCycleSpan(id string, msgIDs []string, summaryID string) (archivedIDs []string, err error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	erred := c.db.Update(func(tx *bolt.Tx) error {
+		bData := tx.Bucket(bucketSessionsData)
+		bArchives := tx.Bucket(bucketSessionArchives)
+		if bData == nil {
+			return fmt.Errorf("session bucket not found")
+		}
+		if bArchives == nil {
+			return fmt.Errorf("session archive bucket not found")
+		}
+
+		sessionVal := bData.Get([]byte(id))
+		if sessionVal == nil {
+			return os.ErrNotExist
+		}
+
+		// Full session as a generic map so we can re-serialize it unchanged
+		// except for the `messages` field.
+		var fullSession map[string]interface{}
+		if err := json.Unmarshal(sessionVal, &fullSession); err != nil {
+			return fmt.Errorf("failed to parse session: %w", err)
+		}
+		var sessionMsgs []map[string]interface{}
+		if raw, ok := fullSession["messages"].([]interface{}); ok {
+			for _, m := range raw {
+				if mm, ok := m.(map[string]interface{}); ok {
+					sessionMsgs = append(sessionMsgs, mm)
+				}
+			}
+		}
+		if len(sessionMsgs) == 0 {
+			return nil
+		}
+
+		// Order the requested IDs by their position in the session
+		// (order-preserving extraction); ignore IDs no longer in the main record.
+		type toMoveEntry struct {
+			idx int
+			id  string
+		}
+		idxByID := make(map[string]int, len(sessionMsgs))
+		for i, m := range sessionMsgs {
+			if idStr, ok := m["id"].(string); ok {
+				idxByID[idStr] = i
+			}
+		}
+		var toMove []toMoveEntry
+		seen := make(map[string]bool, len(msgIDs))
+		for _, mid := range msgIDs {
+			if seen[mid] {
+				continue
+			}
+			seen[mid] = true
+			i, ok := idxByID[mid]
+			if !ok {
+				continue // Already archived (or pruned) — not in the main record.
+			}
+			toMove = append(toMove, toMoveEntry{idx: i, id: mid})
+		}
+		if len(toMove) == 0 {
+			return nil // Nothing to move (idempotent no-op).
+		}
+		sort.Slice(toMove, func(a, b int) bool { return toMove[a].idx < toMove[b].idx })
+
+		startID := toMove[0].id
+		endID := toMove[len(toMove)-1].id
+
+		// Load-or-create the archive doc.
+		var doc archiveDoc
+		if v := bArchives.Get([]byte(id)); v != nil {
+			if err := json.Unmarshal(v, &doc); err != nil {
+				return fmt.Errorf("failed to parse archive doc: %w", err)
+			}
+		}
+
+		// Idempotency: if this exact span (same start+end IDs) is already archived,
+		// the span is done — but the summary may still need its `archived` flag
+		// (a prior crash could have left it unset).
+		alreadyArchived := false
+		for _, s := range doc.Spans {
+			if s.StartMsgID == startID && s.EndMsgID == endID {
+				alreadyArchived = true
+				break
+			}
+		}
+		if alreadyArchived {
+			// Span is already archived — just ensure the summary is marked (in case
+			// it was archived before we started tracking the flag), then no-op.
+			if summaryID != "" {
+				for _, m := range sessionMsgs {
+					if idStr, ok := m["id"].(string); ok && idStr == summaryID {
+						if m["archived"] != true {
+							m["archived"] = true
+							fullSession["messages"] = sessionMsgs
+							sessionBytes, err := json.Marshal(fullSession)
+							if err != nil {
+								return err
+							}
+							return bData.Put([]byte(id), sessionBytes)
+						}
+					}
+				}
+			}
+			return nil // Already archived and already marked — true no-op.
+		}
+
+		// Build the kept (main) message list and the extracted span (in order).
+		removed := make(map[int]bool, len(toMove))
+		for _, o := range toMove {
+			removed[o.idx] = true
+		}
+		spanMsgs := make([]map[string]interface{}, 0, len(toMove))
+		kept := make([]map[string]interface{}, 0, len(sessionMsgs)-len(toMove))
+		for i, m := range sessionMsgs {
+			if removed[i] {
+				spanMsgs = append(spanMsgs, m)
+				archivedIDs = append(archivedIDs, m["id"].(string))
+			} else {
+				kept = append(kept, m)
+			}
+		}
+
+		// Optionally mark the originating cycle_summary as archived (in place in kept).
+		if summaryID != "" {
+			for _, m := range kept {
+				if idStr, ok := m["id"].(string); ok && idStr == summaryID {
+					m["archived"] = true
+				}
+			}
+		}
+
+		fullSession["messages"] = kept
+		sessionBytes, err := json.Marshal(fullSession)
+		if err != nil {
+			return err
+		}
+
+		doc.Spans = append(doc.Spans, archiveSpan{StartMsgID: startID, EndMsgID: endID, Messages: spanMsgs})
+		archiveBytes, err := json.Marshal(doc)
+		if err != nil {
+			return err
+		}
+
+		if err := bData.Put([]byte(id), sessionBytes); err != nil {
+			return err
+		}
+		return bArchives.Put([]byte(id), archiveBytes)
+	})
+	if erred != nil {
+		return nil, erred
+	}
+	return archivedIDs, nil
 }
 
 func (c *CadenceDB) ListSessions() ([]map[string]interface{}, error) {

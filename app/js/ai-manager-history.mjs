@@ -1239,22 +1239,24 @@ class AIManagerHistory {
 										
 										if (cycleStartIdx !== -1 && cycleStartIdx <= msgIdx + 1) {
 											const cycleMsgs = allMsgs.slice(cycleStartIdx, msgIdx + 2);
-											const result = await this.manager.generateCycleSummary(cycleMsgs);
-											if (result && result.summary) {
-												const summaryMessage = {
-													id: crypto.randomUUID(),
-													role: "system",
-													type: "cycle_summary",
-													title: result.title,
-													content: result.summary,
-													timestamp: Date.now(),
-													cycleStartMsgId: allMsgs[cycleStartIdx].id,
-													cycleEndMsgId: nextMsg.id
-												};
-												this.manager.activeSession.messages.splice(msgIdx + 2, 0, summaryMessage);
-												this.manager.activeSession.lastModified = Date.now();
-												await workspaceClient.setSession(this.manager.activeSession.id, this.manager.activeSession);
-												this.render();
+						const result = await this.manager.generateCycleSummary(cycleMsgs);
+						if (result && result.summary) {
+							const summaryMessage = {
+								id: crypto.randomUUID(),
+								role: "system",
+								type: "cycle_summary",
+								title: result.title,
+								content: result.summary,
+								timestamp: Date.now(),
+								cycleStartMsgId: allMsgs[cycleStartIdx].id,
+								cycleEndMsgId: nextMsg.id
+							};
+							this.manager.activeSession.messages.splice(msgIdx + 2, 0, summaryMessage);
+							this.manager.activeSession.lastModified = Date.now();
+							await workspaceClient.setSession(this.manager.activeSession.id, this.manager.activeSession);
+							// Best-effort: archive the raw span out of the main record into the archive.
+							await this._archiveCycleSpan(this.manager.activeSession, summaryMessage);
+							this.render();
 											}
 										}
 									} catch (err) {
@@ -1384,19 +1386,18 @@ class AIManagerHistory {
 				e.stopPropagation();
 				const startId = message.cycleStartMsgId;
 				const endId = message.cycleEndMsgId;
-				const allMsgs = this.chatHistory;
-				const startIdx = allMsgs.findIndex(m => m.id === startId);
-				const endIdx = allMsgs.findIndex(m => m.id === endId);
-				if (startIdx === -1 || endIdx === -1 || startIdx > endIdx) {
-					window.modal.notice("Cannot regenerate summary: original cycle messages are no longer in history.", "Regenerate Summary");
-					return;
-				}
 
 				const originalTitleHtml = titleSpan.innerHTML;
 				titleSpan.innerHTML = `<ui-icon class="spin" style="font-size: 14px; vertical-align: middle; margin-right: 4px;">cached</ui-icon> <em>Regenerating summary...</em>`;
 				regenBtn.classList.add("spin");
 				try {
-					const cycleMsgs = allMsgs.slice(startIdx, endIdx + 1);
+					// Span may live in the main record (unarchived / legacy) or in the per-session archive — the resolver handles both.
+					const cycleMsgs = await this._resolveCycleSpanMessages(targetSessionId, startId, endId, message.id);
+					if (!cycleMsgs || cycleMsgs.length === 0) {
+						window.modal.notice("Cannot regenerate summary: original cycle messages are no longer available.", "Regenerate Summary");
+						titleSpan.innerHTML = originalTitleHtml;
+						return;
+					}
 					const result = await this.manager.generateCycleSummary(cycleMsgs);
 					if (result && (result.title || result.summary)) {
 						message.title = result.title;
@@ -1454,43 +1455,38 @@ class AIManagerHistory {
 			const detailContainer = new Block();
 			detailContainer.className = "cycle-summary-detail-container";
 			
-			detailsHeader.onclick = (e) => {
-				e.stopPropagation();
-				const isExpanded = detailsExpander.hasAttribute("expanded");
-				if (isExpanded) {
-					detailsExpander.removeAttribute("expanded");
-				} else {
-					if (detailContainer.children.length === 0) {
-						const startId = message.cycleStartMsgId;
-						const endId = message.cycleEndMsgId;
-						const allMsgs = this.chatHistory;
-						const startIdx = allMsgs.findIndex(m => m.id === startId);
-						const endIdx = allMsgs.findIndex(m => m.id === endId);
-						if (startIdx !== -1 && endIdx !== -1 && startIdx <= endIdx) {
-							const cycleMsgs = allMsgs.slice(startIdx, endIdx + 1);
-							for (const cMsg of cycleMsgs) {
-								if (cMsg.type === 'file_context' || cMsg.type === 'cycle_summary') continue;
-								const cEl = this._createMessageElement(cMsg, allMsgs.indexOf(cMsg));
-								if (cEl) {
-									const nestedDelete = cEl.querySelector(".delete-history-button");
-									if (nestedDelete) nestedDelete.remove();
-									const nestedReplay = cEl.querySelector(".replay-history-button");
-									if (nestedReplay) nestedReplay.remove();
-									const nestedEdit = cEl.querySelector(".edit-history-button");
-									if (nestedEdit) nestedEdit.remove();
-									detailContainer.append(cEl);
+				detailsHeader.onclick = async (e) => {
+					e.stopPropagation();
+					const isExpanded = detailsExpander.hasAttribute("expanded");
+					if (isExpanded) {
+						detailsExpander.removeAttribute("expanded");
+					} else {
+						detailsExpander.setAttribute("expanded", "");
+							if (detailContainer.children.length === 0) {
+								// Span may live in the main record (unarchived / legacy) or in the per-session archive â the resolver handles both.
+								const cycleMsgs = await this._resolveCycleSpanMessages(targetSessionId, message.cycleStartMsgId, message.cycleEndMsgId, message.id);
+								if (cycleMsgs && cycleMsgs.length) {
+									for (const cMsg of cycleMsgs) {
+										if (cMsg.type === 'file_context' || cMsg.type === 'cycle_summary') continue;
+										const cEl = this._createMessageElement(cMsg, -1);
+										if (!cEl) continue;
+										const nestedDelete = cEl.querySelector(".delete-history-button");
+										if (nestedDelete) nestedDelete.remove();
+										const nestedReplay = cEl.querySelector(".replay-history-button");
+										if (nestedReplay) nestedReplay.remove();
+										const nestedEdit = cEl.querySelector(".edit-history-button");
+										if (nestedEdit) nestedEdit.remove();
+										detailContainer.append(cEl);
 								}
+							} else {
+								const emptyDetail = new Block();
+								emptyDetail.className = "cycle-summary-empty-detail";
+								emptyDetail.textContent = "Detailed history for this cycle is not available (it may have been pruned or deleted from the conversation).";
+								detailContainer.append(emptyDetail);
 							}
-						} else {
-							const emptyDetail = new Block();
-							emptyDetail.className = "cycle-summary-empty-detail";
-							emptyDetail.textContent = "Detailed history for this cycle is not available (it may have been pruned or deleted from the conversation).";
-							detailContainer.append(emptyDetail);
 						}
 					}
-					detailsExpander.setAttribute("expanded", "");
-				}
-			};
+				};
 
 			detailsExpander.append(detailsHeader, detailContainer);
 			bodyContainer.append(contentDiv, detailsExpander);
@@ -3053,6 +3049,225 @@ class AIManagerHistory {
 	}
 
 	/**
+	/**
+	 * Best-effort archival of a just-summarized cycle's RAW messages out of the main
+	 * session record and into the per-session archive record. Call AFTER the summary
+	 * object has been inserted into `targetSession.messages` and persisted.
+	 *
+	 * Only final (non-seed) summaries are archived — seeds are ephemeral placeholders
+	 * whose span may still be mutating. The span's raw message IDs are computed from
+	 * the local array (the same set the UI expander would have shown), and the server
+	 * extracts them by ID (never trusting a client-side copy of the messages). On
+	 * success the raw messages are spliced out of the local array and the summary is
+	 * marked `archived: true`. On failure everything stays in the main record and the
+	 * span simply remains eligible for a future archive attempt — nothing is ever lost.
+	 *
+	 * @param {object} targetSession session object whose `messages` array holds the summary
+	 * @param {object} summaryMsg    the cycle_summary message (must have cycleStartMsgId/cycleEndMsgId)
+	 * @returns {Promise<boolean>} true if the span was archived and removed locally
+	 */
+	async _archiveCycleSpan(targetSession, summaryMsg) {
+		try {
+			if (!targetSession || !summaryMsg || summaryMsg.isSeed) return false;
+			const startId = summaryMsg.cycleStartMsgId;
+			const endId = summaryMsg.cycleEndMsgId;
+			if (!startId || !endId) return false;
+
+			const messages = targetSession.messages;
+			const startIdx = messages.findIndex(m => m.id === startId);
+			const endIdx = messages.findIndex(m => m.id === endId);
+			if (startIdx === -1 || endIdx === -1) return false; // Span already archived or pruned.
+			const lo = Math.min(startIdx, endIdx);
+			const hi = Math.max(startIdx, endIdx);
+
+			// Raw messages in the span the expander would have shown: skip the summary
+			// markers/seed placeholders and the summary itself (it stays in the main record).
+			const rawMsgIds = messages.slice(lo, hi + 1)
+				.filter(m => m.type !== "cycle_summary" && m.id !== summaryMsg.id)
+				.map(m => m.id);
+			if (rawMsgIds.length === 0) return false;
+
+			await workspaceClient.archiveCycleSpan(targetSession.id, {
+				removeMsgIds: rawMsgIds,
+				markSummaryId: summaryMsg.id
+			});
+
+			// Reflect the move locally: drop the raw span, mark the summary archived, persist.
+			const newHi = messages.findIndex(m => m.id === endId);
+			const newLo = messages.findIndex(m => m.id === startId);
+			if (newLo === -1 || newHi === -1) return true; // Already gone locally.
+			messages.splice(newLo, newHi - newLo + 1);
+			summaryMsg.archived = true;
+			targetSession.lastModified = Date.now();
+			await workspaceClient.setSession(targetSession.id, targetSession);
+			return true;
+		} catch (e) {
+			// Best-effort: keep everything in the main record; the span stays eligible for a future attempt.
+			console.warn("[AIManagerHistory] Failed to archive cycle span:", e);
+			return false;
+		}
+	}
+
+	/**
+	 * Load-time JIT backfill for legacy sessions: compacted cycles created BEFORE the
+	 * archive feature kept their raw span in the main session record forever. This
+	 * splits every still-unarchived non-seed cycle_summary whose raw span is still
+	 * present locally out into the per-session archive record — reusing the exact same
+	 * atomic server operation (`archiveCycleSpan`) as new compactions — and marks the
+	 * summary `archived: true` locally, persisting once at the end.
+	 *
+	 * Idempotent & cheap when clean: candidates are summaries that are not `archived`
+	 * yet; once a summary is flagged (or its span is no longer local), it never
+	 * re-triggers, so subsequent loads are a single O(n) scan with zero writes.
+	 * Trusts the server: only the IDs it reports as actually moved are spliced out of
+	 * the local array. Each span moves in one server transaction (atomic), so a
+	 * crash mid-backfill leaves remaining spans eligible on the next load — nothing
+	 * is ever lost. Safe to call fire-and-forget from switchSession; the caller skips
+	 * sessions with a running agent.
+	 *
+	 * @param {object} targetSession session object to backfill (its `messages` array)
+	 * @returns {Promise<number>} total raw messages actually moved into the archive (0 = nothing to do)
+	 */
+	async backfillArchives(targetSession) {
+		if (!targetSession || !Array.isArray(targetSession.messages)) return 0;
+		const messages = targetSession.messages;
+
+		// Candidates: real (non-seed) summaries with a span range, not yet archived.
+		// Array order = oldest first.
+		const candidates = messages.filter(m => m.type === "cycle_summary" && !m.isSeed && !m.archived && m.cycleStartMsgId && m.cycleEndMsgId);
+		if (candidates.length === 0) return 0; // Clean session — a single scan, zero writes.
+
+		if (window.modal?.toast) {
+			window.modal.toast(candidates.length === 1
+				? "Updating chat history storage format…"
+				: `Updating chat history storage format (${candidates.length} compacted cycles)…`);
+		}
+
+		let movedTotal = 0;
+		let localDirty = false;
+
+		for (const summary of candidates) {
+			const startIdx = messages.findIndex(m => m.id === summary.cycleStartMsgId);
+			const endIdx = messages.findIndex(m => m.id === summary.cycleEndMsgId);
+
+			if (startIdx === -1 || endIdx === -1) {
+				// Span no longer local (already archived or pruned) — flag it so we stop scanning it.
+				if (!summary.archived) {
+					summary.archived = true;
+					localDirty = true;
+				}
+				continue;
+			}
+			const lo = Math.min(startIdx, endIdx);
+			const hi = Math.max(startIdx, endIdx);
+
+			// Raw span messages (same rule as _archiveCycleSpan / the expander): skip
+			// cycle_summary markers and the summary itself, which stays in the main record.
+			const rawMsgIds = messages.slice(lo, hi + 1)
+				.filter(m => m.type !== "cycle_summary" && m.id !== summary.id)
+				.map(m => m.id);
+			if (rawMsgIds.length === 0) {
+				summary.archived = true;
+				localDirty = true;
+				continue;
+			}
+
+			try {
+				// Atomic per-span move; the server also marks the summary archived in the persisted blob.
+				const res = await workspaceClient.archiveCycleSpan(targetSession.id, {
+					removeMsgIds: rawMsgIds,
+					markSummaryId: summary.id
+				});
+
+				// Trust the server: splice out only the IDs it reports as actually moved.
+				const moved = Array.isArray(res?.ids) ? new Set(res.ids) : null;
+				if (moved && moved.size) {
+					let writeIdx = 0;
+					for (let i = 0; i < messages.length; i++) {
+						if (moved.has(messages[i].id)) {
+							movedTotal++;
+						} else {
+							if (writeIdx !== i) messages[writeIdx] = messages[i];
+							writeIdx++;
+						}
+					}
+					messages.length = writeIdx;
+					localDirty = true;
+				}
+
+				// Keep local state consistent with the persisted blob (belt-and-suspenders:
+				// the server already set `archived` via markSummaryId).
+				summary.archived = true;
+				localDirty = true;
+			} catch (e) {
+				// Span failed to move — stop here; the remaining candidates stay eligible on
+				// the next load and nothing already-moved is lost (each span is atomic).
+				console.warn(`[AIManagerHistory] Archive backfill failed for summary ${summary.id}; remaining spans will retry on next load:`, e);
+				break;
+			}
+		}
+
+		if (localDirty) {
+			targetSession.lastModified = Date.now();
+			await workspaceClient.setSession(targetSession.id, targetSession);
+			// Re-render only if this session is still active (the user may have switched
+			// tabs during the async backfill) so the trimmed array is reflected in the DOM.
+			if (this.manager.activeSession === targetSession) {
+				this.render();
+			}
+		}
+
+		if (movedTotal > 0 && window.modal?.toast) {
+			window.modal.toast(movedTotal === 1 ? "Chat history storage format updated (1 message archived)" : `Chat history storage format updated (${movedTotal} messages archived)`);
+		}
+		return movedTotal;
+	}
+
+	/**
+	 * Resolve the raw messages of a compacted cycle span for the UI (expander / regenerate).
+	 * Tries the local `chatHistory` first (fast path for unarchived / pre-archival sessions),
+	 * then falls back to the per-session archive record. Returns an array of raw messages
+	 * (in order, excluding cycle_summary markers and the summary itself), or null when the
+	 * span is no longer available anywhere (treat as pruned).
+	 *
+	 * @param {string} sessionId     session whose archive to consult
+	 * @param {string} startId       summary.cycleStartMsgId
+	 * @param {string} endId         summary.cycleEndMsgId
+	 * @param {string} summaryId     summary.id (excluded from results)
+	 * @param {object[]} [localMsgs] local message array to check first (default this.chatHistory)
+	 * @returns {Promise<object[]|null>}
+	 */
+	async _resolveCycleSpanMessages(sessionId, startId, endId, summaryId = null, localMsgs = null) {
+		const strip = (arr) => arr.filter(m => m.type !== "cycle_summary" && m.id !== summaryId);
+
+		// 1. Local fast path (unarchived / pre-archival sessions).
+		const msgs = localMsgs || this.chatHistory;
+		if (msgs.length) {
+			const startIdx = msgs.findIndex(m => m.id === startId);
+			const endIdx = msgs.findIndex(m => m.id === endId);
+			if (startIdx !== -1 && endIdx !== -1 && startIdx <= endIdx) {
+				return strip(msgs.slice(startIdx, endIdx + 1));
+			}
+		}
+
+		// 2. Archive fallback (span was moved out of the main record).
+		try {
+			const doc = await workspaceClient.getSessionArchive(sessionId);
+			if (doc && Array.isArray(doc.spans)) {
+				const span = doc.spans.find(s => s.startMsgId === startId && s.endMsgId === endId);
+				if (span && Array.isArray(span.messages) && span.messages.length) {
+					return strip(span.messages);
+				}
+			}
+		} catch (e) {
+			console.warn("[AIManagerHistory] Failed to fetch session archive for span:", e);
+		}
+
+		// 3. Not found anywhere — treat as pruned.
+		return null;
+	}
+
+	/**
 	 * Agent-mode auto-compaction: condenses the most recent COMPLETED task cycle (ended with a `done` tool call, or an accepted implementation plan, and not yet summarized) into one cycle_summary message — reusing exactly what the manual "Summarize Cycle" path in agent.mjs does, so UI rendering stays identical. No-op unless the target session is in agent mode AND has at least one completed-but-unsummarized boundary; returns true only if a new summary was actually inserted and persisted (idempotent — boundaries already carrying an adjacent cycle_summary are skipped).
 	 */
 	async autoCompactAgentCycle(sessionObj = null) {
@@ -3144,6 +3359,9 @@ class AIManagerHistory {
 			messages.splice(endIdx + 1, 0, summaryMessage); // Insert AFTER the cycle end so it renders as a collapsed summary of exactly that span (same position as agent.mjs' manual path).
 			targetSession.lastModified = Date.now();
 			await workspaceClient.setSession(targetSession.id, targetSession);
+
+			// Best-effort: move the raw span out of the main record into the archive (never fails the compaction).
+			await this._archiveCycleSpan(targetSession, summaryMessage);
 
 			if (this.manager.isSessionViewed?.(targetSession.id)) {
 				this.render({ isNewMessage: true }); // Collapse the just-summarized span into its summary block automatically.
@@ -3325,6 +3543,9 @@ class AIManagerHistory {
 			targetSession.lastModified = Date.now();
 			await workspaceClient.setSession(targetSession.id, targetSession);
 
+			// Best-effort: move the raw span out of the main record into the archive (never fails the compaction).
+			await this._archiveCycleSpan(targetSession, summaryMessage);
+
 			if (this.manager.isSessionViewed?.(targetSession.id)) {
 				this.render({ isNewMessage: true }); // Collapse the just-summarized span into its summary block automatically.
 				const conversationArea = this.conversationArea;
@@ -3399,10 +3620,15 @@ class AIManagerHistory {
 			const n = chatHistory.length;
 			const covered = new Array(n).fill(false);
 
-			// Find each summary's [startIdx .. endIdx] raw span in the original array and mark
-			// those raw turns as covered. This applies to seeds as well: a seed's span exists
-			// precisely so the in-flight cycle is hidden from the prompt.
-			for (let i = 0; i < n; i++) {
+				// Find each summary's [startIdx .. endIdx] raw span in the original array and mark
+				// those raw turns as covered. This applies to seeds as well: a seed's span exists
+				// precisely so the in-flight cycle is hidden from the prompt.
+				// Note: for ARCHIVED spans the raw messages have been moved out of the main record
+				// (into the per-session archive), so findIndex returns -1 and the loop `continue`s —
+				// the covered[] masking is a no-op for those spans, which is exactly what we want.
+				// The compacted_history turn is still emitted from the summary object (kept in the
+				// main record), so prompt correctness is unaffected by archival.
+				for (let i = 0; i < n; i++) {
 				const msg = chatHistory[i];
 				if (msg.type !== "cycle_summary") continue;
 				if (msg.cycleStartMsgId && msg.cycleEndMsgId) {
