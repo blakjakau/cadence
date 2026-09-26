@@ -133,8 +133,9 @@ export class AgentConfigPanel extends Block {
 					if (key === "defaultPlanningMode") window.ui.aiManager.config.defaultPlanningMode = input.checked;
 					if (key === "defaultAllowSubAgents") window.ui.aiManager.config.defaultAllowSubAgents = input.checked;
 					if (key === "defaultAllowRunCommand") window.ui.aiManager.config.defaultAllowRunCommand = input.checked;
-					if (key === "defaultAutoMilestones") window.ui.aiManager.config.defaultAutoMilestones = input.checked;
-					window.ui.aiManager._updatePromptAreaPlaceholder();
+if (key === "defaultAutoMilestones") window.ui.aiManager.config.defaultAutoMilestones = input.checked;
+		if (key === "modelLeadPruning") window.ui.aiManager.config.modelLeadPruning = input.checked;
+	window.ui.aiManager._updatePromptAreaPlaceholder();
 				}
 			};
 
@@ -199,6 +200,7 @@ export class AgentConfigPanel extends Block {
 		}
 		createToggleRow("default-auto-milestones", "Default Auto-Milestones on 'done'", "Automatically freeze a checkpoint milestone when the agent finishes a cycle in new sessions.", "defaultAutoMilestones");
 		createToggleRow("default-auto-rollback-on-failures", "Default Auto-Rollback on Edit Failures", "Automatically roll back a file when consecutive edits fail.", "defaultAutoRollbackOnFailures");
+		createToggleRow("default-model-lead-pruning", "Default Model-Led Context Pruning", "Let the model proactively prune old context by calling the cull_history tool. New sessions inherit this unless overridden per-session.", "modelLeadPruning");
 
 		const updateOpenEditsToggle = (isForgiveness) => {
 			if (!isForgiveness) {

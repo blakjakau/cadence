@@ -93,6 +93,7 @@ class AIManager {
 			defaultAutoRollbackThreshold: parseInt(localStorage.getItem("defaultAutoRollbackThreshold") || "3", 10),
 			enableGlowAnimation: localStorage.getItem("aiEnableGlowAnimation") !== "false",
 			commandPolicy: AIManager._loadCommandPolicy(),
+			modelLeadPruning: localStorage.getItem("modelLeadPruning") === "true",
 		};
 		// NEW: Session TabBar properties
 		this.sessionTabBar = null;
@@ -212,9 +213,10 @@ class AIManager {
 				hasAcceptedPlan,
 				hasCompletedAllTasks,
 				planningMode: targetPlanningMode,
-				isNativeReasoning,
-				workspaceFolders: effectiveFolders
-			});
+isNativeReasoning,
+			workspaceFolders: effectiveFolders,
+			enableModelLeadPruning: targetSession?.enableModelLeadPruning ?? (this.config.modelLeadPruning === true)
+		});
 		} else {
 			basePrompt = systemPromptBuilder(this.getSystemPromptConfig());
 		}

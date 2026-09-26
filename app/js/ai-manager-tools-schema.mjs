@@ -9,9 +9,9 @@ export const subAgentToolsList = [
 	// "edit_remove_lines",
 	// "refactor_copy_lines",
 	"create_file",
-	"validate_syntax",
+	//"validate_syntax",
 	"run_command",
-	"query",
+	//"query",
 	"sub_agent_complete",
 	"query_parent",
 	// "web_search",
@@ -19,7 +19,7 @@ export const subAgentToolsList = [
 	"web_fetch",
 	"checkpoint",
 	"rollback_file",
-	"rollback_cycle",
+	//"rollback_cycle",
 	"scratchpad_write",
 	"scratchpad_clear",
 ]
@@ -28,7 +28,7 @@ export const tools = [
 	{
 		name: "run_command",
 		description:
-			"Run a shell command (auto cwd to the project root).",
+			"Run a shell command (defaults to project root).",
 		parameters: {
 			type: "object",
 			properties: {
@@ -42,21 +42,21 @@ export const tools = [
 			required: ["command"],
 		},
 	},
-	{
-		name: "validate_syntax",
-		description:
-			"Validate JS/JSON/HTML/CSS/Go syntax without writing to disk. Accepts full `content` or a `search`/`replace` pair for simulated edits. Returns 'Valid syntax' or line/column SyntaxError details.",
-		parameters: {
-			type: "object",
-			properties: {
-				path: { type: "string", description: "Path or filename (for extension detection)." },
-				content: { type: "string", description: "Full unsaved file content to validate." },
-				search: { type: "string", description: "Search text for simulated patch validation." },
-				replace: { type: "string", description: "Replacement text for simulated patch validation." },
-			},
-			required: ["path"],
-		},
-	},
+	// {
+	// 	name: "validate_syntax",
+	// 	description:
+	// 		"Validate JS/JSON/HTML/CSS/Go syntax without writing to disk. Accepts full `content` or a `search`/`replace` pair for simulated edits. Returns 'Valid syntax' or line/column SyntaxError details.",
+	// 	parameters: {
+	// 		type: "object",
+	// 		properties: {
+	// 			path: { type: "string", description: "Path or filename (for extension detection)." },
+	// 			content: { type: "string", description: "Full unsaved file content to validate." },
+	// 			search: { type: "string", description: "Search text for simulated patch validation." },
+	// 			replace: { type: "string", description: "Replacement text for simulated patch validation." },
+	// 		},
+	// 		required: ["path"],
+	// 	},
+	// },
 	{
 		name: "list_files",
 		description: "List files and directories in a path.",
@@ -127,17 +127,17 @@ export const tools = [
 			required: ["path", "query"],
 		},
 	},
-	{
-		name: "read_symbol",
-		description: "Find and read a symbol's definition (class, function, variable) across the project.",
-		parameters: {
-			type: "object",
-			properties: {
-				query: { type: "string", description: "Symbol name to read." },
-			},
-			required: ["query"],
-		},
-	},
+	// {
+	// 	name: "read_symbol",
+	// 	description: "Find and read a symbol's definition (class, function, variable) across the project.",
+	// 	parameters: {
+	// 		type: "object",
+	// 		properties: {
+	// 			query: { type: "string", description: "Symbol name to read." },
+	// 		},
+	// 		required: ["query"],
+	// 	},
+	// },
 	{
 		name: "create_file",
 		description:
@@ -154,7 +154,7 @@ export const tools = [
 	},
 	{
 		name: "open_file",
-		description: "Open a file in the workspace editor for the user.",
+		description: "Open a file in the workspace editor for user review.",
 		parameters: {
 			type: "object",
 			properties: {
@@ -416,6 +416,23 @@ export const tools = [
 			},
 		},
 	},
+	{
+		name: "cull_history",
+		description:
+			"Cull the conversation from visible dialogue turn `idx` (0-based, in the order the model sees the turns) through the end. Evergreen plan/tasks, the scratchpad, and [SYSTEM] directives are never culled; an automatic prune safety net still runs as a backstop.",
+		parameters: {
+			type: "object",
+			properties: {
+				idx: {
+					type: "integer",
+					minimum: 0,
+					description:
+						"0-based index of the visible dialogue turn to keep as the new context head. NOT a raw message id.",
+				},
+			},
+			required: ["idx"],
+		},
+	},
 ]
 
 /**
@@ -423,9 +440,15 @@ export const tools = [
  * - Sub-agent sessions get the reduced subAgentToolsList set (no orchestration tools).
  * - Chat-only sessions (supportsJSONTools === false) get no tools.
  * - Main agent sessions get the full set.
+ * - `cull_history` is a main-agent-only, opt-in tool: it is only served to the primary agent
+ *   when the `modelLeadPruning` setting is enabled; sub-agents and chat-only sessions never receive it.
  */
-export function getToolsForSession(isSubAgent, supportsJSONTools) {
+export function getToolsForSession(isSubAgent, supportsJSONTools, modelLeadPruning = false) {
 	if (supportsJSONTools === false) return []
 	if (isSubAgent) return tools.filter((t) => subAgentToolsList.includes(t.name))
+	if (!modelLeadPruning) {
+		// Gate: hide cull_history from the main agent unless the user opted in.
+		return tools.filter((t) => t.name !== "cull_history")
+	}
 	return tools
 }

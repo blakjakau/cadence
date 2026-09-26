@@ -239,6 +239,7 @@ export class SessionArtifactsPanel extends Block {
         }
         this.autoMilestonesCheckbox = createToggleRow("accordion-auto-milestones", "Auto-Milestones on 'done'", "Automatically freeze a checkpoint milestone when the agent finishes a cycle.", "auto-milestones-toggle-wrapper");
         this.autoRollbackCheckbox = createToggleRow("accordion-auto-rollback", "Auto-Rollback on Edit Failures", "Automatically rollback a file if consecutive edit attempts fail.", "auto-rollback-toggle-wrapper");
+        this.modelLeadPruningCheckbox = createToggleRow("accordion-model-lead-pruning", "Model-Led Context Pruning", "Allow Cadence to proactively cull old context via the cull_history tool (per-session; inherits the Agent Config default when unset).", "auto-milestones-toggle-wrapper");
 
         // Helper to construct a number input row
         const createNumberRow = (id, title, desc, defaultVal, min = 10, max = 95) => {
@@ -373,6 +374,18 @@ export class SessionArtifactsPanel extends Block {
             const session = this._getTargetSession();
             if (session) {
                 session.autoRollbackOnFailures = checked;
+                await workspaceClient.setSession(session.id, session);
+            }
+        });
+
+        this.modelLeadPruningCheckbox.addEventListener("change", async (e) => {
+            const checked = e.target.checked;
+            const session = this._getTargetSession();
+            if (session) {
+                // Tri-state: false = explicitly off (overrides global default off);
+                // true  = explicitly on;
+                // (null = not set yet; set by UI toggle here to an explicit value).
+                session.enableModelLeadPruning = checked;
                 await workspaceClient.setSession(session.id, session);
             }
         });
@@ -843,6 +856,7 @@ export class SessionArtifactsPanel extends Block {
         this.allowRunCommandCheckbox.checked = session.allowRunCommand !== false;
         this.autoMilestonesCheckbox.checked = session.autoMilestones ?? (ui.aiManager.config?.defaultAutoMilestones !== false);
         this.autoRollbackCheckbox.checked = session.autoRollbackOnFailures ?? (ui.aiManager.config?.defaultAutoRollbackOnFailures === true);
+        this.modelLeadPruningCheckbox.checked = session.enableModelLeadPruning ?? (ui.aiManager.config?.modelLeadPruning === true);
             this.autoRollbackThresholdInput.value = session.autoRollbackFailureThreshold ?? (ui.aiManager.config?.defaultAutoRollbackThreshold || 3);
 
         // Render implementation plan content if not editing

@@ -269,7 +269,7 @@ export class Agent {
 			});
 
 			try {
-				const responseContent = await runPromise;
+				let responseContent = await runPromise;
 
 				if (forcedReason === "secondary_thought" || forcedReason === "secondary_tool_call") {
 					if (this.protocolFlagRepeatCount < 5) {
@@ -519,6 +519,36 @@ export class Agent {
 				const sourceToolCalls = (callbacks && callbacks.toolCalls && callbacks.toolCalls.length > 0)
 					? callbacks.toolCalls
 					: (lastModelMsg?.toolCalls || []);
+
+				// Model-lead context pruning: if the model issues cull_history(idx), treat it as a control signal
+				// (not a real tool). Resolve idx against the transient cullIndex (dialogue position → source id),
+				// move the pruning marker forward, strip the marker text, and continue WITHOUT producing a tool response.
+				// if (typeof aiManager.historyManager.getcullIndex === "function") {
+				// 	const cullIndex = aiManager.historyManager.getcullIndex();
+				// 	// TEMP DIAGNOSTIC (remove after live cull_history test):
+				// 	console.log("[cull_history DIAG] hasMatch=" + (typeof responseContent === "string" ? responseContent.match(/cull_history\s*\(\s*(\d+)\s*\)/) !== null : "NOT-A-STRING") + " | mapSize=" + (cullIndex ? cullIndex.size : "NULL") + " | contentTail=" + (typeof responseContent === "string" ? JSON.stringify(responseContent.slice(-120)) : "n/a"));
+				// 	if (cullIndex) {
+				// 		const m = responseContent.match(/cull_history\s*\(\s*(\d+)\s*\)/);
+				// 		if (m) {
+				// 			const idx = parseInt(m[1], 10);
+				// 			const id = cullIndex.get(idx);
+				// 			if (id != null) {
+				// 				session.contextHeadMsgId = id;
+				// 				if (session.lastModified != null) {
+				// 					session.lastModified = Date.now();
+				// 				}
+				// 				responseContent = responseContent.split(`cull_history(${m[1].trim()})`).join("");
+				// 				console.log("[cull_history DIAG] RESOLVED idx=" + idx + " -> id=" + id + " | stripped");
+				// 			} else {
+				// 				console.warn(`[Agent] Ignored invalid cull_history(${idx}) â out of range / not culleable. | mapKeys=` + [...cullIndex.keys()]);
+				// 			}
+				// 		}
+				// 	} else {
+				// 		console.warn("[cull_history DIAG] cullIndex is NULL â map never built or not exposed.");
+				// 	}
+				// } else {
+				// 	console.warn("[cull_history DIAG] getcullIndex is not a function on historyManager.");
+				// }
 
 				if (sourceToolCalls && sourceToolCalls.length > 0) {
 					toolCalls = sourceToolCalls.map(tc => {

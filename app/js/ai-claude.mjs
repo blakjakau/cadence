@@ -135,7 +135,10 @@ class Claude extends AI {
 
     _getFormattedTools(session = null) {
         const isSubAgent = !!(session && session.parentId);
-        let toolSet = getToolsForSession(isSubAgent, this.supportsJSONTools);
+        const modelLeadPruning = (session && session.enableModelLeadPruning !== null && session.enableModelLeadPruning !== undefined)
+            ? !!session.enableModelLeadPruning
+            : window.ui?.aiManager?.config?.modelLeadPruning === true;
+        let toolSet = getToolsForSession(isSubAgent, this.supportsJSONTools, modelLeadPruning);
         if (!isSubAgent) {
             const isPlanning = session ? (session.planningMode ?? window.ui?.aiManager?.planningMode === true) : (window.ui?.aiManager?.planningMode === true);
             toolSet = toolSet.filter(t => {

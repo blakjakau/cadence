@@ -1,11 +1,12 @@
 import conduit from '../conduit-client.mjs';
 import AgentBackup from './agent-backup.mjs';
-import { tools } from "../ai-manager-tools-schema.mjs";
+import { tools, getToolsForSession } from "../ai-manager-tools-schema.mjs";
 import workspaceClient from '../workspace-client.mjs';
 import { Agent } from './agent.mjs';
 import AIConnections from '../ai-connections.mjs';
 import syntaxValidator from '../syntax-validator.mjs';
 import { mergePolicies, evaluateCommand } from '../util/command-rules.mjs';
+import { resolveCullTarget } from '../ai-manager-cull-index.mjs';
 
 /**
  * Implements the core tools for Cadence.
@@ -2740,6 +2741,51 @@ Snippet: ${r.content || r.snippet || ""}`;
     }
 
     /**
+     * Recompute the exact set of tool names that were served to the model for a
+     * given session. Faithfully mirrors the provider call-sites
+     * (ai-claude / ai-gemini / ai-llamacpp) so that "what was served" has a
+     * single client-side source of truth at execution time.
+     *
+     * A parsed tool call can only reach execute() if the runtime emitted one,
+     * which requires the JSON-tool protocol to have been in play — hence
+     * supportsJSONTools is treated as true here (same as every reachable
+     * provider path).
+     *
+     * @param {object|null} session - The resolved session (null ⇒ unknown).
+     * @returns {Set<string>|null} Set of served tool names, or null if the
+     *  session could not be resolved (caller skips the whitelist in that case).
+     */
+     _servedToolNames(session) {
+        if (!session) return null;
+        const aiManager = window.ui?.aiManager;
+        const isSubAgent = !!(session.parentId);
+        const modelLeadPruning =
+            (session.enableModelLeadPruning !== null && session.enableModelLeadPruning !== undefined)
+                ? !!session.enableModelLeadPruning
+                : aiManager?.config?.modelLeadPruning === true;
+
+        let names = getToolsForSession(isSubAgent, true, modelLeadPruning).map((t) => t.name);
+
+        // Same post-gate filters the providers apply for main-agent sessions.
+        if (!isSubAgent) {
+            const isPlanning =
+                (session.planningMode !== undefined && session.planningMode !== null)
+                    ? !!session.planningMode
+                    : (aiManager?.planningMode === true);
+            const isAllowSubAgentsFalse = session.allowSubAgents === false;
+            const isAllowRunCommandFalse = session.allowRunCommand === false;
+            names = names.filter((n) => {
+                if (isPlanning && (n === "create_file" || n === "edit_file")) return false;
+                if (isAllowSubAgentsFalse && n === "create_sub_agent") return false;
+                if (isAllowRunCommandFalse && (n === "run_command" || n === "exec_command")) return false;
+                return true;
+            });
+        }
+
+        return new Set(names);
+    }
+
+    /**
      * Centralized tool execution dispatcher.
      * @param {string} name - The tool name.
      * @param {object} args - The arguments.
@@ -2748,6 +2794,15 @@ Snippet: ${r.content || r.snippet || ""}`;
      async execute(name, args = {}, sourceId = null) {
         // Prevent file editing/creation tools in planning mode
         const targetSession = this._resolveSession(sourceId);
+        // Client-side whitelist guardrail: never dispatch a tool that was not
+        // served to the model for this session. This makes it immaterial how
+        // any inference runtime parsed (or ghost-mapped) the call — a name outside
+        // the served set is rejected before execution, with a result the model
+        // can react to (string return, not throw).
+        const servedSet = this._servedToolNames(targetSession);
+        if (servedSet !== null && !servedSet.has(name)) {
+            return `Tool Error: Tool '${name}' was not served to the model for this session. No state changed.`;
+        }
         const isPlanning = targetSession ? (targetSession.planningMode ?? window.ui?.aiManager?.planningMode) : window.ui?.aiManager?.planningMode;
         if (isPlanning && (name === 'create_file' || name === 'edit_file' || name === 'edit_remove_lines' || name === 'refactor_copy_lines')) {
             return `Tool Error: Tool '${name}' is not allowed while in planning mode.`;
@@ -3029,6 +3084,28 @@ Snippet: ${r.content || r.snippet || ""}`;
                 return await this.rollbackFile(args.path, args.target || "cycle_start", sourceId);
             case 'rollback_cycle':
                 return await this.rollbackCycle(args.target || "cycle_start", sourceId);
+            case 'cull_history': {
+                // Real tool-dispatched context pruning (model-led, user-gated).
+                // No string-intercept: the model invokes cull_history({idx}) as a
+                // structured tool call, and this case performs the state change.
+                const session = this._resolveSession(sourceId);
+                if (!session) {
+                    return `Tool Error: Could not resolve session for cull_history. No state changed.`;
+                }
+
+                const cullIndex = window.ui?.aiManager?.historyManager?.getcullIndex();
+                const id = args.idx;
+                const resolved = resolveCullTarget(cullIndex, id);
+                if (!resolved.ok) {
+                    return `Tool Error: ${resolved.error} No state changed.`;
+                }
+
+                session.contextHeadMsgId = resolved.newHeadId;
+                session.lastModified = Date.now();
+                await workspaceClient.setSession(session.id, session);
+
+                return `History cull applied: visible turn ${id} is now the new start point. All dialogue before that turn is dropped from context on the next model turn. Evergreen/directive turns are never culled.`;
+            }
             default:
                 throw new Error(`Tool '${name}' is not recognized.`);
         }

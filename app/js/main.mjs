@@ -2400,8 +2400,10 @@ fileMenu.click = folderMenu.click = topfolderMenu.click = async (action) => {
 			ui.showSidebar()
 			break
 		case "refresh":
-			if (active.refresh) {
-				active.refresh.click()
+			try {
+				await fileList.refreshFolder(filePath);
+			} catch (e) {
+				Modal.notice(`Failed to refresh folder: ${e.message}`, "Error");
 			}
 			break
 		case "newfile":

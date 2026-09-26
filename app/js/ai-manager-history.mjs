@@ -9,6 +9,7 @@ import agentTools from "./agent/agent-tools.mjs"
 import { Agent } from "./agent/agent.mjs"
 	import { normalizePolicy, mergePolicies, evaluateCommand, segmentMatchesRule, segmentPrograms, subChipsFor } from "./util/command-rules.mjs"
 import { parseCommandLine, classifyProgram, annotateCommand } from "./util/command-parser.mjs"
+import { buildCullIndex } from "./ai-manager-cull-index.mjs"
 export const MAX_RECENT_MESSAGES_TO_PRESERVE = 5
 export const MAX_DIRECT_CYCLE_SUMMARIES = 3
 
@@ -3002,9 +3003,7 @@ class AIManagerHistory {
 		}
 
 		if (session.scratchpad && typeof session.scratchpadTokenCount !== 'number') {
-			// Prefix with [SYSTEM] so the note reads as system-injected context, not a user instruction
-			// (trailing array-internal system messages degrade to user turns on most providers).
-			const textToTokenize = `[SYSTEM]\n=== CADENCE'S SCRATCHPAD ===\n${session.scratchpad}\n================================`;
+			const textToTokenize = `=== CADENCE'S SCRATCHPAD ===\n${session.scratchpad}\n================================`;
 			const count = await this.ai.tokenize(textToTokenize);
 			if (typeof count === 'number') {
 				session.scratchpadTokenCount = count;
@@ -3428,7 +3427,7 @@ class AIManagerHistory {
 				// When we hit the FIRST non-seed summary, emit the single compacted_history turn
 				// in its place (the raw turns it covers were already marked covered above and
 				// are dropped by the check below).
-				if (msg.type === "cycle_summary") {
+				/*if (msg.type === "cycle_summary") {
 					if (!msg.isSeed && !compactedPlaced && compactedMarkdown) {
 						newChatHistory.push({
 							id: msg.id,
@@ -3440,7 +3439,7 @@ class AIManagerHistory {
 						compactedPlaced = true;
 					}
 					continue;
-				}
+				}*/
 				// Raw turn: keep only if it isn't part of a summarized span.
 				if (!covered[i]) {
 					newChatHistory.push(msg);
@@ -3448,7 +3447,7 @@ class AIManagerHistory {
 			}
 			chatHistory = newChatHistory;
 		}
-
+		
 		// Calculate extra tokens of evergreen plan & tasks (combined turn), scratchpad, directives, task state, and system prompt
 		let extraTokens = 0;
 		if (isAgentMode) {
@@ -3467,7 +3466,7 @@ class AIManagerHistory {
 			if (targetSession?.scratchpad) {
 				extraTokens += this.ai.estimateTokens([{
 					role: "system",
-					content: `[SYSTEM]\n=== CADENCE'S SCRATCHPAD ===\n${targetSession.scratchpad}\n================================`,
+					content: `=== CADENCE'S SCRATCHPAD ===\n${targetSession.scratchpad}\n================================`,
 					tokenCount: targetSession.scratchpadTokenCount
 				}]);
 			}
@@ -3696,7 +3695,7 @@ class AIManagerHistory {
 								id: `pruned-gap-${i}`,
 								role: "system",
 								type: "system_message",
-								content: `[${skipped} turns pruned for context length]`
+								content: `[SYSTEM(${skipped} turns pruned for context length)]`
 							});
 						}
 						newDialogueHistory.push(dialogueHistory[i]);
@@ -3779,12 +3778,34 @@ class AIManagerHistory {
 
 
 
+		// Model-lead pruning: build a transient visible-turn → messageId map over the culleable dialogue
+		// turns, keyed by a SEQUENTIAL VISIBLE-TURN COUNTER (NOT the raw array position). See
+		// ai-manager-cull-index.mjs for the index-space contract: cull_history(N) = "keep the Nth visible
+		// dialogue turn onward." Gap markers, empty model turns, and evergreen/directive prepends are not
+		// counted. Rebuilt every call (short-lived, this.cullIndex) and exposed so the cull_history tool can
+		// resolve cull_history(idx) → message id.
+		// NOTE: read from this culleable source (chatHistory/dialogueHistory), NOT the reconstructed
+		// contextForAI, because reconstruction drops .id (see the reconstruction block below).
+		this.cullIndex = buildCullIndex(chatHistory);
+
 		// 5. Reconstruct the context for the AI
 		// We always want the Task State to be the very first thing the AI sees.
 		const contextForAI = [];
 
-		// NEW: Prepend the combined evergreen plan & task checklist (single system turn) at the top of AI context in Agent Mode.
-		// Scratchpad notes are appended just before the # Current Directives (framed with explicit delimiters), so the directives remain the final turn.
+		// NEW: Prepend the compacted history so it's clearly BEFORE the tasklist, plan and scratchpad, mitigating 
+		// confusion around chonology
+		
+		if(compactedMarkdown) {
+			contextForAI.push({
+				role: "system",
+				type: "compacted_history",
+				content: compactedMarkdown
+			});
+		}
+
+		// NEW: Prepend the combined evergreen plan & task checklist (single system turn) at the top of AI context in Agent Mode,
+		// followed immediately by the evergreen scratchpad notes (framed with explicit delimiters so they read as
+		// our own working notes rather than a user instruction). Directives stay the final turn.
 		if (isAgentMode) {
 			const plan = targetSession?.implementationPlan;
 			const taskList = targetSession?.taskList;
@@ -3798,8 +3819,14 @@ class AIManagerHistory {
 					tokenCount: targetSession.evergreenPlanTaskTokenCount
 				});
 			}
+			if (targetSession?.scratchpad) {
+				contextForAI.push({
+					role: "system",
+					content: `=== CADENCE'S SCRATCHPAD ===\n${targetSession.scratchpad}\n================================`,
+					tokenCount: targetSession.scratchpadTokenCount
+				});
+			}
 		}
-
 
 		if (taskStateMessage) {
 			contextForAI.push({
@@ -3807,6 +3834,38 @@ class AIManagerHistory {
 				content: `CURRENT TASK STATUS:\n${taskStateMessage.content}`,
 				tokenCount: taskStateMessage.tokenCount
 			});
+		}
+
+		if (isAgentMode && contextForAI.length > 0) {
+			const hasPlan = !!targetSession?.implementationPlan;
+			const hasTasks = !!targetSession?.taskList;
+			const hasAcceptedPlan = targetSession?.messages?.some(m => m.planStatus === "accepted") || false;
+			const planningMode = targetSession ? (targetSession.planningMode ?? (this.manager.config?.defaultPlanningMode ?? true)) : (this.manager.config?.defaultPlanningMode ?? true);
+			
+			let hasCompletedAllTasks = false;
+			if (hasTasks && targetSession.taskList) {
+				hasCompletedAllTasks = !targetSession.taskList.includes("- [ ]") && !targetSession.taskList.includes("* [ ]");
+			}
+
+			const directivesText = getAgentDirectives({
+				hasPlan,
+				hasTasks,
+				hasAcceptedPlan,
+				hasCompletedAllTasks,
+				planningMode,
+				isSubAgent: !!(targetSession && targetSession.parentId)
+			});
+
+			if (directivesText) {
+				// Pushed last so the directives are the final turn the model sees.
+				// A push at the very end never splits a model tool call from its tool response.
+				// [SYSTEM] prefix makes provenance explicit: trailing array-internal system messages
+				// degrade to user turns on most providers, so this prevents reading it as a user instruction.
+				contextForAI.push({
+					role: "system",
+					content: `[SYSTEM]\n${directivesText}`
+				});
+			}
 		}
 
 		// Layer Outlines First
@@ -3909,53 +3968,19 @@ class AIManagerHistory {
 			}
 		});
 
-		// Append the evergreen scratchpad notes just before the current directives, framed with explicit delimiters
-		// so it reads as our own working notes rather than a user instruction; the directives stay the final turn.
-		if (isAgentMode && targetSession?.scratchpad) {
-			contextForAI.push({
-				role: "system",
-				content: `[SYSTEM]\n=== CADENCE'S SCRATCHPAD ===\n${targetSession.scratchpad}\n================================`,
-				tokenCount: targetSession.scratchpadTokenCount
-			});
-		}
 
-		if (isAgentMode && contextForAI.length > 0) {
-			const hasPlan = !!targetSession?.implementationPlan;
-			const hasTasks = !!targetSession?.taskList;
-			const hasAcceptedPlan = targetSession?.messages?.some(m => m.planStatus === "accepted") || false;
-			const planningMode = targetSession ? (targetSession.planningMode ?? (this.manager.config?.defaultPlanningMode ?? true)) : (this.manager.config?.defaultPlanningMode ?? true);
-			
-			let hasCompletedAllTasks = false;
-			if (hasTasks && targetSession.taskList) {
-				hasCompletedAllTasks = !targetSession.taskList.includes("- [ ]") && !targetSession.taskList.includes("* [ ]");
-			}
-
-			const directivesText = getAgentDirectives({
-				hasPlan,
-				hasTasks,
-				hasAcceptedPlan,
-				hasCompletedAllTasks,
-				planningMode,
-				isSubAgent: !!(targetSession && targetSession.parentId)
-			});
-
-			if (directivesText) {
-				// Pushed last (after the scratchpad) so the directives are the final turn the model sees.
-				// A push at the very end never splits a model tool call from its tool response.
-				// [SYSTEM] prefix makes provenance explicit: trailing array-internal system messages
-				// degrade to user turns on most providers, so this prevents reading it as a user instruction.
-				contextForAI.push({
-					role: "system",
-					content: `[SYSTEM]\n${directivesText}`
-				});
-			}
-		}
 
 		if (currentTokens > allowedTokens) {
-			console.warn(`Context window exceeded 80% headroom limit even after pruning. Estimated: ${currentTokens}, Allowed: ${allowedTokens}`);
+			console.warn(`Context window exceeded headroom limit even after pruning. Estimated: ${currentTokens}, Allowed: ${allowedTokens}`);
 		}
 
 		return contextForAI;
+	}
+
+	// Expose the transient index→messageId map for cull_history(idx) interception.
+	// Returns a fresh Map (rebuilt per prepareMessagesForAI call); caller reads it before parsing tools.
+	getcullIndex() {
+		return this.cullIndex || null;
 	}
 }
 

@@ -80,6 +80,7 @@ class AIManagerSettings {
             defaultAutoRollbackOnFailures: aiManager.config.defaultAutoRollbackOnFailures ?? false,
             defaultAutoRollbackThreshold: aiManager.config.defaultAutoRollbackThreshold ?? 3,
             enableGlowAnimation: aiManager.config.enableGlowAnimation !== false,
+            enableModelLeadPruning: aiManager.config.modelLeadPruning,
             systemPromptSpecialization: systemPromptConfig.specialization,
             systemPromptTechnologies: (systemPromptConfig.technologies || []).join(", "),
             systemPromptAvoidedTechnologies: (systemPromptConfig.avoidedTechnologies || []).join(", "),
@@ -123,6 +124,8 @@ class AIManagerSettings {
             { type: "text", id: "systemPromptTechnologies", label: "Preferred Technologies (comma-separated)" },
             { type: "text", id: "systemPromptAvoidedTechnologies", label: "Avoid Technologies (comma-separated)" },
             { type: "text", id: "systemPromptTone", label: "AI Tone (comma-separated)" },
+            { type: "heading", label: "Context Pruning" },
+            { type: "checkbox", id: "enableModelLeadPruning", label: "Enable Model-Led Context Pruning (cull_history control signal)" },
             {
                 type: "select",
                 id: "ai-provider",
@@ -224,6 +227,14 @@ class AIManagerSettings {
 
         // --- Save Glow Animation Setting ---
         aiManager.setGlowAnimationEnabled(!!values.enableGlowAnimation);
+
+        // --- Save Model-Led Context Pruning ---
+        aiManager.config.modelLeadPruning = !!values.enableModelLeadPruning;
+        localStorage.setItem("modelLeadPruning", aiManager.config.modelLeadPruning);
+        if (aiManager.activeSession) {
+            aiManager.activeSession.enableModelLeadPruning = aiManager.config.modelLeadPruning;
+            await workspaceClient.setSession(aiManager.activeSession.id, aiManager.activeSession);
+        }
 
         // --- Save Forgiveness Mode ---
         aiManager.config.defaultForgivenessMode = !!values.forgivenessMode;
