@@ -1145,8 +1145,9 @@ class AIManagerHistory {
 
 			actionsButtons.append(this._createSingleEditButton(message.id));
 			actionsButtons.append(this._createSingleReplayButton(message.id));
+			actionsButtons.append(this._createSingleCompactButton(message.id));
 			actionsButtons.append(this._createSingleDeleteButton(message.id));
-
+			
 			wrapper.append(actionsWrapper);
 			element = wrapper;
 
@@ -1179,7 +1180,7 @@ class AIManagerHistory {
 			deleteButton.classList.add("delete-turn-btn");
 
 			const { wrapper: actionsWrapper, buttons: actionsButtons } = this._createTurnActionsWrapper();
-			actionsButtons.append(replayButton, deleteButton);
+			actionsButtons.append(this._createSingleCompactButton(message.id), replayButton, deleteButton);
 
 			header.append(expandIcon, summarySpan, tokensSpan, actionsWrapper);
 
@@ -1211,9 +1212,9 @@ class AIManagerHistory {
 					const msgIdx = allMsgs.findIndex(m => m.id === message.id);
 					if (msgIdx !== -1) {
 						const nextMsg = allMsgs[msgIdx + 1];
-						const isDoneResponse = nextMsg && nextMsg.type === "tool_response" && nextMsg.content && nextMsg.content.includes("[Tool Response: done]");
+						const isDoneResponse = nextMsg && this._toolResponseHasDone(nextMsg); // Atom-aware: a done-confirmation may be one of several joined tool responses, so split on the separator and prefix-match each atom (avoids false-positives on the phrase appearing mid-content).
 						if (isDoneResponse) {
-							const hasSummary = allMsgs.some(m => m.type === "cycle_summary" && m.cycleEndMsgId === nextMsg.id);
+										const hasSummary = this.hasCycleSummaryCovering(allMsgs, msgIdx) || this.hasCycleSummaryCovering(allMsgs, msgIdx + 1); // Phase 1.5 — span-coverage instead of adjacency (head-anchored summaries aren't adjacent to the done block).
 							if (!hasSummary) {
 								const summarizeBtn = new Button("Compact Cycle");
 								summarizeBtn.className = "summarize-cycle-trigger-btn theme-button primary";
@@ -1225,38 +1226,53 @@ class AIManagerHistory {
 									summarizeBtn.text = "Compacting...";
 									
 									try {
-										let cycleStartIdx = -1;
-										for (let i = msgIdx - 1; i >= 0; i--) {
-											const prevMsg = allMsgs[i];
-											if (prevMsg.type === "cycle_summary" || this.isCycleBoundary(prevMsg, i, allMsgs)) {
-												cycleStartIdx = i + 1;
-												break;
-											}
+										// Capture STABLE ids up-front: the boundary (this done block) and the span's end
+										// (the trailing tool_response). The cascade below inserts summaries BEFORE this
+										// cycle, which shifts raw indices — so everything after it re-locates by id.
+										const boundaryMsgId = allMsgs[msgIdx].id;
+										const endMsgId = nextMsg.id;
+										const activeSession = this.manager.activeSession;
+
+										// Phase 1.3 — Cascade: compact ALL earlier unsummarized cycles (newest-first) BEFORE
+										// the clicked cycle, so the user manually compacting a later cycle while earlier
+										// ones are still raw keeps the spans contiguous and chronologically ordered.
+										// Best-effort (never fails the target compaction) and render: false — the target
+										// compaction below does the single final render.
+										try {
+											await this.compactEarlierCyclesUpTo(activeSession, endMsgId, { render: false });
+										} catch (cascErr) {
+											console.error("Error during manual cascade compaction of earlier cycles:", cascErr); // Best-effort — continue to the target.
 										}
-										if (cycleStartIdx === -1) {
-											cycleStartIdx = allMsgs.findIndex(m => m.type === "user" || m.type === "model");
-										}
-										
-										if (cycleStartIdx !== -1 && cycleStartIdx <= msgIdx + 1) {
-											const cycleMsgs = allMsgs.slice(cycleStartIdx, msgIdx + 2);
-						const result = await this.manager.generateCycleSummary(cycleMsgs);
-						if (result && result.summary) {
-							const summaryMessage = {
-								id: crypto.randomUUID(),
-								role: "system",
-								type: "cycle_summary",
-								title: result.title,
-								content: result.summary,
-								timestamp: Date.now(),
-								cycleStartMsgId: allMsgs[cycleStartIdx].id,
-								cycleEndMsgId: nextMsg.id
-							};
-							this.manager.activeSession.messages.splice(msgIdx + 2, 0, summaryMessage);
-							this.manager.activeSession.lastModified = Date.now();
-							await workspaceClient.setSession(this.manager.activeSession.id, this.manager.activeSession);
-							// Best-effort: archive the raw span out of the main record into the archive.
-							await this._archiveCycleSpan(this.manager.activeSession, summaryMessage);
-							this.render();
+
+										// Re-locate the target boundary by its STABLE id against the CURRENT array (the
+										// cascade's insertions shifted raw indices), then re-derive its span.
+										const curBoundaryIdx = allMsgs.findIndex(m => m.id === boundaryMsgId);
+										if (curBoundaryIdx === -1) throw new Error("Target boundary no longer present");
+										const targetSpan = this._findCycleSpanForEnd(allMsgs, curBoundaryIdx);
+										if (!targetSpan || targetSpan.cycleStartIdx === -1 || targetSpan.cycleStartIdx >= targetSpan.endIdx) return; // Span too small — nothing to compact.
+
+										const cycleStartIdx = targetSpan.cycleStartIdx;
+										const cycleEndIdx = targetSpan.endIdx;
+										if (cycleStartIdx < cycleEndIdx) { // Span too small (<2 messages) to summarize meaningfully.
+											const cycleMsgs = allMsgs.slice(cycleStartIdx, cycleEndIdx + 1);
+											const result = await this.manager.generateCycleSummary(cycleMsgs);
+											if (result && result.summary) {
+												const summaryMessage = {
+													id: crypto.randomUUID(),
+													role: "system",
+													type: "cycle_summary",
+													title: result.title,
+													content: result.summary,
+													timestamp: Date.now(),
+													cycleStartMsgId: allMsgs[cycleStartIdx].id,
+													cycleEndMsgId: allMsgs[cycleEndIdx].id
+												};
+												activeSession.messages.splice(cycleStartIdx, 0, summaryMessage); // Phase 1.1 â HEAD-anchor the summary at the span's start so cycles stay contiguous (this cycle's raw span follows the summary; the next cycle starts after it).
+												activeSession.lastModified = Date.now();
+												await workspaceClient.setSession(activeSession.id, activeSession);
+												// Best-effort: archive the raw span out of the main record into the archive.
+												await this._archiveCycleSpan(activeSession, summaryMessage);
+												this.render();
 											}
 										}
 									} catch (err) {
@@ -2488,7 +2504,7 @@ class AIManagerHistory {
 			replayButton.classList.add("replay-turn-btn");
 		}
 		replayButton.icon = "replay";
-		replayButton.title = "Replay this turn (prunes subsequent turns and regenerates unaltered)";
+		replayButton.title = "Replay this turn (prunes subsequent turns and regenerates from here)";
 		replayButton.on("click", async (e) => {
 			e.stopPropagation();
 			const confirmed = await window.modal.confirm("Are you sure you want to replay from this turn? This will permanently delete all subsequent messages in this session and request a new response.", "Replay Turn");
@@ -2510,6 +2526,114 @@ class AIManagerHistory {
 			this._handleDeleteSingleMessage(messageId, pruneForward);
 		});
 		return deleteButton;
+	}
+
+	/**
+	 * Hover-menu trigger that compacts the cycle whose END POINT is the given turn. The clicked
+	 * turn becomes the span's end (give-or-take for safe tool/response pairing: if the clicked
+	 * turn is a model/error turn and the NEXT message is its trailing tool_response, the span's
+	 * end is extended to include that response so nothing dangles after it). Earlier unsummarized
+	 * cycles are cascaded first (Phase 1.3) so the resulting spans stay contiguous.
+	 */
+	_createSingleCompactButton(messageId) {
+		const compactButton = new Button();
+		compactButton.classList.add("compact-cycle-btn");
+		compactButton.icon = "compress";
+		compactButton.title = "Compact the cycle ending at this turn (earlier cycles are compacted first)";
+
+		compactButton.onclick = async (e) => {
+			e.stopPropagation();
+			if (compactButton.disabled) return; // Already compacting — ignore re-entrancy (Button has no native disabled click-suppression).
+			const activeSession = this.manager.activeSession;
+			if (!activeSession) return;
+			const allMsgs = activeSession.messages;
+
+			// Resolve the END point: the clicked turn's index, extended to include an immediate
+			// trailing tool_response (safe pairing — the response belongs to the clicked turn).
+			let endIdx = allMsgs.findIndex(m => m.id === messageId);
+			if (endIdx === -1) return; // Turn no longer in history.
+			const clickedMsg = allMsgs[endIdx];
+			const nextMsg = allMsgs[endIdx + 1];
+			const isModelTurn = clickedMsg.type === "model" || clickedMsg.type === "error" || clickedMsg.role === "model";
+			if (isModelTurn && nextMsg && nextMsg.type === "tool_response") {
+				endIdx++; // Pull the trailing tool_response into the span.
+			}
+
+			const span = this._findCycleSpanForEndPoint(allMsgs, endIdx);
+			if (!span || span.cycleStartIdx === -1 || span.cycleStartIdx >= span.endIdx) {
+				window.modal?.toast?.("Span too small to compact — the cycle around this turn has fewer than two messages.");
+				return;
+			}
+			const endMsgId = allMsgs[span.endIdx].id;
+
+			// Already summarized? No-op with a notice (the cascade + span helpers below would
+			// otherwise re-compact the same span — keep this explicit and cheap).
+			if (this.hasCycleSummaryCovering(allMsgs, span.endIdx) || this.hasCycleSummaryCovering(allMsgs, span.cycleStartIdx)) {
+				window.modal?.toast?.("This cycle is already compacted.");
+				return;
+			}
+
+			compactButton.disabled = true;
+			compactButton.icon = "cached";
+			compactButton.title = "Compacting cycle…";
+
+			try {
+				// Phase 1.3 — Cascade: compact ALL earlier unsummarized cycles BEFORE this one (newest-first),
+				// so the spans stay contiguous and chronologically ordered. Best-effort: a cascade failure
+				// must not prevent this cycle from compacting.
+				try {
+					await this.compactEarlierCyclesUpTo(activeSession, endMsgId, { render: false });
+				} catch (cascErr) {
+					console.error("Error during cascade compaction of earlier cycles:", cascErr); // Best-effort — continue.
+				}
+
+				// Re-locate the END point by its STABLE id (the cascade's head-insertions shifted raw
+				// indices) and re-derive the span.
+				const curEndIdx = allMsgs.findIndex(m => m.id === endMsgId);
+				if (curEndIdx === -1) throw new Error("Target turn no longer present");
+				const curSpan = this._findCycleSpanForEndPoint(allMsgs, curEndIdx);
+				if (!curSpan || curSpan.cycleStartIdx === -1 || curSpan.cycleStartIdx >= curSpan.endIdx) return; // Span too small — nothing to compact.
+
+				await this._compactCycleSpan(activeSession, curSpan.cycleStartIdx, curSpan.endIdx, { render: true });
+			} catch (err) {
+				console.error("Failed to compact cycle from turn:", err);
+				compactButton.disabled = false;
+				compactButton.icon = "compress";
+				compactButton.title = "Compact the cycle ending at this turn (earlier cycles are compacted first)";
+			}
+		};
+
+		return compactButton;
+	}
+
+	/**
+	 * Generalized span computation for an ARBITRARY end point (not just a cycle boundary): given
+	 * an index `endIdx`, scans BACKWARDS for the previous `cycle_summary` or cycle boundary and
+	 * returns the span starting just after it. Falls back to the first user/model message when no
+	 * previous marker exists. Returns {cycleStartIdx, endIdx} or null when the span is too small
+	 * (fewer than two messages) — mirrors `_findCycleSpanForEnd`'s backward scan, minus the
+	 * boundary-specific trailing-tool_response pull (the caller decides pairing).
+	 */
+	_findCycleSpanForEndPoint(messages, endIdx) {
+		if (!messages || endIdx < 0 || endIdx >= messages.length) return null;
+
+		let cycleStartIdx = -1; // Scan backwards for a previous summary or cycle boundary — start AFTER it.
+		for (let i = endIdx - 1; i >= 0; i--) {
+			const msg = messages[i];
+			if (msg.type === "cycle_summary" || this.isCycleBoundary(msg, i, messages)) {
+				cycleStartIdx = i + 1;
+				break;
+			}
+		}
+
+		if (cycleStartIdx === -1) { // No previous marker — fall back to the first conversational message.
+			const fallbackIdx = messages.findIndex(msg => msg.type === "user" || msg.role === "model");
+			cycleStartIdx = fallbackIdx;
+		}
+
+		if (cycleStartIdx === -1 || cycleStartIdx >= endIdx) return null; // Span too small (<2 messages).
+
+		return { cycleStartIdx, endIdx };
 	}
 
 	async _handleDeleteSingleMessage(messageId, pruneForward = false) {
@@ -2674,6 +2798,7 @@ class AIManagerHistory {
 					}
 					actionsButtons.append(this._createSingleEditButton(userMessage.id));
 					actionsButtons.append(this._createSingleReplayButton(userMessage.id));
+					actionsButtons.append(this._createSingleCompactButton(userMessage.id));
 					actionsButtons.append(this._createSingleDeleteButton(userMessage.id));
 				}
 			}
@@ -3019,6 +3144,26 @@ class AIManagerHistory {
 	}
 
 	/**
+	 * True when a tool_response message's content contains a done-confirmation response.
+	 * A single tool_response message can ACCUMULATE multiple tool results, joined by a
+	 * "\n\n---\n\n" separator (see the agent loop, which joins accumulatedResponses). A naive
+	 * substring match on the whole content false-positives on ANY atom that merely MENTIONS
+	 * the phrase (e.g. a file being edited contains the literal text, or another response's
+	 * output quotes it), so the content is split on the separator and each atom is checked
+	 * with a PREFIX match — the done marker must start an atom to be a real response.
+	 */
+	_toolResponseHasDone(msg) {
+		if (!msg || msg.type !== "tool_response" || !msg.content) return false;
+		const SEP = "\n\n---\n\n";
+		const DONE_MARKER = "[Tool Response: done]";
+		const atoms = msg.content.split(SEP);
+		for (const atom of atoms) {
+			if (atom.trimStart().startsWith(DONE_MARKER)) return true;
+		}
+		return false;
+	}
+
+	/**
 	 * Determines if a message is a cycle boundary marker.
 	 * Cycle boundaries include:
 	 * 1. Done boundary: model turn invoking done, or tool_response confirming done
@@ -3026,24 +3171,30 @@ class AIManagerHistory {
 	 * Note: Rejected or unactioned plans remain normal history and are NOT cycle boundaries.
 	 */
 	isCycleBoundary(msg, idx = -1, allMsgs = null) {
-		if (!msg) return false;
+		if (!msg) 
+			return false;
 
-		// 1. Done boundary: tool_response confirming done, or model turn invoking done
-		if (msg.type === "tool_response" && msg.content?.includes("[Tool Response: done]")) return true;
+		// 1. Done boundary: tool_response confirming done, or model turn invoking done.
+		// A done-cycle emits TWO adjacent markers — the model turn (which invoked done) and the
+		// tool_response that confirms it. To avoid counting a single cycle as two boundaries (the
+		// cascade would then compact the same span twice), the tool_response is the CANONICAL
+		// marker: the model turn is only a boundary when its done-confirmation has NOT yet been
+		// appended (in-flight). Once the tool_response is present, it alone marks the boundary.
+		if (msg.type === "tool_response" && this._toolResponseHasDone(msg)) 
+			return true;
 		const hasDoneCall = Array.isArray(msg.toolCalls) && msg.toolCalls.some(tc => (tc.functionCall?.name || tc.name) === "done");
-		if ((msg.role === "model" || msg.type === "model") && hasDoneCall) return true;
+		const nextMsg = allMsgs ? allMsgs[idx + 1] : null;
+		const confirmationPresent = nextMsg && nextMsg.type === "tool_response" && this._toolResponseHasDone(nextMsg);
+		if ((msg.role === "model" || msg.type === "model") && hasDoneCall && !confirmationPresent) 
+			return true;
 
 		// 2. Accepted plan boundary:
 		// Only accepted plans are cycle boundaries. Rejected or unactioned plans remain normal history.
-		if ((msg.role === "model" || msg.type === "model") && msg.planStatus === "accepted") return true;
-
-		// Tool response immediately following an accepted plan model turn
-		if (msg.type === "tool_response" && allMsgs && idx > 0) {
-			const prev = allMsgs[idx - 1];
-			if ((prev?.role === "model" || prev?.type === "model") && prev?.planStatus === "accepted") {
-				return true;
-			}
-		}
+		// The ACCEPTED model turn is the CANONICAL marker (acceptance is recorded on it). The
+		// tool_response that immediately follows it is the same cycle's own response — NOT a
+		// separate boundary (otherwise one plan cycle would be counted twice).
+		if ((msg.role === "model" || msg.type === "model") && msg.planStatus === "accepted") 
+			return true;
 
 		return false;
 	}
@@ -3270,7 +3421,132 @@ class AIManagerHistory {
 	/**
 	 * Agent-mode auto-compaction: condenses the most recent COMPLETED task cycle (ended with a `done` tool call, or an accepted implementation plan, and not yet summarized) into one cycle_summary message — reusing exactly what the manual "Summarize Cycle" path in agent.mjs does, so UI rendering stays identical. No-op unless the target session is in agent mode AND has at least one completed-but-unsummarized boundary; returns true only if a new summary was actually inserted and persisted (idempotent — boundaries already carrying an adjacent cycle_summary are skipped).
 	 */
-	async autoCompactAgentCycle(sessionObj = null) {
+	/**
+	 * Phase 1.3 — Cascade compaction. Given a target cycle's span end id (`targetCycleEndMsgId`, the stable id of the target's last message),
+	 * compacts every EARLIER completed-but-unsummarized cycle in the session so all cycles are summarized in
+	 * chronological order. Each earlier cycle is compacted on its own (separate-connection) path so the cascade runs
+	 * in the background without blocking the caller, and the newest earlier cycle is compacted first (closest to the
+	 * target) so the summary closest to the target lands soonest.
+	 *
+	 * Returns a list of the newly-created summary objects (empty when there was nothing to cascade).
+	 */
+	async compactEarlierCyclesUpTo(targetSession, targetCycleEndMsgId, opts = null) {
+		const { connectionId = null, progress = null, render: shouldRender = true } = opts || {};
+		if (!targetSession) return [];
+		const messages = targetSession.messages;
+
+		// Locate the target boundary (the latest boundary whose span ends at targetCycleEndMsgId).
+		let targetBoundaryIdx = -1;
+		for (let i = messages.length - 1; i >= 0; i--) {
+			if (!this.isCycleBoundary(messages[i], i, messages)) continue;
+			// endIdx = boundary + trailing tool_response (mirrors _findCycleBoundary's trailing-tool_response logic).
+			let endIdx = i;
+			const nextMsg = messages[i + 1];
+			if ((messages[i].role === "model" || messages[i].type === "model") && nextMsg && nextMsg.type === "tool_response") {
+				endIdx = i + 1;
+			}
+			// Accept EITHER the boundary's own id (the auto path passes messages[lastBoundaryIdx].id) or its
+			// span-end id (the manual path passes the trailing tool_response's id).
+			if (messages[i].id === targetCycleEndMsgId || messages[endIdx]?.id === targetCycleEndMsgId) {
+				targetBoundaryIdx = i;
+				break;
+			}
+		}
+		if (targetBoundaryIdx === -1) return []; // Target boundary not found — nothing to cascade before it.
+		// Capture the target boundary's STABLE message id (its raw index shifts as earlier cycles get
+		// head-anchored summaries spliced in before them). The cascade clamps each earlier cycle's span end
+		// to just before this boundary so archiving an earlier span never deletes the target's boundary message.
+		const targetBoundaryId = messages[targetBoundaryIdx].id;
+
+		// Walk ALL boundaries strictly before the target, in original (chronological) order. Track the boundary
+		// MESSAGE ID (stable across the cascade's own insertions) rather than a raw index, which shifts as earlier
+		// cycles get head-anchored summaries spliced in before them.
+		const boundaries = [];
+		for (let i = 0; i < targetBoundaryIdx; i++) {
+			if (!this.isCycleBoundary(messages[i], i, messages)) continue;
+			// Idempotency: skip cycles already summarized. Use span-coverage (not adjacency) so it works for BOTH
+			// head-anchored (summary before the span) and legacy tail-anchored (summary after the span) formats.
+			const hasSummary = messages.some(m => m.type === "cycle_summary" && !m.isSeed && this._spanCoversMsgId(messages, m, messages[i].id));
+			if (!hasSummary) {
+				boundaries.push({ boundaryMsgId: messages[i].id });
+			}
+		}
+
+		// Compact the earlier cycles, newest-first (closest to the target first). Each is independent — a failure
+		// on one cycle must not prevent the others from compacting (best-effort cascade).
+		// Phase 3.5 - Mitigate the cascade's interruption of the user's flow with a brief toast (the cascade
+		// compacts N earlier cycles in sequence, each an AI call, so the turn can be delayed noticeably).
+		// A single earlier cycle is a quick single AI call (no flag needed — the target compaction's own chip
+		// covers it), so only flag when there's more than one. Skipped when the session isn't being viewed.
+		// Duration scales with the cycle count so the toast doesn't vanish mid-cascade.
+		if (boundaries.length > 1 && this.manager.isSessionViewed?.(targetSession.id) && window.modal?.toast) {
+			window.modal.toast(`Compacting ${boundaries.length} earlier cycles...`, Math.min(10000, 3000 + boundaries.length * 3000));
+		}
+
+		const newSummaries = [];
+		for (let b = boundaries.length - 1; b >= 0; b--) {
+			try {
+				if (progress) progress(`Compacting earlier cycle ${boundaries.length - b} of ${boundaries.length}…`);
+				// Re-locate this boundary by its STABLE message id against the CURRENT array (earlier insertions
+				// have shifted raw indices), then re-derive its span.
+				const curBoundaryIdx = messages.findIndex(m => m.id === boundaries[b].boundaryMsgId);
+				if (curBoundaryIdx === -1) continue; // Boundary no longer present — skip.
+				const span = this._findCycleSpanForEnd(messages, curBoundaryIdx);
+				if (!span || span.cycleStartIdx === -1 || span.cycleStartIdx >= span.endIdx) continue; // Span too small — skip.
+				// Span bleed-forward guard: this earlier cycle's span must never swallow a LATER boundary's
+				// message (the target's done/plan turn). _findCycleSpanForEnd's backward scan stops at the
+				// NEAREST previous boundary, so a large unsummarized earlier cycle can stretch forward past
+				// the target; archiving that range would delete the target's boundary message and break the
+				// caller's re-location (→ "Target boundary no longer present"). Re-locate the target by its
+				// STABLE id against the CURRENT array (earlier insertions shifted raw indices) and clamp this
+				// span's end to just before it so archiving preserves the target.
+				const targetCurIdx = messages.findIndex(m => m.id === targetBoundaryId);
+				if (targetCurIdx === -1) continue; // Target gone — nothing left to guard against; skip this cycle.
+				const clampedEnd = span.endIdx < targetCurIdx ? span.endIdx : targetCurIdx - 1;
+				if (clampedEnd <= span.cycleStartIdx) continue; // Clamp removed the span — skip.
+				const summaryMessage = await this._compactCycleSpan(targetSession, span.cycleStartIdx, clampedEnd, {
+					connectionId,
+					progress: progress ? (msg) => { try { progress(msg); } catch (_) {} } : null,
+					render: false // Don't re-render after every cycle — the cascade re-renders once at the end.
+				});
+				if (summaryMessage) newSummaries.push(summaryMessage);
+			} catch (e) {
+				console.error("Error during cascade compaction of an earlier cycle:", e); // Best-effort — continue with the rest.
+			}
+		}
+
+		// Re-render once, at the end, so the UI collapses all newly-summarized spans in a single pass (avoids a
+		// render storm when several earlier cycles are compacted in sequence). Skipped when the caller (the manual
+		// "Compact Cycle" path) will do its own single render after compacting the target cycle.
+		if (shouldRender && newSummaries.length > 0 && this.manager.isSessionViewed?.(targetSession.id)) {
+			this.render({ isNewMessage: true });
+			const conversationArea = this.conversationArea;
+			if (conversationArea) conversationArea.scrollTop = conversationArea.scrollHeight;
+		}
+
+		return newSummaries;
+	}
+
+	/**
+	 * Phase 1.4 — Returns true when the cycle_summary `summary`'s span [cycleStartMsgId..cycleEndMsgId] covers the
+	 * message with id `msgId`. Works for BOTH head-anchored (summary before the span) and legacy tail-anchored
+	 * (summary after the span) summaries, because it compares the min/max of the two id positions against the
+	 * target index. Used by the cascade and the "Compact Cycle" button: head-anchored summaries no longer sit
+	 * adjacent to the done block, so the old adjacency check misses them.
+	 */
+	_spanCoversMsgId(messages, summary, msgId) {
+		if (!summary || !msgId) return false;
+		const startIdx = messages.findIndex(m => m.id === summary.cycleStartMsgId);
+		const endIdx = messages.findIndex(m => m.id === summary.cycleEndMsgId);
+		const targetIdx = messages.findIndex(m => m.id === msgId);
+		if (startIdx === -1 || endIdx === -1 || targetIdx === -1) return false;
+		const lo = Math.min(startIdx, endIdx);
+		const hi = Math.max(startIdx, endIdx);
+		return targetIdx >= lo && targetIdx <= hi;
+	}
+
+	async autoCompactAgentCycle(sessionObj = null, opts = null) {
+		const { connectionId = null, progress = null } = opts || {}; // Phase 3.3 — optional override: force compaction onto a specific connection (the session's primary connection when the agent loop preempts) and report progress via callback. Null = primary connection + in-conversation chip (unchanged behavior).
 		const targetSession = sessionObj || this.manager.activeSession;
 		if (!targetSession || !this.ai?.isConfigured()) return false;
 
@@ -3300,38 +3576,31 @@ class AIManagerHistory {
 
 		if (lastBoundaryIdx === -1) return false; // No completed cycle awaiting summarization yet.
 
-		let endIdx = lastBoundaryIdx;
-		const nextMsg = messages[lastBoundaryIdx + 1];
-		if ((messages[lastBoundaryIdx].role === "model" || messages[lastBoundaryIdx].type === "model") && isToolResponse(nextMsg)) {
-			endIdx = lastBoundaryIdx + 1; // Pull the trailing accumulated tool_response into the summarized span so nothing dangles after it.
-		}
+		// Phase 1.3 — Cascade: compact ALL earlier unsummarized cycles (newest-first) BEFORE the target cycle, so every
+		// cycle is summarized in chronological order and the spans stay contiguous. The cascade compacts strictly
+		// earlier cycles, so it never touches the target's own span. It's a no-op (returns []) when every earlier
+		// cycle is already summarized. Runs on the same connection + progress channel as the target compaction.
+		await this.compactEarlierCyclesUpTo(targetSession, messages[lastBoundaryIdx].id, {
+			connectionId,
+			progress: progress ? (msg) => { try { progress(msg); } catch (_) {} } : null
+		});
 
-		// Find start of current boundary so we scan strictly BEFORE it for the previous boundary
-		let boundaryStartIdx = endIdx;
-		if (isToolResponse(messages[endIdx]) && endIdx > 0 && (messages[endIdx - 1].role === "model" || messages[endIdx - 1].type === "model")) {
-			boundaryStartIdx = endIdx - 1;
-		}
+		// Re-locate the target span by its STABLE boundary message id (the cascade's insertions shifted raw indices),
+		// then re-derive its span against the current array.
+		const targetBoundaryIdx = messages.findIndex(m => m.id === messages[lastBoundaryIdx].id);
+		if (targetBoundaryIdx === -1) return false; // Boundary no longer present — safe no-op.
+		const targetSpan = this._findCycleSpanForEnd(messages, targetBoundaryIdx);
+		if (!targetSpan || targetSpan.cycleStartIdx === -1 || targetSpan.cycleStartIdx >= targetSpan.endIdx) return false; // Span too small (<2 messages) to summarize meaningfully.
 
-		let cycleStartIdx = -1; // Scan backwards for a previous boundary marker (summary or cycle boundary) — start AFTER it, mirroring agent.mjs' manual path exactly.
-		for (let i = boundaryStartIdx - 1; i >= 0; i--) {
-			const msg = messages[i];
-			if (msg.type === "cycle_summary" || this.isCycleBoundary(msg, i, messages)) {
-				cycleStartIdx = i + 1;
-				break;
-			}
-		}
-
-		if (cycleStartIdx === -1) { // No previous boundary found anywhere before this one — fall back to the first conversational message, mirroring agent.mjs' manual path exactly.
-			const fallbackIdx = messages.findIndex(msg => msg.type === "user" || msg.role === "model");
-			cycleStartIdx = fallbackIdx; // -1 if there's no user/model turn at all — handled by the span guard below (never summarize an empty / non-conversational span).
-		}
-
-		if (cycleStartIdx === -1 || cycleStartIdx >= endIdx) return false; // Span too small (<2 messages) to summarize meaningfully — same guard as performSummarization().
-
+		const { cycleStartIdx, endIdx } = targetSpan;
 		const cycleMessages = messages.slice(cycleStartIdx, endIdx + 1);
 
 		let progressEl = null;
-		if (this.manager.isSessionViewed?.(targetSession.id) && this.conversationArea) {
+		const reportProgress = (msg) => { // Unified progress reporting: an explicit callback takes priority (agent-loop preemption); otherwise the in-conversation progress chip (default path).
+			if (progress) { try { progress(msg); } catch (_) {} }
+			else if (progressEl) progressEl.innerHTML = `<ui-icon class="spin">cached</ui-icon> ${msg}`;
+		};
+		if (!progress && this.manager.isSessionViewed?.(targetSession.id) && this.conversationArea) {
 			progressEl = document.createElement("div");
 			progressEl.className = "agent-tool-progress";
 			progressEl.innerHTML = `<ui-icon class="spin">cached</ui-icon> Compacting cycle...`;
@@ -3342,7 +3611,8 @@ class AIManagerHistory {
 		}
 
 		try {
-			const result = await this.manager.generateCycleSummary(cycleMessages);
+			reportProgress("Compacting cycle...");
+			const result = await this.manager.generateCycleSummary(cycleMessages, connectionId ? { connectionId } : null); // Phase 3.3 — honor the connection override (e.g. the session's primary connection when the agent loop preempts).
 			if (!result || !result.summary) return false; // AI unavailable or returned nothing — safe no-op.
 
 			const summaryMessage = {
@@ -3356,7 +3626,7 @@ class AIManagerHistory {
 				cycleEndMsgId: messages[endIdx].id
 			};
 
-			messages.splice(endIdx + 1, 0, summaryMessage); // Insert AFTER the cycle end so it renders as a collapsed summary of exactly that span (same position as agent.mjs' manual path).
+			messages.splice(cycleStartIdx, 0, summaryMessage); // Phase 1.1 — HEAD-anchor at the span start so cycles are contiguous (this cycle's raw span follows the summary; the next cycle starts after it).
 			targetSession.lastModified = Date.now();
 			await workspaceClient.setSession(targetSession.id, targetSession);
 
@@ -3404,7 +3674,7 @@ class AIManagerHistory {
 	/**
 	 * Inserts a transient cycle_summary seed (last model output, content-only) as a stand-in for the in-flight compaction so the new cycle starts with a continuity anchor. Marked `isSeed: true` so the background compaction can replace it with the real summary when it completes. The seed's `cycleStartMsgId`/`cycleEndMsgId` point to the cycle being compacted so `prepareMessagesForAI` can hide the covered span while the seed is in place.
 	 */
-	_insertCycleSeed(targetSession, cycleStartMsgId, cycleEndMsgId, content) {
+	_insertCycleSeed(targetSession, cycleStartIdx, cycleStartMsgId, cycleEndMsgId, content) {
 		const messages = targetSession.messages;
 		const seed = {
 			id: crypto.randomUUID(),
@@ -3417,13 +3687,55 @@ class AIManagerHistory {
 			cycleStartMsgId,
 			cycleEndMsgId
 		};
-		messages.push(seed); // Append at the end — the new cycle's first conversational message follows it.
+		messages.splice(cycleStartIdx, 0, seed); // Phase 2.3 — HEAD-anchor the seed at the span's head so it occupies the exact position the real summary will take (in-place swap on completion keeps contiguity). // Append at the end — the new cycle's first conversational message follows it.
 		targetSession.lastModified = Date.now();
 		workspaceClient.setSession(targetSession.id, targetSession);
 		if (this.manager.isSessionViewed?.(targetSession.id)) {
 			this.render({ isNewMessage: true });
 		}
 		return seed.id;
+	}
+
+	/**
+	 * Removes the in-flight content-only seed (isSeed) from the session, if one is present. Called when a
+	 * preemptive/background compaction is a no-op or fails and the seed would otherwise linger as a stale
+	 * "Compacting cycle" placeholder. Safe no-op when no seed is present.
+	 */
+	clearPendingSeed(sessionObj = null) {
+		const targetSession = sessionObj || this.manager.activeSession;
+		if (!targetSession) return false;
+		const messages = targetSession.messages;
+		const seedIdx = messages.findIndex(m => m.type === "cycle_summary" && m.isSeed);
+		if (seedIdx === -1) return false; // No seed present — nothing to clear.
+		messages.splice(seedIdx, 1);
+		targetSession.lastModified = Date.now();
+		return workspaceClient.setSession(targetSession.id, targetSession).then(() => {
+			if (this.manager.isSessionViewed?.(targetSession.id)) this.render();
+			return true;
+		}).catch(() => false);
+	}
+
+	/**
+	 * Phase 1.5 — Returns true when a real (non-seed) cycle_summary's span [cycleStartMsgId..cycleEndMsgId]
+	 * covers the message at `msgIdx`. Works for BOTH head-anchored (summary before the span) and legacy
+	 * tail-anchored (summary after the span) summaries, because it compares the min/max of the two id
+	 * positions against the target index. Used by the "Compact Cycle" button: head-anchored summaries no
+	 * longer sit adjacent to the done block, so the old adjacency check misses them.
+	 */
+	hasCycleSummaryCovering(messages, msgIdx) {
+		const targetId = messages[msgIdx]?.id;
+		if (!targetId) return false;
+		for (const m of messages) {
+			if (m.type !== "cycle_summary" || m.isSeed) continue;
+			if (!m.cycleStartMsgId || !m.cycleEndMsgId) continue;
+			const startIdx = messages.findIndex(x => x.id === m.cycleStartMsgId);
+			const endIdx = messages.findIndex(x => x.id === m.cycleEndMsgId);
+			if (startIdx === -1 || endIdx === -1) continue; // span archived out of the main record — no local done block to hide.
+			const lo = Math.min(startIdx, endIdx);
+			const hi = Math.max(startIdx, endIdx);
+			if (msgIdx >= lo && msgIdx <= hi) return true;
+		}
+		return false;
 	}
 
 	/**
@@ -3437,7 +3749,7 @@ class AIManagerHistory {
 			const { cycleStartIdx, endIdx } = boundary;
 			const content = this._extractLastModelContent(messages.slice(0, endIdx + 1));
 			if (!content) return null; // No usable model content to seed with.
-			return this._insertCycleSeed(targetSession, messages[cycleStartIdx].id, messages[endIdx].id, content);
+			return this._insertCycleSeed(targetSession, cycleStartIdx, messages[cycleStartIdx].id, messages[endIdx].id, content);
 		} catch (e) {
 			console.error("Error seeding cycle for background compaction:", e); // Safe no-op on failure.
 			return null;
@@ -3500,6 +3812,89 @@ class AIManagerHistory {
 	}
 
 	/**
+	 * Phase 1.4 â Given a boundary INDEX (a `done`-turn / accepted-plan model turn), derives that cycle's span {cycleStartIdx, endIdx} by applying the same trailing-tool_response + backward-scan logic as _findCycleBoundary. Returns null when the boundary is invalid or the span is too small.
+	 */
+	_findCycleSpanForEnd(messages, boundaryIdx) {
+		if (!messages || boundaryIdx < 0 || boundaryIdx >= messages.length) return null;
+		const isToolResponse = (msg) => msg && msg.type === "tool_response";
+
+		let endIdx = boundaryIdx;
+		const nextMsg = messages[boundaryIdx + 1];
+		if ((messages[boundaryIdx].role === "model" || messages[boundaryIdx].type === "model") && isToolResponse(nextMsg)) {
+			endIdx = boundaryIdx + 1; // Pull the trailing accumulated tool_response into the summarized span so nothing dangles after it.
+		}
+
+		let boundaryStartIdx = endIdx;
+		if (isToolResponse(messages[endIdx]) && endIdx > 0 && (messages[endIdx - 1].role === "model" || messages[endIdx - 1].type === "model")) {
+			boundaryStartIdx = endIdx - 1;
+		}
+
+		let cycleStartIdx = -1; // Scan backwards for a previous boundary marker (summary or cycle boundary) â start AFTER it.
+		for (let i = boundaryStartIdx - 1; i >= 0; i--) {
+			const msg = messages[i];
+			if (msg.type === "cycle_summary" || 
+				this.isCycleBoundary(msg, i, messages)) {
+				cycleStartIdx = i + 1;
+				break;
+			}
+		}
+
+		if (cycleStartIdx === -1) { // No previous boundary found â fall back to the first conversational message.
+			const fallbackIdx = messages.findIndex(msg => msg.type === "user" || msg.role === "model");
+			cycleStartIdx = fallbackIdx;
+		}
+
+		if (cycleStartIdx === -1 || cycleStartIdx >= endIdx) return null; // Span too small.
+
+		return { cycleStartIdx, endIdx };
+	}
+
+	/**
+	 * Phase 1.4 â Compacts a specific cycle span (cycleStartIdx..endIdx) into one HEAD-anchored cycle_summary:
+	 * generates the summary via the manager, splices it at the span's head, persists, archives the raw span, and
+	 * re-renders. Returns the inserted summary message object, or null when the AI is unavailable / returns nothing.
+	 * Shared by autoCompactAgentCycle (latest cycle), the cascade (earlier cycles), and the agent-loop preemption.
+	 */
+	async _compactCycleSpan(targetSession, cycleStartIdx, endIdx, opts = null) {
+		const { connectionId = null, progress = null, render: shouldRender = true } = opts || {};
+		const messages = targetSession.messages;
+		if (cycleStartIdx < 0 || endIdx >= messages.length || cycleStartIdx >= endIdx) return null;
+
+		const cycleMessages = messages.slice(cycleStartIdx, endIdx + 1);
+		const result = await this.manager.generateCycleSummary(cycleMessages, connectionId ? { connectionId } : null);
+		if (!result || !result.summary) return null; // AI unavailable or returned nothing â safe no-op.
+
+		const summaryMessage = {
+			id: crypto.randomUUID(),
+			role: "system",
+			type: "cycle_summary",
+			title: result.title,
+			content: result.summary,
+			timestamp: Date.now(),
+			cycleStartMsgId: messages[cycleStartIdx].id,
+			cycleEndMsgId: messages[endIdx].id
+		};
+
+		messages.splice(cycleStartIdx, 0, summaryMessage); // HEAD-anchor so cycles are contiguous.
+		targetSession.lastModified = Date.now();
+		await workspaceClient.setSession(targetSession.id, targetSession);
+
+		// Best-effort: move the raw span out of the main record into the archive (never fails the compaction).
+		await this._archiveCycleSpan(targetSession, summaryMessage);
+
+		// Re-render so the just-summarized span collapses into its summary block. Skipped when the caller is
+		// compacting multiple cycles in sequence (the cascade) — it re-renders once at the end instead, so the
+		// UI isn't re-rendered N times for N cycles.
+		if (shouldRender && this.manager.isSessionViewed?.(targetSession.id)) {
+			this.render({ isNewMessage: true });
+			const conversationArea = this.conversationArea;
+			if (conversationArea) conversationArea.scrollTop = conversationArea.scrollHeight;
+		}
+
+		return summaryMessage;
+	}
+
+	/**
 	 * Fire-and-forget background compaction: locates the latest completed-but-unsummarized cycle and summarizes it on a separate (non-primary) connection without blocking the caller. The caller is expected to have already inserted a lightweight content-only seed (via _insertCycleSeed) as a stand-in; when the real summary arrives, the seed is replaced in-place so the covered span collapses into the full <compacted_cycle> block. Safe no-op on any failure — the prompt proceeds without compacting.
 	 */
 	async autoCompactAgentCycleAsync(sessionObj = null) {
@@ -3512,7 +3907,23 @@ class AIManagerHistory {
 		const messages = targetSession.messages;
 		if (messages.length < 2) return false;
 
-		// Re-locate the boundary at run time (not at call time) so it stays robust to messages appended while the summary AI call is in flight.
+		// Phase 1.3 — Cascade FIRST (sequentially, before the target is located): compact all earlier unsummarized
+		// cycles so the target's span boundaries stay stable. This runs on the same separate connection as the
+		// target compaction (non-blocking to the prompt — the whole function is fire-and-forget). Running it
+		// sequentially (not as a parallel fire-and-forget) avoids an index-shift race: the cascade's insertions
+		// settle BEFORE the target span is derived, so the target's cycleStartMsgId/cycleEndMsgId stay correct.
+		// Best-effort — a cascade failure must not prevent the target from compacting.
+		try {
+			const preBoundary = this._findCycleBoundary(messages);
+			if (preBoundary) {
+				const preEndIdx = preBoundary.endIdx;
+				await this.compactEarlierCyclesUpTo(targetSession, messages[preEndIdx].id, { render: false });
+			}
+		} catch (cascErr) {
+			console.error("Error during background cascade compaction of earlier cycles:", cascErr); // Best-effort — continue to the target.
+		}
+
+		// Re-locate the boundary at run time (not at call time) so it stays robust to messages appended while the summary AI call is in flight, AND to the cascade's own insertions above.
 		const boundary = this._findCycleBoundary(messages);
 		if (!boundary) return false; // No completed cycle awaiting summarization yet, or span too small to summarize meaningfully.
 		const { cycleStartIdx, endIdx } = boundary;
@@ -3520,7 +3931,21 @@ class AIManagerHistory {
 
 		try {
 			const result = await this.manager.generateCycleSummary(cycleMessages);
-			if (!result || !result.summary) return false; // AI unavailable or returned nothing — safe no-op.
+			if (!result || !result.summary) {
+				// Phase 3.2 — the background (separate-connection) compaction produced nothing (AI unavailable or
+				// returned empty). Mark the session so the agent loop preempts it onto the main connection on its
+				// next turn. The seed (if present) remains as the continuity anchor until the preemption replaces it.
+				targetSession._pendingCycleCompaction = true;
+				return false;
+			}
+
+			// Re-derive the target's span bounds by STABLE message id (the cascade's insertions above may have
+			// shifted raw indices), so cycleStartMsgId/cycleEndMsgId and the splice position stay correct.
+			const startMsgId = messages[cycleStartIdx].id;
+			const endMsgId = messages[endIdx].id;
+			const curStartIdx = messages.findIndex(m => m.id === startMsgId);
+			const curEndIdx = messages.findIndex(m => m.id === endMsgId);
+			if (curStartIdx === -1 || curEndIdx === -1) return false; // Target span no longer present — safe no-op.
 
 			const summaryMessage = {
 				id: crypto.randomUUID(),
@@ -3529,8 +3954,8 @@ class AIManagerHistory {
 				title: result.title,
 				content: result.summary,
 				timestamp: Date.now(),
-				cycleStartMsgId: messages[cycleStartIdx].id,
-				cycleEndMsgId: messages[endIdx].id
+				cycleStartMsgId: startMsgId,
+				cycleEndMsgId: endMsgId
 			};
 
 			// Replace the content-only seed (if present) with the real summary so the covered span collapses into the full block instead of leaving a dangling placeholder.
@@ -3538,7 +3963,7 @@ class AIManagerHistory {
 			if (seedIdx !== -1) {
 				messages[seedIdx] = summaryMessage; // In-place swap keeps the seed's position (end of the covered span) stable.
 			} else {
-				messages.splice(endIdx + 1, 0, summaryMessage); // No seed was inserted — insert AFTER the cycle end, same position as the manual path.
+				messages.splice(curStartIdx, 0, summaryMessage); // Phase 1.1 — HEAD-anchor (no seed was present). Cycles stay contiguous: this cycle's raw span follows the summary; the next cycle starts after it.
 			}
 			targetSession.lastModified = Date.now();
 			await workspaceClient.setSession(targetSession.id, targetSession);
@@ -3554,7 +3979,11 @@ class AIManagerHistory {
 
 			return true;
 		} catch (e) {
-			console.error("Error during background agent cycle compaction:", e); // Safe no-op on failure — the prompt proceeds without compacting.
+			console.error("Error during background agent cycle compaction:", e);
+			// Phase 3.2 — the background (separate-connection) compaction failed. Mark the session so the
+			// agent loop preempts it onto the main connection on its next turn. The seed (if present)
+			// remains as the continuity anchor until the preemption replaces it in place.
+			targetSession._pendingCycleCompaction = true;
 			return false;
 		}
 	}
@@ -3648,6 +4077,11 @@ class AIManagerHistory {
 
 			for (let i = 0; i < n; i++) {
 				const msg = chatHistory[i];
+
+				// Phase 1.2 — A cycle_summary (head-anchored or legacy) is never sent as a raw turn.
+				// Its covered raw spans are already dropped by the covered[] masking above; the summary's
+				// content is folded into the single compacted_history turn emitted later.
+				if (msg.type === "cycle_summary") continue;
 
 				// A summary object (seed or not) is never sent; it only marks a span to collapse.
 				// When we hit the FIRST non-seed summary, emit the single compacted_history turn

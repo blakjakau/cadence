@@ -185,6 +185,58 @@ export class Agent {
 			}
 
 
+			// Phase 3.3 — Preemptive cycle compaction: if a prior prompt crossed the summarization
+			// threshold without a separate compaction connection (or the background compaction failed),
+			// run the compaction NOW on the session's own (primary) connection, bounded by a timeout so
+			// the turn is never stalled indefinitely. A content-only seed (if any) remains as a continuity
+			// anchor throughout; it is replaced in-place on success. A brief progress chip lets the user
+			// know the turn is momentarily delayed.
+			if (session._pendingCycleCompaction) {
+				delete session._pendingCycleCompaction;
+				// Phase 3.3 — Mitigate the preemption's interruption of the user's flow with a brief
+				// toast (matches the cascade toast), in addition to the in-conversation progress chip.
+				if (window.modal?.toast) window.modal.toast("History compaction in progress…", 2500);
+				let preemptEl = null;
+				if (aiManager.isSessionViewed(session.id) && aiManager.conversationArea) {
+					preemptEl = new Block();
+					preemptEl.className = "agent-tool-progress";
+					preemptEl.innerHTML = `<ui-icon class="spin">cached</ui-icon> Compacting prior cycle…`;
+					aiManager.conversationArea.append(preemptEl);
+					if (aiManager._shouldAutoScroll() && aiManager.conversationArea) aiManager.conversationArea.scrollTop = aiManager.conversationArea.scrollHeight;
+				}
+				try {
+					const COMPACT_TIMEOUT_MS = 90000;
+					let timedOut = false;
+					const compacted = await Promise.race([
+						aiManager.historyManager.autoCompactAgentCycle(session, {
+							// Force the compaction onto the session's own (primary) connection — the whole point
+							// of the preemption when no separate compaction connection is available.
+							connectionId: session.connectionId,
+							progress: (msg) => { if (preemptEl) preemptEl.textContent = msg; }
+						}),
+						new Promise(resolve => setTimeout(() => {
+							// Promise.race does NOT cancel the in-flight compaction — it keeps running on the
+							// main connection and will land the real summary (replacing the seed in place).
+							// So we must NOT clear the seed here; it's still a live anchor.
+							timedOut = true;
+							console.warn("Cycle compaction timed out after 90s — proceeding without the summary (seed anchor retained).");
+							resolve(false);
+						}, COMPACT_TIMEOUT_MS))
+					]);
+					if (!compacted && !timedOut) {
+						// Genuine no-op (no boundary) or failure — clear the stale seed anchor so it doesn't
+						// linger as a placeholder. (On timeout the seed is retained; the in-flight compaction
+						// will replace it in place when it completes.)
+						aiManager.historyManager.clearPendingSeed(session);
+					}
+				} catch (e) {
+					console.warn("Preemptive cycle compaction failed; proceeding with seed anchor:", e);
+					aiManager.historyManager.clearPendingSeed(session);
+				} finally {
+					if (preemptEl) preemptEl.remove();
+				}
+			}
+
 			const modelMessageId = crypto.randomUUID();
 			const responseBlock = aiManager.historyManager.createStreamingBlock(modelMessageId, "model", session.id);
 			if (aiManager.isSessionViewed(session.id)) {
@@ -1035,88 +1087,27 @@ export class Agent {
 				}
 
 				if (hasPlan) {
+					// Phase 3.4 — The loop BREAKS after a plan-accept turn (no next turn exists), so the
+					// turn-start preemption (Phase 3.3) cannot cover this case. Keep the post-turn path,
+					// but delegate to the centralized autoCompactAgentCycle so the boundary/span
+					// computation, HEAD-anchored insertion, archive, and Phase 2.1 prior-cycle context
+					// stay consistent with the auto/manual/background paths. No-op (safe) when there's
+					// no unsummarized done boundary (e.g. plan-accept turns that didn't end with done).
 					try {
-						const messages = session.messages;
-						let lastDoneMsgIdx = -1;
-						for (let i = messages.length - 1; i >= 0; i--) {
-							const msg = messages[i];
-							if ((msg.type === "tool_response" && msg.content && msg.content.includes("[Tool Response: done]")) ||
-								(msg.role === "model" && msg.toolCalls && msg.toolCalls.some(tc => (tc.functionCall?.name || tc.name) === "done"))) {
-								const hasSummary = messages.some(m => m.type === "cycle_summary" && (m.cycleEndMsgId === msg.id || m.cycleEndMsgId === messages[i+1]?.id));
-								if (!hasSummary) {
-									lastDoneMsgIdx = i;
-									break;
-								}
+						let summaryProgressMsg = null;
+						if (aiManager.isSessionViewed(session.id) && aiManager.conversationArea) {
+							summaryProgressMsg = document.createElement("div");
+							summaryProgressMsg.className = "agent-tool-progress";
+							summaryProgressMsg.innerHTML = `<ui-icon class="spin">cached</ui-icon> Generating cycle summary...`;
+							aiManager.conversationArea.append(summaryProgressMsg);
+							if (aiManager._shouldAutoScroll() && aiManager.conversationArea) {
+								aiManager.conversationArea.scrollTop = aiManager.conversationArea.scrollHeight;
 							}
 						}
-
-						if (lastDoneMsgIdx !== -1) {
-							let endIdx = lastDoneMsgIdx;
-							if (messages[lastDoneMsgIdx].role === "model" && 
-								messages[lastDoneMsgIdx + 1] && 
-								messages[lastDoneMsgIdx + 1].type === "tool_response") {
-								endIdx = lastDoneMsgIdx + 1;
-							}
-							
-							let cycleStartIdx = -1;
-							for (let i = endIdx - 2; i >= 0; i--) {
-								const msg = messages[i];
-								if (msg.type === "cycle_summary" || 
-									aiManager.historyManager?.isCycleBoundary(msg, i, messages) ||
-									(msg.type === "tool_response" && msg.content && msg.content.includes("[Tool Response: done]")) ||
-									(msg.role === "model" && msg.toolCalls && msg.toolCalls.some(tc => (tc.functionCall?.name || tc.name) === "done"))) {
-									cycleStartIdx = i + 1;
-									break;
-								}
-							}
-							if (cycleStartIdx === -1) {
-								cycleStartIdx = messages.findIndex(msg => msg.type === "user" || msg.type === "model");
-							}
-
-							if (cycleStartIdx !== -1 && cycleStartIdx <= endIdx) {
-								const cycleMessages = messages.slice(cycleStartIdx, endIdx + 1);
-								
-								const summaryProgressMsg = document.createElement("div");
-								summaryProgressMsg.className = "agent-tool-progress";
-								summaryProgressMsg.innerHTML = `<ui-icon class="spin">cached</ui-icon> Generating cycle summary...`;
-								if (aiManager.isSessionViewed(session.id)) {
-									aiManager.conversationArea.append(summaryProgressMsg);
-									if (aiManager._shouldAutoScroll() && aiManager.conversationArea) {
-										aiManager.conversationArea.scrollTop = aiManager.conversationArea.scrollHeight;
-									}
-								}
-
-								const result = await aiManager.generateCycleSummary(cycleMessages);
-								
-								summaryProgressMsg.remove();
-
-								if (result && result.summary) {
-									const summaryMessage = {
-										id: crypto.randomUUID(),
-										role: "system",
-										type: "cycle_summary",
-										title: result.title,
-										content: result.summary,
-										timestamp: Date.now(),
-										cycleStartMsgId: messages[cycleStartIdx].id,
-										cycleEndMsgId: messages[endIdx].id
-									};
-								session.messages.splice(endIdx + 1, 0, summaryMessage);
-								session.lastModified = Date.now();
-								await workspaceClient.setSession(session.id, session);
-
-								// Best-effort: move the raw span out of the main record into the archive (never fails the compaction).
-								await aiManager.historyManager._archiveCycleSpan(session, summaryMessage);
-
-								if (aiManager.isSessionViewed(session.id)) {
-										aiManager.historyManager.render();
-										if (aiManager.conversationArea) {
-											aiManager.scrollToBottom(true);
-										}
-									}
-								}
-							}
-						}
+						await aiManager.historyManager.autoCompactAgentCycle(session, {
+							progress: (msg) => { if (summaryProgressMsg) summaryProgressMsg.innerHTML = `<ui-icon class="spin">cached</ui-icon> ${msg}`; }
+						});
+						if (summaryProgressMsg) summaryProgressMsg.remove();
 					} catch (e) {
 						console.error("Error generating cycle summary:", e);
 					}

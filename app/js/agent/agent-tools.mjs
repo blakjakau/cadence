@@ -3053,6 +3053,9 @@ Snippet: ${r.content || r.snippet || ""}`;
                     return `Error: Scratchpad content exceeds 4KB limit (${byteSize} bytes / 4096 bytes max). Please keep your notes concise.`;
                 }
 
+                // Snapshot the previous content before overwriting (replace is destructive).
+	            window.ui.aiManager.sessionsManager.pushScratchpadHistory(session, "replace")
+
                 session.scratchpad = finalContent;
                 delete session.scratchpadTokenCount;
                 session.lastModified = Date.now();
@@ -3071,6 +3074,9 @@ Snippet: ${r.content || r.snippet || ""}`;
                 if (!session) {
                     throw new Error("No active session found to clear scratchpad.");
                 }
+
+                // Snapshot the previous content before clearing
+	            window.ui.aiManager.sessionsManager.pushScratchpadHistory(session, "clear")
 
                 delete session.scratchpad;
                 delete session.scratchpadTokenCount;

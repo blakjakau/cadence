@@ -1489,6 +1489,26 @@ ui-input input:focus {
     margin-bottom: 10px;
 }
 
+/* --- Modal toast --- */
+/* Hook for Modal.toast() elements. Inline styles currently take
+   precedence; this rule exists so future toast() calls can drop
+   the inline block and inherit theming from here. */
+.modal-toast {
+    position: fixed;
+    bottom: 20px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: var(--bg-secondary);
+    color: var(--text-primary);
+    border-radius: var(--borderRadius, 8px);
+    padding: 12px 24px;
+    box-shadow: 0 4px 12px var(--shadow-color);
+    z-index: 99999;
+    font-size: 14px;
+    transition: opacity 0.3s ease, transform 0.3s ease;
+    cursor: pointer;
+}
+
 .save-folder-select {
     flex: 1;
     padding: 8px;

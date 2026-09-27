@@ -313,6 +313,10 @@
     color: var(--color-error);
 }
 
+.compact-cycle-btn:hover {
+    color: var(--theme);
+}
+
 .replay-history-button:hover,
 .edit-history-button:hover {
     color: var(--theme);

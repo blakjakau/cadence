@@ -672,7 +672,8 @@ export class SessionArtifactsPanel extends Block {
             if (!confirmed) return;
 
             // Snapshot the current content before the destructive clear.
-            this._recordScratchpadVersion(session, "clear");
+            window.ui.aiManager.sessionsManager.pushScratchpadHistory(session, "clear")
+
             delete session.scratchpad;
             delete session.scratchpadTokenCount;
             session.lastModified = Date.now();
@@ -785,7 +786,8 @@ export class SessionArtifactsPanel extends Block {
                 }
 
                 // Snapshot the previous content before overwriting (replace is destructive).
-                this._recordScratchpadVersion(session, "replace");
+	            window.ui.aiManager.sessionsManager.pushScratchpadHistory(session, "replace")
+
                 if (newValue.trim()) {
                     session.scratchpad = newValue.trim();
                 } else {
@@ -1372,31 +1374,6 @@ export class SessionArtifactsPanel extends Block {
     }
 
     /**
-     * Records a snapshot of the session's current scratchpad content into its
-     * version history before a destructive overwrite (replace/clear). Mirrors the
-     * agent-tool helper: deduplicates identical content and caps the history at 25.
-     * @param {Object} session - The session object.
-     * @param {string} mode - The operation that triggered the snapshot ('replace' | 'clear').
-     */
-    _recordScratchpadVersion(session, mode) {
-        if (!session.scratchpad) return; // nothing to preserve
-        if (!Array.isArray(session.scratchpadVersions)) {
-            session.scratchpadVersions = [];
-        }
-        const last = session.scratchpadVersions[session.scratchpadVersions.length - 1];
-        if (last && last.content === session.scratchpad) return; // dedup
-        session.scratchpadVersions.push({
-            version: (last?.version || 0) + 1,
-            timestamp: Date.now(),
-            mode: mode,
-            content: session.scratchpad
-        });
-        if (session.scratchpadVersions.length > 25) {
-            session.scratchpadVersions.splice(0, session.scratchpadVersions.length - 25);
-        }
-    }
-
-    /**
      * Renders the collapsible scratchpad version-history section: a sticky header
      * with a Prev/Next pager, the live ("Newest") tile, and one row per recorded
      * version (newest-first). Also drives the read-only viewing banner in the
@@ -1692,7 +1669,7 @@ export class SessionArtifactsPanel extends Block {
 
         // Push the current live content onto the stack so the restore itself is
         // reversible (keeps prior history intact).
-        this._recordScratchpadVersion(session, "replace");
+        window.ui.aiManager.sessionsManager.pushScratchpadHistory(session, "replace")
 
         session.scratchpad = chosen.content;
         delete session.scratchpadTokenCount;

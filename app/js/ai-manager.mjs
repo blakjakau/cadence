@@ -2573,8 +2573,12 @@ isNativeReasoning,
 					// 2. Fire-and-forget the background compaction on the separate connection. When it completes it replaces the seed in-place with the real <compacted_cycle> summary. Safe no-op on any failure — the prompt proceeds without compacting.
 					this.historyManager.autoCompactAgentCycleAsync(targetSession).catch(e => console.error("Background cycle compaction failed:", e));
 				} else {
-					// No separate connection available — the compaction would contend with the primary connection the new prompt is about to use, so keep the awaited (synchronous) path.
-					const compacted = await this.historyManager.autoCompactAgentCycle(targetSession);
+					// Phase 3.1 — No separate connection available. Instead of blocking the new prompt on an
+					// inline compaction (which contends with the primary connection the prompt is about to
+					// use), defer to the agent loop: mark the session so its next turn preempts the compaction
+					// onto the session's own (primary) connection, bounded by a timeout so the turn is never
+					// stalled indefinitely.
+					targetSession._pendingCycleCompaction = true;
 				}
 			} else {
 				await this.historyManager.performSummarization(); // Await summarization before continuing (standard mode only).
@@ -3202,8 +3206,14 @@ isNativeReasoning,
 		});
 	}
 
-	async generateCycleSummary(cycleMessages) {
+	async generateCycleSummary(cycleMessages, opts = null) {
 		if (!this.ai || !this.ai.isConfigured()) return "";
+
+		// Optional caller context for richer summarization:
+		//   opts.session            — the session object, so we can read preceding cycle summaries (Phase 2.1).
+		//   opts.targetCycleEndMsgId— the stable id of the target cycle's last message, so we only take PRIOR summaries.
+		const priorSession = opts?.session || null;
+		const targetCycleEndMsgId = opts?.targetCycleEndMsgId || null;
 
 		const eligibleMessages = cycleMessages.filter(
 			(msg) => msg.type === "user" || msg.type === "model" || msg.type === "tool_response"
@@ -3242,13 +3252,22 @@ isNativeReasoning,
 
 			if (msg.type === "tool_response") {
 				// Truncate massive tool response outputs (e.g. huge file reads or directory listings)
-				if (content.length > 800) {
-					content = safeSlice(content, 0, 500) + "\n...[output truncated for summarization]...\n" + safeSlice(content, -200);
+				if (content.length > 500) {
+					content = safeSlice(content, 0, 200) + "\n...[truncated for summarization]...\n" + safeSlice(content, -200);
 				}
 				return sanitizeSurrogates(`[Tool Response]\n${content.trim()}`);
 			}
 
 			if (msg.role === "model") {
+				// Reasoning (reasoning-model messages carry it in `msg.thought`, tag-free; inline thought
+				// blocks in `content` were already stripped above). Include it so the summarizer sees WHY
+				// the agent acted, not just WHAT it did. Labeled and placed first (it drives the actions).
+				let thought = msg.thought || ""
+				if (thought.length>500) {
+					thought = safeSlice(thought, 0, 200) + "\n...[truncated for summarization]...\n" + safeSlice(thought, -200);
+				}
+				const thoughtBlock = thought ? `[Cadence Reasoning]\n${thought.trim()}\n` : "";
+
 				// If model did a tool call, summarize the tool call parameters concisely
 				if (msg.toolCalls && msg.toolCalls.length > 0) {
 					const toolDetails = msg.toolCalls.map(tc => {
@@ -3262,11 +3281,11 @@ isNativeReasoning,
 						return `[Action: ${name} (${argSummary})]`;
 					}).join(" ");
 					
-					// Combine tool details with any accompanying text
-					const cleanText = content.replace(/<tool_call\s+name=["']([^"']+)["']\s*>[\s\S]*?<\/tool_call>/gi, '').trim();
-					return sanitizeSurrogates(`[Assistant]\n${toolDetails}${cleanText ? `\n${cleanText}` : ''}`);
+					// Combine reasoning + tool details + any accompanying text
+					const cleanText = content.replace(/[\s\S]*?<\/tool_call>/gi, '').trim();
+					return sanitizeSurrogates(`[Cadence]\n${thoughtBlock}${toolDetails}${cleanText ? `\n${cleanText}` : ''}`);
 				}
-				return sanitizeSurrogates(`[Assistant]\n${content.trim()}`);
+				return sanitizeSurrogates(`[Cadence]\n${thoughtBlock}${content.trim()}`);
 			}
 
 			return sanitizeSurrogates(`[User]\n${content.trim()}`);
@@ -3277,29 +3296,93 @@ isNativeReasoning,
 		const distilledTurns = eligibleMessages.map(distillMessage).filter(Boolean);
 		if (distilledTurns.length === 0) return "";
 
-		// Select a connection for the summarization call. Prefer a *separate* (non-primary) connection so the
-		// compaction can run in the background without contending with the active prompt. Among the available
-		// non-busy connections, prefer the fastest one (highest average tokens/sec) so the summary arrives sooner;
-		// fall back to the size-based heuristic when telemetry is empty.
+		// Select a connection for the summarization call. A caller-provided `connectionId` override wins
+		// unconditionally (the agent-loop preemption uses this to force the compaction onto the session's
+		// own primary connection when no separate connection is available). Otherwise, prefer a *separate*
+		// (non-primary) connection so the compaction can run in the background without contending with the
+		// active prompt. Among the available non-busy connections, prefer the fastest one (highest average
+		// tokens/sec) so the summary arrives sooner; fall back to the size-based heuristic when telemetry is empty.
 		const primaryConnId = this.ai?.connectionId;
-		const summarizationConnId = await this._selectCompactionConnection(primaryConnId);
+		const overrideConnId = opts?.connectionId || null;
+		const summarizationConnId = overrideConnId || await this._selectCompactionConnection(primaryConnId);
 
 		const summarizationAI = AIConnections.getInstance(summarizationConnId) || this.ai;
 		const maxTokens = summarizationAI.MAX_CONTEXT_TOKENS || 8192;
 
 		const budgetTokens = Math.max(2000, Math.floor(maxTokens * 0.6));
 
+		// Phase 2.1 — Build a PRIOR CYCLE CONTEXT section from the session's PRECEDING (non-seed)
+		// cycle summaries so the summarizer has continuity into the cycle being summarized now.
+		// Token-capped: the newest MAX_DIRECT_CYCLE_SUMMARIES keep full content; older ones become
+		// title-only. Omitted entirely when there are no prior summaries (no wasted tokens).
+		const buildPriorCycleContext = () => {
+			if (!priorSession || !Array.isArray(priorSession.messages)) return "";
+			const all = priorSession.messages;
+
+			// Determine which cycle summaries are PRIOR to the target cycle. Prefer a timestamp-based
+			// filter (robust when the target span has been archived and its raw messages no longer sit
+			// in the main record); fall back to index-based (before the target's end id) when the target
+			// span is still inline.
+			const targetStartTs = Math.min(...cycleMessages.map(m => m.timestamp || 0).filter(Boolean));
+			const byTimestamp = Number.isFinite(targetStartTs) && targetStartTs > 0;
+			let targetIdx = -1;
+			if (!byTimestamp && targetCycleEndMsgId) {
+				targetIdx = all.findIndex(m => m.id === targetCycleEndMsgId);
+				if (targetIdx === -1) {
+					targetIdx = all.findIndex(m => m.id === (cycleMessages[0]?.id)); // fallback: span's first raw message.
+				}
+			}
+
+			const prior = [];
+			for (const m of all) {
+				if (m.type !== "cycle_summary" || m.isSeed) continue;
+				const isPrior = byTimestamp
+					? (m.timestamp || 0) < targetStartTs
+					: (targetIdx === -1 || all.indexOf(m) < targetIdx);
+				if (isPrior) prior.push(m);
+			}
+			prior.sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0)); // chronological order.
+			if (prior.length === 0) return "";
+
+			const priorTokenBudget = Math.min(4000, Math.floor(budgetTokens * 0.5));
+			const MAX_FULL = 3; // Reuse the MAX_DIRECT_CYCLE_SUMMARIES window for full-content prior summaries.
+			// Newest summaries first; keep full content for the newest MAX_FULL, title-only for the rest.
+			let usedTokens = 0;
+			let fullCount = 0;
+			const lines = [];
+			for (let i = prior.length - 1; i >= 0; i--) {
+				const m = prior[i];
+				const title = m.title || "(untitled cycle)";
+				const content = m.content || "";
+				const isFull = fullCount < MAX_FULL;
+				const line = isFull
+					? `- ${title}: ${content}`
+					: `- ${title}`;
+				const lineTokens = this.ai.estimateTokens(line);
+				if (!isFull || usedTokens + lineTokens <= priorTokenBudget) {
+					lines.push(line);
+					if (isFull) fullCount++;
+					usedTokens += lineTokens;
+				}
+			}
+			if (lines.length === 0) return "";
+			return `\nPRIOR CYCLE CONTEXT (for continuity — do NOT repeat, only reference if relevant):\n` + lines.reverse().join("\n");
+		};
+		const priorCycleContext = buildPriorCycleContext();
+
 		// Concise, standalone system prompt for the summarization task.
 		// Replaces the full chat/agent system prompt (and tool schema) for this call.
 		const summarizationSystemPrompt = `You are a summarization assistant. Summarize the given agent task cycle into the following XML format:
 <title>A very concise, single-line, active-voice title summarizing the main outcome of the cycle (max 10 words)</title>
 <summary>
-Outline what the user requested, what implementation actions (file edits, creations, commands) the agent (Cadence) performed, and the final outcome/results. Keep the summary concise but descriptive of all changes. Write the summary in the first person, as Cadence.
+Outline what the user requested, what implementation actions (file edits, creations, commands) the agent (Cadence) performed, and the final outcome/results. Keep the summary concise but descriptive of changes. Write the summary in the first person, as Cadence.
 </summary>
-Output only the XML. Do not use any tools.`;
+Output only the XML. Do not use any tools.${priorCycleContext}`;
 
-		// Function to perform a single AI summarization call without reasoning overhead
-		const runSummaryCall = async (contextText) => {
+		// Function to perform a single AI summarization call without reasoning overhead.
+		// `extraSystemContext` (Phase 2.2) is appended to the system prompt — used by the chunked
+		// path to give each chunk the cycle's summary-so-far (its own prior chunks' output).
+		const runSummaryCall = async (contextText, extraSystemContext = "") => {
 			const sanitizedText = sanitizeSurrogates(contextText);
 			const prompt = `Here is the task cycle to summarize:\n${sanitizedText}`;
 
@@ -3314,7 +3397,7 @@ Output only the XML. Do not use any tools.`;
 						onDone: () => resolve(),
 						onError: (error) => reject(error),
 					},
-					summarizationSystemPrompt,
+					summarizationSystemPrompt + (extraSystemContext ? `\n${extraSystemContext}` : ""),
 					{ disableReasoning: true, noTools: true } // Disable reasoning + tool schema
 				);
 			});
@@ -3326,7 +3409,7 @@ Output only the XML. Do not use any tools.`;
 		try {
 			const fullContent = distilledTurns.join("\n\n");
 			const estimated = this.ai.estimateTokens(fullContent);
-
+			
 			if (estimated <= budgetTokens) {
 				// Fits easily in single context call
 				finalSummaryResponse = await runSummaryCall(fullContent);
@@ -3353,20 +3436,31 @@ Output only the XML. Do not use any tools.`;
 					chunks.push(currentChunk.join("\n\n"));
 				}
 
-				// Summarize each chunk
+				// Summarize each chunk. Phase 2.2 — each chunk (from the 2nd onward) is given the
+				// cycle's summary-so-far (its own prior chunks' output) so the summarizer knows what
+				// the cycle has covered up to this point, reducing drift between chunks.
 				const intermediateSummaries = [];
 				for (let i = 0; i < chunks.length; i++) {
-					const chunkResp = await runSummaryCall(chunks[i]);
+					const progressContext = intermediateSummaries.length > 0
+						? `\n(THIS CYCLE) SUMMARY SO FAR:\n${intermediateSummaries.join("\n\n")}`
+						: "";
+					
+					window.modal.toast(`Compacting history, segment ${i+1} of ${chunks.length} ...`, 0);
+
+					const chunkResp = await runSummaryCall(chunks[i], progressContext);
 					const cleanChunk = chunkResp.trim();
 					const sMatch = cleanChunk.match(/<summary>([\s\S]*?)<\/summary>/i);
 					intermediateSummaries.push(`--- Phase ${i + 1} Summary ---\n${sMatch ? sMatch[1].trim() : cleanChunk}`);
 				}
 
-				// Final recursive consolidation
+				// Final recursive consolidation — receives all intermediate summaries as its user message.
+				window.modal.toast(`Compacting history`, 0);
 				finalSummaryResponse = await runSummaryCall(intermediateSummaries.join("\n\n"));
+				window.modal.toast(`Compacting history`, 500);
 			}
 		} catch (error) {
 			console.error("Error during cycle summarization AI call:", error);
+			window.modal.toast(`Error compacting history`);
 			return null;
 		}
 

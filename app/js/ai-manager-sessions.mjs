@@ -1061,6 +1061,34 @@ class AIManagerSessions {
 			this._broadcast('session_renamed', { sessionId: this.activeSession.id, name: trimmedName });
 		}
 	}
+	
+    /**
+     * Records a snapshot of the session's current scratchpad content into its
+     * version history before a destructive overwrite (replace/clear).
+     * deduplicates identical content and caps the history at 25.
+     * @param {Object} session - The session object.
+     * @param {string} mode - The operation that triggered the snapshot ('replace' | 'clear').
+     */
+    pushScratchpadHistory(session, mode) {
+        if (!session.scratchpad) return; // nothing to preserve
+        if (!Array.isArray(session.scratchpadVersions)) {
+            session.scratchpadVersions = [];
+        }
+        const last = session.scratchpadVersions[session.scratchpadVersions.length - 1];
+        if (last && last.content === session.scratchpad) return; // dedup
+        session.scratchpadVersions.push({
+            version: (last?.version || 0) + 1,
+            timestamp: Date.now(),
+            mode: mode,
+            content: session.scratchpad
+        });
+        if (session.scratchpadVersions.length > 25) {
+            session.scratchpadVersions.splice(0, session.scratchpadVersions.length - 25);
+        }
+    }
+
+	
+	
 }
 
 export default AIManagerSessions;
