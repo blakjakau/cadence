@@ -1,8 +1,8 @@
 # Cadence
 
-*A bit of an experiment in building a web editor that doesn't suck.*
-
 Cadence is a passion project where I'm messing around with a few different ideas:
+
+Forked from [Code](https://github.com/blakjakau/dev.jakbox.code) - a bit of an old experiment in building a web-based code editor that doesn't suck - and [Conduit](https://github.com/blakjakau/dev.jakbox.conduit) my attempts at building a file access service binary as an optional plugin for Code.
 
 - Building a code editor that lives in the browser but feels like it belongs on the desktop.
 - Deeply integrating with **Conduit** to handle the file system over WebSockets (because the File System Access API is a bit of a headache).
