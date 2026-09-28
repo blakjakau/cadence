@@ -18,6 +18,7 @@ export class TabItem extends Button {
 		if (isset(content)) {
 			this._text.textContent = content;
 			this._name = content;
+			this.setAttribute("title", content)
 		}
 
 		this._close = new Icon()
@@ -187,6 +188,7 @@ export class TabItem extends Button {
 		}
 		this._name = newName;
 		this._text.innerHTML = newName;
+		this.setAttribute("title", newName)
 
 		if (this.config) {
 			this.config.name = newName;

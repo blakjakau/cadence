@@ -2836,15 +2836,15 @@ Snippet: ${r.content || r.snippet || ""}`;
             case 'read_symbol':
                 return await this.readSymbol(args.query || args.symbol, sourceId);
             case 'search_files':
-            case 'search_in_files': {
+            case 'search_in_file': {
                 const targetPath = args.path || args.folder || args.directory || null;
                 if (targetPath && /\.[a-zA-Z0-9_-]+$/.test(targetPath)) {
                     return await this.searchInFile(targetPath, args.query, sourceId);
                 }
                 return await this.searchFiles(args.query, targetPath, sourceId);
             }
-            case 'search_in_file':
-                return await this.searchInFile(args.path, args.query, sourceId);
+            // case 'search_in_file':
+            //     return await this.searchInFile(args.path, args.query, sourceId);
             case 'edit_file':
                 return await this.editFile(
                     args.path,

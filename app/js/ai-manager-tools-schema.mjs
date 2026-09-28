@@ -4,7 +4,7 @@ export const subAgentToolsList = [
 	"read_file_outline",
 	"read_symbol",
 	"search_files",
-	"search_in_file",
+	// "search_in_file",
 	"edit_file",
 	// "edit_remove_lines",
 	// "refactor_copy_lines",
@@ -70,12 +70,12 @@ export const tools = [
 	},
 	{
 		name: "search_files",
-		description: "Search for an exact string across project files, optionally within a path.",
+		description: "Search for an exact string across project files, optionally limited to a path or file.",
 		parameters: {
 			type: "object",
 			properties: {
 				query: { type: "string", description: "Exact text to search for." },
-				path: { type: "string", description: "Folder to restrict the search to." },
+				path: { type: "string", description: "Folder or File to restrict the search to." },
 			},
 			required: ["query"],
 		},
@@ -115,18 +115,18 @@ export const tools = [
 			required: ["path"],
 		},
 	},
-	{
-		name: "search_in_file",
-		description: "Search for an exact string in a file (case-insensitive).",
-		parameters: {
-			type: "object",
-			properties: {
-				path: { type: "string", description: "File path to search." },
-				query: { type: "string", description: "Exact text to search for." },
-			},
-			required: ["path", "query"],
-		},
-	},
+	// {
+	// 	name: "search_in_file",
+	// 	description: "Search for an exact string in a file (case-insensitive).",
+	// 	parameters: {
+	// 		type: "object",
+	// 		properties: {
+	// 			path: { type: "string", description: "File to search." },
+	// 			query: { type: "string", description: "Exact text to search for." },
+	// 		},
+	// 		required: ["path", "query"],
+	// 	},
+	// },
 	// {
 	// 	name: "read_symbol",
 	// 	description: "Find and read a symbol's definition (class, function, variable) across the project.",
