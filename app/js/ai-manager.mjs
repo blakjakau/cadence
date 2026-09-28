@@ -1,6 +1,6 @@
 // ai-manager.mjs
 // Styles for this module are located in css/ai-manager.css
-import { Block, Button, Icon, TabBar, TabItem, FileBar, SkillPicker, RootPicker } from "./elements.mjs"
+import { Block, Button, Icon, TabBar, TabItem, FileBar, SkillPicker, RootPicker, ContentFill } from "./elements.mjs"
 import AIManagerHistory, { MAX_RECENT_MESSAGES_TO_PRESERVE } from "./ai-manager-history.mjs"
 import AIManagerMessageRenderer from "./ai-manager-message-renderer.mjs" // NEW: Settings manager
 import AIManagerSessions from "./ai-manager-sessions.mjs" // NEW: Sessions manager
@@ -1168,6 +1168,21 @@ isNativeReasoning,
 		const promptAreaContainer = document.createElement("div")
 		promptAreaContainer.classList.add("prompt-area")
 		promptAreaContainer.setAttribute("id", "ai-prompt-editor-container")
+		
+		// Create the overlay element (sibling to ACE editor, uses pointer-events: none)
+		this.placeholderOverlay = new Block("Tell Cadence what you want to do... (tip: @tag a file)")
+		this.placeholderOverlay.classList.add("prompt-placeholder-overlay")
+		this.placeholderOverlay.style.justifyContent = "center"
+		this.placeholderOverlay.style.fontSize = "var(--font-size-sm)"
+		this.placeholderOverlay.style.color = "var(--text-color)"
+		this.placeholderOverlay.style.opacity = "0.33"
+		this.placeholderOverlay.style.zIndex = "10"
+		
+		
+		setTimeout(()=>{
+			promptAreaContainer.parentElement.append(this.placeholderOverlay)
+		},50)
+		
 		// The editor instance is created and configured in _initPromptEditor
 		return promptAreaContainer;
 	}
@@ -1177,6 +1192,7 @@ isNativeReasoning,
 		if (!window.ace || !this.promptArea) return; // Ensure ACE and container are ready
 
 		this.promptEditor = ace.edit(this.promptArea);
+		this._updatePromptAreaPlaceholder();
 		this.promptEditor.id = "ai-prompt-editor"
 		this.promptEditor.session.setMode("ace/mode/markdown");
 		this.promptEditor.setOptions(promptEditorSettings)
@@ -1331,6 +1347,26 @@ isNativeReasoning,
 		}
 	}
 
+	_onPromptEditorFocus() {
+		this.placeholderOverlay.hide()
+	}
+	
+	_onPromptEditorBlur() {
+		if(this.promptEditor.session.getValue()!=="") {
+			this.placeholderOverlay.hide()
+		} else {
+			this.placeholderOverlay.show()
+		}
+	}
+	
+	_onPromptEditorChange() {
+		if(this.promptEditor.session.getValue()!=="") {
+			this.placeholderOverlay.hide()
+		} else {
+			this.placeholderOverlay.show()
+		}
+	}
+
 	// NEW METHOD: Updates the prompt area placeholder text based on AI configuration
 	_updatePromptAreaPlaceholder() {
 		if (!this.promptEditor) return;
@@ -1338,13 +1374,28 @@ isNativeReasoning,
 		if (this.ai && this.ai.isConfigured()) {
 			this.promptEditor.setReadOnly(false);
 			if (this.agentMode) {
-				this.promptEditor.setOption("placeholder", "Ask Cadence to list/read/edit files... (use @ to tag files)");
+				this.placeholderOverlay.innerText = "Tell Cadence what you want to do ... (use @ to tag files)"
 			} else {
-				this.promptEditor.setOption("placeholder", "Enter your prompt here...");
+				this.placeholderOverlay.innerText = "Ask Cadence a question"
+			}
+
+			if(this.promptEditor.bound) return
+			// Add listeners when AI is configured and editor is usable
+			if (this.ai && this.ai.isConfigured()) {
+				this.promptEditor.on("focus", () => this._onPromptEditorFocus());
+				this.promptEditor.on("blur", () => this._onPromptEditorBlur());
+				this.promptEditor.on("change", () => this._onPromptEditorChange());
+			} else {
+				this.promptEditor.removeListener("focus", this._onPromptEditorFocus);
+				this.promptEditor.removeListener("blur", this._onPromptEditorBlur);
+				this.promptEditor.removeListener("change", this._onPromptEditorChange);
 			}
 		} else {
 			this.promptEditor.setReadOnly(true);
-			this.promptEditor.setOption("placeholder", "AI is not configured. Go to Settings (gear icon) to set up a provider.");
+			this.promptEditor.removeListener("focus", this._onPromptEditorFocus);
+			this.promptEditor.removeListener("blur", this._onPromptEditorBlur);
+			this.promptEditor.removeListener("change", this._onPromptEditorChange);
+			this.placeholderOverlay.innerText =  "AI is not configured. Go to Settings (gear icon) to set up a provider."
 		}
 	}
 
@@ -2551,36 +2602,29 @@ isNativeReasoning,
 		}
 		this.scrollToBottom(true);
 
-		// Check for automatic summarization before processing the new prompt
-		const estimatedTokensBeforeNewPrompt = targetAI.estimateTokens(targetSession.messages);
-		const maxContextTokens = targetAI.MAX_CONTEXT_TOKENS;
-		if (
-			maxContextTokens > 0 &&
-			(estimatedTokensBeforeNewPrompt / maxContextTokens) * 100 >= this.config.summarizeThreshold
-		) {
-			console.log(
-				`Context at ${Math.round(
-					(estimatedTokensBeforeNewPrompt / maxContextTokens) * 100
-				)}%, triggering summarization.`
-			);
-
-			if (targetAgentMode) {
-				// Agent mode: standard performSummarization() is gated OFF here, so condense the latest completed-but-unsummarized task cycle into one cycle_summary instead — same boundary logic & idempotency guard as the manual "Summarize Cycle" path. No-op (no AI call) when there's no such cycle yet; sliding-window pruning in prepareMessagesForAI remains the hard cap either way, this just trades lost turns for a durable summary before they'd be pruned away forever.
-				if (this._hasSeparateCompactionConnection(targetAI.connectionId)) {
-					// A separate (non-primary) connection is available — run the compaction in the BACKGROUND so the new prompt proceeds immediately instead of blocking on the summary AI call.
-					// 1. Synchronously insert a lightweight content-only seed (last model output, thoughts/tool-calls stripped) as a continuity anchor for the new cycle while the full compaction is in flight.
-					this.historyManager.seedCycleIfCompacting(targetSession);
-					// 2. Fire-and-forget the background compaction on the separate connection. When it completes it replaces the seed in-place with the real <compacted_cycle> summary. Safe no-op on any failure — the prompt proceeds without compacting.
-					this.historyManager.autoCompactAgentCycleAsync(targetSession).catch(e => console.error("Background cycle compaction failed:", e));
-				} else {
-					// Phase 3.1 — No separate connection available. Instead of blocking the new prompt on an
-					// inline compaction (which contends with the primary connection the prompt is about to
-					// use), defer to the agent loop: mark the session so its next turn preempts the compaction
-					// onto the session's own (primary) connection, bounded by a timeout so the turn is never
-					// stalled indefinitely.
-					targetSession._pendingCycleCompaction = true;
-				}
-			} else {
+		// Check for automatic compaction before processing the new prompt.
+		if (targetAgentMode) {
+			// Agent mode: token-based cycle compaction trigger (replaces the old total-tokens summarizeThreshold
+			// gate). When the UNCOMPACTED region (everything after the last cycle_summary, up to the tail —
+			// the new prompt hasn't been appended yet, hence headId = null) reaches 2× the connection's
+			// maxPrefill, it's condensed into a cycle_summary: background on a separate connection when one
+			// is available (tail seed as continuity anchor, replaced in-place on completion), else deferred to
+			// the agent-loop preemption (toast + progress chip) on the next turn start. Below threshold this
+			// is a cheap no-op (one backward scan + a tail token tally) that runs on every prompt.
+			this.historyManager.checkCycleCompactionTrigger(targetSession, { source: "prompt" });
+		} else {
+			// Standard mode: the traditional total-tokens summarizeThreshold gate (unchanged).
+			const estimatedTokensBeforeNewPrompt = targetAI.estimateTokens(targetSession.messages);
+			const maxContextTokens = targetAI.MAX_CONTEXT_TOKENS;
+			if (
+				maxContextTokens > 0 &&
+				(estimatedTokensBeforeNewPrompt / maxContextTokens) * 100 >= this.config.summarizeThreshold
+			) {
+				console.log(
+					`Context at ${Math.round(
+						(estimatedTokensBeforeNewPrompt / maxContextTokens) * 100
+					)}%, triggering summarization.`
+				);
 				await this.historyManager.performSummarization(); // Await summarization before continuing (standard mode only).
 			}
 		}
