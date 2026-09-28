@@ -520,6 +520,80 @@ class AIManagerSessions {
 		this.manager.promptEditor.focus(); // Ensure focus returns to the prompt editor after a switch
 	}
 
+	/**
+	 * Resolve the objective text that a sub-session was spawned with (derived from its
+	 * `name`, which is `Sub-Agent: <objective[:30]>`). Returns the truncated objective
+	 * inner-text, or null if the name doesn't match the sub-agent naming convention.
+	 */
+	_subAgentObjective(subSession) {
+		if (!subSession || typeof subSession.name !== "string") return null;
+		const m = subSession.name.match(/^Sub-Agent:\s*(.*)$/);
+		if (!m) return null;
+		return m[1].replace(/\.\.\.$/, "");
+	}
+
+	// Does this model message's toolCalls contain a create_sub_agent call for the given objective?
+	_msgCreatesSubAgent(msg, objective) {
+		if (!msg || msg.role !== "model" || !Array.isArray(msg.toolCalls)) return false;
+		return msg.toolCalls.some(tc => {
+			const name = tc.name || tc.functionCall?.name;
+			if (name !== "create_sub_agent") return false;
+			const argObj = tc.arguments || tc.args || (tc.functionCall && (tc.functionCall.args || tc.functionCall.arguments)) || {};
+			const candidate = typeof argObj === "object" ? argObj.objective : undefined;
+			if (typeof candidate !== "string") return false;
+			// objective was truncated to 30 chars on spawn; compare the same slice.
+			return candidate.slice(0, 30) === objective;
+		});
+	}
+
+	/**
+	 * Resolve where a sub-agent's `[sub-agent:<id>]` marker belongs in the CURRENT
+	 * `session.messages` array. The marker originally sat right AFTER the model turn that
+	 * called `create_sub_agent` for it. Two cases:
+	 *   1. Spawn turn is still in the live messages → insert at `spawnIdx + 1`.
+	 *   2. Spawn turn was archived away → it lives inside an archived `cycle_summary`'s
+	 *      span; the marker now belongs right AFTER that summary (insert at `summaryIdx + 1`).
+	 * Returns the insert index, or -1 when the spawn turn can't be found anywhere (caller
+	 * falls back to appending).
+	 */
+	async _resolveSubAgentMarkerIndex(session, subSession) {
+		const objective = this._subAgentObjective(subSession);
+		const messages = session.messages;
+		if (!objective) return -1;
+
+		// 1. Live messages: find the exact spawn turn (matched by objective, not just any
+		//    create_sub_agent — that's the old bug that mis-placed markers when several
+		//    sub-agents share a thread).
+		for (let i = messages.length - 1; i >= 0; i--) {
+			if (this._msgCreatesSubAgent(messages[i], objective)) return i + 1;
+		}
+
+		// 2. Archived spawn turn: consult each archived cycle_summary's raw span (local or
+		//    archive) for the spawn turn; the marker belongs just after that summary.
+		const hm = this.manager?.historyManager;
+		if (hm && typeof hm._resolveCycleSpanMessages === "function") {
+			const summaries = messages.filter(m => m.type === "cycle_summary" && m.cycleStartMsgId && m.cycleEndMsgId);
+			// Newest first (most recent spawn is most likely the missing one).
+			summaries.reverse();
+			for (const summary of summaries) {
+				let spanMsgs = null;
+				try {
+					spanMsgs = await hm._resolveCycleSpanMessages(session.id, summary.cycleStartMsgId, summary.cycleEndMsgId, summary.id, null);
+				} catch (e) {
+					spanMsgs = null;
+				}
+				if (!Array.isArray(spanMsgs)) continue;
+				for (const sm of spanMsgs) {
+					if (this._msgCreatesSubAgent(sm, objective)) {
+						const summaryIdx = messages.findIndex(m => m.id === summary.id);
+						if (summaryIdx !== -1) return summaryIdx + 1;
+					}
+				}
+			}
+		}
+		return -1;
+	}
+
 	async repairDisconnectedSubAgents(session) {
 		if (!session || !session.messages) return;
 
@@ -539,41 +613,36 @@ class AIManagerSessions {
 			}
 
 			let modified = false;
+
+			// Resolve every missing marker's target index FIRST, then insert in descending
+			// index order so earlier insertions don't shift the indices we already resolved.
+			const pending = [];
 			for (const subSession of subSessions) {
-				if (!linkedSubAgentIds.has(subSession.id)) {
-					console.log(`[Self-Healing] Found disconnected sub-agent: ${subSession.id}. Re-linking to parent session.`);
+				if (linkedSubAgentIds.has(subSession.id)) continue;
+				console.log(`[Self-Healing] Found disconnected sub-agent: ${subSession.id}. Re-linking to parent session.`);
+				const insertIndex = await this._resolveSubAgentMarkerIndex(session, subSession);
+				pending.push({ subSession, insertIndex });
+			}
+			pending.sort((a, b) => b.insertIndex - a.insertIndex); // Descending (append=-1 last).
 
-					// Find the model message that contains the tool call to create this sub-agent
-					let insertIndex = -1;
-					for (let i = session.messages.length - 1; i >= 0; i--) {
-						const msg = session.messages[i];
-						if (msg.role === "model" && msg.toolCalls) {
-							const hasCreateCall = msg.toolCalls.some(tc => {
-								const name = tc.name || tc.functionCall?.name;
-								return name === "create_sub_agent";
-							});
-							if (hasCreateCall) {
-								insertIndex = i + 1;
-								break;
-							}
-						}
-					}
+			for (const { subSession, insertIndex } of pending) {
+				const triggerMessage = {
+					role: "user",
+					type: "user",
+					content: `[sub-agent:${subSession.id}]`,
+					timestamp: subSession.createdAt || Date.now(),
+					id: crypto.randomUUID()
+				};
 
-					const triggerMessage = {
-						role: "user",
-						type: "user",
-						content: `[sub-agent:${subSession.id}]`,
-						timestamp: subSession.createdAt || Date.now(),
-						id: crypto.randomUUID()
-					};
-
-					if (insertIndex !== -1 && insertIndex <= session.messages.length) {
-						session.messages.splice(insertIndex, 0, triggerMessage);
-					} else {
-						session.messages.push(triggerMessage);
-					}
-					modified = true;
+				if (insertIndex !== -1 && insertIndex <= session.messages.length) {
+					console.log(`[Self-Healing] Re-linked sub-agent ${subSession.id} at its original position (index ${insertIndex}).`);
+					session.messages.splice(insertIndex, 0, triggerMessage);
+				} else {
+					// Spawn turn isn't recoverable (pruned / no toolCalls) — append as a last resort.
+					console.warn(`[Self-Healing] Could not resolve original position for sub-agent ${subSession.id}; appending to end.`);
+					session.messages.push(triggerMessage);
 				}
+				modified = true;
 			}
 
 			if (modified && !this.externalRunningSessions.has(session.id)) {

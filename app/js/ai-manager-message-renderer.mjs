@@ -960,7 +960,10 @@ export default class AIManagerMessageRenderer {
                         for (const ed of editsList) {
                             const s = ed.search !== undefined ? ed.search : ed.searchString;
                             const r = ed.replace !== undefined ? ed.replace : ed.replacementString;
+                            if("string" != typeof s) continue
+                            
                             if (s) searchLines += s.split('\n').length;
+                            if("string" != typeof r) continue
                             if (r) {
                                 replaceLines += r.split('\n').length;
                                 replaceBytes += (new TextEncoder().encode(r)).length;
@@ -1033,7 +1036,7 @@ export default class AIManagerMessageRenderer {
             } else {
                 newContent = args.replace || "";
             }
-            if (newContent.length > 0) {
+            if ("string" == typeof newContent && newContent.length > 0) {
                 const allLines = newContent.split('\n');
                 const last5Lines = allLines.slice(-5);
                 const previewText = last5Lines.join('\n');
@@ -1217,7 +1220,11 @@ export default class AIManagerMessageRenderer {
                         for (const ed of editsList) {
                             const s = ed.search !== undefined ? ed.search : ed.searchString;
                             const r = ed.replace !== undefined ? ed.replace : ed.replacementString;
+                            
+                            if("string" != typeof s) continue
                             if (s) searchLines += s.split('\n').length;
+                            
+                            if("string" != typeof r) continue
                             if (r) {
                                 replaceLines += r.split('\n').length;
                                 replaceBytes += (new TextEncoder().encode(r)).length;

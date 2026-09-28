@@ -262,7 +262,7 @@ export const tools = [
 	},
 	{
 		name: "create_sub_agent",
-		description: "Spawns a sub-agent with a clean context and limited toolset.",
+		description: "Spawns a sub-agent with a clean context and limited toolset. Sub-agent reports it's finding to conserver main context.",
 		parameters: {
 			type: "object",
 			properties: {

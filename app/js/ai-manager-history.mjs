@@ -2617,10 +2617,10 @@ class AIManagerHistory {
 	_findCycleSpanForEndPoint(messages, endIdx) {
 		if (!messages || endIdx < 0 || endIdx >= messages.length) return null;
 
-		let cycleStartIdx = -1; // Scan backwards for a previous summary or cycle boundary — start AFTER it.
+		let cycleStartIdx = -1; // Scan backwards for a previous CYCLE SUMMARY only — start AFTER it (summary-only boundaries: a cycle's span is everything since the last summary, or the session start).
 		for (let i = endIdx - 1; i >= 0; i--) {
 			const msg = messages[i];
-			if (msg.type === "cycle_summary" || this.isCycleBoundary(msg, i, messages)) {
+			if (msg.type === "cycle_summary") {
 				cycleStartIdx = i + 1;
 				break;
 			}
@@ -3218,6 +3218,13 @@ class AIManagerHistory {
 	 * @returns {Promise<boolean>} true if the span was archived and removed locally
 	 */
 	async _archiveCycleSpan(targetSession, summaryMsg) {
+		/**
+		 * A sub-agent marker message (`[sub-agent:<id>]` user msg) is a structural
+		 * anchor for its sub-session card — it must survive archival so the sub-agent
+		 * stays linked to its parent thread in-place. Returning true keeps it in the
+		 * main record while everything else in the span is moved out.
+		 */
+		const isSubAgentMarker = (m) => m.type === "user" && m.content && m.content.startsWith("[sub-agent:");
 		try {
 			if (!targetSession || !summaryMsg || summaryMsg.isSeed) return false;
 			const startId = summaryMsg.cycleStartMsgId;
@@ -3234,7 +3241,7 @@ class AIManagerHistory {
 			// Raw messages in the span the expander would have shown: skip the summary
 			// markers/seed placeholders and the summary itself (it stays in the main record).
 			const rawMsgIds = messages.slice(lo, hi + 1)
-				.filter(m => m.type !== "cycle_summary" && m.id !== summaryMsg.id)
+				.filter(m => m.type !== "cycle_summary" && m.id !== summaryMsg.id && !isSubAgentMarker(m))
 				.map(m => m.id);
 			if (rawMsgIds.length === 0) return false;
 
@@ -3243,11 +3250,18 @@ class AIManagerHistory {
 				markSummaryId: summaryMsg.id
 			});
 
-			// Reflect the move locally: drop the raw span, mark the summary archived, persist.
-			const newHi = messages.findIndex(m => m.id === endId);
-			const newLo = messages.findIndex(m => m.id === startId);
-			if (newLo === -1 || newHi === -1) return true; // Already gone locally.
-			messages.splice(newLo, newHi - newLo + 1);
+			// Reflect the move locally: drop exactly the ids the server moved (NOT a range
+			// splice) so sub-agent marker messages — excluded above — stay in the main
+			// record and remain in place. The server moves only the ids we send, so this
+			// keeps local state in sync with the persisted blob.
+			const removedIds = new Set(rawMsgIds);
+			let writeIdx = 0;
+			for (let i = 0; i < messages.length; i++) {
+				if (removedIds.has(messages[i].id)) continue;
+				if (writeIdx !== i) messages[writeIdx] = messages[i];
+				writeIdx++;
+			}
+			messages.length = writeIdx;
 			summaryMsg.archived = true;
 			targetSession.lastModified = Date.now();
 			await workspaceClient.setSession(targetSession.id, targetSession);
@@ -3313,9 +3327,11 @@ class AIManagerHistory {
 			const hi = Math.max(startIdx, endIdx);
 
 			// Raw span messages (same rule as _archiveCycleSpan / the expander): skip
-			// cycle_summary markers and the summary itself, which stays in the main record.
+			// cycle_summary markers and the summary itself, which stay in the main record.
+			// Sub-agent marker messages are also structural anchors and must survive archival.
+			const isSubAgentMarker = (m) => m.type === "user" && m.content && m.content.startsWith("[sub-agent:");
 			const rawMsgIds = messages.slice(lo, hi + 1)
-				.filter(m => m.type !== "cycle_summary" && m.id !== summary.id)
+				.filter(m => m.type !== "cycle_summary" && m.id !== summary.id && !isSubAgentMarker(m))
 				.map(m => m.id);
 			if (rawMsgIds.length === 0) {
 				summary.archived = true;
@@ -3556,22 +3572,15 @@ class AIManagerHistory {
 		const messages = targetSession.messages;
 		if (messages.length < 2) return false;
 
-		const isToolResponse = (msg) => msg && msg.type === "tool_response"; // Operator precedence: must parenthesize the comparison itself, not just `!!` on a possibly-undefined value.
-
-		// Locate the latest completed cycle boundary not already summarized — mirrors agent.mjs' manual path exactly, including its idempotency guard.
+		// Locate the latest completed cycle boundary not already summarized. Idempotency via SPAN-COVERAGE
+		// (not adjacency): a head-anchored summary sits at the span's start (far from the boundary), so the
+		// old ±1 adjacency check would miss it and re-compact an already-summarized cycle.
 		let lastBoundaryIdx = -1;
 		for (let i = messages.length - 1; i >= 0; i--) {
 			if (!this.isCycleBoundary(messages[i], i, messages)) continue;
-
-			const hasSummary = messages.some(m => m.type === "cycle_summary" && !m.isSeed && (
-				m.cycleEndMsgId === messages[i].id || 
-				m.cycleEndMsgId === messages[i + 1]?.id ||
-				(i > 0 && m.cycleEndMsgId === messages[i - 1]?.id)
-			)); // Already summarized — keep scanning older boundaries. (isSeed placeholders are NOT real summaries.)
-			if (!hasSummary) {
-				lastBoundaryIdx = i;
-				break;
-			}
+			if (this.hasCycleSummaryCovering(messages, i)) continue; // Already summarized — keep scanning older boundaries.
+			lastBoundaryIdx = i;
+			break;
 		}
 
 		if (lastBoundaryIdx === -1) return false; // No completed cycle awaiting summarization yet.
@@ -3595,6 +3604,14 @@ class AIManagerHistory {
 		const { cycleStartIdx, endIdx } = targetSpan;
 		const cycleMessages = messages.slice(cycleStartIdx, endIdx + 1);
 
+		// Capture the span bounds by STABLE message id BEFORE the await: the summary AI call is long, and other
+		// code (a concurrent background compaction's seed clear/archive, a new prompt append, a sub-agent marker
+		// push) can mutate `messages` while it's in flight — the preemption's Promise.race timeout does NOT cancel
+		// the in-flight compaction, so a timed-out compaction can still land while the next turn appends messages.
+		const startMsgId = cycleMessages[0]?.id;
+		const endMsgId = cycleMessages[cycleMessages.length - 1]?.id;
+		if (!startMsgId || !endMsgId) return false; // Span not fully present — nothing to summarize.
+
 		let progressEl = null;
 		const reportProgress = (msg) => { // Unified progress reporting: an explicit callback takes priority (agent-loop preemption); otherwise the in-conversation progress chip (default path).
 			if (progress) { try { progress(msg); } catch (_) {} }
@@ -3615,6 +3632,10 @@ class AIManagerHistory {
 			const result = await this.manager.generateCycleSummary(cycleMessages, connectionId ? { connectionId } : null); // Phase 3.3 — honor the connection override (e.g. the session's primary connection when the agent loop preempts).
 			if (!result || !result.summary) return false; // AI unavailable or returned nothing — safe no-op.
 
+			// Re-derive the span's head position by STABLE id (insertions during the await may have shifted raw
+			// indices), so the head-anchored splice and the summary's cycleStartMsgId/cycleEndMsgId stay correct.
+			const curStartIdx = messages.findIndex(m => m.id === startMsgId);
+			if (curStartIdx === -1) return false; // Span's head no longer present (archived concurrently) — safe no-op.
 			const summaryMessage = {
 				id: crypto.randomUUID(),
 				role: "system",
@@ -3622,11 +3643,11 @@ class AIManagerHistory {
 				title: result.title,
 				content: result.summary,
 				timestamp: Date.now(),
-				cycleStartMsgId: messages[cycleStartIdx].id, // render() already hides the covered span and shows this block instead — identical to manual-path behavior.
-				cycleEndMsgId: messages[endIdx].id
+				cycleStartMsgId: startMsgId, // render() already hides the covered span and shows this block instead — identical to manual-path behavior.
+				cycleEndMsgId: endMsgId
 			};
 
-			messages.splice(cycleStartIdx, 0, summaryMessage); // Phase 1.1 — HEAD-anchor at the span start so cycles are contiguous (this cycle's raw span follows the summary; the next cycle starts after it).
+			messages.splice(curStartIdx, 0, summaryMessage); // Phase 1.1 — HEAD-anchor at the span start so cycles are contiguous (this cycle's raw span follows the summary; the next cycle starts after it).
 			targetSession.lastModified = Date.now();
 			await workspaceClient.setSession(targetSession.id, targetSession);
 
@@ -3697,6 +3718,133 @@ class AIManagerHistory {
 	}
 
 	/**
+	 * Inserts a content-only cycle_summary seed TAIL-anchored (right after the span's end) as a stand-in for an
+	 * in-flight background compaction. Unlike _insertCycleSeed (HEAD-anchored at the span's head), the tail
+	 * position means the seed is NEVER inside the span it covers — so the span's token tally and the backward
+	 * summary-stop used by checkCycleCompactionTrigger stay clean while the compaction is in flight.
+	 * autoCompactAgentCycleAsync replaces the seed in-place when the real summary arrives (seed-present
+	 * outcome), preserving the tail position.
+	 */
+	_insertTailSeed(targetSession, cycleStartMsgId, cycleEndMsgId, content) {
+		const messages = targetSession.messages;
+		const endIdx = messages.findIndex(m => m.id === cycleEndMsgId);
+		const seed = {
+			id: crypto.randomUUID(),
+			role: "system",
+			type: "cycle_summary",
+			title: "Compacting cycle…",
+			content,
+			timestamp: Date.now(),
+			isSeed: true,
+			cycleStartMsgId,
+			cycleEndMsgId
+		};
+		messages.splice(endIdx + 1, 0, seed); // TAIL-anchor: right after the covered span's last message.
+		targetSession.lastModified = Date.now();
+		workspaceClient.setSession(targetSession.id, targetSession);
+		if (this.manager.isSessionViewed?.(targetSession.id)) {
+			this.render({ isNewMessage: true });
+		}
+		return seed.id;
+	}
+
+	/**
+	 * Token-based cycle compaction trigger: when the UNCOMPACTED region (everything after the most recent real
+	 * cycle_summary, up to and including the head message) reaches 2× the connection's maxPrefill, kicks off a
+	 * compaction of that region. Called fire-and-forget from prepareMessagesForAI (agent block) and from the
+	 * prompt gate, so it must be cheap on the common "no trigger" path: one backward scan + a token tally of the
+	 * tail region.
+	 *
+	 * - headId given → span = messages after the last cycle_summary up to (and including) the head message.
+	 * - headId null  → span = the tail region after the last cycle_summary (prompt-gate path, where the new
+	 *   prompt hasn't been appended yet).
+	 * - Skips when the region starts at a cycle_summary (previous summary) or is already covered by a real
+	 *   summary (hasCycleSummaryCovering at the head), i.e. there is no uncompacted region.
+	 * - Token tally uses per-message tokenCount when present (cached archive case), else estimateTokens.
+	 *
+	 * On trigger: a separate (non-primary) connection → tail seed (so the seed never falls inside its own
+	 * span) + fire-and-forget autoCompactAgentCycleAsync on that connection (its Phase 3.2 failure path sets
+	 * _pendingCycleCompaction so the agent-loop preemption picks it up). No separate connection → set
+	 * _pendingCycleCompaction so the agent-loop preemption (toast + progress chip) compacts it on the next
+	 * turn start. Returns true when compaction was triggered.
+	 */
+	checkCycleCompactionTrigger(targetSession, opts = {}) {
+		const { maxTok = null, headId = null, source = "manual" } = opts;
+		if (!targetSession || !this.ai?.isConfigured()) return false;
+		const agentModeEnabled = targetSession.agentMode ?? this.manager.agentMode;
+		if (!agentModeEnabled) return false; // Standard mode has its own performSummarization() path.
+
+		const messages = targetSession.messages;
+		if (messages.length < 2) return false;
+
+		// Re-entrancy guard: a compaction is already in flight (a seed anchor is present) or already deferred
+		// to the agent-loop preemption — don't double-fire (a second background compaction would insert a
+		// second tail seed and both would race to replace each other's seeds).
+		if (targetSession._pendingCycleCompaction || messages.some(m => m.type === "cycle_summary" && m.isSeed)) return false;
+
+		// Resolve the token budget (1× the connection's maxPrefill): explicit override, else the session
+		// connection's maxPrefill, else 0.8×n_ctx (mirrors prepareMessagesForAI's agent-block resolution).
+		const conn = AIConnections.getConnection(targetSession.connectionId || AIConnections.defaultConnectionId);
+		const maxContextTokens = this.ai.MAX_CONTEXT_TOKENS || 8192;
+		const maxTokResolved = maxTok ?? resolvePrefillTokens(conn?.maxPrefill) ?? Math.floor(maxContextTokens * 0.8);
+		if (!maxTokResolved || maxTokResolved <= 0) return false; // No usable budget — nothing to compare against.
+		const maxTokens = maxTokResolved;
+		// Threshold = the connection's maxPrefill: the uncompacted region is allowed to grow to twice the
+		// window budget before it's condensed. (The sliding window itself culls the view at 1×, so 2× is the
+		// point where the compacted region is doing real work keeping the window small.)
+		const threshold = maxTokResolved;
+
+		// Locate the span: from just after the last real cycle_summary (or session start) up to the head
+		// message (or the tail). Seeds (isSeed) are excluded from the stop — an in-flight tail seed is not
+		// a real summary yet, so the region it anchors is still uncompacted.
+		let stopIdx = -1; // Index of the last REAL summary (or -1 = session start).
+		for (let i = messages.length - 1; i >= 0; i--) {
+			const m = messages[i];
+			if (m.type === "cycle_summary" && !m.isSeed) { stopIdx = i; break; }
+		}
+		let headIdx = messages.length - 1; // Tail region by default.
+		if (headId) {
+			headIdx = messages.findIndex(m => m.id === headId);
+			if (headIdx === -1) return false; // Head not in the record (archived) — nothing to trigger from.
+			if (headIdx <= stopIdx) return false; // Head is at/before the last summary — region is empty.
+		}
+
+		const spanStartIdx = stopIdx + 1;
+		if (spanStartIdx >= headIdx) return false; // Empty region.
+
+		// Idempotency: if the head is already inside a real summary's span, the region is covered — skip.
+		if (this.hasCycleSummaryCovering(messages, headIdx)) return false;
+
+		// Token tally across the uncompacted region.
+		let tokens = 0;
+		for (let i = spanStartIdx; i <= headIdx; i++) {
+			const msg = messages[i];
+			tokens += (msg.tokenCount != null && msg.tokenCount > 0) ? msg.tokenCount : this.ai.estimateTokens([msg]);
+		}
+		if (tokens < threshold) return false; // Below maxPrefill — no trigger (cheap path, runs every prompt).
+
+		// Triggered. Prefer a separate (non-primary) connection for a background compaction so the current
+		// prompt proceeds unblocked; otherwise defer to the agent-loop preemption on the next turn start.
+		const primaryConnId = targetSession.connectionId;
+		const hasSeparate = this.manager._hasSeparateCompactionConnection?.(primaryConnId);
+		if (hasSeparate) {
+			const headMsg = messages[headIdx];
+			const lastModelText = this._extractLastModelContent(messages.slice(spanStartIdx, headIdx + 1)) || "Cycle compacted.";
+			this._insertTailSeed(targetSession, messages[spanStartIdx].id, headMsg.id, lastModelText);
+			// Fire-and-forget: the async path cascades earlier cycles, then compacts this span on the chosen
+			// separate connection. Its Phase 3.2 failure path sets _pendingCycleCompaction for preemption.
+			this.autoCompactAgentCycleAsync(targetSession).catch(err =>
+				console.error(`Error during background compaction trigger (${source}):`, err));
+			console.log(`Cycle compaction triggered (${source}): ${tokens} tokens ≥ ${threshold} (maxTok ${maxTokens}) — background on separate connection.`);
+			return true;
+		}
+
+		targetSession._pendingCycleCompaction = true; // Agent-loop preemption (toast + progress chip) on the next turn start.
+		console.log(`Cycle compaction triggered (${source}): ${tokens} tokens ≥ ${threshold} (maxTok ${maxTokens}) — deferred to agent-loop preemption (no separate connection).`);
+		return true;
+	}
+
+	/**
 	 * Removes the in-flight content-only seed (isSeed) from the session, if one is present. Called when a
 	 * preemptive/background compaction is a no-op or fails and the seed would otherwise linger as a stale
 	 * "Compacting cycle" placeholder. Safe no-op when no seed is present.
@@ -3762,20 +3910,16 @@ class AIManagerHistory {
 	_findCycleBoundary(messages) {
 		const isToolResponse = (msg) => msg && msg.type === "tool_response"; // Operator precedence: must parenthesize the comparison itself, not just `!!` on a possibly-undefined value.
 
-		// Locate the latest completed cycle boundary not already summarized — mirrors agent.mjs' manual path exactly, including its idempotency guard.
+		// Locate the latest completed cycle boundary not already summarized. Idempotency via SPAN-COVERAGE
+		// (not adjacency): a head-anchored summary sits at the span's start (far from the boundary), so the
+		// old ±1 adjacency check would miss it and re-compact an already-summarized cycle. Seeds (isSeed)
+		// are excluded by hasCycleSummaryCovering, so an in-flight compaction still finds its boundary.
 		let lastBoundaryIdx = -1;
 		for (let i = messages.length - 1; i >= 0; i--) {
 			if (!this.isCycleBoundary(messages[i], i, messages)) continue;
-
-			const hasSummary = messages.some(m => m.type === "cycle_summary" && !m.isSeed && (
-				m.cycleEndMsgId === messages[i].id ||
-				m.cycleEndMsgId === messages[i + 1]?.id ||
-				(i > 0 && m.cycleEndMsgId === messages[i - 1]?.id)
-			)); // Already summarized — keep scanning older boundaries. (isSeed placeholders are NOT real summaries — the in-flight compaction must still find this boundary.)
-			if (!hasSummary) {
-				lastBoundaryIdx = i;
-				break;
-			}
+			if (this.hasCycleSummaryCovering(messages, i)) continue; // Already summarized — keep scanning older boundaries.
+			lastBoundaryIdx = i;
+			break;
 		}
 
 		if (lastBoundaryIdx === -1) return null; // No completed cycle awaiting summarization yet.
@@ -3792,10 +3936,10 @@ class AIManagerHistory {
 			boundaryStartIdx = endIdx - 1;
 		}
 
-		let cycleStartIdx = -1; // Scan backwards for a previous boundary marker (summary or cycle boundary) — start AFTER it, mirroring agent.mjs' manual path exactly.
+		let cycleStartIdx = -1; // Scan backwards for a previous CYCLE SUMMARY only — start AFTER it (summary-only boundaries: cycles are contiguous spans since the last summary).
 		for (let i = boundaryStartIdx - 1; i >= 0; i--) {
 			const msg = messages[i];
-			if (msg.type === "cycle_summary" || this.isCycleBoundary(msg, i, messages)) {
+			if (msg.type === "cycle_summary") {
 				cycleStartIdx = i + 1;
 				break;
 			}
@@ -3829,11 +3973,10 @@ class AIManagerHistory {
 			boundaryStartIdx = endIdx - 1;
 		}
 
-		let cycleStartIdx = -1; // Scan backwards for a previous boundary marker (summary or cycle boundary) â start AFTER it.
+		let cycleStartIdx = -1; // Scan backwards for a previous CYCLE SUMMARY only — start AFTER it (summary-only boundaries: cycles are contiguous spans since the last summary).
 		for (let i = boundaryStartIdx - 1; i >= 0; i--) {
 			const msg = messages[i];
-			if (msg.type === "cycle_summary" || 
-				this.isCycleBoundary(msg, i, messages)) {
+			if (msg.type === "cycle_summary") {
 				cycleStartIdx = i + 1;
 				break;
 			}
@@ -3861,9 +4004,19 @@ class AIManagerHistory {
 		if (cycleStartIdx < 0 || endIdx >= messages.length || cycleStartIdx >= endIdx) return null;
 
 		const cycleMessages = messages.slice(cycleStartIdx, endIdx + 1);
+		// Capture the span's stable message ids BEFORE the await: the summary AI call is long, and other
+		// code (a concurrent compaction's seed clear/archive, a new prompt append, a sub-agent marker push)
+		// can mutate `messages` while it's in flight, so the raw indices are only valid at capture time.
+		const startMsgId = cycleMessages[0]?.id;
+		const endMsgId = cycleMessages[cycleMessages.length - 1]?.id;
+		if (!startMsgId || !endMsgId) return null; // Span not fully present — safe no-op.
 		const result = await this.manager.generateCycleSummary(cycleMessages, connectionId ? { connectionId } : null);
-		if (!result || !result.summary) return null; // AI unavailable or returned nothing â safe no-op.
+		if (!result || !result.summary) return null; // AI unavailable or returned nothing — safe no-op.
 
+		// Re-derive the span's head position by STABLE id (insertions during the await may have shifted raw
+		// indices), so the head-anchored splice and the summary's cycleStartMsgId/cycleEndMsgId stay correct.
+		const curStartIdx = messages.findIndex(m => m.id === startMsgId);
+		if (curStartIdx === -1) return null; // Span's head no longer present (archived concurrently) — safe no-op.
 		const summaryMessage = {
 			id: crypto.randomUUID(),
 			role: "system",
@@ -3871,11 +4024,11 @@ class AIManagerHistory {
 			title: result.title,
 			content: result.summary,
 			timestamp: Date.now(),
-			cycleStartMsgId: messages[cycleStartIdx].id,
-			cycleEndMsgId: messages[endIdx].id
+			cycleStartMsgId: startMsgId,
+			cycleEndMsgId: endMsgId
 		};
 
-		messages.splice(cycleStartIdx, 0, summaryMessage); // HEAD-anchor so cycles are contiguous.
+		messages.splice(curStartIdx, 0, summaryMessage); // HEAD-anchor so cycles are contiguous.
 		targetSession.lastModified = Date.now();
 		await workspaceClient.setSession(targetSession.id, targetSession);
 
@@ -3895,9 +4048,11 @@ class AIManagerHistory {
 	}
 
 	/**
-	 * Fire-and-forget background compaction: locates the latest completed-but-unsummarized cycle and summarizes it on a separate (non-primary) connection without blocking the caller. The caller is expected to have already inserted a lightweight content-only seed (via _insertCycleSeed) as a stand-in; when the real summary arrives, the seed is replaced in-place so the covered span collapses into the full <compacted_cycle> block. Safe no-op on any failure — the prompt proceeds without compacting.
+	 * Fire-and-forget background compaction: locates the latest completed-but-unsummarized cycle and summarizes it on a separate (non-primary) connection without blocking the caller. The caller may have pre-inserted a lightweight content-only seed (via _insertTailSeed — tail-anchored, so the seed never falls inside its own span — or _insertCycleSeed) as a stand-in; when the real summary arrives the seed is replaced in-place so the covered span collapses into the full <compacted_cycle> block. When no seed is present the summary is head-spliced before the cycle.
+	 * @param {Object} [opts] - { connectionId } optional: force the compaction (cascade + summary) onto a specific connection; null = _selectCompactionConnection picks the fastest separate connection (unchanged behavior).
 	 */
-	async autoCompactAgentCycleAsync(sessionObj = null) {
+	async autoCompactAgentCycleAsync(sessionObj = null, opts = null) {
+		const { connectionId = null } = opts || {}; // Optional override: run the background compaction (cascade + summary) on a specific connection. Null = _selectCompactionConnection picks the fastest separate connection (unchanged behavior).
 		const targetSession = sessionObj || this.manager.activeSession;
 		if (!targetSession || !this.ai?.isConfigured()) return false;
 
@@ -3917,7 +4072,7 @@ class AIManagerHistory {
 			const preBoundary = this._findCycleBoundary(messages);
 			if (preBoundary) {
 				const preEndIdx = preBoundary.endIdx;
-				await this.compactEarlierCyclesUpTo(targetSession, messages[preEndIdx].id, { render: false });
+				await this.compactEarlierCyclesUpTo(targetSession, messages[preEndIdx].id, { connectionId, render: false });
 			}
 		} catch (cascErr) {
 			console.error("Error during background cascade compaction of earlier cycles:", cascErr); // Best-effort — continue to the target.
@@ -3929,8 +4084,16 @@ class AIManagerHistory {
 		const { cycleStartIdx, endIdx } = boundary;
 		const cycleMessages = messages.slice(cycleStartIdx, endIdx + 1);
 
+		// Capture the span bounds by STABLE message id BEFORE the await: the summary AI call is long,
+		// and other code (a concurrent compaction's seed clear/archive, a new prompt append, a
+		// sub-agent marker push) can mutate `messages` while it's in flight, so the raw indices are
+		// only valid at capture time. The post-await re-derivation below looks the bounds up by id.
+		const startMsgId = cycleMessages[0]?.id;
+		const endMsgId = cycleMessages[cycleMessages.length - 1]?.id;
+		if (!startMsgId || !endMsgId) return false; // Span not fully present — nothing to summarize.
+
 		try {
-			const result = await this.manager.generateCycleSummary(cycleMessages);
+			const result = await this.manager.generateCycleSummary(cycleMessages, { connectionId });
 			if (!result || !result.summary) {
 				// Phase 3.2 — the background (separate-connection) compaction produced nothing (AI unavailable or
 				// returned empty). Mark the session so the agent loop preempts it onto the main connection on its
@@ -3939,10 +4102,9 @@ class AIManagerHistory {
 				return false;
 			}
 
-			// Re-derive the target's span bounds by STABLE message id (the cascade's insertions above may have
-			// shifted raw indices), so cycleStartMsgId/cycleEndMsgId and the splice position stay correct.
-			const startMsgId = messages[cycleStartIdx].id;
-			const endMsgId = messages[endIdx].id;
+			// Re-derive the target's span bounds by STABLE message id (the cascade's insertions above, and any
+			// `messages` mutation during the await, may have shifted raw indices), so cycleStartMsgId/cycleEndMsgId
+			// and the splice position stay correct.
 			const curStartIdx = messages.findIndex(m => m.id === startMsgId);
 			const curEndIdx = messages.findIndex(m => m.id === endMsgId);
 			if (curStartIdx === -1 || curEndIdx === -1) return false; // Target span no longer present — safe no-op.
@@ -4330,6 +4492,17 @@ class AIManagerHistory {
 			if (targetSession && dialogueHistory[sliceIndex]) {
 				targetSession.contextHeadMsgId = dialogueHistory[sliceIndex].id;
 			}
+
+			// Token-based cycle compaction trigger (agent mode): when the uncompacted region after the last
+			// cycle_summary (up to the window head) reaches 2× maxTok, kick off a background compaction on a
+			// separate connection (or defer to the agent-loop preemption when none is available). Fire-and-forget —
+			// the check is synchronous/cheap (below threshold it's a no-op) and the current prompt's prepared
+			// output is unaffected.
+			this.checkCycleCompactionTrigger(targetSession, {
+				maxTok,
+				headId: dialogueHistory[sliceIndex]?.id,
+				source: "prepare"
+			});
 
 			if (sliceIndex > 0) {
 				const recentHistory = dialogueHistory.slice(sliceIndex);
