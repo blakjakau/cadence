@@ -242,6 +242,105 @@ class AIManagerHistory {
 		}
 	}
 
+	/**
+	 * Capture the expanded state of cycle-summary UI elements from the current DOM so it survives a
+	 * full re-render (which clears conversationArea.innerHTML). A compaction that generates or
+	 * regenerates a summary calls render() to collapse the covered span into its block — but that
+	 * full rebuild previously wiped every `expanded` attribute, collapsing the group header, the
+	 * individual summary blocks, and the nested "Detailed Conversation History" expanders the user
+	 * had opened. Returns { groupExpanded, summaryBlocks (Set of message ids), detailExpanders
+	 * (Set of message ids whose nested detail expander was open) }, or null if no cycle-summary UI is
+	 * present (nothing to preserve).
+	 */
+	_captureCycleExpanderState(container) {
+		if (!container) return null;
+		const group = container.querySelector(".cycle-summaries-group-block");
+		const summaryBlockEls = Array.from(container.querySelectorAll(".cycle-summary-block"));
+		if (!group && summaryBlockEls.length === 0) return null; // No cycle UI rendered yet — nothing to preserve.
+		const state = {
+			groupExpanded: !!(group && group.hasAttribute("expanded")),
+			summaryBlocks: new Set(),
+			detailExpanders: new Set()
+		};
+		for (const block of summaryBlockEls) {
+			const id = block.dataset.messageId;
+			if (!id) continue;
+			if (block.hasAttribute("expanded")) state.summaryBlocks.add(id);
+			if (block.querySelector(".cycle-details-expander[expanded]")) state.detailExpanders.add(id);
+		}
+		return state;
+	}
+
+	/**
+	 * Re-apply previously-captured cycle-summary expander state (see _captureCycleExpanderState) to a
+	 * freshly rendered conversationArea. The group header and individual summary blocks simply regain
+	 * their `expanded` attribute. A nested "Detailed Conversation History" expander that was open also
+	 * needs its (lazily-loaded) content re-fetched, since the rebuild cleared it — _loadCycleDetailContent
+	 * reloads it for each captured summary block.
+	 */
+	_restoreCycleExpanderState(container, state) {
+		if (!container || !state) return;
+		if (state.groupExpanded) {
+			const group = container.querySelector(".cycle-summaries-group-block");
+			if (group) group.setAttribute("expanded", "");
+		}
+		for (const id of state.summaryBlocks) {
+			const block = container.querySelector(`.cycle-summary-block[data-message-id="${CSS.escape(id)}"]`);
+			if (block) block.setAttribute("expanded", "");
+		}
+		// Reload + reopen nested detail expanders last so the content is present when they expand.
+		for (const id of state.detailExpanders) {
+			const block = container.querySelector(`.cycle-summary-block[data-message-id="${CSS.escape(id)}"]`);
+			const expander = block && block.querySelector(".cycle-details-expander");
+			const detailContainer = expander && expander.querySelector(".cycle-summary-detail-container");
+			if (expander && detailContainer) {
+				expander.setAttribute("expanded", "");
+				this._loadCycleDetailContent(detailContainer, block.dataset.subSessionId || this.manager.activeSessionId, id).catch(e =>
+					console.warn("Failed to restore cycle detail content:", e));
+			}
+		}
+	}
+
+	/**
+	 * Lazily load and append a cycle summary's raw "Detailed Conversation History" into its detail
+	 * container (from the main record or the per-session archive). Shared by the click handler and the
+	 * expander-state restore path. No-op if the container already has content (already loaded).
+	 * @param {Element} detailContainer - The `.cycle-summary-detail-container` to populate.
+	 * @param {string} targetSessionId - The session whose archive/record the span may live in.
+	 * @param {string} messageId - The cycle_summary message id (its cycleStartMsgId/cycleEndMsgId bound the span).
+	 */
+	async _loadCycleDetailContent(detailContainer, targetSessionId, messageId) {
+		if (!detailContainer || detailContainer.children.length > 0) return; // Already loaded (idempotent).
+		// The summary must be looked up in the *target* session (sub-agent view renders a sub-session,
+		// not the active tab).
+		const viewedSessionId = targetSessionId || this.manager.activeSessionId;
+		const viewedSession = await this._resolveSessionById(viewedSessionId);
+		const history = (viewedSession && viewedSession.messages) || this.chatHistory;
+		const message = history.find(m => m.id === messageId);
+		if (!message) return; // Summary no longer present — nothing to load.
+		// Span may live in the main record (unarchived / legacy) or in the per-session archive — the resolver handles both.
+		const cycleMsgs = await this._resolveCycleSpanMessages(targetSessionId, message.cycleStartMsgId, message.cycleEndMsgId, message.id);
+		if (cycleMsgs && cycleMsgs.length) {
+			for (const cMsg of cycleMsgs) {
+				if (cMsg.type === 'file_context' || cMsg.type === 'cycle_summary') continue;
+				const cEl = this._createMessageElement(cMsg, -1);
+				if (!cEl) continue;
+				const nestedDelete = cEl.querySelector(".delete-history-button");
+				if (nestedDelete) nestedDelete.remove();
+				const nestedReplay = cEl.querySelector(".replay-history-button");
+				if (nestedReplay) nestedReplay.remove();
+				const nestedEdit = cEl.querySelector(".edit-history-button");
+				if (nestedEdit) nestedEdit.remove();
+				detailContainer.append(cEl);
+			}
+		} else {
+			const emptyDetail = new Block();
+			emptyDetail.className = "cycle-summary-empty-detail";
+			emptyDetail.textContent = "Detailed history for this cycle is not available (it may have been pruned or deleted from the conversation).";
+			detailContainer.append(emptyDetail);
+		}
+	}
+
 	async _actualRender({ shouldScroll, isSwitchingSession }) {
 		this.manager._updateGlowForViewedSession();
 
@@ -358,6 +457,14 @@ class AIManagerHistory {
 		}
 
 		this.manager.activeSubAgentSession = null;
+
+		// Capture the open state of the cycle-summary UI (group header, individual summary blocks, and
+		// any open nested "Detailed Conversation History" expanders) BEFORE the full DOM rebuild below
+		// clears it. When a compaction generates/regenerates a summary it re-renders to collapse the
+		// covered span — without this capture the rebuild would wipe the `expanded` attributes and
+		// collapse everything the user had opened. Restored after the messages are re-rendered.
+		const preservedCycleState = this._captureCycleExpanderState(this.conversationArea);
+
 		this.conversationArea.innerHTML = ""; // Clear existing messages
 		this.populateFileBar(); // Always populate file bar
 
@@ -635,6 +742,12 @@ class AIManagerHistory {
 				}
 			}
 		});
+
+		// Restore the cycle-summary expander state captured before the DOM rebuild (group header, summary
+		// blocks, and any open nested detail expanders — the latter also re-fetch their content).
+		if (preservedCycleState) {
+			this._restoreCycleExpanderState(this.conversationArea, preservedCycleState);
+		}
 
 		// Render pending queued prompts (scoped to the viewed session, not the active tab)
 		if (viewedSession && viewedSession.promptQueue) {
@@ -1352,6 +1465,7 @@ class AIManagerHistory {
 			element = new Block();
 			element.classList.add("cycle-summary-block");
 			element.dataset.messageId = message.id;
+			if (message.subSessionId) element.dataset.subSessionId = message.subSessionId;
 			element.setAttribute("title", `Tokens: ${tokenCount}`);
 			
 			const summaryTitleText = message.title || (message.content ? (message.content.split(/[.\n]/)[0].trim().substring(0, 75) + "...") : "Task Cycle Compacted");
@@ -1491,28 +1605,10 @@ class AIManagerHistory {
 						detailsExpander.removeAttribute("expanded");
 					} else {
 						detailsExpander.setAttribute("expanded", "");
-							if (detailContainer.children.length === 0) {
-								// Span may live in the main record (unarchived / legacy) or in the per-session archive â the resolver handles both.
-								const cycleMsgs = await this._resolveCycleSpanMessages(targetSessionId, message.cycleStartMsgId, message.cycleEndMsgId, message.id);
-								if (cycleMsgs && cycleMsgs.length) {
-									for (const cMsg of cycleMsgs) {
-										if (cMsg.type === 'file_context' || cMsg.type === 'cycle_summary') continue;
-										const cEl = this._createMessageElement(cMsg, -1);
-										if (!cEl) continue;
-										const nestedDelete = cEl.querySelector(".delete-history-button");
-										if (nestedDelete) nestedDelete.remove();
-										const nestedReplay = cEl.querySelector(".replay-history-button");
-										if (nestedReplay) nestedReplay.remove();
-										const nestedEdit = cEl.querySelector(".edit-history-button");
-										if (nestedEdit) nestedEdit.remove();
-										detailContainer.append(cEl);
-								}
-							} else {
-								const emptyDetail = new Block();
-								emptyDetail.className = "cycle-summary-empty-detail";
-								emptyDetail.textContent = "Detailed history for this cycle is not available (it may have been pruned or deleted from the conversation).";
-								detailContainer.append(emptyDetail);
-							}
+						try {
+							await this._loadCycleDetailContent(detailContainer, targetSessionId, message.id);
+						} catch (err) {
+							console.error("Failed to load cycle detail history:", err);
 						}
 					}
 				};

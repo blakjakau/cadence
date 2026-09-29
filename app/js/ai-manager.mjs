@@ -3438,9 +3438,23 @@ isNativeReasoning,
 		const summarizationSystemPrompt = `You are a summarization assistant. Summarize the given agent task cycle into the following XML format:
 <title>A very concise, single-line, active-voice title summarizing the main outcome of the cycle (max 10 words)</title>
 <summary>
-Outline what the user requested, what implementation actions (file edits, creations, commands) the agent (Cadence) performed, and the final outcome/results. Keep the summary concise but descriptive of changes. Write the summary in the first person, as Cadence.
+Outline what the user requested, what implementation actions (file edits, creations, commands) the agent performed, and the final outcome/results. Keep the summary concise but descriptive of changes. Write the summary in the first person, as the agent.
 </summary>
-Output only the XML. Do not use any tools.${priorCycleContext}`;
+
+### Example:
+---
+<title>Analysis of the REST API implementation and performance</title>
+<summary>
+	User requested investigation into the performance of the REST API, and any technical advice on the resent througput issues.
+	
+	After analysis I found 2 processing bottlenecks (\`api_relay.mjs:createPost()\`, \`api_handler.go:commit_db()\`). and 1 display bug in index.html, caused by a CSS class typo.
+	
+	The display issue has been resolved, as has the frontend bottleneck (api_relay.mjs). The backend bottleneck(api_hanler.go) is still being addressed
+</summary
+---
+
+Output only the XML. Do not use any tools.
+${priorCycleContext}`;
 
 		// Function to perform a single AI summarization call without reasoning overhead.
 		// `extraSystemContext` (Phase 2.2) is appended to the system prompt — used by the chunked
