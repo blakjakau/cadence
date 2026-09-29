@@ -6,7 +6,7 @@ import AIManagerMessageRenderer from "./ai-manager-message-renderer.mjs" // NEW:
 import AIManagerSessions from "./ai-manager-sessions.mjs" // NEW: Sessions manager
 import workspaceClient from "./workspace-client.mjs"
 import agentTools from "./agent/agent-tools.mjs"
-import AIConnections from "./ai-connections.mjs"
+import AIConnections, { resolvePrefillTokens } from "./ai-connections.mjs"
 import { Agent } from "./agent/agent.mjs"
 import { SessionMigrator } from "./sessions/session-migrator.mjs"
 
@@ -3362,7 +3362,17 @@ isNativeReasoning,
 		const summarizationAI = AIConnections.getInstance(summarizationConnId) || this.ai;
 		const maxTokens = summarizationAI.MAX_CONTEXT_TOKENS || 8192;
 
-		const budgetTokens = Math.max(2000, Math.floor(maxTokens * 0.6));
+		// Cap the per-part summarization budget: hard 48k ceiling, the summarization connection's own
+		// maxPrefill when set (prefillCap is null when maxPrefill is "none"/unset → no prefill-based
+		// cap), and the existing 60%-of-context-window floor (2k floor). A single summarization call
+		// should never exceed any of these bounds.
+		const summarizationConn = AIConnections.getConnection(summarizationConnId);
+		const prefillCap = resolvePrefillTokens(summarizationConn?.maxPrefill);
+		const budgetTokens = Math.min(
+			49152,                                             // Hard 48k ceiling
+			prefillCap ?? Number.MAX_SAFE_INTEGER,             // Connection's maxPrefill, when set
+			Math.max(2000, Math.floor(maxTokens * 0.6))       // Existing 60%-of-context window (2k floor)
+		);
 
 		// Phase 2.1 — Build a PRIOR CYCLE CONTEXT section from the session's PRECEDING (non-seed)
 		// cycle summaries so the summarizer has continuity into the cycle being summarized now.

@@ -3764,7 +3764,7 @@ class AIManagerHistory {
 
 	/**
 	 * Token-based cycle compaction trigger: when the UNCOMPACTED region (everything after the most recent real
-	 * cycle_summary, up to and including the head message) reaches 1× the connection's maxPrefill, kicks off a
+	 * cycle_summary, up to and including the head message) reaches 0.5× the connection's maxPrefill, kicks off a
 	 * compaction of that region. Called fire-and-forget from prepareMessagesForAI (agent block) and from the
 	 * prompt gate, so it must be cheap on the common "no trigger" path: one backward scan + a token tally of the
 	 * tail region.
@@ -3803,10 +3803,9 @@ class AIManagerHistory {
 		const maxTokResolved = maxTok ?? resolvePrefillTokens(conn?.maxPrefill) ?? Math.floor(maxContextTokens * 0.8);
 		if (!maxTokResolved || maxTokResolved <= 0) return false; // No usable budget — nothing to compare against.
 		const maxTokens = maxTokResolved;
-		// Threshold = 1× the connection's maxPrefill: the uncompacted region is condensed once it reaches
-		// the window budget. (The sliding window itself culls the view at 1×, so compacting at 1× keeps the
-		// uncompacted region from pushing the window head back into older cycles.)
-		const threshold = maxTokResolved;
+		// Threshold = 0.5× the connection's maxPrefill: compact the uncompacted region once it reaches
+		// half the window budget, before the sliding window needs to cull the view.
+		const threshold = Math.floor(maxTokResolved * 0.5);
 
 		// Locate the span: from just after the last real cycle_summary (or session start) up to the head
 		// message (or the tail). Seeds (isSeed) are excluded from the stop — an in-flight tail seed is not
@@ -4508,7 +4507,7 @@ class AIManagerHistory {
 			}
 
 			// Token-based cycle compaction trigger (agent mode): when the uncompacted region after the last
-			// cycle_summary (up to the window head) reaches 1× maxTok, kick off a background compaction on a
+			// cycle_summary (up to the window head) reaches 0.5× maxTok, kick off a background compaction on a
 			// separate connection (or defer to the agent-loop preemption when none is available). Fire-and-forget —
 			// the check is synchronous/cheap (below threshold it's a no-op) and the current prompt's prepared
 			// output is unaffected.
