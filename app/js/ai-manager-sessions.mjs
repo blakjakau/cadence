@@ -874,22 +874,22 @@ class AIManagerSessions {
 				
 				item.append(nameSpan);
 
-				const copyBtn = document.createElement('button');
-				copyBtn.innerHTML = '<ui-icon>content_copy</ui-icon>';
-				copyBtn.className = 'icon-button';
-				copyBtn.style.background = 'transparent';
-				copyBtn.style.color = 'var(--text-secondary)';
-				copyBtn.style.border = 'none';
-				copyBtn.style.marginRight = '8px';
-				copyBtn.style.visibility = isMultiSelectMode ? 'hidden' : 'visible';
-				copyBtn.title = "Duplicate Chat";
-				copyBtn.onclick = async (e) => {
-					e.stopPropagation();
-					if (isMultiSelectMode) return;
-					window.modal.hide();
-					await this.copySession(session.id, true);
-				};
-				item.append(copyBtn);
+			const forkBtn = document.createElement('button');
+			forkBtn.innerHTML = '<ui-icon>arrow_split</ui-icon>';
+			forkBtn.className = 'icon-button';
+			forkBtn.style.background = 'transparent';
+			forkBtn.style.color = 'var(--text-secondary)';
+			forkBtn.style.border = 'none';
+			forkBtn.style.marginRight = '8px';
+			forkBtn.style.visibility = isMultiSelectMode ? 'hidden' : 'visible';
+			forkBtn.title = "Fork";
+			forkBtn.onclick = async (e) => {
+				e.stopPropagation();
+				if (isMultiSelectMode) return;
+				window.modal.hide();
+				await this.copySession(session.id, true);
+			};
+			item.append(forkBtn);
 
 				const delBtn = document.createElement('button');
 				delBtn.innerHTML = '<ui-icon>delete</ui-icon>';
@@ -996,12 +996,12 @@ class AIManagerSessions {
 	async copySession(sessionId, makeActive = true) {
 		const sourceSession = await workspaceClient.getSession(sessionId);
 		if (!sourceSession) {
-			window.modal.notice("Source session not found.", "Error Copying Session");
+			window.modal.notice("Source session not found.", "Error Forking Session");
 			return;
 		}
 
 		const newId = `ai-session-${crypto.randomUUID()}`;
-		const newName = `${sourceSession.name} - copy`;
+		const newName = `${sourceSession.name} - fork`;
 
 		// Deep clone session data
 		const newSessionData = JSON.parse(JSON.stringify(sourceSession));
@@ -1023,9 +1023,9 @@ class AIManagerSessions {
 			const newTab = this.manager.sessionTabBar.add({ name: newName, id: newId, defaultStatusIcon: 'developer_board' });
 			newTab.on('dblclick', () => this.renameCurrentSession());
 			newTab.click();
-			window.modal.toast(`Chat duplicated as "${newName}"`);
+			window.modal.toast(`Forked as "${newName}"`);
 		} else {
-			window.modal.toast(`Chat duplicated as "${newName}"`);
+			window.modal.toast(`Forked as "${newName}"`);
 		}
 	}
 
