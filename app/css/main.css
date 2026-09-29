@@ -1,5 +1,6 @@
 @import "editor.css";
 @import "diff-view.css";
+@import "markdown-view.css";
 @import "session-artifacts.css";
 
 :root {
@@ -285,33 +286,23 @@ body:not(.showSplitView) #rightHolder {
     bottom: 0px;
 }
 
-.ace_scrollbar::-webkit-scrollbar,
-ui-file-list .inner::-webkit-scrollbar,
-ui-menu::-webkit-scrollbar,
-#ace_settingsmenu::-webkit-scrollbar,
-.xterm-viewport::-webkit-scrollbar {
-    width: 0.66em;
-    height: 0.66em;
+::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
 }
 
-.ace_scrollbar-v::-webkit-scrollbar-track,
-ui-file-list .inner::-webkit-scrollbar-track,
-ui-menu::-webkit-scrollbar-track,
-.darkmode #ace_settingsmenu::-webkit-scrollbar-track,
-.xterm-viewport::-webkit-scrollbar-track {
-    width: 0.66em;
-    height: 0.66em;
+::-webkit-scrollbar-track {
+    width: 8px;
+    height: 8px;
     box-shadow: inset 0 0 6px var(--shadow-color);
 }
 
-.ace_scrollbar::-webkit-scrollbar-thumb,
-ui-file-list .inner::-webkit-scrollbar-thumb,
-ui-menu::-webkit-scrollbar-thumb,
-.darkmode #ace_settingsmenu::-webkit-scrollbar-thumb,
-.xterm-viewport::-webkit-scrollbar-thumb {
+::-webkit-scrollbar-thumb {
     background-color: var(--text-muted);
     border-radius: 4px;
 }
+
+
 
 ui-editor-holder .ace_editor {
     top: calc(var(--menuHeight) + 6px);
@@ -987,7 +978,7 @@ ui-sidebar-panel pre {
     white-space: pre-line;
 }
 
-ui-sidebar-panel ui-file-list::-webkit-scrollbar,
+/*ui-sidebar-panel ui-file-list::-webkit-scrollbar,
 ui-sidebar-panel .conversation-area::-webkit-scrollbar,
 ui-sidebar-panel pre::-webkit-scrollbar {
     width: 0.66em;
@@ -1006,7 +997,7 @@ ui-sidebar-panel pre::-webkit-scrollbar-thumb {
     background-color: darkgrey;
     border-radius: 4px;
 }
-
+*/
 .terminal-panel-container {
     /* Renamed from ui-terminal-panel */
     /*display: flex; */ /* removed as this is handled by the active attribute*/
