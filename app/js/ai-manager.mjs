@@ -1614,9 +1614,12 @@ isNativeReasoning,
 			id: crypto.randomUUID(),
 			tokenCount: connection?.estimateTokens ? connection.estimateTokens(processedPrompt) : Math.ceil(processedPrompt.length / 3.2)
 		};
-		session.messages.push(userMessage);
-		session.lastModified = Date.now();
-		await workspaceClient.setSession(sessionId, session);
+			session.messages.push(userMessage);
+			session.lastModified = Date.now();
+			const setRes = await workspaceClient.setSession(sessionId, session);
+			if (setRes && setRes.ok) {
+				session.revision = parseInt(setRes.headers.get('X-Session-Revision')) || session.revision;
+			}
 
 		// Asynchronously tokenize the user prompt
 		this.historyManager.tokenizeMessage(userMessage, session).catch(err => {
@@ -2739,7 +2742,10 @@ isNativeReasoning,
 		// Update lastModified timestamp for the session
 		targetSession.lastModified = Date.now();
 		// Save the active session to IndexedDB immediately after adding user prompt and context
-		await workspaceClient.setSession(targetSession.id, targetSession);
+		const setRes = await workspaceClient.setSession(targetSession.id, targetSession);
+		if (setRes && setRes.ok) {
+			targetSession.revision = parseInt(setRes.headers.get('X-Session-Revision')) || targetSession.revision;
+		}
 
 		// Render updated history in UI and dispatch event
 		if (this.activeSessionId === targetSessionId) {
@@ -2992,7 +2998,10 @@ isNativeReasoning,
 							}
 						} else if (targetForgivenessMode) {
 							// Update IndexedDB to persist the updated diffStatuses and backup references
-							await workspaceClient.setSession(targetSession.id, targetSession);
+							const setRes = await workspaceClient.setSession(targetSession.id, targetSession);
+					if (setRes && setRes.ok) {
+						targetSession.revision = parseInt(setRes.headers.get('X-Session-Revision')) || targetSession.revision;
+					}
 						}
 					}
 				}

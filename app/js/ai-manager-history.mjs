@@ -294,7 +294,10 @@ class AIManagerHistory {
 			// Render messages
 			const subMessages = subSession.messages || [];
 			const summarizedIds = new Set();
-			const summaries = subMessages.filter(msg => msg.type === "cycle_summary");
+			// Only REAL summaries collapse a span. Content-only seeds (isSeed) are in-flight
+			// placeholders ("Compacting cycle…") — collapsing their span would hide live turns
+			// behind an empty placeholder (the exact corruption seen in the sub-agent view).
+			const summaries = subMessages.filter(msg => msg.type === "cycle_summary" && !msg.isSeed);
 			for (const summary of summaries) {
 				const startId = summary.cycleStartMsgId;
 				const endId = summary.cycleEndMsgId;
@@ -403,10 +406,12 @@ class AIManagerHistory {
 			}
 		}
 
-		// Collect IDs of messages that have been summarized to skip rendering them directly in the chat history
+		// Collect IDs of messages that have been summarized to skip rendering them directly in the chat history.
+		// Only REAL summaries collapse a span. Content-only seeds (isSeed) are in-flight placeholders
+		// ("Compacting cycle…") — collapsing their span would hide live turns behind an empty placeholder.
 		const summarizedIds = new Set();
 		let lastSummarizedIdx = -1;
-		const summaries = history.filter(msg => msg.type === "cycle_summary");
+		const summaries = history.filter(msg => msg.type === "cycle_summary" && !msg.isSeed);
 		for (const summary of summaries) {
 			const startId = summary.cycleStartMsgId;
 			const endId = summary.cycleEndMsgId;
@@ -1335,6 +1340,14 @@ class AIManagerHistory {
 			const deleteButton = this._createSingleDeleteButton(message.id);
 			element.append(deleteButton);
 		} else if (message.type === "cycle_summary") {
+			// Content-only seeds (isSeed) are transient in-flight placeholders ("Compacting cycle…")
+			// that get replaced in-place by the real summary when the background compaction completes.
+			// They must NOT render as a visible block — they have no real summary content, and a
+			// dangling seed (compaction failed / never ran) would render as an empty "Task Cycle
+			// Compacted" placeholder (the exact corruption seen in the sub-agent view). Return null
+			// so the caller's `if (!element) continue` skips it. The span it anchored is NOT collapsed
+			// (the hide-loops skip seeds), so the live turns it covered remain visible.
+			if (!message.isSeed) {
 			const targetSessionId = message.subSessionId || this.manager.activeSessionId;
 			element = new Block();
 			element.classList.add("cycle-summary-block");
@@ -1516,6 +1529,7 @@ class AIManagerHistory {
 			};
 
 			element.append(header, bodyContainer);
+			} // end if (!message.isSeed)
 		} else if (message.type === "agent_query") {
 			element = new Block();
 			element.classList.add("agent-query-block");
@@ -2627,7 +2641,7 @@ class AIManagerHistory {
 		}
 
 		if (cycleStartIdx === -1) { // No previous marker — fall back to the first conversational message.
-			const fallbackIdx = messages.findIndex(msg => msg.type === "user" || msg.role === "model");
+			const fallbackIdx = messages.findIndex(msg => msg.role === "user" || msg.role === "model");
 			cycleStartIdx = fallbackIdx;
 		}
 
@@ -3750,7 +3764,7 @@ class AIManagerHistory {
 
 	/**
 	 * Token-based cycle compaction trigger: when the UNCOMPACTED region (everything after the most recent real
-	 * cycle_summary, up to and including the head message) reaches 2× the connection's maxPrefill, kicks off a
+	 * cycle_summary, up to and including the head message) reaches 1× the connection's maxPrefill, kicks off a
 	 * compaction of that region. Called fire-and-forget from prepareMessagesForAI (agent block) and from the
 	 * prompt gate, so it must be cheap on the common "no trigger" path: one backward scan + a token tally of the
 	 * tail region.
@@ -3789,9 +3803,9 @@ class AIManagerHistory {
 		const maxTokResolved = maxTok ?? resolvePrefillTokens(conn?.maxPrefill) ?? Math.floor(maxContextTokens * 0.8);
 		if (!maxTokResolved || maxTokResolved <= 0) return false; // No usable budget — nothing to compare against.
 		const maxTokens = maxTokResolved;
-		// Threshold = the connection's maxPrefill: the uncompacted region is allowed to grow to twice the
-		// window budget before it's condensed. (The sliding window itself culls the view at 1×, so 2× is the
-		// point where the compacted region is doing real work keeping the window small.)
+		// Threshold = 1× the connection's maxPrefill: the uncompacted region is condensed once it reaches
+		// the window budget. (The sliding window itself culls the view at 1×, so compacting at 1× keeps the
+		// uncompacted region from pushing the window head back into older cycles.)
 		const threshold = maxTokResolved;
 
 		// Locate the span: from just after the last real cycle_summary (or session start) up to the head
@@ -3946,7 +3960,7 @@ class AIManagerHistory {
 		}
 
 		if (cycleStartIdx === -1) { // No previous boundary found anywhere before this one — fall back to the first conversational message, mirroring agent.mjs' manual path exactly.
-			const fallbackIdx = messages.findIndex(msg => msg.type === "user" || msg.role === "model");
+			const fallbackIdx = messages.findIndex(msg => msg.role === "user" || msg.role === "model");
 			cycleStartIdx = fallbackIdx; // -1 if there's no user/model turn at all — handled by the span guard below (never summarize an empty / non-conversational span).
 		}
 
@@ -3983,7 +3997,7 @@ class AIManagerHistory {
 		}
 
 		if (cycleStartIdx === -1) { // No previous boundary found â fall back to the first conversational message.
-			const fallbackIdx = messages.findIndex(msg => msg.type === "user" || msg.role === "model");
+			const fallbackIdx = messages.findIndex(msg => msg.role === "user" || msg.role === "model");
 			cycleStartIdx = fallbackIdx;
 		}
 
@@ -4494,7 +4508,7 @@ class AIManagerHistory {
 			}
 
 			// Token-based cycle compaction trigger (agent mode): when the uncompacted region after the last
-			// cycle_summary (up to the window head) reaches 2× maxTok, kick off a background compaction on a
+			// cycle_summary (up to the window head) reaches 1× maxTok, kick off a background compaction on a
 			// separate connection (or defer to the agent-loop preemption when none is available). Fire-and-forget —
 			// the check is synchronous/cheap (below threshold it's a no-op) and the current prompt's prepared
 			// output is unaffected.
