@@ -3473,9 +3473,15 @@ Output only the XML. Do not use any tools.${priorCycleContext}`;
 			const fullContent = distilledTurns.join("\n\n");
 			const estimated = this.ai.estimateTokens(fullContent);
 			
+			// Global progress indicator for both the single-call and chunked paths: persistent (duration 0)
+			// until replaced — by the per-segment toasts (chunked path) or the short-lived completion toast
+			// (single-call path). The chunked path's consolidation toast replaces it again mid-flight.
+			window.modal.toast(`Compacting history`, 0);
+			
 			if (estimated <= budgetTokens) {
 				// Fits easily in single context call
 				finalSummaryResponse = await runSummaryCall(fullContent);
+				window.modal.toast(`Compacting history`, 500);
 			} else {
 				// Large cycle: split turns into sequential chunks, summarize each chunk, then summarize the condensed chunks
 				console.info(`[Cycle Summary] Large cycle (${estimated} est. tokens). Summarizing in chunks within ${budgetTokens} token budget.`);
