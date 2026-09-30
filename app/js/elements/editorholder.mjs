@@ -5,6 +5,7 @@ import { TabBar } from './tabbar.mjs';
 import { SessionArtifactsPanel } from './session-artifacts-panel.mjs';
 import { AgentConfigPanel } from './agent-config-panel.mjs';
 import { DiffViewPanel } from './diff-view-panel.mjs';
+import { MarkdownPreviewPanel } from './markdown-preview-panel.mjs';
 import { SettingsPanel } from './settings-panel.mjs';
 
 export class EditorHolder extends Panel {
@@ -21,6 +22,9 @@ export class EditorHolder extends Panel {
         this.agentConfigView.style.display = "none";
         this.diffView = new DiffViewPanel();
         this.diffView.style.display = "none";
+
+        this.previewView = new MarkdownPreviewPanel();
+        this.previewView.style.display = "none";
         
         this.workspaceSettingsView = new SettingsPanel();
         this.workspaceSettingsView.style.display = "none";
@@ -39,6 +43,7 @@ export class EditorHolder extends Panel {
         this.appendChild(this.planTasksView);
         this.appendChild(this.agentConfigView);
         this.appendChild(this.diffView);
+        this.appendChild(this.previewView);
         this.appendChild(this.workspaceSettingsView);
         this.appendChild(this.terminalSettingsView);
         this.appendChild(this.editorSettingsView);
@@ -187,6 +192,7 @@ export class EditorHolder extends Panel {
             if (this.planTasksView) this.planTasksView.style.display = 'none';
             if (this.agentConfigView) this.agentConfigView.style.display = 'none';
             if (this.diffView) this.diffView.style.display = 'none';
+            if (this.previewView) this.previewView.style.display = 'none';
         } else {
             const activeTab = this._tabs.activeTab;
             // if (activeTab && activeTab.config && activeTab.config.mode === "media") {

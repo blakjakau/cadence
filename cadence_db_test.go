@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"io/ioutil"
 	"os"
 	"path/filepath"
@@ -260,6 +261,307 @@ func TestCadenceDB_FreshAndDeleted(t *testing.T) {
 	bakPath := filepath.Join(tempDir, "cadence.db.bak")
 	if _, err := os.Stat(bakPath); err != nil {
 		t.Errorf("Expected cadence.db.bak to exist after recreation, got err: %v", err)
+	}
+}
+
+// TestCadenceDB_ArchiveCycleSpan verifies the atomic span move:
+//  - the raw messages are removed from the main session record
+//  - the span is appended to the per-session archive document
+//  - the operation is idempotent (a second call is a no-op)
+//  - the originating cycle_summary is marked archived
+//  - DeleteSession also removes the archive key
+func TestCadenceDB_ArchiveCycleSpan(t *testing.T) {
+	tempDir, err := ioutil.TempDir("", "cadence_db_archive_test_*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	db, err := openCadenceDB(tempDir)
+	if err != nil {
+		t.Fatalf("Failed to open CadenceDB: %v", err)
+	}
+	defer db.Close()
+
+	sessID := "ai-session-archive-1"
+	// A main session with a raw span (m1..m4) plus a cycle_summary (s1) that
+	// points at the span and is NOT yet archived.
+	sessionJSON := []byte(`{` +
+		`"id":"ai-session-archive-1","name":"Archive Chat","createdAt":1000,"lastModified":2000,` +
+		`"messages":[` +
+		`{"id":"m0","type":"user","content":"before"},` +
+		`{"id":"m1","type":"user","content":"c1"},` +
+		`{"id":"m2","type":"model","content":"c2"},` +
+		`{"id":"m3","type":"tool_response","content":"c3"},` +
+		`{"id":"s1","type":"cycle_summary","title":"Cycle","content":"sum","cycleStartMsgId":"m1","cycleEndMsgId":"m3"},` +
+		`{"id":"m4","type":"user","content":"after"}` +
+		`]}`)
+	if _, err := db.PutSession(sessID, sessionJSON); err != nil {
+		t.Fatalf("Failed to put session: %v", err)
+	}
+
+	// No archive record yet.
+	if _, err := db.GetSessionArchive(sessID); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("Expected os.ErrNotExist for empty archive, got %v", err)
+	}
+
+	// Archive the raw span (m1..m3) and mark summary s1 archived.
+	archived, err := db.ArchiveCycleSpan(sessID, []string{"m1", "m2", "m3"}, "s1")
+	if err != nil {
+		t.Fatalf("ArchiveCycleSpan failed: %v", err)
+	}
+	if len(archived) != 3 {
+		t.Fatalf("Expected 3 archived IDs, got %d (%v)", len(archived), archived)
+	}
+
+	// Main record: m1..m3 removed, m0/m4/s1 kept, s1 marked archived.
+	sessBytes, _, err := db.GetSession(sessID)
+	if err != nil {
+		t.Fatalf("GetSession after archive: %v", err)
+	}
+	var main struct {
+		Messages []struct {
+			ID       string `json:"id"`
+			Type     string `json:"type"`
+			Archived bool   `json:"archived"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal(sessBytes, &main); err != nil {
+		t.Fatalf("Unmarshal main session: %v", err)
+	}
+	keptIDs := make([]string, 0, len(main.Messages))
+	s1Archived := false
+	for _, m := range main.Messages {
+		keptIDs = append(keptIDs, m.ID)
+		if m.ID == "s1" && m.Archived {
+			s1Archived = true
+		}
+	}
+	if len(keptIDs) != 3 {
+		t.Fatalf("Expected 3 kept messages, got %d (%v)", len(keptIDs), keptIDs)
+	}
+	if !s1Archived {
+		t.Errorf("Expected summary s1 to be marked archived in main record")
+	}
+	for _, forbidden := range []string{"m1", "m2", "m3"} {
+		for _, k := range keptIDs {
+			if k == forbidden {
+				t.Errorf("Message %s should have been removed from main record", forbidden)
+			}
+		}
+	}
+
+	// Archive document: exactly one span with the moved messages in order.
+	archBytes, err := db.GetSessionArchive(sessID)
+	if err != nil {
+		t.Fatalf("GetSessionArchive: %v", err)
+	}
+	var doc struct {
+		Spans []struct {
+			StartMsgID string `json:"startMsgId"`
+			EndMsgID   string `json:"endMsgId"`
+			Messages   []struct {
+				ID string `json:"id"`
+			} `json:"messages"`
+		} `json:"spans"`
+	}
+	if err := json.Unmarshal(archBytes, &doc); err != nil {
+		t.Fatalf("Unmarshal archive doc: %v", err)
+	}
+	if len(doc.Spans) != 1 {
+		t.Fatalf("Expected 1 archived span, got %d", len(doc.Spans))
+	}
+	span := doc.Spans[0]
+	if span.StartMsgID != "m1" || span.EndMsgID != "m3" {
+		t.Errorf("Expected span [m1..m3], got [%s..%s]", span.StartMsgID, span.EndMsgID)
+	}
+	if len(span.Messages) != 3 || span.Messages[0].ID != "m1" || span.Messages[2].ID != "m3" {
+		t.Errorf("Expected span messages [m1,m2,m3], got %v", span.Messages)
+	}
+
+	// Idempotency: re-archiving the same span is a no-op.
+	archived2, err := db.ArchiveCycleSpan(sessID, []string{"m1", "m2", "m3"}, "s1")
+	if err != nil {
+		t.Fatalf("Idempotent ArchiveCycleSpan failed: %v", err)
+	}
+	if archived2 != nil {
+		t.Errorf("Expected nil archived IDs on second call, got %v", archived2)
+	}
+	sessBytes2, _, err := db.GetSession(sessID)
+	if err != nil {
+		t.Fatalf("GetSession after idempotent archive: %v", err)
+	}
+	var main2 struct {
+		Messages []map[string]interface{} `json:"messages"`
+	}
+	if err := json.Unmarshal(sessBytes2, &main2); err != nil {
+		t.Fatalf("Unmarshal main after idempotent: %v", err)
+	}
+	if len(main2.Messages) != 3 {
+		t.Errorf("Expected 3 kept messages after idempotent call, got %d", len(main2.Messages))
+	}
+	archBytes2, err := db.GetSessionArchive(sessID)
+	if err != nil {
+		t.Fatalf("GetSessionArchive after idempotent: %v", err)
+	}
+	var doc2 struct {
+		Spans []interface{} `json:"spans"`
+	}
+	if err := json.Unmarshal(archBytes2, &doc2); err != nil {
+		t.Fatalf("Unmarshal archive after idempotent: %v", err)
+	}
+	if len(doc2.Spans) != 1 {
+		t.Errorf("Expected 1 span after idempotent call, got %d", len(doc2.Spans))
+	}
+
+	// DeleteSession removes the main record AND the archive key.
+	if err := db.DeleteSession(sessID); err != nil {
+		t.Fatalf("DeleteSession: %v", err)
+	}
+	if _, _, err := db.GetSession(sessID); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("Expected os.ErrNotExist after delete, got %v", err)
+	}
+	if _, err := db.GetSessionArchive(sessID); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("Expected archive key removed after delete, got %v", err)
+	}
+}
+
+// TestCadenceDB_CopySession verifies the atomic session fork:
+//  - the main record is copied with a new id and "<name> - fork"
+//  - the metadata record is created fresh (revision 1, parentId preserved)
+//  - the per-session archive is copied byte-for-byte
+//  - the source session is untouched
+//  - forking a session with no archive works (fork starts empty)
+//  - forking a missing source returns os.ErrNotExist
+func TestCadenceDB_CopySession(t *testing.T) {
+	tempDir, err := ioutil.TempDir("", "cadence_db_copy_test_*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	db, err := openCadenceDB(tempDir)
+	if err != nil {
+		t.Fatalf("Failed to open CadenceDB: %v", err)
+	}
+	defer db.Close()
+
+	// Source session with a main record (including a parentId) and an archive.
+	srcID := "ai-session-copy-src"
+	srcJSON := []byte(`{"id":"ai-session-copy-src","name":"Source Chat","parentId":"ai-parent-1","createdAt":1000,"lastModified":2000,"messages":[{"id":"m0","type":"user","content":"hello"}]}`)
+	if _, err := db.PutSession(srcID, srcJSON); err != nil {
+		t.Fatalf("Failed to put source session: %v", err)
+	}
+	archiveJSON := []byte(`{"spans":[{"startMsgId":"a1","endMsgId":"a2","messages":[{"id":"a1","type":"user","content":"x"}]}]}`)
+	if err := db.PutSessionArchive(srcID, archiveJSON); err != nil {
+		t.Fatalf("Failed to put source archive: %v", err)
+	}
+
+	// Fork the source.
+	newID := "ai-session-copy-fork"
+	name, err := db.CopySession(srcID, newID)
+	if err != nil {
+		t.Fatalf("CopySession failed: %v", err)
+	}
+	if name != "Source Chat - fork" {
+		t.Errorf("Expected fork name %q, got %q", "Source Chat - fork", name)
+	}
+
+	// Main record: new id, fork name, preserved parent, fresh timestamps.
+	forkBytes, rev, err := db.GetSession(newID)
+	if err != nil {
+		t.Fatalf("GetSession fork: %v", err)
+	}
+	if rev != 1 {
+		t.Errorf("Expected fork revision 1, got %d", rev)
+	}
+	var fork struct {
+		ID           string `json:"id"`
+		Name         string `json:"name"`
+		ParentID     string `json:"parentId"`
+		CreatedAt    int64  `json:"createdAt"`
+		LastModified int64  `json:"lastModified"`
+		Messages     []struct {
+			ID string `json:"id"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal(forkBytes, &fork); err != nil {
+		t.Fatalf("Unmarshal fork: %v", err)
+	}
+	if fork.ID != newID || fork.Name != "Source Chat - fork" {
+		t.Errorf("Expected id=%s name=%q, got %s %q", newID, "Source Chat - fork", fork.ID, fork.Name)
+	}
+	if fork.ParentID != "ai-parent-1" {
+		t.Errorf("Expected parentId preserved, got %q", fork.ParentID)
+	}
+	if fork.CreatedAt != fork.LastModified || fork.CreatedAt <= 2000 {
+		t.Errorf("Expected fresh timestamps (createdAt=lastModified > 2000), got %d/%d", fork.CreatedAt, fork.LastModified)
+	}
+	if len(fork.Messages) != 1 || fork.Messages[0].ID != "m0" {
+		t.Errorf("Expected copied messages [{m0}], got %v", fork.Messages)
+	}
+
+	// Archive: copied byte-for-byte.
+	forkArchive, err := db.GetSessionArchive(newID)
+	if err != nil {
+		t.Fatalf("GetSessionArchive fork: %v", err)
+	}
+	var forkDoc struct {
+		Spans []struct {
+			StartMsgID string `json:"startMsgId"`
+			Messages   []struct {
+				ID string `json:"id"`
+			} `json:"messages"`
+		} `json:"spans"`
+	}
+	if err := json.Unmarshal(forkArchive, &forkDoc); err != nil {
+		t.Fatalf("Unmarshal fork archive: %v", err)
+	}
+	if len(forkDoc.Spans) != 1 || forkDoc.Spans[0].StartMsgID != "a1" || len(forkDoc.Spans[0].Messages) != 1 || forkDoc.Spans[0].Messages[0].ID != "a1" {
+		t.Errorf("Expected copied span [a1], got %v", forkDoc.Spans)
+	}
+
+	// Source untouched: main record still its own, archive still present.
+	srcBytes, _, err := db.GetSession(srcID)
+	if err != nil {
+		t.Fatalf("GetSession source: %v", err)
+	}
+	var src struct {
+		ID   string `json:"id"`
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal(srcBytes, &src); err != nil {
+		t.Fatalf("Unmarshal source: %v", err)
+	}
+	if src.ID != srcID || src.Name != "Source Chat" {
+		t.Errorf("Expected source unchanged (%s / Source Chat), got %s / %s", srcID, src.ID, src.Name)
+	}
+	if _, err := db.GetSessionArchive(srcID); err != nil {
+		t.Errorf("Source archive should still exist: %v", err)
+	}
+
+	// Forking a session with no archive works; the fork starts with none.
+	noArchID := "ai-session-copy-noarch"
+	if _, err := db.PutSession(noArchID, []byte(`{"id":"ai-session-copy-noarch","name":"No Archive","createdAt":3000,"lastModified":3000}`)); err != nil {
+		t.Fatalf("Failed to put no-archive session: %v", err)
+	}
+	noArchFork := "ai-session-copy-noarch-fork"
+	if _, err := db.CopySession(noArchID, noArchFork); err != nil {
+		t.Fatalf("CopySession no-archive failed: %v", err)
+	}
+	if _, _, err := db.GetSession(noArchFork); err != nil {
+		t.Fatalf("GetSession no-archive fork: %v", err)
+	}
+	if _, err := db.GetSessionArchive(noArchFork); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("Expected no archive on no-archive fork, got %v", err)
+	}
+
+	// Forking a missing source returns os.ErrNotExist.
+	if _, err := db.CopySession("ai-session-does-not-exist", "ai-session-ghost"); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("Expected os.ErrNotExist for missing source, got %v", err)
+	}
+	if _, _, err := db.GetSession("ai-session-ghost"); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("Expected ghost session not created on failed copy, got %v", err)
 	}
 }
 

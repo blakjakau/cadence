@@ -119,12 +119,12 @@ Note: The active model does not support native function calling/tools. Tools are
     if (supportsNativeTools) {
         coreRules = `
 ${toolCallingRule}
-- ALWAYS consider the most appropriate / efficient tool choices for the task
-- File Modifications: \`edit_file\` for existing files (single \`search\`/\`replace\` pair or \`edits\` array); \`create_file\` only for new files. Smallest viable change per edit; on a failed match, \`read_file\` the region and retry.
-- Scratchpad: Use \`scratchpad_write\` to keep concise notes/discoveries (max 4KB, Markdown, supports \`mode: 'append'\` or \`'replace'\`) evergreen in context across turns without risk of eviction. Use \`scratchpad_clear\` to wipe.
+- ALWAYS prefer direct tools over running commands
+- File Modifications: Smallest viable change per edit; on a failed match, \`read_file\` the source section and retry.
+- Scratchpad: Use \`scratchpad_write\` to keep concise notes/discoveries (max 4KB, Markdown, supports \`mode: 'append'\` or \`'replace'\`) hoisted to the end of context across turns without risk of eviction. Use \`scratchpad_clear\` to wipe.
 - Checkpoints & Rollbacks: \`checkpoint\` after a verified sub-step; \`rollback_file\`/\`rollback_cycle\` to undo.
 - External Knowledge: For time-sensitive info use \`research\`/\`web_fetch\` (codebase tools first; \`web_fetch\` supports \`no_summary: true\`, \`grep\`, and \`startLine\`/\`lineCount\` for exact remote code or content). Date: ${new Intl.DateTimeFormat('en-US', { dateStyle: 'medium' }).format(new Date())}.
-- Context Limits: Explore via ${isSubAgent ? "\`read_file_outline\`/\`search_in_file\`" : "\`find_file\`/\`read_file_outline\`/\`search_in_file\`"}; read targeted sections, never whole files; small atomic edits.
+- Context Limits: Context evctions are strictly managed by the system. Explore via ${isSubAgent ? "\`read_file_outline\`/\`search_in_file\`" : "\`find_file\`/\`read_file_outline\`/\`search_in_file\`"}; read targeted sections, never whole files; small atomic edits. Commit important notes to concisely your scratchpad to avoid loss
 `;
     } else {
         coreRules = `
@@ -161,8 +161,7 @@ ${hasPlan?"The host maintains your plan and task list when provided":""}
 - For complex, multi-file or architectural changes, you are encouraged to call \`create_implementation_plan\` (and optional \`tasks\`) or \`update_task_list\` to outline your roadmap. For localized or straightforward changes, you may proceed directly with code edits.
 ${hasTasks?"- Call \`complete_task\` with the task name as you finish each task. DO NOT rewrite the full task list just to check a box. ":""}
 ${hasTasks?"- When all tasks and objectives are satisfied, call the \`done\` tool.":""}
-- Call \`create_sub_agent\` to delegate discrete exploration, search, or research tasks to specialized sub-agents to keep your main context clean.
-- Avoid rambling or repetitive content outputs`;
+- Call \`create_sub_agent\` to delegate discrete exploration, search, or research tasks to specialized sub-agents to keep your main context clean.`;
     }
 
     let verificationSection = "";
@@ -172,13 +171,14 @@ ${hasTasks?"- When all tasks and objectives are satisfied, call the \`done\` too
 # Verification Protocol
 # Verification & Completion Protocol
 - Syntax validation is automatically enforce when using \`edit_file\` or \`create_file\`
-- As appropriate verify edits with \`run_command\` for any applicable unit tests
+- As appropriate verify edits with \`run_command\` for any applicable unit tests, or \`query_parent\` for guidance
 - Before calling \`sub_agent_complete\`, re-read the sections you edited to confirm the changes are correct and consistent, and include a detailed summary of what you changed in your result.`;
         } else {
             verificationSection = `
 # Verification & Completion Protocol
-- Syntax validation is automatically enforce when using \`edit_file\` or \`create_file\`
+- Syntax validation and code style is automatically enforced when using \`edit_file\` or \`create_file\`
 - As appropriate verify edits with \`run_command\` for any applicable unit tests; re-read the edited sections before \`done\`
+- As appropriate verify your work by running unit tests with \`run_command\', if no test coverage exists, create them or consult the user.
 `;
         }
     }
@@ -206,6 +206,19 @@ To execute terminal commands in a secondary root with \`run_command\`, pass the 
 `;
     }
 
+	// Model-lead context pruning directive. Only emitted when model-lead pruning is enabled AND the model is a known reasoning model.
+	// Explains the cull_history(idx) tool: idx is the 0-based position in the visible (cullable) dialogue order.
+	const { enableModelLeadPruning: enableModelLeadPruningFeat, isNativeReasoning: isNativeReasoningFeat } = features || {};
+	const contextPruningSection = enableModelLeadPruningFeat && isNativeReasoningFeat
+	    ? `# Context Pruning
+	Pruning is handled for you, but you can steer it. An automatic safety-net prune runs whenever context grows beyond its budget.
+
+	To steer pruning, call the tool \`cull_history({idx: N})\` to keep turns N onward. N is the 0-based position among your CULLEABLE dialogue turns, counted in the order you see them: your own model turns, the user's messages, tool responses, and the compacted-history turn. System gap markers, other system blocks, and the evergreen/directive turns are NOT counted.
+	- Turns from N on are retained; everything before N is culled on the next model turn.
+	- If N is out of range, the call is rejected safely with no state change — keep working.
+	- If you never call it, auto-prune still runs when needed. Pruning never removes the compacted-history turn.`
+	    : "";
+
     return `You are Cadence, an AI software engineer, pair programming with a human software engineer.
 The human user is the expert on the intent and objective of your tasks, defer to them.
 ${workspaceSection}
@@ -216,6 +229,7 @@ ${thinkingRule}
 ${taskFocusRule}
 ${loopingRule}
 ${coreRules}
-${projectManagementSection}
-${verificationSection}`;
+	${projectManagementSection}
+${verificationSection}
+${contextPruningSection}`;
 }

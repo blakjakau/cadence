@@ -68,6 +68,20 @@ class LlamaCpp extends AI {
         return this.config.server !== "";
     }
 
+    get supportsParallelTools() {
+        if (this.serverSupportsTools) {
+	        const model = (this.config.model || "").toLowerCase();
+	        return model.includes('r1') 
+	        	|| model.includes('reasoning') 
+	        	|| model.includes('deepseek') 
+	        	|| model.includes('think') 
+	        	|| model.includes("gemma-4")
+	        	|| model.includes('qwen')
+	        	|| model.includes('ornith');
+	        return true;
+        }
+    }
+    
     get supportsJSONTools() {
         if (this.serverSupportsTools !== undefined) {
             return this.serverSupportsTools;
@@ -406,7 +420,10 @@ class LlamaCpp extends AI {
             const isAgent = session ? (session.agentMode ?? window.ui?.aiManager?.agentMode) : window.ui?.aiManager?.agentMode;
             if (!(session && session.noTools) && (isAgent || (session && session.parentId))) {
                 const isSubAgent = !!(session && session.parentId);
-                let filteredTools = getToolsForSession(isSubAgent, this.supportsJSONTools);
+                const modelLeadPruning = (session && session.enableModelLeadPruning !== null && session.enableModelLeadPruning !== undefined)
+                    ? !!session.enableModelLeadPruning
+                    : window.ui?.aiManager?.config?.modelLeadPruning === true;
+                let filteredTools = getToolsForSession(isSubAgent, this.supportsJSONTools, modelLeadPruning);
                 if (!isSubAgent) {
                     const isPlanning = session ? (session.planningMode ?? window.ui?.aiManager?.planningMode === true) : (window.ui?.aiManager?.planningMode === true);
                     filteredTools = filteredTools.filter(t => {

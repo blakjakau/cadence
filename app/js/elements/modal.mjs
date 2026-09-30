@@ -12,6 +12,8 @@ class Modal {
     #snapshotTaken = false; // set by snapshot() so show() skips its auto-snapshot
     #stack = []; // snapshots of previous modal content (inner + actionBar) so a
                   // nested modal (prompt/confirm) restores the one below it
+    #heldToast = null; // the currently held toast element (null = none)
+    #toastTimer = null; // pending auto-dismiss timer id (null = none / persistent)
 
     constructor() {
         this.#panel = new Panel();
@@ -202,7 +204,9 @@ class Modal {
     }
 
     toast(message, duration = 3000) {
+        this.clearToast(); // a new toast replaces any currently held one
         const toastEl = document.createElement('div');
+        toastEl.classList.add('modal-toast');
         toastEl.textContent = message;
         toastEl.style.position = 'fixed';
         toastEl.style.bottom = '20px';
@@ -216,27 +220,68 @@ class Modal {
         toastEl.style.zIndex = '99999';
         toastEl.style.opacity = '0';
         toastEl.style.transition = 'opacity 0.3s ease, transform 0.3s ease';
-        toastEl.style.pointerEvents = 'none';
         toastEl.style.fontSize = '14px';
+        // Clicking the toast dismisses it instantly (no fade-out)
+        toastEl.addEventListener('click', () => {
+            if (this.#heldToast !== toastEl) return;
+            this.#heldToast = null;
+            if (this.#toastTimer !== null) {
+                clearTimeout(this.#toastTimer);
+                this.#toastTimer = null;
+            }
+            toastEl.remove();
+        });
 
         document.body.appendChild(toastEl);
+        this.#heldToast = toastEl;
 
-        // Fade in
+        // Fade in (only if this toast is still the held one — it may have
+        // been replaced by a newer toast before the frames fired)
         requestAnimationFrame(() => {
             requestAnimationFrame(() => {
+                if (this.#heldToast !== toastEl) return;
                 toastEl.style.opacity = '1';
                 toastEl.style.transform = 'translateX(-50%) translateY(-10px)';
             });
         });
 
-        // Fade out and remove
-        setTimeout(() => {
-            toastEl.style.opacity = '0';
-            toastEl.style.transform = 'translateX(-50%) translateY(10px)';
-            setTimeout(() => {
-                toastEl.remove();
-            }, 300);
-        }, duration);
+        if (duration > 0) {
+            // Auto-dismiss after `duration` ms (existing behavior for
+            // duration > 0 callers)
+            this.#toastTimer = setTimeout(() => {
+                this.#toastTimer = null;
+                if (this.#heldToast !== toastEl) return;
+                this.#heldToast = null;
+                toastEl.style.opacity = '0';
+                toastEl.style.transform = 'translateX(-50%) translateY(10px)';
+                setTimeout(() => {
+                    if (toastEl.isConnected) toastEl.remove();
+                }, 300);
+            }, duration);
+        } else {
+            // duration === 0: no timer — the toast persists until it is
+            // replaced by a newer toast() call or cleared explicitly
+        }
+    }
+
+    clearToast() {
+        // Manually remove the currently held toast and cancel any pending
+        // auto-dismiss timer. No-op when nothing is held.
+        if (this.#toastTimer !== null) {
+            clearTimeout(this.#toastTimer);
+            this.#toastTimer = null;
+        }
+        const el = this.#heldToast;
+        this.#heldToast = null;
+        if (el && el.isConnected) {
+            el.style.opacity = '0';
+            el.style.transform = 'translateX(-50%) translateY(10px)';
+            setTimeout(() => el.remove(), 300);
+        }
+    }
+
+    clearModal() {
+        this.clearToast();
     }
 }
 

@@ -1,0 +1,224 @@
+/* --- ui-markdown-preview-panel (MarkdownPreviewPanel) --- */
+ui-markdown-preview-panel {
+    display: flex;
+    flex-direction: column;
+    position: absolute;
+    top: var(--tabHeight);
+    left: 0;
+    right: 4px;
+    bottom: 0;
+    overflow: auto;
+    background: var(--bg-primary);
+    z-index: 2;
+    pointer-events: auto !important;
+}
+
+ui-markdown-preview-panel .md-preview-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 16px;
+    background: var(--theme);
+    border-bottom: 1px solid var(--border-primary);
+    height: var(--menuHeight);
+    min-height: var(--menuHeight);
+    box-sizing: border-box;
+    flex: none;
+}
+
+ui-markdown-preview-panel .md-preview-header-left {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-primary);
+    overflow: hidden;
+    min-width: 0;
+}
+
+ui-markdown-preview-panel .md-preview-header-left ui-icon {
+    font-size: 16px;
+    flex: none;
+}
+
+ui-markdown-preview-panel .md-preview-header-title {
+    text-overflow: ellipsis;
+    overflow: hidden;
+    white-space: nowrap;
+}
+
+ui-markdown-preview-panel .md-preview-header ui-button {
+    flex: none;
+    background: var(--bg-tertiary, rgba(0, 0, 0, 0.66));
+    color: var(--text-primary);
+    border: 1px solid var(--border-primary);
+    min-height: 23px;
+    height: 23px;
+    font-size: 11px;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-weight: 600;
+    margin-left: 8px;
+}
+
+ui-markdown-preview-panel .md-preview-header ui-button:hover {
+    background: rgba(0, 0, 0, 0.33);
+}
+
+/* Read-only tabs (e.g. the in-memory "History preview") always show rendered
+   markdown only, so the "Edit" button is hidden. */
+ui-markdown-preview-panel .md-preview-header.readonly ui-button {
+    display: none;
+}
+
+ui-markdown-preview-panel .md-preview-body {
+    flex: 1;
+    /* min-height: 0 lets the flex child shrink below its content height so the
+       `overflow-y: auto` below actually produces a scrollbar (a column flex
+       item's default min-height is `auto`, which would otherwise keep it as
+       tall as its content and clip it against the root's `overflow: hidden`). */
+    min-height: 0;
+    overflow-y: auto;
+    overflow-x: auto;
+    padding: 16px 24px 32px;
+    box-sizing: border-box;
+    line-height: 1.6;
+    color: var(--text-primary);
+    word-wrap: break-word;
+}
+
+/* Empty-state placeholder. */
+ui-markdown-preview-panel .md-preview-empty {
+    color: var(--text-secondary);
+    font-style: italic;
+}
+
+/* Rendered markdown content (self-contained; markdown-it emits standard HTML). */
+ui-markdown-preview-panel .md-preview-body h1,
+ui-markdown-preview-panel .md-preview-body h2,
+ui-markdown-preview-panel .md-preview-body h3,
+ui-markdown-preview-panel .md-preview-body h4,
+ui-markdown-preview-panel .md-preview-body h5,
+ui-markdown-preview-panel .md-preview-body h6 {
+    margin: 1.2em 0 0.5em;
+    font-weight: 600;
+    line-height: 1.3;
+    color: var(--text-primary);
+}
+ui-markdown-preview-panel .md-preview-body h1 { font-size: 1.7em; border-bottom: 1px solid var(--border-primary); padding-bottom: 0.25em; }
+ui-markdown-preview-panel .md-preview-body h2 { font-size: 1.4em; }
+ui-markdown-preview-panel .md-preview-body h3 { font-size: 1.2em; }
+
+ui-markdown-preview-panel .md-preview-body p {
+    margin: 0.6em 0;
+}
+
+ui-markdown-preview-panel .md-preview-body a {
+    color: var(--theme);
+    text-decoration: underline;
+}
+
+ui-markdown-preview-panel .md-preview-body ul,
+ui-markdown-preview-panel .md-preview-body ol {
+    margin: 0.6em 0;
+    padding-left: 1.6em;
+}
+
+ui-markdown-preview-panel .md-preview-body li {
+    margin: 0.2em 0;
+}
+
+ui-markdown-preview-panel .md-preview-body blockquote {
+    margin: 0.8em 0;
+    padding: 4px 14px;
+    border-left: 4px solid var(--theme);
+    background: var(--bg-secondary);
+    color: var(--text-secondary);
+}
+
+ui-markdown-preview-panel .md-preview-body table {
+    border-collapse: collapse;
+    margin: 0.8em 0;
+    display: block;
+    max-width: 100%;
+    overflow-x: auto;
+}
+ui-markdown-preview-panel .md-preview-body th,
+ui-markdown-preview-panel .md-preview-body td {
+    border: 1px solid var(--border-primary);
+    padding: 6px 12px;
+    text-align: left;
+}
+ui-markdown-preview-panel .md-preview-body th {
+    background: var(--bg-secondary);
+}
+
+ui-markdown-preview-panel .md-preview-body hr {
+    border: none;
+    border-top: 1px solid var(--border-primary);
+    margin: 1.2em 0;
+}
+
+ui-markdown-preview-panel .md-preview-body img {
+    max-width: 100%;
+}
+
+/* Inline code. */
+ui-markdown-preview-panel .md-preview-body code {
+    font-family: var(--font-mono);
+    font-size: 0.92em;
+    background: var(--bg-secondary);
+    padding: 1px 5px;
+    border-radius: 3px;
+}
+
+/* Code blocks (highlight.js output from markdown-it's `highlight` hook). */
+ui-markdown-preview-panel .md-preview-body pre {
+    background: var(--bg-code, var(--bg-secondary));
+    border: 1px solid var(--border-primary);
+    border-radius: 6px;
+    padding: 12px;
+    overflow-x: auto;
+    margin: 0.8em 0;
+    line-height: 1.5;
+}
+ui-markdown-preview-panel .md-preview-body pre code {
+    background: transparent;
+    padding: 0;
+    border-radius: 0;
+    display: block;
+}
+
+/* highlight.js token colors (atom-one-dark, matching the AI chat overrides). */
+ui-markdown-preview-panel .md-preview-body .hljs-comment,
+ui-markdown-preview-panel .md-preview-body .hljs-quote {
+    color: var(--hljs-comment, #7f848e);
+}
+ui-markdown-preview-panel .md-preview-body .hljs-built_in,
+ui-markdown-preview-panel .md-preview-body .hljs-keyword,
+ui-markdown-preview-panel .md-preview-body .hljs-selector-tag,
+ui-markdown-preview-panel .md-preview-body .hljs-subst {
+    color: var(--hljs-keyword, #c678dd);
+}
+ui-markdown-preview-panel .md-preview-body .hljs-number,
+ui-markdown-preview-panel .md-preview-body .hljs-literal,
+ui-markdown-preview-panel .md-preview-body .hljs-template-variable,
+ui-markdown-preview-panel .md-preview-body .hljs-tag {
+    color: var(--hljs-number, #d19a66);
+}
+ui-markdown-preview-panel .md-preview-body .hljs-string,
+ui-markdown-preview-panel .md-preview-body .hljs-attr,
+ui-markdown-preview-panel .md-preview-body .hljs-selector-attr,
+ui-markdown-preview-panel .md-preview-body .hljs-selector-pseudo {
+    color: var(--hljs-string, #98c379);
+}
+ui-markdown-preview-panel .md-preview-body .hljs-title,
+ui-markdown-preview-panel .md-preview-body .hljs-section,
+ui-markdown-preview-panel .md-preview-body .hljs-name {
+    color: var(--hljs-title, #61afef);
+}
+

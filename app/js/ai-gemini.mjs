@@ -1189,8 +1189,11 @@ class Gemini extends AI {
                 
                 const isAgent = session ? (session.agentMode ?? window.ui?.aiManager?.agentMode) : window.ui?.aiManager?.agentMode;
                 if (!(session && session.noTools) && (isAgent || (session && session.parentId))) {
-                    const isSubAgent = !!(session && session.parentId);
-                    let filteredTools = getToolsForSession(isSubAgent, this.supportsJSONTools);
+                const isSubAgent = !!(session && session.parentId);
+                const modelLeadPruning = (session && session.enableModelLeadPruning !== null && session.enableModelLeadPruning !== undefined)
+                    ? !!session.enableModelLeadPruning
+                    : window.ui?.aiManager?.config?.modelLeadPruning === true;
+                let filteredTools = getToolsForSession(isSubAgent, this.supportsJSONTools, modelLeadPruning);
                     if (!isSubAgent) {
                         const isPlanning = session ? (session.planningMode ?? window.ui?.aiManager?.planningMode === true) : (window.ui?.aiManager?.planningMode === true);
                         filteredTools = filteredTools.filter(t => {

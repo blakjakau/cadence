@@ -480,6 +480,16 @@ class AIManagerSessions {
 		// Update the rest of the UI based on the new data
 		this.manager.historyManager.loadSessionMessages(this.activeSession.messages, false);
 
+		// JIT backfill: split legacy compacted spans out of the main record into the
+		// per-session archive (fire-and-forget). Skips sessions with a running agent,
+		// since those rewrite `messages` concurrently and will archive on their next
+		// compaction. switchSession is the single funnel for all load paths (initial
+		// page load + tab switch), so this one hook covers everything.
+		if (!this.externalRunningSessions.has(sessionId) && !this.manager.runningSessions.has(sessionId)) {
+			void this.manager.historyManager.backfillArchives(this.activeSession).catch(err =>
+				console.warn("[AIManagerSessions] Archive backfill failed:", err));
+		}
+
 		this.manager.promptEditor.setValue(this.activeSession.promptInput || "", -1);
 		this.promptIndex = (this.activeSession.promptHistory?.length || 0);
 		this.manager._resizePromptArea();
@@ -510,6 +520,80 @@ class AIManagerSessions {
 		this.manager.promptEditor.focus(); // Ensure focus returns to the prompt editor after a switch
 	}
 
+	/**
+	 * Resolve the objective text that a sub-session was spawned with (derived from its
+	 * `name`, which is `Sub-Agent: <objective[:30]>`). Returns the truncated objective
+	 * inner-text, or null if the name doesn't match the sub-agent naming convention.
+	 */
+	_subAgentObjective(subSession) {
+		if (!subSession || typeof subSession.name !== "string") return null;
+		const m = subSession.name.match(/^Sub-Agent:\s*(.*)$/);
+		if (!m) return null;
+		return m[1].replace(/\.\.\.$/, "");
+	}
+
+	// Does this model message's toolCalls contain a create_sub_agent call for the given objective?
+	_msgCreatesSubAgent(msg, objective) {
+		if (!msg || msg.role !== "model" || !Array.isArray(msg.toolCalls)) return false;
+		return msg.toolCalls.some(tc => {
+			const name = tc.name || tc.functionCall?.name;
+			if (name !== "create_sub_agent") return false;
+			const argObj = tc.arguments || tc.args || (tc.functionCall && (tc.functionCall.args || tc.functionCall.arguments)) || {};
+			const candidate = typeof argObj === "object" ? argObj.objective : undefined;
+			if (typeof candidate !== "string") return false;
+			// objective was truncated to 30 chars on spawn; compare the same slice.
+			return candidate.slice(0, 30) === objective;
+		});
+	}
+
+	/**
+	 * Resolve where a sub-agent's `[sub-agent:<id>]` marker belongs in the CURRENT
+	 * `session.messages` array. The marker originally sat right AFTER the model turn that
+	 * called `create_sub_agent` for it. Two cases:
+	 *   1. Spawn turn is still in the live messages → insert at `spawnIdx + 1`.
+	 *   2. Spawn turn was archived away → it lives inside an archived `cycle_summary`'s
+	 *      span; the marker now belongs right AFTER that summary (insert at `summaryIdx + 1`).
+	 * Returns the insert index, or -1 when the spawn turn can't be found anywhere (caller
+	 * falls back to appending).
+	 */
+	async _resolveSubAgentMarkerIndex(session, subSession) {
+		const objective = this._subAgentObjective(subSession);
+		const messages = session.messages;
+		if (!objective) return -1;
+
+		// 1. Live messages: find the exact spawn turn (matched by objective, not just any
+		//    create_sub_agent — that's the old bug that mis-placed markers when several
+		//    sub-agents share a thread).
+		for (let i = messages.length - 1; i >= 0; i--) {
+			if (this._msgCreatesSubAgent(messages[i], objective)) return i + 1;
+		}
+
+		// 2. Archived spawn turn: consult each archived cycle_summary's raw span (local or
+		//    archive) for the spawn turn; the marker belongs just after that summary.
+		const hm = this.manager?.historyManager;
+		if (hm && typeof hm._resolveCycleSpanMessages === "function") {
+			const summaries = messages.filter(m => m.type === "cycle_summary" && m.cycleStartMsgId && m.cycleEndMsgId);
+			// Newest first (most recent spawn is most likely the missing one).
+			summaries.reverse();
+			for (const summary of summaries) {
+				let spanMsgs = null;
+				try {
+					spanMsgs = await hm._resolveCycleSpanMessages(session.id, summary.cycleStartMsgId, summary.cycleEndMsgId, summary.id, null);
+				} catch (e) {
+					spanMsgs = null;
+				}
+				if (!Array.isArray(spanMsgs)) continue;
+				for (const sm of spanMsgs) {
+					if (this._msgCreatesSubAgent(sm, objective)) {
+						const summaryIdx = messages.findIndex(m => m.id === summary.id);
+						if (summaryIdx !== -1) return summaryIdx + 1;
+					}
+				}
+			}
+		}
+		return -1;
+	}
+
 	async repairDisconnectedSubAgents(session) {
 		if (!session || !session.messages) return;
 
@@ -529,41 +613,36 @@ class AIManagerSessions {
 			}
 
 			let modified = false;
+
+			// Resolve every missing marker's target index FIRST, then insert in descending
+			// index order so earlier insertions don't shift the indices we already resolved.
+			const pending = [];
 			for (const subSession of subSessions) {
-				if (!linkedSubAgentIds.has(subSession.id)) {
-					console.log(`[Self-Healing] Found disconnected sub-agent: ${subSession.id}. Re-linking to parent session.`);
+				if (linkedSubAgentIds.has(subSession.id)) continue;
+				console.log(`[Self-Healing] Found disconnected sub-agent: ${subSession.id}. Re-linking to parent session.`);
+				const insertIndex = await this._resolveSubAgentMarkerIndex(session, subSession);
+				pending.push({ subSession, insertIndex });
+			}
+			pending.sort((a, b) => b.insertIndex - a.insertIndex); // Descending (append=-1 last).
 
-					// Find the model message that contains the tool call to create this sub-agent
-					let insertIndex = -1;
-					for (let i = session.messages.length - 1; i >= 0; i--) {
-						const msg = session.messages[i];
-						if (msg.role === "model" && msg.toolCalls) {
-							const hasCreateCall = msg.toolCalls.some(tc => {
-								const name = tc.name || tc.functionCall?.name;
-								return name === "create_sub_agent";
-							});
-							if (hasCreateCall) {
-								insertIndex = i + 1;
-								break;
-							}
-						}
-					}
+			for (const { subSession, insertIndex } of pending) {
+				const triggerMessage = {
+					role: "user",
+					type: "user",
+					content: `[sub-agent:${subSession.id}]`,
+					timestamp: subSession.createdAt || Date.now(),
+					id: crypto.randomUUID()
+				};
 
-					const triggerMessage = {
-						role: "user",
-						type: "user",
-						content: `[sub-agent:${subSession.id}]`,
-						timestamp: subSession.createdAt || Date.now(),
-						id: crypto.randomUUID()
-					};
-
-					if (insertIndex !== -1 && insertIndex <= session.messages.length) {
-						session.messages.splice(insertIndex, 0, triggerMessage);
-					} else {
-						session.messages.push(triggerMessage);
-					}
-					modified = true;
+				if (insertIndex !== -1 && insertIndex <= session.messages.length) {
+					console.log(`[Self-Healing] Re-linked sub-agent ${subSession.id} at its original position (index ${insertIndex}).`);
+					session.messages.splice(insertIndex, 0, triggerMessage);
+				} else {
+					// Spawn turn isn't recoverable (pruned / no toolCalls) — append as a last resort.
+					console.warn(`[Self-Healing] Could not resolve original position for sub-agent ${subSession.id}; appending to end.`);
+					session.messages.push(triggerMessage);
 				}
+				modified = true;
 			}
 
 			if (modified && !this.externalRunningSessions.has(session.id)) {
@@ -795,22 +874,22 @@ class AIManagerSessions {
 				
 				item.append(nameSpan);
 
-				const copyBtn = document.createElement('button');
-				copyBtn.innerHTML = '<ui-icon>content_copy</ui-icon>';
-				copyBtn.className = 'icon-button';
-				copyBtn.style.background = 'transparent';
-				copyBtn.style.color = 'var(--text-secondary)';
-				copyBtn.style.border = 'none';
-				copyBtn.style.marginRight = '8px';
-				copyBtn.style.visibility = isMultiSelectMode ? 'hidden' : 'visible';
-				copyBtn.title = "Duplicate Chat";
-				copyBtn.onclick = async (e) => {
-					e.stopPropagation();
-					if (isMultiSelectMode) return;
-					window.modal.hide();
-					await this.copySession(session.id, true);
-				};
-				item.append(copyBtn);
+			const forkBtn = document.createElement('button');
+			forkBtn.innerHTML = '<ui-icon>arrow_split</ui-icon>';
+			forkBtn.className = 'icon-button';
+			forkBtn.style.background = 'transparent';
+			forkBtn.style.color = 'var(--text-secondary)';
+			forkBtn.style.border = 'none';
+			forkBtn.style.marginRight = '8px';
+			forkBtn.style.visibility = isMultiSelectMode ? 'hidden' : 'visible';
+			forkBtn.title = "Fork";
+			forkBtn.onclick = async (e) => {
+				e.stopPropagation();
+				if (isMultiSelectMode) return;
+				window.modal.hide();
+				await this.copySession(session.id, true);
+			};
+			item.append(forkBtn);
 
 				const delBtn = document.createElement('button');
 				delBtn.innerHTML = '<ui-icon>delete</ui-icon>';
@@ -915,39 +994,31 @@ class AIManagerSessions {
 	}
 
 	async copySession(sessionId, makeActive = true) {
-		const sourceSession = await workspaceClient.getSession(sessionId);
-		if (!sourceSession) {
-			window.modal.notice("Source session not found.", "Error Copying Session");
+		// Fork is done atomically on the backend (main record, metadata, and
+		// archive are copied in one DB transaction), so the fork keeps its
+		// compacted cycle-span detail.
+		let result;
+		try {
+			result = await workspaceClient.copySession(sessionId);
+		} catch (err) {
+			window.modal.notice(err.message, "Error Forking Session");
 			return;
 		}
 
-		const newId = `ai-session-${crypto.randomUUID()}`;
-		const newName = `${sourceSession.name} - copy`;
-
-		// Deep clone session data
-		const newSessionData = JSON.parse(JSON.stringify(sourceSession));
-		newSessionData.id = newId;
-		newSessionData.name = newName;
-		newSessionData.createdAt = Date.now();
-		newSessionData.lastModified = Date.now();
-
-		await workspaceClient.setSession(newId, newSessionData);
-
+		const now = Date.now();
 		this.allSessionMetadata.push({
-			id: newId,
-			name: newName,
-			createdAt: newSessionData.createdAt,
-			lastModified: newSessionData.lastModified
+			id: result.newId,
+			name: result.name,
+			createdAt: now,
+			lastModified: now
 		});
 
 		if (makeActive) {
-			const newTab = this.manager.sessionTabBar.add({ name: newName, id: newId, defaultStatusIcon: 'developer_board' });
+			const newTab = this.manager.sessionTabBar.add({ name: result.name, id: result.newId, defaultStatusIcon: 'developer_board' });
 			newTab.on('dblclick', () => this.renameCurrentSession());
 			newTab.click();
-			window.modal.toast(`Chat duplicated as "${newName}"`);
-		} else {
-			window.modal.toast(`Chat duplicated as "${newName}"`);
 		}
+		window.modal.toast(`Forked as "${result.name}"`);
 	}
 
 	/**
@@ -1051,6 +1122,34 @@ class AIManagerSessions {
 			this._broadcast('session_renamed', { sessionId: this.activeSession.id, name: trimmedName });
 		}
 	}
+	
+    /**
+     * Records a snapshot of the session's current scratchpad content into its
+     * version history before a destructive overwrite (replace/clear).
+     * deduplicates identical content and caps the history at 25.
+     * @param {Object} session - The session object.
+     * @param {string} mode - The operation that triggered the snapshot ('replace' | 'clear').
+     */
+    pushScratchpadHistory(session, mode) {
+        if (!session.scratchpad) return; // nothing to preserve
+        if (!Array.isArray(session.scratchpadVersions)) {
+            session.scratchpadVersions = [];
+        }
+        const last = session.scratchpadVersions[session.scratchpadVersions.length - 1];
+        if (last && last.content === session.scratchpad) return; // dedup
+        session.scratchpadVersions.push({
+            version: (last?.version || 0) + 1,
+            timestamp: Date.now(),
+            mode: mode,
+            content: session.scratchpad
+        });
+        if (session.scratchpadVersions.length > 25) {
+            session.scratchpadVersions.splice(0, session.scratchpadVersions.length - 25);
+        }
+    }
+
+	
+	
 }
 
 export default AIManagerSessions;

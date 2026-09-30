@@ -135,6 +135,22 @@
     display: none !important; /* Hide print margin and gutter for the prompt editor */
 }
 
+.prompt-placeholder-overlay {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: calc( var(--menuHeight) * 1.5 );
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    padding: 8px;
+    font-size: var(--font-size-sm);
+    color: var(--text-color);
+    opacity: 0.5;
+    z-index: 10;
+    pointer-events:none;
+}
+
 .prompt-area:disabled {
     opacity: 0.7;
     cursor: not-allowed;
@@ -311,6 +327,10 @@
 
 .delete-history-button:hover {
     color: var(--color-error);
+}
+
+.compact-cycle-btn:hover {
+    color: var(--theme);
 }
 
 .replay-history-button:hover,

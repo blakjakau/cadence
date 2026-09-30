@@ -139,7 +139,7 @@ export class Inline extends Element {
 export class Block extends Element {
 	constructor(content) {
 		super(content)
-		this._displayType = "block"
+		this._displayType = ""
 	}
 }
 
@@ -152,6 +152,7 @@ export class View extends Block {
 export class ContentFill extends Block {
 	constructor(content) {
 		super(content)
+		// this._displayType = ""
 	}
 }
 

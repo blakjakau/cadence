@@ -11,6 +11,32 @@ const PROVIDERS = {
 	llamacpp: LlamaCpp
 };
 
+// Token-based context pre-fill options for connections.
+// "none" means no explicit bound (falls back to legacy 40%/80% of n_ctx).
+export const PREFILL_OPTIONS = [
+	{ value: "none", label: "None" },
+	{ value: "8k", label: "8k", tokens: 8192 },
+	{ value: "16k", label: "16k", tokens: 16384 },
+	{ value: "24k", label: "24k", tokens: 24576 },
+	{ value: "32k", label: "32k", tokens: 32768 },
+	{ value: "48k", label: "48k", tokens: 49152 },
+	{ value: "64k", label: "64k", tokens: 65536 },
+	{ value: "80k", label: "80k", tokens: 81920 },
+	{ value: "96k", label: "96k", tokens: 98304 },
+	{ value: "128k", label: "128k", tokens: 131072 },
+	{ value: "160k", label: "160k", tokens: 163840 },
+	{ value: "192k", label: "192k", tokens: 196608 },
+	{ value: "256k", label: "256k", tokens: 262144 }
+];
+
+// Map a prefill enum value ("8k", "256k", ...) to absolute tokens.
+// Returns null for "none" or unset/unknown values.
+export function resolvePrefillTokens(value) {
+	if (!value || value === "none") return null;
+	const opt = PREFILL_OPTIONS.find(o => o.value === value);
+	return opt ? opt.tokens : null;
+}
+
 class AIConnections {
 	constructor() {
 		this.connections = [];
@@ -107,6 +133,22 @@ class AIConnections {
 
 	getConnection(id) {
 		return this.connections.find(c => c.id === id);
+	}
+
+	// Best-known context size (n_ctx) for a connection, used to suppress
+	// prefill options that exceed the provider's context window.
+	// llamacpp: stored config.n_ctx if set, else live instance MAX_CONTEXT_TOKENS.
+	// Other providers: live instance MAX_CONTEXT_TOKENS. Returns 0 if unknown.
+	connectionContextSize(conn) {
+		if (!conn) return 0;
+		if (conn.provider === "llamacpp" && Number(conn.config?.n_ctx) > 0) {
+			return Number(conn.config.n_ctx);
+		}
+		const instance = this.instances.get(conn.id);
+		if (instance && Number(instance.MAX_CONTEXT_TOKENS) > 0) {
+			return Number(instance.MAX_CONTEXT_TOKENS);
+		}
+		return 0;
 	}
 
 	getInstance(id) {

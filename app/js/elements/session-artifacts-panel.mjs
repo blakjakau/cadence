@@ -239,6 +239,7 @@ export class SessionArtifactsPanel extends Block {
         }
         this.autoMilestonesCheckbox = createToggleRow("accordion-auto-milestones", "Auto-Milestones on 'done'", "Automatically freeze a checkpoint milestone when the agent finishes a cycle.", "auto-milestones-toggle-wrapper");
         this.autoRollbackCheckbox = createToggleRow("accordion-auto-rollback", "Auto-Rollback on Edit Failures", "Automatically rollback a file if consecutive edit attempts fail.", "auto-rollback-toggle-wrapper");
+        this.modelLeadPruningCheckbox = createToggleRow("accordion-model-lead-pruning", "Model-Led Context Pruning", "Allow Cadence to proactively cull old context via the cull_history tool (per-session; inherits the Agent Config default when unset).", "auto-milestones-toggle-wrapper");
 
         // Helper to construct a number input row
         const createNumberRow = (id, title, desc, defaultVal, min = 10, max = 95) => {
@@ -274,9 +275,7 @@ export class SessionArtifactsPanel extends Block {
             return input;
         };
 
-        this.autoRollbackThresholdInput = createNumberRow("accordion-auto-rollback-threshold", "Auto-Rollback Failure Count", "Consecutive failed edits before auto-rollback is triggered.", 3, 1, 10);
-        this.maxContextPrefillInput = createNumberRow("accordion-max-prefill", "Max Context Pre-fill (%)", "Sliding window upper threshold before culling triggers.", 80, 20, 98);
-        this.minContextPrefillInput = createNumberRow("accordion-min-prefill", "Min Context Pre-fill (%)", "Sliding window cull target when max pre-fill is triggered.", 40, 10, 90);
+            this.autoRollbackThresholdInput = createNumberRow("accordion-auto-rollback-threshold", "Auto-Rollback Failure Count", "Consecutive failed edits before auto-rollback is triggered.", 3, 1, 10);
 
         this.container.appendChild(this.settingsAccordion);
 
@@ -379,6 +378,18 @@ export class SessionArtifactsPanel extends Block {
             }
         });
 
+        this.modelLeadPruningCheckbox.addEventListener("change", async (e) => {
+            const checked = e.target.checked;
+            const session = this._getTargetSession();
+            if (session) {
+                // Tri-state: false = explicitly off (overrides global default off);
+                // true  = explicitly on;
+                // (null = not set yet; set by UI toggle here to an explicit value).
+                session.enableModelLeadPruning = checked;
+                await workspaceClient.setSession(session.id, session);
+            }
+        });
+
         this.autoRollbackThresholdInput.addEventListener("change", async (e) => {
             let val = parseInt(e.target.value);
             if (isNaN(val) || val < 1) val = 1;
@@ -391,29 +402,6 @@ export class SessionArtifactsPanel extends Block {
             }
         });
 
-        this.minContextPrefillInput.addEventListener("change", async (e) => {
-            let val = parseInt(e.target.value);
-            if (isNaN(val) || val < 10) val = 10;
-            if (val > 90) val = 90;
-            e.target.value = val;
-            const session = this._getTargetSession();
-            if (session) {
-                session.contextPrefillMinPercentage = val;
-                await workspaceClient.setSession(session.id, session);
-            }
-        });
-
-        this.maxContextPrefillInput.addEventListener("change", async (e) => {
-            let val = parseInt(e.target.value);
-            if (isNaN(val) || val < 20) val = 20;
-            if (val > 98) val = 98;
-            e.target.value = val;
-            const session = this._getTargetSession();
-            if (session) {
-                session.contextPrefillMaxPercentage = val;
-                await workspaceClient.setSession(session.id, session);
-            }
-        });
     }
 
     _updateOpenEditsReviewState(isForgiveness, sessionOpenEdits) {
@@ -684,7 +672,8 @@ export class SessionArtifactsPanel extends Block {
             if (!confirmed) return;
 
             // Snapshot the current content before the destructive clear.
-            this._recordScratchpadVersion(session, "clear");
+            window.ui.aiManager.sessionsManager.pushScratchpadHistory(session, "clear")
+
             delete session.scratchpad;
             delete session.scratchpadTokenCount;
             session.lastModified = Date.now();
@@ -797,7 +786,8 @@ export class SessionArtifactsPanel extends Block {
                 }
 
                 // Snapshot the previous content before overwriting (replace is destructive).
-                this._recordScratchpadVersion(session, "replace");
+	            window.ui.aiManager.sessionsManager.pushScratchpadHistory(session, "replace")
+
                 if (newValue.trim()) {
                     session.scratchpad = newValue.trim();
                 } else {
@@ -868,9 +858,8 @@ export class SessionArtifactsPanel extends Block {
         this.allowRunCommandCheckbox.checked = session.allowRunCommand !== false;
         this.autoMilestonesCheckbox.checked = session.autoMilestones ?? (ui.aiManager.config?.defaultAutoMilestones !== false);
         this.autoRollbackCheckbox.checked = session.autoRollbackOnFailures ?? (ui.aiManager.config?.defaultAutoRollbackOnFailures === true);
-        this.autoRollbackThresholdInput.value = session.autoRollbackFailureThreshold ?? (ui.aiManager.config?.defaultAutoRollbackThreshold || 3);
-        this.minContextPrefillInput.value = session.contextPrefillMinPercentage ?? (ui.aiManager.config?.contextPrefillMinPercentage || 40);
-        this.maxContextPrefillInput.value = session.contextPrefillMaxPercentage ?? (ui.aiManager.config?.contextPrefillMaxPercentage || 80);
+        this.modelLeadPruningCheckbox.checked = session.enableModelLeadPruning ?? (ui.aiManager.config?.modelLeadPruning === true);
+            this.autoRollbackThresholdInput.value = session.autoRollbackFailureThreshold ?? (ui.aiManager.config?.defaultAutoRollbackThreshold || 3);
 
         // Render implementation plan content if not editing
         if (!this.planEditorInstance) {
@@ -1385,31 +1374,6 @@ export class SessionArtifactsPanel extends Block {
     }
 
     /**
-     * Records a snapshot of the session's current scratchpad content into its
-     * version history before a destructive overwrite (replace/clear). Mirrors the
-     * agent-tool helper: deduplicates identical content and caps the history at 25.
-     * @param {Object} session - The session object.
-     * @param {string} mode - The operation that triggered the snapshot ('replace' | 'clear').
-     */
-    _recordScratchpadVersion(session, mode) {
-        if (!session.scratchpad) return; // nothing to preserve
-        if (!Array.isArray(session.scratchpadVersions)) {
-            session.scratchpadVersions = [];
-        }
-        const last = session.scratchpadVersions[session.scratchpadVersions.length - 1];
-        if (last && last.content === session.scratchpad) return; // dedup
-        session.scratchpadVersions.push({
-            version: (last?.version || 0) + 1,
-            timestamp: Date.now(),
-            mode: mode,
-            content: session.scratchpad
-        });
-        if (session.scratchpadVersions.length > 25) {
-            session.scratchpadVersions.splice(0, session.scratchpadVersions.length - 25);
-        }
-    }
-
-    /**
      * Renders the collapsible scratchpad version-history section: a sticky header
      * with a Prev/Next pager, the live ("Newest") tile, and one row per recorded
      * version (newest-first). Also drives the read-only viewing banner in the
@@ -1705,7 +1669,7 @@ export class SessionArtifactsPanel extends Block {
 
         // Push the current live content onto the stack so the restore itself is
         // reversible (keeps prior history intact).
-        this._recordScratchpadVersion(session, "replace");
+        window.ui.aiManager.sessionsManager.pushScratchpadHistory(session, "replace")
 
         session.scratchpad = chosen.content;
         delete session.scratchpadTokenCount;

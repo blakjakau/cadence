@@ -1,11 +1,12 @@
 import conduit from '../conduit-client.mjs';
 import AgentBackup from './agent-backup.mjs';
-import { tools } from "../ai-manager-tools-schema.mjs";
+import { tools, getToolsForSession } from "../ai-manager-tools-schema.mjs";
 import workspaceClient from '../workspace-client.mjs';
 import { Agent } from './agent.mjs';
-import AIConnections from '../ai-connections.mjs';
+import AIConnections, { resolvePrefillTokens } from '../ai-connections.mjs';
 import syntaxValidator from '../syntax-validator.mjs';
 import { mergePolicies, evaluateCommand } from '../util/command-rules.mjs';
+import { resolveCullTarget } from '../ai-manager-cull-index.mjs';
 
 /**
  * Implements the core tools for Cadence.
@@ -688,6 +689,41 @@ Snippet: ${r.content || r.snippet || ""}`;
             return true;
         } catch (error) {
             return true; // Let it fail normally later if path is invalid
+        }
+    }
+
+    /**
+     * Size guard for model-facing read_file results.
+     * Returns an error string when the content's estimated tokens exceed 0.5× the session's
+     * connection maxPrefill, otherwise null (allow the read). Best-effort: any resolution
+     * failure (no session, no AI) or an unset/"none" maxPrefill means no bound → no guard.
+     * @param {string} content - Result string from readFile()
+     * @param {string|null} sourceId
+     * @returns {string|null} Error message to return to the model, or null to proceed.
+     */
+    _readFilePrefillGuard(content, sourceId) {
+        try {
+            if (typeof content !== "string" || content.length === 0) return null;
+            // Sentinels returned by readFile() are control/error strings, not file content — never size-gated.
+            if (content.startsWith("Error") || content.startsWith("Content is unchanged")) return null;
+
+            const aiManager = window.ui?.aiManager;
+            const session = this._resolveSession(sourceId);
+            const connectionId = session?.connectionId || aiManager?.activeSession?.connectionId || AIConnections.defaultConnectionId;
+            const conn = AIConnections.getConnection(connectionId);
+            const maxPrefillTokens = resolvePrefillTokens(conn?.maxPrefill);
+            if (!maxPrefillTokens) return null; // No explicit prefill bound ("none"/unset) → guard disabled.
+
+            const estTokens = aiManager?.ai?.estimateTokens
+                ? aiManager.ai.estimateTokens(content)
+                : Math.ceil(content.length / 3.2);
+            const threshold = Math.floor(maxPrefillTokens * 0.5);
+            if (estTokens > threshold) {
+                return "Result too big. Try a more selective read (e.g. search_files, or target section by line number)";
+            }
+            return null;
+        } catch (e) {
+            return null; // Best-effort: the guard must never block a read that would otherwise succeed.
         }
     }
 
@@ -1722,10 +1758,8 @@ Snippet: ${r.content || r.snippet || ""}`;
                 this.fileFailureCounts[resolvedPath] = (this.fileFailureCounts[resolvedPath] || 0) + 1;
                 const failCount = this.fileFailureCounts[resolvedPath];
 
-                const targetSessionId = sourceId || window.ui?.aiManager?.activeSessionId;
                 const aiManager = window.ui?.aiManager;
-                const session = (targetSessionId && aiManager?.runningSessions?.get(targetSessionId)?.instance?.session)
-                    || (targetSessionId === aiManager?.activeSessionId ? aiManager?.activeSession : null);
+                const session = this._resolveSession(sourceId);
 
                 const shouldAutoRollback = session?.autoRollbackOnFailures ?? (aiManager?.config?.defaultAutoRollbackOnFailures === true);
                 const threshold = session?.autoRollbackFailureThreshold ?? (aiManager?.config?.defaultAutoRollbackThreshold || 3);
@@ -2742,6 +2776,51 @@ Snippet: ${r.content || r.snippet || ""}`;
     }
 
     /**
+     * Recompute the exact set of tool names that were served to the model for a
+     * given session. Faithfully mirrors the provider call-sites
+     * (ai-claude / ai-gemini / ai-llamacpp) so that "what was served" has a
+     * single client-side source of truth at execution time.
+     *
+     * A parsed tool call can only reach execute() if the runtime emitted one,
+     * which requires the JSON-tool protocol to have been in play — hence
+     * supportsJSONTools is treated as true here (same as every reachable
+     * provider path).
+     *
+     * @param {object|null} session - The resolved session (null ⇒ unknown).
+     * @returns {Set<string>|null} Set of served tool names, or null if the
+     *  session could not be resolved (caller skips the whitelist in that case).
+     */
+     _servedToolNames(session) {
+        if (!session) return null;
+        const aiManager = window.ui?.aiManager;
+        const isSubAgent = !!(session.parentId);
+        const modelLeadPruning =
+            (session.enableModelLeadPruning !== null && session.enableModelLeadPruning !== undefined)
+                ? !!session.enableModelLeadPruning
+                : aiManager?.config?.modelLeadPruning === true;
+
+        let names = getToolsForSession(isSubAgent, true, modelLeadPruning).map((t) => t.name);
+
+        // Same post-gate filters the providers apply for main-agent sessions.
+        if (!isSubAgent) {
+            const isPlanning =
+                (session.planningMode !== undefined && session.planningMode !== null)
+                    ? !!session.planningMode
+                    : (aiManager?.planningMode === true);
+            const isAllowSubAgentsFalse = session.allowSubAgents === false;
+            const isAllowRunCommandFalse = session.allowRunCommand === false;
+            names = names.filter((n) => {
+                if (isPlanning && (n === "create_file" || n === "edit_file")) return false;
+                if (isAllowSubAgentsFalse && n === "create_sub_agent") return false;
+                if (isAllowRunCommandFalse && (n === "run_command" || n === "exec_command")) return false;
+                return true;
+            });
+        }
+
+        return new Set(names);
+    }
+
+    /**
      * Centralized tool execution dispatcher.
      * @param {string} name - The tool name.
      * @param {object} args - The arguments.
@@ -2750,6 +2829,15 @@ Snippet: ${r.content || r.snippet || ""}`;
      async execute(name, args = {}, sourceId = null) {
         // Prevent file editing/creation tools in planning mode
         const targetSession = this._resolveSession(sourceId);
+        // Client-side whitelist guardrail: never dispatch a tool that was not
+        // served to the model for this session. This makes it immaterial how
+        // any inference runtime parsed (or ghost-mapped) the call — a name outside
+        // the served set is rejected before execution, with a result the model
+        // can react to (string return, not throw).
+        const servedSet = this._servedToolNames(targetSession);
+        if (servedSet !== null && !servedSet.has(name)) {
+            return `Tool Error: Tool '${name}' was not served to the model for this session. No state changed.`;
+        }
         const isPlanning = targetSession ? (targetSession.planningMode ?? window.ui?.aiManager?.planningMode) : window.ui?.aiManager?.planningMode;
         if (isPlanning && (name === 'create_file' || name === 'edit_file' || name === 'edit_remove_lines' || name === 'refactor_copy_lines')) {
             return `Tool Error: Tool '${name}' is not allowed while in planning mode.`;
@@ -2776,22 +2864,25 @@ Snippet: ${r.content || r.snippet || ""}`;
                 return await this.research(args.query);
             case 'web_fetch':
                 return await this.webFetch(args.url, args);
-            case 'read_file':
-                return await this.readFile(args.path, args.startLine, args.lineCount, false, sourceId);
+            case 'read_file': {
+                const result = await this.readFile(args.path, args.startLine, args.lineCount, false, sourceId);
+                const guard = this._readFilePrefillGuard(result, sourceId);
+                return guard !== null ? guard : result;
+            }
             case 'read_file_outline':
                 return await this.readFileOutline(args.path, sourceId);
             case 'read_symbol':
                 return await this.readSymbol(args.query || args.symbol, sourceId);
             case 'search_files':
-            case 'search_in_files': {
+            case 'search_in_file': {
                 const targetPath = args.path || args.folder || args.directory || null;
                 if (targetPath && /\.[a-zA-Z0-9_-]+$/.test(targetPath)) {
                     return await this.searchInFile(targetPath, args.query, sourceId);
                 }
                 return await this.searchFiles(args.query, targetPath, sourceId);
             }
-            case 'search_in_file':
-                return await this.searchInFile(args.path, args.query, sourceId);
+            // case 'search_in_file':
+            //     return await this.searchInFile(args.path, args.query, sourceId);
             case 'edit_file':
                 return await this.editFile(
                     args.path,
@@ -3000,6 +3091,9 @@ Snippet: ${r.content || r.snippet || ""}`;
                     return `Error: Scratchpad content exceeds 4KB limit (${byteSize} bytes / 4096 bytes max). Please keep your notes concise.`;
                 }
 
+                // Snapshot the previous content before overwriting (replace is destructive).
+	            window.ui.aiManager.sessionsManager.pushScratchpadHistory(session, "replace")
+
                 session.scratchpad = finalContent;
                 delete session.scratchpadTokenCount;
                 session.lastModified = Date.now();
@@ -3019,6 +3113,9 @@ Snippet: ${r.content || r.snippet || ""}`;
                     throw new Error("No active session found to clear scratchpad.");
                 }
 
+                // Snapshot the previous content before clearing
+	            window.ui.aiManager.sessionsManager.pushScratchpadHistory(session, "clear")
+
                 delete session.scratchpad;
                 delete session.scratchpadTokenCount;
                 session.lastModified = Date.now();
@@ -3031,6 +3128,28 @@ Snippet: ${r.content || r.snippet || ""}`;
                 return await this.rollbackFile(args.path, args.target || "cycle_start", sourceId);
             case 'rollback_cycle':
                 return await this.rollbackCycle(args.target || "cycle_start", sourceId);
+            case 'cull_history': {
+                // Real tool-dispatched context pruning (model-led, user-gated).
+                // No string-intercept: the model invokes cull_history({idx}) as a
+                // structured tool call, and this case performs the state change.
+                const session = this._resolveSession(sourceId);
+                if (!session) {
+                    return `Tool Error: Could not resolve session for cull_history. No state changed.`;
+                }
+
+                const cullIndex = window.ui?.aiManager?.historyManager?.getcullIndex();
+                const id = args.idx;
+                const resolved = resolveCullTarget(cullIndex, id);
+                if (!resolved.ok) {
+                    return `Tool Error: ${resolved.error} No state changed.`;
+                }
+
+                session.contextHeadMsgId = resolved.newHeadId;
+                session.lastModified = Date.now();
+                await workspaceClient.setSession(session.id, session);
+
+                return `History cull applied: visible turn ${id} is now the new start point. All dialogue before that turn is dropped from context on the next model turn. Evergreen/directive turns are never culled.`;
+            }
             default:
                 throw new Error(`Tool '${name}' is not recognized.`);
         }
@@ -3084,10 +3203,7 @@ Snippet: ${r.content || r.snippet || ""}`;
      */
     async rollbackFile(path, target = "cycle_start", sourceId = null) {
         try {
-            const targetSessionId = sourceId || window.ui?.aiManager?.activeSessionId;
-            const aiManager = window.ui?.aiManager;
-            const session = (targetSessionId && aiManager?.runningSessions?.get(targetSessionId)?.instance?.session)
-                || (targetSessionId === aiManager?.activeSessionId ? aiManager?.activeSession : null);
+            const session = this._resolveSession(sourceId);
 
             if (!session) {
                 throw new Error("No active session found.");
@@ -3225,10 +3341,7 @@ Snippet: ${r.content || r.snippet || ""}`;
      */
     async rollbackCycle(target = "cycle_start", sourceId = null) {
         try {
-            const targetSessionId = sourceId || window.ui?.aiManager?.activeSessionId;
-            const aiManager = window.ui?.aiManager;
-            const session = (targetSessionId && aiManager?.runningSessions?.get(targetSessionId)?.instance?.session)
-                || (targetSessionId === aiManager?.activeSessionId ? aiManager?.activeSession : null);
+            const session = this._resolveSession(sourceId);
 
             if (!session || !session.modifiedFiles) {
                 return "Notice: No modified files found in this session.";

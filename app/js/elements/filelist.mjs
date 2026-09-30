@@ -504,7 +504,7 @@ export class FileList extends ContentFill {
 		}
 	}
 	
-	find(match, limit = 20) {
+	find(match, limit = 50) {
 		const matches = [];
 		if (!this?.index?.files) return [];
 

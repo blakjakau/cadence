@@ -1,12 +1,12 @@
 // ai-manager.mjs
 // Styles for this module are located in css/ai-manager.css
-import { Block, Button, Icon, TabBar, TabItem, FileBar, SkillPicker, RootPicker } from "./elements.mjs"
+import { Block, Button, Icon, TabBar, TabItem, FileBar, SkillPicker, RootPicker, ContentFill } from "./elements.mjs"
 import AIManagerHistory, { MAX_RECENT_MESSAGES_TO_PRESERVE } from "./ai-manager-history.mjs"
 import AIManagerMessageRenderer from "./ai-manager-message-renderer.mjs" // NEW: Settings manager
 import AIManagerSessions from "./ai-manager-sessions.mjs" // NEW: Sessions manager
 import workspaceClient from "./workspace-client.mjs"
 import agentTools from "./agent/agent-tools.mjs"
-import AIConnections from "./ai-connections.mjs"
+import AIConnections, { resolvePrefillTokens } from "./ai-connections.mjs"
 import { Agent } from "./agent/agent.mjs"
 import { SessionMigrator } from "./sessions/session-migrator.mjs"
 
@@ -81,8 +81,6 @@ class AIManager {
 		this.config = {
 			summarizeThreshold: parseInt(localStorage.getItem("summarizeThreshold") || "85"),
 			summarizeTargetPercentage: parseInt(localStorage.getItem("summarizeTargetPercentage") || "50"),
-			contextPrefillMinPercentage: parseInt(localStorage.getItem("contextPrefillMinPercentage") || "40"),
-			contextPrefillMaxPercentage: parseInt(localStorage.getItem("contextPrefillMaxPercentage") || "80"),
 			defaultAgentMode: localStorage.getItem("defaultAgentMode") === "true",
 			defaultPlanningMode: localStorage.getItem("defaultPlanningMode") !== "false",
 			defaultForgivenessMode: localStorage.getItem("aiForgivenessMode") === "true",
@@ -95,6 +93,7 @@ class AIManager {
 			defaultAutoRollbackThreshold: parseInt(localStorage.getItem("defaultAutoRollbackThreshold") || "3", 10),
 			enableGlowAnimation: localStorage.getItem("aiEnableGlowAnimation") !== "false",
 			commandPolicy: AIManager._loadCommandPolicy(),
+			modelLeadPruning: localStorage.getItem("modelLeadPruning") === "true",
 		};
 		// NEW: Session TabBar properties
 		this.sessionTabBar = null;
@@ -214,9 +213,10 @@ class AIManager {
 				hasAcceptedPlan,
 				hasCompletedAllTasks,
 				planningMode: targetPlanningMode,
-				isNativeReasoning,
-				workspaceFolders: effectiveFolders
-			});
+isNativeReasoning,
+			workspaceFolders: effectiveFolders,
+			enableModelLeadPruning: targetSession?.enableModelLeadPruning ?? (this.config.modelLeadPruning === true)
+		});
 		} else {
 			basePrompt = systemPromptBuilder(this.getSystemPromptConfig());
 		}
@@ -254,7 +254,7 @@ class AIManager {
 
 		if (hints.length > 0) {
 			const compiledHints = hints.join("\n\n---\n\n");
-			basePrompt += `\n\n=== PROJECT SPECIFIC HINTS FROM THE USER ===\n\n${compiledHints}\n=================================================`;
+			basePrompt += `\n\n=== AGENT HINTS FOR CADENCE ===\n\n${compiledHints}\n================================`;
 		}
 
 		// Skills interpreter: load and match active skills based on user's query
@@ -288,7 +288,7 @@ class AIManager {
 			}
 
 			for (const skill of activeSkills.values()) {
-				basePrompt += `\n\n=== ACTIVE SKILL: ${skill.name} ===\n\n${skill.body}\n===================================`;
+				basePrompt += `\n\n=== ACTIVE SKILL: ${skill.name} ===\n\n${skill.body}\n================================`;
 				if (this.fileBar) {
 					this.fileBar.addSkill({ name: skill.name, id: `skillchip-${skill.name}` });
 				}
@@ -1168,6 +1168,21 @@ class AIManager {
 		const promptAreaContainer = document.createElement("div")
 		promptAreaContainer.classList.add("prompt-area")
 		promptAreaContainer.setAttribute("id", "ai-prompt-editor-container")
+		
+		// Create the overlay element (sibling to ACE editor, uses pointer-events: none)
+		this.placeholderOverlay = new Block("Tell Cadence what you want to do... (tip: @tag a file)")
+		this.placeholderOverlay.classList.add("prompt-placeholder-overlay")
+		this.placeholderOverlay.style.justifyContent = "center"
+		this.placeholderOverlay.style.fontSize = "var(--font-size-sm)"
+		this.placeholderOverlay.style.color = "var(--text-color)"
+		this.placeholderOverlay.style.opacity = "0.33"
+		this.placeholderOverlay.style.zIndex = "10"
+		
+		
+		setTimeout(()=>{
+			promptAreaContainer.parentElement.append(this.placeholderOverlay)
+		},50)
+		
 		// The editor instance is created and configured in _initPromptEditor
 		return promptAreaContainer;
 	}
@@ -1177,6 +1192,7 @@ class AIManager {
 		if (!window.ace || !this.promptArea) return; // Ensure ACE and container are ready
 
 		this.promptEditor = ace.edit(this.promptArea);
+		this._updatePromptAreaPlaceholder();
 		this.promptEditor.id = "ai-prompt-editor"
 		this.promptEditor.session.setMode("ace/mode/markdown");
 		this.promptEditor.setOptions(promptEditorSettings)
@@ -1234,6 +1250,16 @@ class AIManager {
 					this.promptEditor.setValue(prompt || "", -1);
 				}
 			},
+		});
+
+		// ALT+H: Open the "View History Summary" (compacted history) preview for the
+		// active session. Bound to the prompt editor (like the Alt+Up/Down prompt
+		// history commands above) so it only fires while the AI prompt editor has
+		// focus — matching the session context menu's "preview" action.
+		this.promptEditor.commands.addCommand({
+			name: "ai:preview-history",
+			bindKey: { win: "Alt+H", mac: "Alt+H" },
+			exec: () => this._previewActiveSessionHistory(),
 		});
 
 		this.promptEditor.on("change", () => this._resizePromptArea());
@@ -1331,6 +1357,26 @@ class AIManager {
 		}
 	}
 
+	_onPromptEditorFocus() {
+		this.placeholderOverlay.hide()
+	}
+	
+	_onPromptEditorBlur() {
+		if(this.promptEditor.session.getValue()!=="") {
+			this.placeholderOverlay.hide()
+		} else {
+			this.placeholderOverlay.show()
+		}
+	}
+	
+	_onPromptEditorChange() {
+		if(this.promptEditor.session.getValue()!=="") {
+			this.placeholderOverlay.hide()
+		} else {
+			this.placeholderOverlay.show()
+		}
+	}
+
 	// NEW METHOD: Updates the prompt area placeholder text based on AI configuration
 	_updatePromptAreaPlaceholder() {
 		if (!this.promptEditor) return;
@@ -1338,13 +1384,28 @@ class AIManager {
 		if (this.ai && this.ai.isConfigured()) {
 			this.promptEditor.setReadOnly(false);
 			if (this.agentMode) {
-				this.promptEditor.setOption("placeholder", "Ask Cadence to list/read/edit files... (use @ to tag files)");
+				this.placeholderOverlay.innerText = "Tell Cadence what you want to do ... (use @ to tag files)"
 			} else {
-				this.promptEditor.setOption("placeholder", "Enter your prompt here...");
+				this.placeholderOverlay.innerText = "Ask Cadence a question"
+			}
+
+			if(this.promptEditor.bound) return
+			// Add listeners when AI is configured and editor is usable
+			if (this.ai && this.ai.isConfigured()) {
+				this.promptEditor.on("focus", () => this._onPromptEditorFocus());
+				this.promptEditor.on("blur", () => this._onPromptEditorBlur());
+				this.promptEditor.on("change", () => this._onPromptEditorChange());
+			} else {
+				this.promptEditor.removeListener("focus", this._onPromptEditorFocus);
+				this.promptEditor.removeListener("blur", this._onPromptEditorBlur);
+				this.promptEditor.removeListener("change", this._onPromptEditorChange);
 			}
 		} else {
 			this.promptEditor.setReadOnly(true);
-			this.promptEditor.setOption("placeholder", "AI is not configured. Go to Settings (gear icon) to set up a provider.");
+			this.promptEditor.removeListener("focus", this._onPromptEditorFocus);
+			this.promptEditor.removeListener("blur", this._onPromptEditorBlur);
+			this.promptEditor.removeListener("change", this._onPromptEditorChange);
+			this.placeholderOverlay.innerText =  "AI is not configured. Go to Settings (gear icon) to set up a provider."
 		}
 	}
 
@@ -1563,9 +1624,12 @@ class AIManager {
 			id: crypto.randomUUID(),
 			tokenCount: connection?.estimateTokens ? connection.estimateTokens(processedPrompt) : Math.ceil(processedPrompt.length / 3.2)
 		};
-		session.messages.push(userMessage);
-		session.lastModified = Date.now();
-		await workspaceClient.setSession(sessionId, session);
+			session.messages.push(userMessage);
+			session.lastModified = Date.now();
+			const setRes = await workspaceClient.setSession(sessionId, session);
+			if (setRes && setRes.ok) {
+				session.revision = parseInt(setRes.headers.get('X-Session-Revision')) || session.revision;
+			}
 
 		// Asynchronously tokenize the user prompt
 		this.historyManager.tokenizeMessage(userMessage, session).catch(err => {
@@ -2126,9 +2190,25 @@ class AIManager {
 	}
 
 	/**
+	 * Opens the "Preview History" (compacted history) tab for the currently
+	 * active session. This is the shortcut entry point behind the ALT+H
+	 * keyboard binding (see _initPromptEditor) and mirrors the session context
+	 * menu's "preview" action. If no session is active it shows a hint rather
+	 * than failing silently.
+	 */
+	async _previewActiveSessionHistory() {
+		const sessionId = this.activeSessionId;
+		if (!sessionId) {
+			window.modal?.toast("No active session to preview. Open a session first.");
+			return;
+		}
+		await this.previewSessionHistory(sessionId);
+	}
+
+	/**
 	 * Opens the "Preview History" file tab: a read-only, markdown-mode ace editor
 	 * in the main editor tab bar (leftTabs) that shows exactly the compacted
-	 * history this session would send to the AI — the "## title" of every
+	 * history this session would send to the AI â the "## title" of every
 	 * non-seed cycle summary, plus the summary content of the last
 	 * MAX_DIRECT_CYCLE_SUMMARIES cycles. Being a real editor tab, it keeps the
 	 * AI session panel visible on screen at the same time.
@@ -2551,32 +2631,29 @@ class AIManager {
 		}
 		this.scrollToBottom(true);
 
-		// Check for automatic summarization before processing the new prompt
-		const estimatedTokensBeforeNewPrompt = targetAI.estimateTokens(targetSession.messages);
-		const maxContextTokens = targetAI.MAX_CONTEXT_TOKENS;
-		if (
-			maxContextTokens > 0 &&
-			(estimatedTokensBeforeNewPrompt / maxContextTokens) * 100 >= this.config.summarizeThreshold
-		) {
-			console.log(
-				`Context at ${Math.round(
-					(estimatedTokensBeforeNewPrompt / maxContextTokens) * 100
-				)}%, triggering summarization.`
-			);
-
-			if (targetAgentMode) {
-				// Agent mode: standard performSummarization() is gated OFF here, so condense the latest completed-but-unsummarized task cycle into one cycle_summary instead — same boundary logic & idempotency guard as the manual "Summarize Cycle" path. No-op (no AI call) when there's no such cycle yet; sliding-window pruning in prepareMessagesForAI remains the hard cap either way, this just trades lost turns for a durable summary before they'd be pruned away forever.
-				if (this._hasSeparateCompactionConnection(targetAI.connectionId)) {
-					// A separate (non-primary) connection is available — run the compaction in the BACKGROUND so the new prompt proceeds immediately instead of blocking on the summary AI call.
-					// 1. Synchronously insert a lightweight content-only seed (last model output, thoughts/tool-calls stripped) as a continuity anchor for the new cycle while the full compaction is in flight.
-					this.historyManager.seedCycleIfCompacting(targetSession);
-					// 2. Fire-and-forget the background compaction on the separate connection. When it completes it replaces the seed in-place with the real <compacted_cycle> summary. Safe no-op on any failure — the prompt proceeds without compacting.
-					this.historyManager.autoCompactAgentCycleAsync(targetSession).catch(e => console.error("Background cycle compaction failed:", e));
-				} else {
-					// No separate connection available — the compaction would contend with the primary connection the new prompt is about to use, so keep the awaited (synchronous) path.
-					const compacted = await this.historyManager.autoCompactAgentCycle(targetSession);
-				}
-			} else {
+		// Check for automatic compaction before processing the new prompt.
+		if (targetAgentMode) {
+			// Agent mode: token-based cycle compaction trigger (replaces the old total-tokens summarizeThreshold
+			// gate). When the UNCOMPACTED region (everything after the last cycle_summary, up to the tail —
+			// the new prompt hasn't been appended yet, hence headId = null) reaches 2× the connection's
+			// maxPrefill, it's condensed into a cycle_summary: background on a separate connection when one
+			// is available (tail seed as continuity anchor, replaced in-place on completion), else deferred to
+			// the agent-loop preemption (toast + progress chip) on the next turn start. Below threshold this
+			// is a cheap no-op (one backward scan + a tail token tally) that runs on every prompt.
+			this.historyManager.checkCycleCompactionTrigger(targetSession, { source: "prompt" });
+		} else {
+			// Standard mode: the traditional total-tokens summarizeThreshold gate (unchanged).
+			const estimatedTokensBeforeNewPrompt = targetAI.estimateTokens(targetSession.messages);
+			const maxContextTokens = targetAI.MAX_CONTEXT_TOKENS;
+			if (
+				maxContextTokens > 0 &&
+				(estimatedTokensBeforeNewPrompt / maxContextTokens) * 100 >= this.config.summarizeThreshold
+			) {
+				console.log(
+					`Context at ${Math.round(
+						(estimatedTokensBeforeNewPrompt / maxContextTokens) * 100
+					)}%, triggering summarization.`
+				);
 				await this.historyManager.performSummarization(); // Await summarization before continuing (standard mode only).
 			}
 		}
@@ -2691,7 +2768,10 @@ class AIManager {
 		// Update lastModified timestamp for the session
 		targetSession.lastModified = Date.now();
 		// Save the active session to IndexedDB immediately after adding user prompt and context
-		await workspaceClient.setSession(targetSession.id, targetSession);
+		const setRes = await workspaceClient.setSession(targetSession.id, targetSession);
+		if (setRes && setRes.ok) {
+			targetSession.revision = parseInt(setRes.headers.get('X-Session-Revision')) || targetSession.revision;
+		}
 
 		// Render updated history in UI and dispatch event
 		if (this.activeSessionId === targetSessionId) {
@@ -2944,7 +3024,10 @@ class AIManager {
 							}
 						} else if (targetForgivenessMode) {
 							// Update IndexedDB to persist the updated diffStatuses and backup references
-							await workspaceClient.setSession(targetSession.id, targetSession);
+							const setRes = await workspaceClient.setSession(targetSession.id, targetSession);
+					if (setRes && setRes.ok) {
+						targetSession.revision = parseInt(setRes.headers.get('X-Session-Revision')) || targetSession.revision;
+					}
 						}
 					}
 				}
@@ -3202,8 +3285,14 @@ class AIManager {
 		});
 	}
 
-	async generateCycleSummary(cycleMessages) {
+	async generateCycleSummary(cycleMessages, opts = null) {
 		if (!this.ai || !this.ai.isConfigured()) return "";
+
+		// Optional caller context for richer summarization:
+		//   opts.session            — the session object, so we can read preceding cycle summaries (Phase 2.1).
+		//   opts.targetCycleEndMsgId— the stable id of the target cycle's last message, so we only take PRIOR summaries.
+		const priorSession = opts?.session || null;
+		const targetCycleEndMsgId = opts?.targetCycleEndMsgId || null;
 
 		const eligibleMessages = cycleMessages.filter(
 			(msg) => msg.type === "user" || msg.type === "model" || msg.type === "tool_response"
@@ -3242,13 +3331,22 @@ class AIManager {
 
 			if (msg.type === "tool_response") {
 				// Truncate massive tool response outputs (e.g. huge file reads or directory listings)
-				if (content.length > 800) {
-					content = safeSlice(content, 0, 500) + "\n...[output truncated for summarization]...\n" + safeSlice(content, -200);
+				if (content.length > 500) {
+					content = safeSlice(content, 0, 200) + "\n...[truncated for summarization]...\n" + safeSlice(content, -200);
 				}
 				return sanitizeSurrogates(`[Tool Response]\n${content.trim()}`);
 			}
 
 			if (msg.role === "model") {
+				// Reasoning (reasoning-model messages carry it in `msg.thought`, tag-free; inline thought
+				// blocks in `content` were already stripped above). Include it so the summarizer sees WHY
+				// the agent acted, not just WHAT it did. Labeled and placed first (it drives the actions).
+				let thought = msg.thought || ""
+				if (thought.length>500) {
+					thought = safeSlice(thought, 0, 200) + "\n...[truncated for summarization]...\n" + safeSlice(thought, -200);
+				}
+				const thoughtBlock = thought ? `[Cadence Reasoning]\n${thought.trim()}\n` : "";
+
 				// If model did a tool call, summarize the tool call parameters concisely
 				if (msg.toolCalls && msg.toolCalls.length > 0) {
 					const toolDetails = msg.toolCalls.map(tc => {
@@ -3262,11 +3360,11 @@ class AIManager {
 						return `[Action: ${name} (${argSummary})]`;
 					}).join(" ");
 					
-					// Combine tool details with any accompanying text
-					const cleanText = content.replace(/<tool_call\s+name=["']([^"']+)["']\s*>[\s\S]*?<\/tool_call>/gi, '').trim();
-					return sanitizeSurrogates(`[Assistant]\n${toolDetails}${cleanText ? `\n${cleanText}` : ''}`);
+					// Combine reasoning + tool details + any accompanying text
+					const cleanText = content.replace(/[\s\S]*?<\/tool_call>/gi, '').trim();
+					return sanitizeSurrogates(`[Cadence]\n${thoughtBlock}${toolDetails}${cleanText ? `\n${cleanText}` : ''}`);
 				}
-				return sanitizeSurrogates(`[Assistant]\n${content.trim()}`);
+				return sanitizeSurrogates(`[Cadence]\n${thoughtBlock}${content.trim()}`);
 			}
 
 			return sanitizeSurrogates(`[User]\n${content.trim()}`);
@@ -3277,29 +3375,117 @@ class AIManager {
 		const distilledTurns = eligibleMessages.map(distillMessage).filter(Boolean);
 		if (distilledTurns.length === 0) return "";
 
-		// Select a connection for the summarization call. Prefer a *separate* (non-primary) connection so the
-		// compaction can run in the background without contending with the active prompt. Among the available
-		// non-busy connections, prefer the fastest one (highest average tokens/sec) so the summary arrives sooner;
-		// fall back to the size-based heuristic when telemetry is empty.
+		// Select a connection for the summarization call. A caller-provided `connectionId` override wins
+		// unconditionally (the agent-loop preemption uses this to force the compaction onto the session's
+		// own primary connection when no separate connection is available). Otherwise, prefer a *separate*
+		// (non-primary) connection so the compaction can run in the background without contending with the
+		// active prompt. Among the available non-busy connections, prefer the fastest one (highest average
+		// tokens/sec) so the summary arrives sooner; fall back to the size-based heuristic when telemetry is empty.
 		const primaryConnId = this.ai?.connectionId;
-		const summarizationConnId = await this._selectCompactionConnection(primaryConnId);
+		const overrideConnId = opts?.connectionId || null;
+		const summarizationConnId = overrideConnId || await this._selectCompactionConnection(primaryConnId);
 
 		const summarizationAI = AIConnections.getInstance(summarizationConnId) || this.ai;
 		const maxTokens = summarizationAI.MAX_CONTEXT_TOKENS || 8192;
 
-		const budgetTokens = Math.max(2000, Math.floor(maxTokens * 0.6));
+		// Cap the per-part summarization budget: hard 48k ceiling, the summarization connection's own
+		// maxPrefill when set (prefillCap is null when maxPrefill is "none"/unset → no prefill-based
+		// cap), and the existing 60%-of-context-window floor (2k floor). A single summarization call
+		// should never exceed any of these bounds.
+		const summarizationConn = AIConnections.getConnection(summarizationConnId);
+		const prefillCap = resolvePrefillTokens(summarizationConn?.maxPrefill);
+		const budgetTokens = Math.min(
+			49152,                                             // Hard 48k ceiling
+			prefillCap ?? Number.MAX_SAFE_INTEGER,             // Connection's maxPrefill, when set
+			Math.max(2000, Math.floor(maxTokens * 0.6))       // Existing 60%-of-context window (2k floor)
+		);
+
+		// Phase 2.1 — Build a PRIOR CYCLE CONTEXT section from the session's PRECEDING (non-seed)
+		// cycle summaries so the summarizer has continuity into the cycle being summarized now.
+		// Token-capped: the newest MAX_DIRECT_CYCLE_SUMMARIES keep full content; older ones become
+		// title-only. Omitted entirely when there are no prior summaries (no wasted tokens).
+		const buildPriorCycleContext = () => {
+			if (!priorSession || !Array.isArray(priorSession.messages)) return "";
+			const all = priorSession.messages;
+
+			// Determine which cycle summaries are PRIOR to the target cycle. Prefer a timestamp-based
+			// filter (robust when the target span has been archived and its raw messages no longer sit
+			// in the main record); fall back to index-based (before the target's end id) when the target
+			// span is still inline.
+			const targetStartTs = Math.min(...cycleMessages.map(m => m.timestamp || 0).filter(Boolean));
+			const byTimestamp = Number.isFinite(targetStartTs) && targetStartTs > 0;
+			let targetIdx = -1;
+			if (!byTimestamp && targetCycleEndMsgId) {
+				targetIdx = all.findIndex(m => m.id === targetCycleEndMsgId);
+				if (targetIdx === -1) {
+					targetIdx = all.findIndex(m => m.id === (cycleMessages[0]?.id)); // fallback: span's first raw message.
+				}
+			}
+
+			const prior = [];
+			for (const m of all) {
+				if (m.type !== "cycle_summary" || m.isSeed) continue;
+				const isPrior = byTimestamp
+					? (m.timestamp || 0) < targetStartTs
+					: (targetIdx === -1 || all.indexOf(m) < targetIdx);
+				if (isPrior) prior.push(m);
+			}
+			prior.sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0)); // chronological order.
+			if (prior.length === 0) return "";
+
+			const priorTokenBudget = Math.min(4000, Math.floor(budgetTokens * 0.5));
+			const MAX_FULL = 3; // Reuse the MAX_DIRECT_CYCLE_SUMMARIES window for full-content prior summaries.
+			// Newest summaries first; keep full content for the newest MAX_FULL, title-only for the rest.
+			let usedTokens = 0;
+			let fullCount = 0;
+			const lines = [];
+			for (let i = prior.length - 1; i >= 0; i--) {
+				const m = prior[i];
+				const title = m.title || "(untitled cycle)";
+				const content = m.content || "";
+				const isFull = fullCount < MAX_FULL;
+				const line = isFull
+					? `- ${title}: ${content}`
+					: `- ${title}`;
+				const lineTokens = this.ai.estimateTokens(line);
+				if (!isFull || usedTokens + lineTokens <= priorTokenBudget) {
+					lines.push(line);
+					if (isFull) fullCount++;
+					usedTokens += lineTokens;
+				}
+			}
+			if (lines.length === 0) return "";
+			return `\nPRIOR CYCLE CONTEXT (for continuity — do NOT repeat, only reference if relevant):\n` + lines.reverse().join("\n");
+		};
+		const priorCycleContext = buildPriorCycleContext();
 
 		// Concise, standalone system prompt for the summarization task.
 		// Replaces the full chat/agent system prompt (and tool schema) for this call.
 		const summarizationSystemPrompt = `You are a summarization assistant. Summarize the given agent task cycle into the following XML format:
 <title>A very concise, single-line, active-voice title summarizing the main outcome of the cycle (max 10 words)</title>
 <summary>
-Outline what the user requested, what implementation actions (file edits, creations, commands) the agent performed, and the final outcome/results. Keep the summary concise but descriptive of all changes.
+Outline what the user requested, what implementation actions (file edits, creations, commands) the agent performed, and the final outcome/results. Keep the summary concise but descriptive of changes. Write the summary in the first person, as the agent.
 </summary>
-Output only the XML. Do not use any tools.`;
 
-		// Function to perform a single AI summarization call without reasoning overhead
-		const runSummaryCall = async (contextText) => {
+### Example:
+---
+<title>Analysis of the REST API implementation and performance</title>
+<summary>
+	User requested investigation into the performance of the REST API, and any technical advice on the resent througput issues.
+	
+	After analysis I found 2 processing bottlenecks (\`api_relay.mjs:createPost()\`, \`api_handler.go:commit_db()\`). and 1 display bug in index.html, caused by a CSS class typo.
+	
+	The display issue has been resolved, as has the frontend bottleneck (api_relay.mjs). The backend bottleneck(api_hanler.go) is still being addressed
+</summary
+---
+
+Output only the XML. Do not use any tools.
+${priorCycleContext}`;
+
+		// Function to perform a single AI summarization call without reasoning overhead.
+		// `extraSystemContext` (Phase 2.2) is appended to the system prompt — used by the chunked
+		// path to give each chunk the cycle's summary-so-far (its own prior chunks' output).
+		const runSummaryCall = async (contextText, extraSystemContext = "") => {
 			const sanitizedText = sanitizeSurrogates(contextText);
 			const prompt = `Here is the task cycle to summarize:\n${sanitizedText}`;
 
@@ -3314,7 +3500,7 @@ Output only the XML. Do not use any tools.`;
 						onDone: () => resolve(),
 						onError: (error) => reject(error),
 					},
-					summarizationSystemPrompt,
+					summarizationSystemPrompt + (extraSystemContext ? `\n${extraSystemContext}` : ""),
 					{ disableReasoning: true, noTools: true } // Disable reasoning + tool schema
 				);
 			});
@@ -3326,10 +3512,16 @@ Output only the XML. Do not use any tools.`;
 		try {
 			const fullContent = distilledTurns.join("\n\n");
 			const estimated = this.ai.estimateTokens(fullContent);
-
+			
+			// Global progress indicator for both the single-call and chunked paths: persistent (duration 0)
+			// until replaced — by the per-segment toasts (chunked path) or the short-lived completion toast
+			// (single-call path). The chunked path's consolidation toast replaces it again mid-flight.
+			window.modal.toast(`Compacting history`, 0);
+			
 			if (estimated <= budgetTokens) {
 				// Fits easily in single context call
 				finalSummaryResponse = await runSummaryCall(fullContent);
+				window.modal.toast(`Compacting history`, 500);
 			} else {
 				// Large cycle: split turns into sequential chunks, summarize each chunk, then summarize the condensed chunks
 				console.info(`[Cycle Summary] Large cycle (${estimated} est. tokens). Summarizing in chunks within ${budgetTokens} token budget.`);
@@ -3353,20 +3545,31 @@ Output only the XML. Do not use any tools.`;
 					chunks.push(currentChunk.join("\n\n"));
 				}
 
-				// Summarize each chunk
+				// Summarize each chunk. Phase 2.2 — each chunk (from the 2nd onward) is given the
+				// cycle's summary-so-far (its own prior chunks' output) so the summarizer knows what
+				// the cycle has covered up to this point, reducing drift between chunks.
 				const intermediateSummaries = [];
 				for (let i = 0; i < chunks.length; i++) {
-					const chunkResp = await runSummaryCall(chunks[i]);
+					const progressContext = intermediateSummaries.length > 0
+						? `\n(THIS CYCLE) SUMMARY SO FAR:\n${intermediateSummaries.join("\n\n")}`
+						: "";
+					
+					window.modal.toast(`Compacting history, segment ${i+1} of ${chunks.length} ...`, 0);
+
+					const chunkResp = await runSummaryCall(chunks[i], progressContext);
 					const cleanChunk = chunkResp.trim();
 					const sMatch = cleanChunk.match(/<summary>([\s\S]*?)<\/summary>/i);
 					intermediateSummaries.push(`--- Phase ${i + 1} Summary ---\n${sMatch ? sMatch[1].trim() : cleanChunk}`);
 				}
 
-				// Final recursive consolidation
+				// Final recursive consolidation — receives all intermediate summaries as its user message.
+				window.modal.toast(`Compacting history`, 0);
 				finalSummaryResponse = await runSummaryCall(intermediateSummaries.join("\n\n"));
+				window.modal.toast(`Compacting history`, 500);
 			}
 		} catch (error) {
 			console.error("Error during cycle summarization AI call:", error);
+			window.modal.toast(`Error compacting history`);
 			return null;
 		}
 
