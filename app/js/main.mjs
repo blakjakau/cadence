@@ -2836,7 +2836,8 @@ const closeTab = async (targetTabs, event, force = false) => {
 
 	tab.tabBar.remove(tab)
 	// targetTabs.remove(tab);
-	tab.config.session.destroy()
+	if(tab?.config?.session?.destroy) tab.config.session.destroy()
+	
 	saveWorkspace()
 }
 
