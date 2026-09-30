@@ -3,7 +3,7 @@ import AgentBackup from './agent-backup.mjs';
 import { tools, getToolsForSession } from "../ai-manager-tools-schema.mjs";
 import workspaceClient from '../workspace-client.mjs';
 import { Agent } from './agent.mjs';
-import AIConnections from '../ai-connections.mjs';
+import AIConnections, { resolvePrefillTokens } from '../ai-connections.mjs';
 import syntaxValidator from '../syntax-validator.mjs';
 import { mergePolicies, evaluateCommand } from '../util/command-rules.mjs';
 import { resolveCullTarget } from '../ai-manager-cull-index.mjs';
@@ -689,6 +689,41 @@ Snippet: ${r.content || r.snippet || ""}`;
             return true;
         } catch (error) {
             return true; // Let it fail normally later if path is invalid
+        }
+    }
+
+    /**
+     * Size guard for model-facing read_file results.
+     * Returns an error string when the content's estimated tokens exceed 0.5× the session's
+     * connection maxPrefill, otherwise null (allow the read). Best-effort: any resolution
+     * failure (no session, no AI) or an unset/"none" maxPrefill means no bound → no guard.
+     * @param {string} content - Result string from readFile()
+     * @param {string|null} sourceId
+     * @returns {string|null} Error message to return to the model, or null to proceed.
+     */
+    _readFilePrefillGuard(content, sourceId) {
+        try {
+            if (typeof content !== "string" || content.length === 0) return null;
+            // Sentinels returned by readFile() are control/error strings, not file content — never size-gated.
+            if (content.startsWith("Error") || content.startsWith("Content is unchanged")) return null;
+
+            const aiManager = window.ui?.aiManager;
+            const session = this._resolveSession(sourceId);
+            const connectionId = session?.connectionId || aiManager?.activeSession?.connectionId || AIConnections.defaultConnectionId;
+            const conn = AIConnections.getConnection(connectionId);
+            const maxPrefillTokens = resolvePrefillTokens(conn?.maxPrefill);
+            if (!maxPrefillTokens) return null; // No explicit prefill bound ("none"/unset) → guard disabled.
+
+            const estTokens = aiManager?.ai?.estimateTokens
+                ? aiManager.ai.estimateTokens(content)
+                : Math.ceil(content.length / 3.2);
+            const threshold = Math.floor(maxPrefillTokens * 0.5);
+            if (estTokens > threshold) {
+                return "Result too big. Try a more selective read (e.g. search_files, or target section by line number)";
+            }
+            return null;
+        } catch (e) {
+            return null; // Best-effort: the guard must never block a read that would otherwise succeed.
         }
     }
 
@@ -2829,8 +2864,11 @@ Snippet: ${r.content || r.snippet || ""}`;
                 return await this.research(args.query);
             case 'web_fetch':
                 return await this.webFetch(args.url, args);
-            case 'read_file':
-                return await this.readFile(args.path, args.startLine, args.lineCount, false, sourceId);
+            case 'read_file': {
+                const result = await this.readFile(args.path, args.startLine, args.lineCount, false, sourceId);
+                const guard = this._readFilePrefillGuard(result, sourceId);
+                return guard !== null ? guard : result;
+            }
             case 'read_file_outline':
                 return await this.readFileOutline(args.path, sourceId);
             case 'read_symbol':

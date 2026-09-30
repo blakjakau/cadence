@@ -69,6 +69,12 @@ ui-markdown-preview-panel .md-preview-header ui-button:hover {
     background: rgba(0, 0, 0, 0.33);
 }
 
+/* Read-only tabs (e.g. the in-memory "History preview") always show rendered
+   markdown only, so the "Edit" button is hidden. */
+ui-markdown-preview-panel .md-preview-header.readonly ui-button {
+    display: none;
+}
+
 ui-markdown-preview-panel .md-preview-body {
     flex: 1;
     /* min-height: 0 lets the flex child shrink below its content height so the

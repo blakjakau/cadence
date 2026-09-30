@@ -99,6 +99,11 @@ export class MarkdownPreviewPanel extends Block {
 
         this.titleSpan.textContent = tab?.config?.name || "Markdown Preview";
 
+        // The in-memory "History preview" tab (ALT+H) is read-only and always
+        // presented as rendered markdown, so hide the "Edit" button there.
+        const isReadOnly = tab?.config?.path === "history_preview";
+        this.header.classList.toggle("readonly", isReadOnly);
+
         const md = this._getRenderer();
         if (!md || !text) {
             this.body.innerHTML = `<div class="md-preview-empty">Nothing to preview yet.</div>`;

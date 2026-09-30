@@ -1926,6 +1926,8 @@ const openHistoryPreviewTab = (markdown = "", targetEditor = leftEdit) => {
 			newSession.setOption("indentedSoftWrap", false)
 			newSession.setOption("readOnly", true)
 			tab.config.session = newSession
+			// Read-only content: always present as rendered markdown.
+			tab.config.viewMode = "preview"
 			if (!restoreInProgress) tab.click()
 			return
 		}
@@ -1944,8 +1946,8 @@ const openHistoryPreviewTab = (markdown = "", targetEditor = leftEdit) => {
 		defaultStatusIcon: "text_format",
 	})
 
-	// Set the (in-memory) session BEFORE clicking so updateEditorUI() renders
-	// it in the text branch (setSession + focus) instead of a special view.
+	// Set the (in-memory) session BEFORE clicking so the markdown preview panel
+	// has live content to render (it reads session.getValue()).
 	const previewSession = ace.createEditSession(markdown, "ace/mode/markdown")
 	previewSession.baseValue = markdown
 	previewSession.setOption("wrap", "free")
@@ -1954,6 +1956,10 @@ const openHistoryPreviewTab = (markdown = "", targetEditor = leftEdit) => {
 	tab.config.session = previewSession
 	targetEditor.setSession(previewSession)
 	execCommandEditorOptions()
+
+	// The content is not editable, so present it rendered (markdown view)
+	// rather than as raw text.
+	tab.config.viewMode = "preview"
 
 	// Cosmetic class so CSS can style the preview tab distinctively. It is a
 	// disposable, read-only, unsaved in-memory view; its standard close handler
@@ -2143,6 +2149,11 @@ const openFileHandle = async (handle, knownPath = null, targetEditor = currentEd
 	targetEditor.setSession(newSession)
 	execCommandEditorOptions()
 
+	// Markdown files open in the rendered preview view by default; the panel's
+	// "Edit" button (or Alt+P) switches back to the raw text editor.
+	const lowerName = name.toLowerCase()
+	const isMarkdown = lowerName.endsWith(".md") || lowerName.endsWith(".markdown")
+
 	let projectFolder = typeof handle === "string" ? "" : handle.container;
 	if (!projectFolder && typeof path === "string") {
 		// Find the longest matching workspace folder
@@ -2169,6 +2180,8 @@ const openFileHandle = async (handle, knownPath = null, targetEditor = currentEd
 		fullPath: fileData ? fileData.fullPath : undefined,
 		modTime: fileData ? fileData.modTime : undefined,
 		size: fileData ? fileData.size : undefined,
+		// .md files default to the rendered markdown preview (see updateEditorUI).
+		viewMode: isMarkdown ? "preview" : undefined,
 	})
 	setupSessionChangeListener(newSession, tab)
 	if(!restoreInProgress) tab.click()
@@ -2675,15 +2688,17 @@ const updateEditorUI = async (targetEditor, targetMediaView, tab) => {
 		return;
 	}
 
-	// Markdown preview mode: only meaningful for .md files. The menu item and
-	// Alt+P toggle both guard on this, so viewMode should never be "preview"
-	// for a non-markdown tab — but guard here anyway so a stale value falls
-	// back to the normal editor).
-	const isMarkdownFile = (name) => {
-		const n = (name || "").toLowerCase()
+	// Markdown preview mode: meaningful for .md files. The in-memory
+	// "History preview" tab (path "history_preview", opened by ALT+H / the
+	// "View History Summary" menu action) is read-only and always opens in
+	// viewMode "preview", so it is allowed here even though it is not a real
+	// .md file. Guarded anyway so a stale value falls back to the normal editor.
+	const isMarkdownPreviewable = (tab) => {
+		if (tab.config.path === "history_preview") return true
+		const n = (tab.config.name || "").toLowerCase()
 		return n.endsWith(".md") || n.endsWith(".markdown")
 	}
-	if (tab.config.viewMode === "preview" && isMarkdownFile(tab.config.name) && holder.previewView) {
+	if (tab.config.viewMode === "preview" && isMarkdownPreviewable(tab) && holder.previewView) {
 		holder.previewView.style.display = "block"
 		// Allow the panel to click back into the editor.
 		holder.previewView.onEdit = () => {
@@ -3130,7 +3145,8 @@ const keyBinds = [
 		exec: () => {
 			const activeTab = currentTabs?.activeTab;
 			if (!activeTab || !activeTab.config) return;
-			// Only meaningful for markdown files with a live session.
+			// Only meaningful for markdown files with a live session. The read-only
+			// "History preview" tab (ALT+H) is always shown rendered, never raw.
 			const name = (activeTab.config.name || "").toLowerCase();
 			const isMd = name.endsWith(".md") || name.endsWith(".markdown");
 			if (!isMd || !activeTab.config.session) return;

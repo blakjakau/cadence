@@ -4323,7 +4323,7 @@ class AIManagerHistory {
 			let title = s.title || "";
 			if (!title && s.content) title = s.content.split(/[.\n]/)[0].trim();
 			if (!title) title = "Completed Task";
-			lines.push(`** ${title} **`);
+			lines.push(`## ${title} \n`);
 			if (i >= n - directCount && s.content && s.content.trim()) {
 				lines.push(s.content.trim());
 			}

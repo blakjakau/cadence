@@ -1252,6 +1252,16 @@ isNativeReasoning,
 			},
 		});
 
+		// ALT+H: Open the "View History Summary" (compacted history) preview for the
+		// active session. Bound to the prompt editor (like the Alt+Up/Down prompt
+		// history commands above) so it only fires while the AI prompt editor has
+		// focus — matching the session context menu's "preview" action.
+		this.promptEditor.commands.addCommand({
+			name: "ai:preview-history",
+			bindKey: { win: "Alt+H", mac: "Alt+H" },
+			exec: () => this._previewActiveSessionHistory(),
+		});
+
 		this.promptEditor.on("change", () => this._resizePromptArea());
 		this.promptEditor.resize(); // Perform initial resize
 	}
@@ -2180,9 +2190,25 @@ isNativeReasoning,
 	}
 
 	/**
+	 * Opens the "Preview History" (compacted history) tab for the currently
+	 * active session. This is the shortcut entry point behind the ALT+H
+	 * keyboard binding (see _initPromptEditor) and mirrors the session context
+	 * menu's "preview" action. If no session is active it shows a hint rather
+	 * than failing silently.
+	 */
+	async _previewActiveSessionHistory() {
+		const sessionId = this.activeSessionId;
+		if (!sessionId) {
+			window.modal?.toast("No active session to preview. Open a session first.");
+			return;
+		}
+		await this.previewSessionHistory(sessionId);
+	}
+
+	/**
 	 * Opens the "Preview History" file tab: a read-only, markdown-mode ace editor
 	 * in the main editor tab bar (leftTabs) that shows exactly the compacted
-	 * history this session would send to the AI — the "## title" of every
+	 * history this session would send to the AI â the "## title" of every
 	 * non-seed cycle summary, plus the summary content of the last
 	 * MAX_DIRECT_CYCLE_SUMMARIES cycles. Being a real editor tab, it keeps the
 	 * AI session panel visible on screen at the same time.
