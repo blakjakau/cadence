@@ -1454,10 +1454,10 @@ class AIManagerHistory {
 			element.append(deleteButton);
 		} else if (message.type === "cycle_summary") {
 			// Content-only seeds (isSeed) are transient in-flight placeholders ("Compacting cycle…")
-			// that get replaced in-place by the real summary when the background compaction completes.
-			// They must NOT render as a visible block — they have no real summary content, and a
-			// dangling seed (compaction failed / never ran) would render as an empty "Task Cycle
-			// Compacted" placeholder (the exact corruption seen in the sub-agent view). Return null
+			// that are REMOVED when the background compaction completes (the real summary is HEAD-spliced
+			// before the covered span). They must NOT render as a visible block — they have no real summary
+			// content, and a dangling seed (compaction failed / never ran) would render as an empty "Task
+			// Cycle Compacted" placeholder (the exact corruption seen in the sub-agent view). Return null
 			// so the caller's `if (!element) continue` skips it. The span it anchored is NOT collapsed
 			// (the hide-loops skip seeds), so the live turns it covered remain visible.
 			if (!message.isSeed) {
@@ -2731,7 +2731,14 @@ class AIManagerHistory {
 		for (let i = endIdx - 1; i >= 0; i--) {
 			const msg = messages[i];
 			if (msg.type === "cycle_summary") {
-				cycleStartIdx = i + 1;
+				// SPAN-AWARE stop (same logic as _findCycleBoundary): start after the previous summary's covered-span END
+				// so a legacy tail-anchored summary never leaks its covered turns back into this span.
+				let startIdx = i + 1;
+				if (msg.cycleEndMsgId) {
+					const endIdx2 = messages.findIndex(x => x.id === msg.cycleEndMsgId);
+					if (endIdx2 !== -1 && endIdx2 + 1 > startIdx) startIdx = endIdx2 + 1;
+				}
+				cycleStartIdx = startIdx;
 				break;
 			}
 		}
@@ -3803,7 +3810,7 @@ class AIManagerHistory {
 	}
 
 	/**
-	 * Inserts a transient cycle_summary seed (last model output, content-only) as a stand-in for the in-flight compaction so the new cycle starts with a continuity anchor. Marked `isSeed: true` so the background compaction can replace it with the real summary when it completes. The seed's `cycleStartMsgId`/`cycleEndMsgId` point to the cycle being compacted so `prepareMessagesForAI` can hide the covered span while the seed is in place.
+	 * Inserts a transient cycle_summary seed (last model output, content-only) as a stand-in for the in-flight compaction so the new cycle starts with a continuity anchor. Marked `isSeed: true` so the background compaction can remove it and head-splice the real summary before the span when it completes. The seed's `cycleStartMsgId`/`cycleEndMsgId` point to the cycle being compacted so `prepareMessagesForAI` can hide the covered span while the seed is in place.
 	 */
 	_insertCycleSeed(targetSession, cycleStartIdx, cycleStartMsgId, cycleEndMsgId, content) {
 		const messages = targetSession.messages;
@@ -3818,7 +3825,7 @@ class AIManagerHistory {
 			cycleStartMsgId,
 			cycleEndMsgId
 		};
-		messages.splice(cycleStartIdx, 0, seed); // Phase 2.3 — HEAD-anchor the seed at the span's head so it occupies the exact position the real summary will take (in-place swap on completion keeps contiguity). // Append at the end — the new cycle's first conversational message follows it.
+		messages.splice(cycleStartIdx, 0, seed); // Phase 2.3 — HEAD-anchor the seed at the span's head so it occupies the exact position the real summary will take (the auto path removes the seed and head-splices the real summary in its stead, keeping cycles contiguous).
 		targetSession.lastModified = Date.now();
 		workspaceClient.setSession(targetSession.id, targetSession);
 		if (this.manager.isSessionViewed?.(targetSession.id)) {
@@ -3830,10 +3837,11 @@ class AIManagerHistory {
 	/**
 	 * Inserts a content-only cycle_summary seed TAIL-anchored (right after the span's end) as a stand-in for an
 	 * in-flight background compaction. Unlike _insertCycleSeed (HEAD-anchored at the span's head), the tail
-	 * position means the seed is NEVER inside the span it covers — so the span's token tally and the backward
-	 * summary-stop used by checkCycleCompactionTrigger stay clean while the compaction is in flight.
-	 * autoCompactAgentCycleAsync replaces the seed in-place when the real summary arrives (seed-present
-	 * outcome), preserving the tail position.
+		 * position means the seed is NEVER inside the span it covers — so the span's token tally and the backward
+		 * summary-stop used by checkCycleCompactionTrigger stay clean while the compaction is in flight.
+		 * autoCompactAgentCycleAsync REMOVES the seed when the real summary arrives (seed-present outcome) and
+		 * HEAD-splices the real summary before the covered span's head (unified head-anchored layout) — the tail
+		 * position is only a transient in-flight placeholder, never the final summary's position.
 	 */
 	_insertTailSeed(targetSession, cycleStartMsgId, cycleEndMsgId, content) {
 		const messages = targetSession.messages;
@@ -3903,13 +3911,24 @@ class AIManagerHistory {
 		// half the window budget, before the sliding window needs to cull the view.
 		const threshold = Math.floor(maxTokResolved * 0.5);
 
-		// Locate the span: from just after the last real cycle_summary (or session start) up to the head
-		// message (or the tail). Seeds (isSeed) are excluded from the stop — an in-flight tail seed is not
-		// a real summary yet, so the region it anchors is still uncompacted.
-		let stopIdx = -1; // Index of the last REAL summary (or -1 = session start).
+		// Locate the span: from just after the last real cycle_summary's COVERED SPAN (or session start) up to
+		// the head message (or the tail). Seeds (isSeed) are excluded from the stop — an in-flight tail seed is not
+		// a real summary yet, so the region it anchors is still uncompacted. SPAN-AWARE: a legacy tail-anchored
+		// summary sits AFTER its covered span, so the region start is the covered-span END's index (via
+		// cycleEndMsgId) — starting at the summary's own index would tally (and re-summarize) already-covered
+		// turns. A head-anchored summary's covered end sits at/after its own index, so this is a no-op there;
+		// a missing/archived end id falls back to the summary index (old behavior).
+		let stopIdx = -1; // Index of the last REAL summary's covered-region start (or -1 = session start).
 		for (let i = messages.length - 1; i >= 0; i--) {
 			const m = messages[i];
-			if (m.type === "cycle_summary" && !m.isSeed) { stopIdx = i; break; }
+			if (m.type === "cycle_summary" && !m.isSeed) {
+				stopIdx = i; // Region starts after the summary's index by default (correct for head-anchored summaries).
+				if (m.cycleEndMsgId) {
+					const endIdx = messages.findIndex(x => x.id === m.cycleEndMsgId);
+					if (endIdx !== -1 && endIdx > stopIdx) stopIdx = endIdx; // Legacy tail-anchored: start after the covered span's END instead.
+				}
+				break;
+			}
 		}
 		let headIdx = messages.length - 1; // Tail region by default.
 		if (headId) {
@@ -4049,7 +4068,17 @@ class AIManagerHistory {
 		for (let i = boundaryStartIdx - 1; i >= 0; i--) {
 			const msg = messages[i];
 			if (msg.type === "cycle_summary") {
-				cycleStartIdx = i + 1;
+				// SPAN-AWARE stop: start the new span after the previous summary's COVERED-SPAN END, not just after
+				// the summary's own index. A head-anchored summary sits at its span's head (i+1 already excludes the
+				// covered region); a legacy tail-anchored summary sits AFTER its span, so i+1 would re-include covered
+				// turns that still sit before it. Locating cycleEndMsgId's index and taking max(i+1, endIdx+1) keeps
+				// the covered region out of the next span either way; a missing/archived end id falls back to i+1.
+				let startIdx = i + 1;
+				if (msg.cycleEndMsgId) {
+					const endIdx = messages.findIndex(x => x.id === msg.cycleEndMsgId);
+					if (endIdx !== -1 && endIdx + 1 > startIdx) startIdx = endIdx + 1;
+				}
+				cycleStartIdx = startIdx;
 				break;
 			}
 		}
@@ -4086,7 +4115,14 @@ class AIManagerHistory {
 		for (let i = boundaryStartIdx - 1; i >= 0; i--) {
 			const msg = messages[i];
 			if (msg.type === "cycle_summary") {
-				cycleStartIdx = i + 1;
+				// SPAN-AWARE stop (same logic as _findCycleBoundary): start after the previous summary's covered-span END
+				// so a legacy tail-anchored summary never leaks its covered turns back into the next span.
+				let startIdx = i + 1;
+				if (msg.cycleEndMsgId) {
+					const endIdx = messages.findIndex(x => x.id === msg.cycleEndMsgId);
+					if (endIdx !== -1 && endIdx + 1 > startIdx) startIdx = endIdx + 1;
+				}
+				cycleStartIdx = startIdx;
 				break;
 			}
 		}
@@ -4157,7 +4193,7 @@ class AIManagerHistory {
 	}
 
 	/**
-	 * Fire-and-forget background compaction: locates the latest completed-but-unsummarized cycle and summarizes it on a separate (non-primary) connection without blocking the caller. The caller may have pre-inserted a lightweight content-only seed (via _insertTailSeed — tail-anchored, so the seed never falls inside its own span — or _insertCycleSeed) as a stand-in; when the real summary arrives the seed is replaced in-place so the covered span collapses into the full <compacted_cycle> block. When no seed is present the summary is head-spliced before the cycle.
+	 * Fire-and-forget background compaction: locates the latest completed-but-unsummarized cycle and summarizes it on a separate (non-primary) connection without blocking the caller. The caller may have pre-inserted a lightweight content-only seed (via _insertTailSeed — tail-anchored, so the seed never falls inside its own span while the compaction is in flight — or _insertCycleSeed) as a stand-in; when the real summary arrives the seed is REMOVED and the real summary is HEAD-spliced before the cycle's span head (unified head-anchored layout — an in-place tail replacement would leave the summary after its covered span and leak it into the next boundary scan).
 	 * @param {Object} [opts] - { connectionId } optional: force the compaction (cascade + summary) onto a specific connection; null = _selectCompactionConnection picks the fastest separate connection (unchanged behavior).
 	 */
 	async autoCompactAgentCycleAsync(sessionObj = null, opts = null) {
@@ -4206,7 +4242,8 @@ class AIManagerHistory {
 			if (!result || !result.summary) {
 				// Phase 3.2 — the background (separate-connection) compaction produced nothing (AI unavailable or
 				// returned empty). Mark the session so the agent loop preempts it onto the main connection on its
-				// next turn. The seed (if present) remains as the continuity anchor until the preemption replaces it.
+				// next turn. The seed (if present) remains as the continuity anchor until the preemption completes
+				// the summary and head-splices the real summary.
 				targetSession._pendingCycleCompaction = true;
 				return false;
 			}
@@ -4229,13 +4266,17 @@ class AIManagerHistory {
 				cycleEndMsgId: endMsgId
 			};
 
-			// Replace the content-only seed (if present) with the real summary so the covered span collapses into the full block instead of leaving a dangling placeholder.
+			// Phase 1.1 — UNIFY ANCHORING TO HEAD (auto path): every cycle_summary sits immediately BEFORE its covered raw span.
+			// The in-flight seed is a content-only placeholder (head- or tail-anchored) — it never lies INSIDE
+			// [startMsgId..endMsgId], so it can be removed outright. Replacing a TAIL seed in place would leave
+			// the real summary AFTER its covered span; the next boundary scan then starts at prevSummaryIdx+1
+			// (before the covered region) and re-summarizes the same turns. Removing the seed and splicing the
+			// real summary at the span's head makes the auto path identical to the manual / no-seed HEAD layout.
 			const seedIdx = messages.findIndex(m => m.type === "cycle_summary" && m.isSeed);
-			if (seedIdx !== -1) {
-				messages[seedIdx] = summaryMessage; // In-place swap keeps the seed's position (end of the covered span) stable.
-			} else {
-				messages.splice(curStartIdx, 0, summaryMessage); // Phase 1.1 — HEAD-anchor (no seed was present). Cycles stay contiguous: this cycle's raw span follows the summary; the next cycle starts after it.
-			}
+			if (seedIdx !== -1) messages.splice(seedIdx, 1); // Drop the placeholder; the real summary takes the canonical HEAD position below.
+			const insertIdx = messages.findIndex(m => m.id === startMsgId); // Re-derive: removing the seed above may have shifted indices.
+			if (insertIdx === -1) return false; // Span head vanished while the seed was removed (concurrent archive) — safe no-op.
+			messages.splice(insertIdx, 0, summaryMessage); // HEAD-anchor: this cycle's raw span follows the summary; the next cycle starts after it.
 			targetSession.lastModified = Date.now();
 			await workspaceClient.setSession(targetSession.id, targetSession);
 
@@ -4251,9 +4292,10 @@ class AIManagerHistory {
 			return true;
 		} catch (e) {
 			console.error("Error during background agent cycle compaction:", e);
-			// Phase 3.2 — the background (separate-connection) compaction failed. Mark the session so the
-			// agent loop preempts it onto the main connection on its next turn. The seed (if present)
-			// remains as the continuity anchor until the preemption replaces it in place.
+				// Phase 3.2 — the background (separate-connection) compaction failed. Mark the session so the
+				// agent loop preempts it onto the main connection on its next turn. The seed (if present)
+				// remains as the continuity anchor until the preemption completes the summary and head-splices
+				// the real summary.
 			targetSession._pendingCycleCompaction = true;
 			return false;
 		}

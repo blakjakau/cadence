@@ -104,6 +104,7 @@ func createServerMux() *http.ServeMux {
 	mux.HandleFunc("/api/session", sessionHandler)
 	mux.HandleFunc("/api/sessions", sessionsHandler)
 	mux.HandleFunc("/api/session-archive", sessionArchiveHandler)
+	mux.HandleFunc("/api/session-copy", sessionCopyHandler)
 	mux.HandleFunc("/api/db-stats", dbStatsHandler)
 	mux.HandleFunc("/api/restart", restartHandler)
 	mux.HandleFunc("/api/stop", stopHandler)

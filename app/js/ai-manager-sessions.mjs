@@ -994,39 +994,31 @@ class AIManagerSessions {
 	}
 
 	async copySession(sessionId, makeActive = true) {
-		const sourceSession = await workspaceClient.getSession(sessionId);
-		if (!sourceSession) {
-			window.modal.notice("Source session not found.", "Error Forking Session");
+		// Fork is done atomically on the backend (main record, metadata, and
+		// archive are copied in one DB transaction), so the fork keeps its
+		// compacted cycle-span detail.
+		let result;
+		try {
+			result = await workspaceClient.copySession(sessionId);
+		} catch (err) {
+			window.modal.notice(err.message, "Error Forking Session");
 			return;
 		}
 
-		const newId = `ai-session-${crypto.randomUUID()}`;
-		const newName = `${sourceSession.name} - fork`;
-
-		// Deep clone session data
-		const newSessionData = JSON.parse(JSON.stringify(sourceSession));
-		newSessionData.id = newId;
-		newSessionData.name = newName;
-		newSessionData.createdAt = Date.now();
-		newSessionData.lastModified = Date.now();
-
-		await workspaceClient.setSession(newId, newSessionData);
-
+		const now = Date.now();
 		this.allSessionMetadata.push({
-			id: newId,
-			name: newName,
-			createdAt: newSessionData.createdAt,
-			lastModified: newSessionData.lastModified
+			id: result.newId,
+			name: result.name,
+			createdAt: now,
+			lastModified: now
 		});
 
 		if (makeActive) {
-			const newTab = this.manager.sessionTabBar.add({ name: newName, id: newId, defaultStatusIcon: 'developer_board' });
+			const newTab = this.manager.sessionTabBar.add({ name: result.name, id: result.newId, defaultStatusIcon: 'developer_board' });
 			newTab.on('dblclick', () => this.renameCurrentSession());
 			newTab.click();
-			window.modal.toast(`Forked as "${newName}"`);
-		} else {
-			window.modal.toast(`Forked as "${newName}"`);
 		}
+		window.modal.toast(`Forked as "${result.name}"`);
 	}
 
 	/**

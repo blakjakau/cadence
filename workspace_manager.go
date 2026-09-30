@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
@@ -13,6 +15,21 @@ import (
 	"sync"
 	"time"
 )
+
+// newSessionID generates a new session ID in the standard "ai-session-<uuidv4>"
+// format using crypto/rand (no external uuid dependency in go.mod).
+func newSessionID() string {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		// crypto/rand never fails on supported platforms; fall back to a
+		// timestamp-based unique id if it somehow does.
+		return fmt.Sprintf("ai-session-%d", time.Now().UnixNano())
+	}
+	// RFC 4122 v4 bits.
+	b[6] = (b[6] & 0x0f) | 0x40
+	b[8] = (b[8] & 0x3f) | 0x80
+	return "ai-session-" + hex.EncodeToString(b)
+}
 
 type AppConfig struct {
 	Folders                  []string               `json:"folders,omitempty"`
@@ -428,6 +445,49 @@ func sessionArchiveHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+}
+
+// sessionCopyHandler duplicates a session (main record, metadata, and archive)
+// atomically on the backend, so the fork keeps its compacted cycle-span detail.
+//
+//	POST /api/session-copy?id=<srcId> -> {"newId": "...", "name": "<srcName> - fork"}
+func sessionCopyHandler(w http.ResponseWriter, r *http.Request) {
+	if !checkRequestAuthorization(r) {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	id := r.URL.Query().Get("id")
+	if id == "" {
+		http.Error(w, "Missing session ID", http.StatusBadRequest)
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if globalDB == nil {
+		http.Error(w, "DB not available", http.StatusInternalServerError)
+		return
+	}
+
+	newID := newSessionID()
+	name, err := globalDB.CopySession(id, newID)
+	if err != nil {
+		if os.IsNotExist(err) {
+			http.Error(w, "Session not found", http.StatusNotFound)
+			return
+		}
+		log.Printf("[WorkspaceManager] Failed to copy session %s: %v", id, err)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"newId": newID,
+		"name":  name,
+	})
 }
 
 func sessionsHandler(w http.ResponseWriter, r *http.Request) {

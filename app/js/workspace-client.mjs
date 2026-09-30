@@ -152,6 +152,20 @@ export const workspaceClient = {
         return await res.json();
     },
 
+    // Fork a session atomically on the backend (main record, metadata, and
+    // archive copied). Returns {newId, name}.
+    async copySession(id) {
+        const res = await fetch(`${API_BASE}/session-copy?id=${encodeURIComponent(id)}`, {
+            method: 'POST'
+        });
+        if (!res.ok) {
+            let msg = res.statusText;
+            try { msg = await res.text(); } catch (e) { /* keep statusText */ }
+            throw new Error(`Failed to fork session: ${msg}`);
+        }
+        return await res.json();
+    },
+
     async getDBStats() {
         const res = await fetch(`${API_BASE}/db-stats?t=${Date.now()}`);
         if (!res.ok) {

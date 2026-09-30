@@ -354,6 +354,92 @@ func (c *CadenceDB) DeleteSession(id string) error {
 	})
 }
 
+// CopySession atomically duplicates a session's main record, metadata, and
+// archived cycle spans within a single transaction. The copy gets newID and
+// the name "<srcName> - fork", with fresh createdAt/lastModified; the
+// source's parentId is preserved. Returns the new session's display name.
+func (c *CadenceDB) CopySession(srcID, newID string) (string, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	var forkName string
+
+	err := c.db.Update(func(tx *bolt.Tx) error {
+		bData := tx.Bucket(bucketSessionsData)
+		bMeta := tx.Bucket(bucketSessionsMeta)
+		bArchives := tx.Bucket(bucketSessionArchives)
+
+		if bData == nil || bMeta == nil {
+			return fmt.Errorf("session buckets not found")
+		}
+
+		srcBytes := bData.Get([]byte(srcID))
+		if srcBytes == nil {
+			return os.ErrNotExist
+		}
+
+		var header struct {
+			ID       string `json:"id"`
+			Name     string `json:"name"`
+			ParentID string `json:"parentId"`
+		}
+		if err := json.Unmarshal(srcBytes, &header); err != nil {
+			return err
+		}
+
+		now := time.Now().UnixMilli()
+		forkName = header.Name + " - fork"
+
+		// Clone the main record and patch the id and metadata fields.
+		var doc map[string]interface{}
+		if err := json.Unmarshal(srcBytes, &doc); err != nil {
+			return err
+		}
+		doc["id"] = newID
+		doc["name"] = forkName
+		doc["createdAt"] = now
+		doc["lastModified"] = now
+
+		clone, err := json.Marshal(doc)
+		if err != nil {
+			return err
+		}
+
+		meta := SessionMetadataRecord{
+			ID:           newID,
+			Name:         forkName,
+			ParentID:     header.ParentID,
+			CreatedAt:    now,
+			LastModified: now,
+			Revision:     1,
+		}
+		metaBytes, err := json.Marshal(meta)
+		if err != nil {
+			return err
+		}
+
+		if err := bData.Put([]byte(newID), clone); err != nil {
+			return err
+		}
+		if err := bMeta.Put([]byte(newID), metaBytes); err != nil {
+			return err
+		}
+
+		// Copy the archive byte-for-byte (skip when the source has none).
+		if bArchives != nil {
+			if srcArchive := bArchives.Get([]byte(srcID)); srcArchive != nil {
+				if err := bArchives.Put([]byte(newID), srcArchive); err != nil {
+					return err
+				}
+			}
+		}
+
+		return nil
+	})
+
+	return forkName, err
+}
+
 // GetSessionArchive returns the raw archive document for a session (the JSON
 // spans record that holds compacted cycle spans), or os.ErrNotExist when the
 // session has no archived spans yet.
