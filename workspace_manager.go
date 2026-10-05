@@ -88,12 +88,19 @@ func initWorkspaceManager() {
 		log.Printf("Failed to create config dir: %v", err)
 	}
 
+	// Dev mode (--serve) uses a separate database file so it never locks or
+	// mutates the production cadence.db.
+	dbFile := "cadence.db"
+	if serveFlag != "" {
+		dbFile = "cadence-dev.db"
+	}
+
 	var errDB error
-	globalDB, errDB = openCadenceDB(configDir)
+	globalDB, errDB = openCadenceDB(configDir, dbFile)
 	if errDB != nil {
 		log.Printf("[WorkspaceManager] Warning: failed to open CadenceDB: %v", errDB)
 	} else {
-		log.Printf("[WorkspaceManager] Initialized CadenceDB at %s", filepath.Join(configDir, "cadence.db"))
+		log.Printf("[WorkspaceManager] Initialized CadenceDB at %s", filepath.Join(configDir, dbFile))
 	}
 
 	loadAppConfig()
