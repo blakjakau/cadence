@@ -3100,7 +3100,7 @@ Snippet: ${r.content || r.snippet || ""}`;
                 const aiManager = window.ui?.aiManager;
 
                 if (!session) {
-                    throw new Error("No active session found to update scratchpad.");
+                    throw new Error("Could not resolve session to update scratchpad.");
                 }
 
                 const mode = (args.mode || "replace").toLowerCase();
@@ -3142,7 +3142,7 @@ Snippet: ${r.content || r.snippet || ""}`;
                 const aiManager = window.ui?.aiManager;
 
                 if (!session) {
-                    throw new Error("No active session found to clear scratchpad.");
+                    throw new Error("Could not resolve session to clear scratchpad.");
                 }
 
                 // Snapshot the previous content before clearing
@@ -3198,7 +3198,7 @@ Snippet: ${r.content || r.snippet || ""}`;
             const session = this._resolveSession(sourceId);
 
             if (!session) {
-                throw new Error("No active session found to create a checkpoint.");
+                throw new Error("Could not resolve session to create a checkpoint.");
             }
 
             const checkpointTs = Date.now();
