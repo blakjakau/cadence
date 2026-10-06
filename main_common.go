@@ -164,6 +164,7 @@ func parseFlags() {
 	flag.BoolVar(&installServiceFlag, "install-service", false, "Install Cadence as a systemd service (requires root).")
 	flag.BoolVar(&uninstallFlag, "uninstall", false, "Uninstall user and/or system Cadence installations.")
 	flag.StringVar(&rootFlag, "root", "", "Set the root directory for the file API (defaults to user's home directory).")
+	flag.StringVar(&port, "port", port, "Override the listen port (default 3022, or 3023 when --serve is set).")
 	flag.BoolVar(&noIdleShutdownFlag, "no-idle-shutdown", true, "Disable automatic shutdown due to inactivity. Recommended for services.")
 	flag.StringVar(&serveFlag, "serve", "", "Serve live static files from this directory instead of embedded assets.")
 	flag.BoolVar(&browserFlag, "browser", false, "Open in the default browser instead of a native window.")
@@ -172,7 +173,16 @@ func parseFlags() {
 	flag.Parse()
 
 	if serveFlag != "" {
-		port = "3023"
+		// Only apply the serve-mode port default if --port was not given explicitly.
+		explicitPort := false
+		flag.Visit(func(f *flag.Flag) {
+			if f.Name == "port" {
+				explicitPort = true
+			}
+		})
+		if !explicitPort {
+			port = "3023"
+		}
 	}
 
 	if keyFlag {

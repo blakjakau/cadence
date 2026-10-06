@@ -1,8 +1,8 @@
 ---
 name: ui-elements-guide
-description: Provides patterns, conventions, and code examples for building user interfaces using Cadence's custom Web Components (Block, Inline, Button, Input, Panel) and strict CSS styling guidelines. Activate this skill when the user asks to create, modify, or extend UI elements, layout panels, or view components.
+description: Provides patterns, conventions, and code examples for building user interfaces using Cadence's custom Web Components (Block, Inline, Button, Input, Panel) and strict CSS styling guidelines.
+Activate this skill when creating, modifying, or extending UI elements, layout panels, or view components.
 ---
-
 # Cadence UI Elements & Web Components Guide
 
 When building or modifying UI components in the Cadence workspace, follow these strict rules to maintain codebase consistency and styling hygiene.

@@ -203,7 +203,7 @@ class AgentTools {
     _cleanNormalizedPath(rawPath, sourceId = null) {
         const folders = this._getEffectiveWorkspaceFolders(sourceId);
         rawPath = rawPath.replace(/\\/g, '/');
-
+        
         // Resolve traversal sequences
         const parts = rawPath.split('/');
         const resolvedParts = [];
@@ -218,22 +218,31 @@ class AgentTools {
             }
         }
 
-        const finalResolvedPath = '/' + resolvedParts.join('/');
-        const cleanFinalPath = finalResolvedPath.replace(/\/+/g, '/');
+        // Build both a leading-slash (absolute) and a bare (relative) form.
+        // The resolved path may itself be relative, so containment must be
+        // checked in *both* normalized forms — otherwise a relative
+        // workspace folder (e.g. "repo/dev.jakbox.cadence") can never
+        // match a forced-absolute path like "/repo/dev.jakbox.cadence/x".
+        const bare = resolvedParts.join('/').replace(/\/+/g, '/');
+        const cleanFinalPath = bare ? '/' + bare : '/';
 
-        // Verify security against open workspace folders
+        // Verify security against open workspace folders. Require the
+        // resolved path to actually lie under an open workspace folder in
+        // *both* normalized forms (leading-slash and bare). No short-circuit
+        // for relative folders: containment must genuinely hold.
         const isSafe = folders.some(folder => {
             const normalizedFolder = folder.replace(/\\/g, '/').replace(/\/+/g, '/').replace(/\/+$/, '');
-            if (normalizedFolder === '.' || normalizedFolder === '' || !normalizedFolder.startsWith('/')) {
-                return true;
-            }
-            return cleanFinalPath === normalizedFolder || cleanFinalPath.startsWith(normalizedFolder + '/');
+            if (normalizedFolder === '.' || normalizedFolder === '') return false;
+            const underAbsolute = cleanFinalPath === normalizedFolder || cleanFinalPath.startsWith(normalizedFolder + '/');
+            const underRelative = bare === normalizedFolder || bare.startsWith(normalizedFolder + '/');
+            return underAbsolute || underRelative;
         }) || (window.ui?.fileList?.index?.files || []).some(file => {
-            const normalizedFilePath = file.path.replace(/\\/g, '/').replace(/\/+/g, '/');
-            if (cleanFinalPath !== normalizedFilePath) return false;
+            const normalizedFilePath = file.path.replace(/\\/g, '/').replace(/\/+/g, '/').replace(/^\/+/, '');
+            if (bare !== normalizedFilePath) return false;
             return folders.some(folder => {
                 const normFolder = folder.replace(/\\/g, '/').replace(/\/+/g, '/').replace(/\/+$/, '');
-                return cleanFinalPath === normFolder || cleanFinalPath.startsWith(normFolder + '/');
+                if (normFolder === '.' || normFolder === '') return false;
+                return bare === normFolder || bare.startsWith(normFolder + '/');
             });
         });
 
@@ -244,6 +253,11 @@ class AgentTools {
                 cleanFinalPath
             });
             throw new Error(`Security Exception: Access to path '${rawPath}' is denied. It lies outside the allowed workspace folders.`);
+        }
+        
+        // if it all checks out, ensure it's actually relative
+        if(cleanFinalPath.startsWith("/")) {
+        	return cleanFinalPath.substring(1)
         }
 
         return cleanFinalPath;
@@ -1002,9 +1016,13 @@ Snippet: ${r.content || r.snippet || ""}`;
             const effectiveFolders = this._getEffectiveWorkspaceFolders(sourceId);
             let searchRoots = [];
             if (targetFolder) {
+                // targetFolder may be in leading-slash form while the effective
+                // folder is relative (or vice versa) - compare both sides in a
+                // canonicalized form (slash-normalized, leading slashes stripped).
+                const normTarget = targetFolder.replace(/\\/g, '/').replace(/\/+/g, '/').replace(/^\/+/, '');
                 const isWithinEffective = effectiveFolders.some(f => {
-                    const normF = f.replace(/\\/g, '/').replace(/\/+$/, '');
-                    return targetFolder === normF || targetFolder.startsWith(normF + '/');
+                    const normF = f.replace(/\\/g, '/').replace(/\/+/g, '/').replace(/^\/+/, '');
+                    return normTarget === normF || normTarget.startsWith(normF + '/');
                 });
                 if (!isWithinEffective) {
                     return `Security Exception: Access to path '${targetPath}' is denied. It lies outside the allowed workspace folders.`;
@@ -1049,17 +1067,34 @@ Snippet: ${r.content || r.snippet || ""}`;
             }
 
             // 2. Search remaining files using backend Go server if connected
+            let droppedBackendMatches = 0;
             if (this.conduit.isConnected) {
                 console.debug(`[AgentTools] Running backend Go search for query: "${query}" in roots:`, searchRoots);
                 try {
                     for (const rootFolder of searchRoots) {
                         try {
-                            const res = await this.conduit.wsSearch(rootFolder, "content", query);
+                            // Backend returns match paths relative to this exact
+                            // search root, so re-join them deterministically —
+                            // no heuristic re-anchoring against fileAPIRoot.
+                            // The backend resolves relative paths against the workspace
+                            // root but treats leading-slash paths as absolute filesystem
+                            // paths (Forbidden) — send the root in bare (relative) form.
+                            const bareRoot = rootFolder.replace(new RegExp('' + String.fromCharCode(94, 47, 43)), '');
+                            const res = await this.conduit.wsSearch(bareRoot, "content", query, { agent: true });
                             if (res && !res.error && Array.isArray(res.data)) {
                                 for (const match of res.data) {
+                                    if (!match || typeof match.path !== 'string') continue;
                                     try {
-                                        const resolved = this._resolveAndValidatePath(match.path, sourceId);
-                                        if (targetFolder && !resolved.startsWith(targetFolder)) continue;
+                                        const raw = match.path.replace(/\\/g, '/');
+                                        const normRoot = rootFolder.replace(/\\/g, '/').replace(/\/+$/, '');
+                                        const joined = raw === '.' || raw === ''
+                                            ? normRoot
+                                            : `${normRoot}/${raw.replace(/^\/+/, '')}`;
+                                        const resolved = this._cleanNormalizedPath(joined, sourceId);
+                                        if (targetFolder && !resolved.startsWith(targetFolder)) {
+                                            droppedBackendMatches++;
+                                            continue;
+                                        }
                                         if (searchedPaths.has(resolved)) continue; // Already searched
                                         searchedPaths.add(resolved);
                                         matches.push({
@@ -1067,8 +1102,11 @@ Snippet: ${r.content || r.snippet || ""}`;
                                             line: match.line,
                                             content: match.content
                                         });
-                                    } catch (e) {
-                                        // Skip files that fail path resolution or lie outside pinned roots
+                                    } catch (eMatch) {
+                                        // A match we could not re-anchor is excluded
+                                        // and reported below rather than silently lost.
+                                        droppedBackendMatches++;
+                                        console.warn(`[AgentTools] Excluded backend match ${match.path} from root ${rootFolder}:`, eMatch.message);
                                     }
                                 }
                             }
@@ -1124,7 +1162,15 @@ Snippet: ${r.content || r.snippet || ""}`;
                 }
             }
 
-            if (matches.length === 0) return "No matches found.";
+            if (matches.length === 0) {
+                return droppedBackendMatches > 0
+                    ? `No matches found. (${droppedBackendMatches} backend match(es) outside the search scope were excluded)`
+                    : "No matches found.";
+            }
+
+            const droppedNote = droppedBackendMatches > 0
+                ? `\n(${droppedBackendMatches} backend match(es) outside the search scope were excluded)`
+                : "";
 
             // Group matches by path to count hits per file
             const matchesByPath = {};
@@ -1206,10 +1252,10 @@ Snippet: ${r.content || r.snippet || ""}`;
                 }
 
                 const header = `Too many search matches, showing ${bestX} of ${Y}\n\n`;
-                return header + bestLines.map(ld => ld.text).join('\n');
+                return header + bestLines.map(ld => ld.text).join('\n') + droppedNote;
             }
 
-            return lineData.map(ld => ld.text).join('\n');
+            return lineData.map(ld => ld.text).join('\n') + droppedNote;
         } catch (error) {
             return `Error searching files: ${error.message}`;
         }

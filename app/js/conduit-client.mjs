@@ -274,12 +274,16 @@ class ConduitClient {
         return this._send({ action: 'count_files', path });
     }
 
-    wsSearch(path, type, query) {
-        return this._send({ action: 'search', path, type, query });
+    wsSearch(path, type, query, opts = null) {
+        const payload = { action: 'search', path, type, query };
+        if (opts && opts.agent) payload.agent = true;
+        return this._send(payload);
     }
 
-    wsSearchWithId(requestId, path, type, query) {
-        return this._send({ action: 'search', path, type, query }, requestId);
+    wsSearchWithId(requestId, path, type, query, opts = null) {
+        const payload = { action: 'search', path, type, query };
+        if (opts && opts.agent) payload.agent = true;
+        return this._send(payload, requestId);
     }
 
     wsSearchSymbols(query) {
