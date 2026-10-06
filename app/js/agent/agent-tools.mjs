@@ -2500,8 +2500,7 @@ Snippet: ${r.content || r.snippet || ""}`;
         const targetSessionId = subSessionId || aiManager?.activeSessionId;
         
         // 0. Check session / global toggle
-        const sessionObj = aiManager?.runningSessions.get(targetSessionId)?.instance?.session ||
-                           aiManager?.activeSession;
+        const sessionObj = this._resolveSession(targetSessionId);
 
         if (sessionObj && sessionObj.allowRunCommand === false) {
             return "Tool Error: Terminal command execution (`run_command`) is disabled for this session.";
@@ -2543,9 +2542,8 @@ Snippet: ${r.content || r.snippet || ""}`;
         // 3. User Approval Workflow if not whitelisted
         if (!isApproved) {
             const runningSub = aiManager?.runningSessions.get(targetSessionId);
-            const activeSession = (runningSub && runningSub.instance?.session)
-                ? runningSub.instance.session
-                : (aiManager?.activeSessionId === targetSessionId ? aiManager.activeSession : await workspaceClient.getSession(targetSessionId));
+            const activeSession = (runningSub && (runningSub.instance?.session || runningSub.session))
+                || (aiManager?.activeSessionId === targetSessionId ? aiManager.activeSession : await workspaceClient.getSession(targetSessionId));
             
             if (!activeSession) {
                 return "Error: Session context not found for command approval.";
@@ -2619,7 +2617,7 @@ Snippet: ${r.content || r.snippet || ""}`;
                 wsUrl += `&dir=${encodeURIComponent(targetDir)}`;
             }
 
-            const activeSession = aiManager?.runningSessions.get(targetSessionId)?.instance?.session || aiManager?.activeSession;
+            const activeSession = this._resolveSession(targetSessionId);
             const executionMsgId = crypto.randomUUID();
             const streamMsg = {
                 id: executionMsgId,
@@ -3098,10 +3096,8 @@ Snippet: ${r.content || r.snippet || ""}`;
             case 'checkpoint':
                 return await this.checkpoint(args.name, sourceId);
             case 'scratchpad_write': {
-                const targetSessionId = sourceId || window.ui?.aiManager?.activeSessionId;
+                const session = this._resolveSession(sourceId);
                 const aiManager = window.ui?.aiManager;
-                const session = (targetSessionId && aiManager?.runningSessions?.get(targetSessionId)?.instance?.session)
-                    || (targetSessionId === aiManager?.activeSessionId ? aiManager?.activeSession : null);
 
                 if (!session) {
                     throw new Error("No active session found to update scratchpad.");
@@ -3142,10 +3138,8 @@ Snippet: ${r.content || r.snippet || ""}`;
                 return `Scratchpad ${actionVerb} (${byteSize} bytes). Notes are active and evergreen in context.`;
             }
             case 'scratchpad_clear': {
-                const targetSessionId = sourceId || window.ui?.aiManager?.activeSessionId;
+                const session = this._resolveSession(sourceId);
                 const aiManager = window.ui?.aiManager;
-                const session = (targetSessionId && aiManager?.runningSessions?.get(targetSessionId)?.instance?.session)
-                    || (targetSessionId === aiManager?.activeSessionId ? aiManager?.activeSession : null);
 
                 if (!session) {
                     throw new Error("No active session found to clear scratchpad.");
@@ -3201,10 +3195,7 @@ Snippet: ${r.content || r.snippet || ""}`;
      */
     async checkpoint(name, sourceId = null) {
         try {
-            const targetSessionId = sourceId || window.ui?.aiManager?.activeSessionId;
-            const aiManager = window.ui?.aiManager;
-            const session = (targetSessionId && aiManager?.runningSessions?.get(targetSessionId)?.instance?.session)
-                || (targetSessionId === aiManager?.activeSessionId ? aiManager?.activeSession : null);
+            const session = this._resolveSession(sourceId);
 
             if (!session) {
                 throw new Error("No active session found to create a checkpoint.");
