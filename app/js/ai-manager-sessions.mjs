@@ -1023,10 +1023,17 @@ class AIManagerSessions {
 
 	/**
 	 * Automatically renames the session based on the first prompt.
+	 * @param {string} firstPromptContent - The first user prompt.
+	 * @param {object} [targetSession] - The session to rename. Defaults to the active session (legacy callers).
 	 */
-	async autoRenameSession(firstPromptContent) {
+	async autoRenameSession(firstPromptContent, targetSession = null) {
 		// Yield immediately to let the initial prompt generation and UI rendering proceed async
 		await new Promise(resolve => setTimeout(resolve, 500));
+
+		// Pin to the session being renamed; the active session may have changed while the rename is in flight.
+		const target = targetSession || this.activeSession;
+		const targetId = target?.id;
+		if (!target || !targetId) return;
 
 		const sizeRank = {
 			tiny: 1,
@@ -1072,21 +1079,21 @@ class AIManagerSessions {
 				
 				const newName = cleanResponse.replace(/["']/g, '').trim();
 				
-				this.activeSession.name = newName;
-				const meta = this.allSessionMetadata.find(s => s.id === this.activeSession.id);
+				target.name = newName;
+				const meta = this.allSessionMetadata.find(s => s.id === targetId);
 				if (meta) {
 					meta.name = newName;
 					meta.lastModified = Date.now();
 				}
-				await workspaceClient.setSession(this.activeSession.id, this.activeSession);
+				await workspaceClient.setSession(targetId, target);
 
-				const tabToRename = this.manager.sessionTabBar.tabs.find(t => t.config.id === this.activeSessionId);
+				const tabToRename = this.manager.sessionTabBar.tabs.find(t => t.config.id === targetId);
 				if (tabToRename) {
 					tabToRename.name = newName; 
 				}
 
 				this.manager._dispatchContextUpdate("session_renamed");
-				this._broadcast('session_renamed', { sessionId: this.activeSession.id, name: newName });
+				this._broadcast('session_renamed', { sessionId: targetId, name: newName });
 			}
 		} catch (e) {
 			console.error("Auto rename failed:", e);

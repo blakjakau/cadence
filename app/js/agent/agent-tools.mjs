@@ -29,11 +29,14 @@ class AgentTools {
     _resolveSession(sourceId = null) {
         try {
             const aiManager = window.ui?.aiManager;
-            const targetSessionId = sourceId || aiManager?.activeSessionId;
-            const running = targetSessionId ? aiManager?.runningSessions?.get(targetSessionId) : null;
-            const session = running?.instance?.session || running?.session
-                || (targetSessionId === aiManager?.activeSessionId ? aiManager?.activeSession : null)
-                || aiManager?.activeSession;
+            // Legacy callers with no sourceId resolve to the active session.
+            if (!sourceId) {
+                return aiManager?.activeSession || null;
+            }
+            // A specific session was requested: never silently fall back to the active session.
+            const entry = aiManager?.runningSessions?.get(sourceId) || null;
+            const session = entry?.instance?.session || entry?.session
+                || (sourceId === aiManager?.activeSessionId ? aiManager?.activeSession : null);
             return session || null;
         } catch (e) {
             return null;
@@ -1593,13 +1596,10 @@ Snippet: ${r.content || r.snippet || ""}`;
                 editList = [{ search: searchString || "", replace: replacementString || "" }];
             }
 
-            const resolvedPath = this._resolveAndValidatePath(path);
+            const resolvedPath = this._resolveAndValidatePath(path, sourceId);
 
-            const targetSessionId = sourceId || window.ui?.aiManager?.activeSessionId;
             const aiManager = window.ui?.aiManager;
-            const activeSession = (targetSessionId && aiManager?.runningSessions?.get(targetSessionId)?.instance?.session)
-                || (targetSessionId === aiManager?.activeSessionId ? aiManager?.activeSession : null)
-                || window.ui?.aiManager?.activeSession;
+            const activeSession = this._resolveSession(sourceId);
 
             const isForgivenessMode = (activeSession?.forgivenessMode ?? window.ui?.aiManager?.forgivenessMode) === true;
             const shouldOpenForReview = !isForgivenessMode || (activeSession?.openEditsForReview ?? window.ui?.aiManager?.openEditsForReview ?? window.ui?.aiManager?.config?.defaultOpenEditsForReview ?? true);
@@ -1972,11 +1972,7 @@ Snippet: ${r.content || r.snippet || ""}`;
                 throw new Error("You must provide either 'search' or both 'startLine' and 'lineCount'.");
             }
 
-            const targetSessionId = sourceId || window.ui?.aiManager?.activeSessionId;
-            const aiManager = window.ui?.aiManager;
-            const activeSession = (targetSessionId && aiManager?.runningSessions?.get(targetSessionId)?.instance?.session)
-                || (targetSessionId === aiManager?.activeSessionId ? aiManager?.activeSession : null)
-                || window.ui?.aiManager?.activeSession;
+            const activeSession = this._resolveSession(sourceId);
 
             const isForgivenessMode = (activeSession?.forgivenessMode ?? window.ui?.aiManager?.forgivenessMode) === true;
 
@@ -2103,11 +2099,7 @@ Snippet: ${r.content || r.snippet || ""}`;
                 destinationExists = false;
             }
 
-            const targetSessionId = sourceId || window.ui?.aiManager?.activeSessionId;
-            const aiManager = window.ui?.aiManager;
-            const activeSession = (targetSessionId && aiManager?.runningSessions?.get(targetSessionId)?.instance?.session)
-                || (targetSessionId === aiManager?.activeSessionId ? aiManager?.activeSession : null)
-                || window.ui?.aiManager?.activeSession;
+            const activeSession = this._resolveSession(sourceId);
 
             const isForgivenessMode = (activeSession?.forgivenessMode ?? window.ui?.aiManager?.forgivenessMode) === true;
             const actId = sourceId || activeSession?.id || "default";

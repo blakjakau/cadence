@@ -2788,7 +2788,7 @@ isNativeReasoning,
 		// Auto-rename if this is the first message and the name is default
 		if (targetSession.messages.filter(m => m.type === 'user').length === 1 && targetSession.name.startsWith("Chat ")) {
 			// Don't await it, let it run in the background
-			this.sessionsManager.autoRenameSession(userMessage.content);
+			this.sessionsManager.autoRenameSession(userMessage.content, targetSession);
 		}
 
 		if (targetAgentMode) {
