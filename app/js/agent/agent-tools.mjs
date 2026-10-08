@@ -985,6 +985,66 @@ Snippet: ${r.content || r.snippet || ""}`;
     }
 
     /**
+     * Determines whether a path refers to an existing *file* (as opposed to a
+     * directory). Used by the search_files dispatcher to decide between the
+     * line-numbered `searchInFile` output and the directory-walking
+     * `searchFiles` (backend grep).
+     *
+     * Resolution strategy:
+     *  1. Fast path: exact match in the file index. `index.files` contains
+     *     file entries only (directories live in `index.folders`), so a hit
+     *     confirms the path is a file.
+     *  2. Backend probe: `wsList` on the resolved path. The backend `list`
+     *     handler returns an array of entries for a directory and an error
+     *     for a file or missing path, so a non-error response with a
+     *     non-array payload confirms a file.
+     *
+     * Any failure (offline, missing path, outside workspace) returns false —
+     * "not confirmed a file". The worst case is falling through to
+     * `searchFiles`, which is correct for directories, files, and missing
+     * paths alike (the backend falls back to searching all indexer roots).
+     * @param {string} path
+     * @param {string|null} [sourceId]
+     * @returns {Promise<boolean>} true only when the path is confirmed to be a file.
+     */
+    async _isFilePath(path, sourceId = null) {
+        let resolved;
+        try {
+            resolved = this._resolveAndValidatePath(path, sourceId);
+        } catch (e) {
+            return false;
+        }
+        if (!resolved) return false;
+
+        // 1. Fast path: exact match in the file index (file entries only ⇒ confirmed file).
+        const normTarget = resolved.replace(/\\/g, '/').replace(/\/+/g, '/').replace(/^\/+/, '').toLowerCase();
+        const indexedFiles = window.ui?.fileList?.index?.files || [];
+        if (indexedFiles.length) {
+            const hit = indexedFiles.some(f => {
+                const fPath = f.path.replace(/\\/g, '/').replace(/\/+/g, '/').replace(/^\/+/, '').toLowerCase();
+                return fPath === normTarget;
+            });
+            if (hit) return true;
+        }
+
+        // 2. Backend probe: array payload ⇒ directory; non-error non-array ⇒ file.
+        if (this.conduit && this.conduit.isConnected) {
+            try {
+                const result = await this.conduit.wsList(resolved);
+                if (result && !result.error) {
+                    return !Array.isArray(result.data);
+                }
+            } catch (e) {
+                // Fall through: unknown path kind.
+            }
+        }
+
+        // Unknown (missing / offline / error): treat as "not a file" so the
+        // caller falls back to the directory-capable backend search.
+        return false;
+    }
+
+    /**
      * Searches for text across files (Grep) accelerating using Go and local buffers.
      * @param {string} query 
      */
@@ -2909,16 +2969,30 @@ Snippet: ${r.content || r.snippet || ""}`;
                 return await this.readFileOutline(args.path, sourceId);
             case 'read_symbol':
                 return await this.readSymbol(args.query || args.symbol, sourceId);
-            case 'search_files':
+            case 'search_files': {
+                const targetPath = args.path || args.folder || args.directory || null;
+                // Route by the ACTUAL path kind, not a "last atom contains a dot"
+                // guess (a directory like `dev.jakbox.cadence` would otherwise be
+                // misrouted to searchInFile and fail with "is a directory").
+                // A confirmed file gets the line-numbered searchInFile output;
+                // directories / missing / unknown paths fall back to the backend
+                // grep (searchFiles), which handles both kinds correctly.
+                const isFile = targetPath ? await this._isFilePath(targetPath, sourceId) : false;
+                if (isFile) {
+                    return await this.searchInFile(targetPath, args.query, sourceId);
+                }
+                return await this.searchFiles(args.query, targetPath, sourceId);
+            }
             case 'search_in_file': {
                 const targetPath = args.path || args.folder || args.directory || null;
+                // search_in_file is a file-scoped tool: keep the lightweight regex
+                // heuristic. A directory here yields the same informative error as
+                // before (no silent misrouting, no extra round-trip).
                 if (targetPath && /\.[a-zA-Z0-9_-]+$/.test(targetPath)) {
                     return await this.searchInFile(targetPath, args.query, sourceId);
                 }
                 return await this.searchFiles(args.query, targetPath, sourceId);
             }
-            // case 'search_in_file':
-            //     return await this.searchInFile(args.path, args.query, sourceId);
             case 'edit_file':
                 return await this.editFile(
                     args.path,
