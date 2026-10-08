@@ -406,9 +406,24 @@
     position: relative;
 }
 
+/* Lay the markdown text and the delete button out as a flex row: the text
+   wraps inside its own (growing) cell, and the button sits in its own cell.
+   Excluded for the context-stale-notice, which reuses this class but keeps
+   its own column layout. */
+.system-message-block:not(.context-stale-notice) {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+}
+.system-message-block > p {
+    flex: 1;
+    margin: 0;
+}
+
 /* Collapse vertical space between adjacent system message blocks */
 .system-message-block + .system-message-block {
-    margin-top: -42px; /* completely squash the gap on stacked system prompts*/
+    margin-top: 6px; /* completely squash the gap on stacked system prompts*/
 }
 
 .ai-provider-select {
