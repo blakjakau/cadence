@@ -253,6 +253,196 @@ func TestWalkAndSearchContentAgentTotalCap(t *testing.T) {
 	}
 }
 
+func TestIsAllRootsSearchPath(t *testing.T) {
+	trueCases := []string{".", "", "/", " . ", " / ", "\t."}
+	for _, p := range trueCases {
+		if !isAllRootsSearchPath(p) {
+			t.Errorf("isAllRootsSearchPath(%q) = false, want true", p)
+		}
+	}
+	falseCases := []string{"sub", "a/b", "project", "./sub", "..", "/home/user"}
+	for _, p := range falseCases {
+		if isAllRootsSearchPath(p) {
+			t.Errorf("isAllRootsSearchPath(%q) = true, want false", p)
+		}
+	}
+}
+
+func TestEffectiveSearchRoots(t *testing.T) {
+	im := getIndexManagerAPI()
+
+	// Save/restore global state so other tests are unaffected.
+	origRoot := fileAPIRoot
+	defer func() { fileAPIRoot = origRoot }()
+	fileAPIRoot = t.TempDir()
+
+	// No indexer roots: fall back to the file API root.
+	im.mu.Lock()
+	for r := range im.Indexes {
+		delete(im.Indexes, r)
+	}
+	im.mu.Unlock()
+
+	roots := effectiveSearchRoots()
+	if len(roots) != 1 || roots[0] != fileAPIRoot {
+		t.Fatalf("no indexer roots: got %v, want [%s]", roots, fileAPIRoot)
+	}
+
+	// With indexer roots: return them (not the file API root).
+	r1 := t.TempDir()
+	r2 := t.TempDir()
+	im.mu.Lock()
+	im.Indexes[r1] = &WorkspaceIndex{WorkspaceDir: r1, Files: make(map[string]*FileIndex)}
+	im.Indexes[r2] = &WorkspaceIndex{WorkspaceDir: r2, Files: make(map[string]*FileIndex)}
+	im.mu.Unlock()
+	defer func() {
+		im.mu.Lock()
+		delete(im.Indexes, r1)
+		delete(im.Indexes, r2)
+		im.mu.Unlock()
+	}()
+
+	got := effectiveSearchRoots()
+	gotSet := map[string]bool{}
+	for _, g := range got {
+		gotSet[g] = true
+	}
+	if len(got) != 2 || !gotSet[r1] || !gotSet[r2] {
+		t.Fatalf("got %v, want %v and %v", got, r1, r2)
+	}
+	if gotSet[fileAPIRoot] {
+		t.Fatalf("file API root %q should not appear when indexer roots exist", fileAPIRoot)
+	}
+}
+
+func TestRebasePathToRoot(t *testing.T) {
+	base := "/home/user"
+	root := "/home/user/project"
+
+	// A match relative to the root is rebased relative to the file API root.
+	if got := rebasePathToRoot("app/js/main.mjs", root, base); got != "project/app/js/main.mjs" {
+		t.Fatalf("rebasePathToRoot = %q, want project/app/js/main.mjs", got)
+	}
+	// A match at the root itself.
+	if got := rebasePathToRoot(".", root, base); got != "project" {
+		t.Fatalf("rebasePathToRoot(\".\") = %q, want project", got)
+	}
+	// Windows-style paths are normalized to forward slashes.
+	if got := rebasePathToRoot(`sub\file.txt`, root, base); got != "project/sub/file.txt" {
+		t.Fatalf("rebasePathToRoot(windows) = %q, want project/sub/file.txt", got)
+	}
+}
+
+func TestResolveGrepSearchRootsAllRoots(t *testing.T) {
+	im := getIndexManagerAPI()
+
+	// fileAPIRoot must be the base that match paths are computed relative to.
+	origRoot := fileAPIRoot
+	defer func() { fileAPIRoot = origRoot }()
+	fileAPIRoot = t.TempDir()
+
+	// A single indexer (workspace) root nested under fileAPIRoot.
+	wsRoot := filepath.Join(fileAPIRoot, "project")
+	writeTestFile(t, filepath.Join(wsRoot, "src", "main.mjs"), "MARKER_ALLROOTS\n")
+	// A file OUTSIDE the indexer root but under fileAPIRoot must not be walked.
+	writeTestFile(t, filepath.Join(fileAPIRoot, "outside", "other.mjs"), "MARKER_ALLROOTS\n")
+
+	// Clear any stale entries (e.g. from other tests) so the index holds only
+	// the workspace root we just created.
+	im.mu.Lock()
+	for r := range im.Indexes {
+		delete(im.Indexes, r)
+	}
+	im.Indexes[wsRoot] = &WorkspaceIndex{WorkspaceDir: wsRoot, Files: make(map[string]*FileIndex)}
+	im.mu.Unlock()
+	defer func() {
+		im.mu.Lock()
+		delete(im.Indexes, wsRoot)
+		im.mu.Unlock()
+	}()
+
+	// Empty scope = "search all active workspace roots" (the "." sentinel).
+	roots, walkBase, scopedFile := resolveGrepSearchRoots("")
+
+	if len(roots) != 1 || roots[0].path != wsRoot {
+		t.Fatalf("all-roots: got %v, want [%s]", roots, wsRoot)
+	}
+	// Match paths must stay relative to the file API root so the frontend can
+	// re-open them (securePath resolves relative paths against it first).
+	if walkBase != fileAPIRoot {
+		t.Fatalf("all-roots walkBase = %q, want fileAPIRoot %q", walkBase, fileAPIRoot)
+	}
+	if scopedFile != "" {
+		t.Fatalf("all-roots scopedFileFilter = %q, want empty", scopedFile)
+	}
+	// The file outside the indexer root is not among the walk roots.
+	for _, r := range roots {
+		if r.path == filepath.Join(fileAPIRoot, "outside") {
+			t.Fatalf("walked a root outside the indexer roots: %q", r.path)
+		}
+	}
+}
+
+func TestResolveGrepSearchRootsScoped(t *testing.T) {
+	im := getIndexManagerAPI()
+
+	origRoot := fileAPIRoot
+	defer func() { fileAPIRoot = origRoot }()
+	fileAPIRoot = t.TempDir()
+
+	// Scoped to a directory: walk only that directory, walkBase = that dir.
+	sub := filepath.Join(fileAPIRoot, "sub")
+	writeTestFile(t, filepath.Join(sub, "a.txt"), "x")
+	roots, walkBase, scopedFile := resolveGrepSearchRoots(sub)
+	if len(roots) != 1 || roots[0].path != sub {
+		t.Fatalf("dir scope: got %v, want [%s]", roots, sub)
+	}
+	if walkBase != sub {
+		t.Fatalf("dir scope walkBase = %q, want %q", walkBase, sub)
+	}
+	if scopedFile != "" {
+		t.Fatalf("dir scope scopedFileFilter = %q, want empty", scopedFile)
+	}
+
+	// Scoped to a single file: walk its parent dir, filter to that file.
+	file := filepath.Join(sub, "a.txt")
+	roots, walkBase, scopedFile = resolveGrepSearchRoots(file)
+	if len(roots) != 1 || roots[0].path != sub {
+		t.Fatalf("file scope: got %v, want [%s]", roots, sub)
+	}
+	if walkBase != sub {
+		t.Fatalf("file scope walkBase = %q, want %q", walkBase, sub)
+	}
+	if scopedFile != file {
+		t.Fatalf("file scope scopedFileFilter = %q, want %q", scopedFile, file)
+	}
+}
+
+func TestResolveGrepSearchRootsNoIndexers(t *testing.T) {
+	im := getIndexManagerAPI()
+
+	origRoot := fileAPIRoot
+	defer func() { fileAPIRoot = origRoot }()
+	fileAPIRoot = t.TempDir()
+
+	// No indexer roots: an empty scope must NOT fall back to the file API root
+	// (home) — that would reintroduce the home-directory walk bug. It returns
+	// no roots, so startGrepSearch emits search_done with zero matches.
+	im.mu.Lock()
+	for r := range im.Indexes {
+		delete(im.Indexes, r)
+	}
+	im.mu.Unlock()
+
+	roots, walkBase, _ := resolveGrepSearchRoots("")
+	if len(roots) != 0 {
+		t.Fatalf("no indexer roots: got %v, want empty (no home fallback)", roots)
+	}
+	if walkBase != fileAPIRoot {
+		t.Fatalf("walkBase = %q, want fileAPIRoot %q", walkBase, fileAPIRoot)
+	}
+}
+
 func TestWalkAndSearchFoldersRespectsFullpath(t *testing.T) {
 	base := t.TempDir()
 	// Create two sibling trees; the query dir must only be returned under the

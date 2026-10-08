@@ -135,6 +135,27 @@
     display: none !important; /* Hide print margin and gutter for the prompt editor */
 }
 
+/* @tag chips in the AI prompt editor. The ace/mode/ai-prompt tokenizer emits an
+   "at.mention" token, which ACE renders as <span class="ace_at ace_mention">.
+   The chip is styled with the SAME colours as the tool-call file chips
+   (ui-filechip in elements.css: --bg-secondary fill, --theme border,
+   --text-primary text, 16px pill) so a typed @file tag visually matches the
+   file chip the agent echoes back in the response. The padding/margin trick
+   keeps the chip from pushing the cursor. */
+.prompt-area .ace_at.ace_mention {
+    display: inline-block;
+    vertical-align: baseline;
+    color: var(--text-primary);
+    background-color: var(--bg-secondary);
+    border: 1px solid var(--theme);
+    border-radius: 16px;
+    padding: 0 4px;
+    margin: 0 -5px;
+    font-weight: 600;
+    line-height: 1.2;
+    white-space: nowrap;
+}
+
 .prompt-placeholder-overlay {
     position: absolute;
     left: 0;
@@ -607,6 +628,26 @@
 .conversation-area .response-block pre .hljs-tag {
     color: var(--hljs-tag, #e06c75);
 }
+
+
+/* Hide close button and make padding symmetric for filechips inside chat history */
+.conversation-area ui-filechip {
+    padding-right: 8px;
+}
+.conversation-area ui-filechip > ui-icon[close] {
+    display: none;
+}
+
+/* Inline message file chips render as a bare clickable path: no Full/Outline
+   toggle, no close icon, no extra margin beyond what a normal path occupies. */
+.conversation-area .message-filechip .chip-mode-toggle,
+.conversation-area .message-filechip > ui-icon[close] {
+    display: none;
+}
+.conversation-area .message-filechip {
+    margin: 0;
+}
+
 
 /* Thinking Block Styles */
 .thought-block {

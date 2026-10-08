@@ -1085,7 +1085,9 @@ class AIManagerHistory {
 
 				responseBlock.classList.remove("streaming");
 				summarySpan.innerHTML = this.manager.messageRenderer.getModelTurnSummary(fullResponse, finalizedMessage, skipXml, targetSession);
-				contentDiv.innerHTML = this.manager.messageRenderer.renderResponseContent(fullResponse, finalizedMessage, true, skipXml, targetSession);
+				// Turn file-path-looking strings (bare paths and @path tags) into clickable file chips,
+				// matching the styling/behaviour of the edit_file tool card.
+				contentDiv.innerHTML = this._renderWithFileChips(this.manager.messageRenderer.renderResponseContent(fullResponse, finalizedMessage, true, skipXml, targetSession), targetSession, { skipText: false, skipLinks: true });
 				// Attach code block buttons to the complete finalized message
 				this.manager.messageRenderer.addCodeBlockButtons(contentDiv, finalizedMessage, targetSession);
 
@@ -1256,7 +1258,16 @@ class AIManagerHistory {
 
 			const messageBlock = new Block();
 			messageBlock.classList.add("prompt-pill");
-			messageBlock.innerHTML = this.md.render(message.content);
+			// Guard against missing/non-string content (would otherwise render the literal
+			// word "undefined" into the pill).
+			if (typeof message.content !== "string") {
+				console.warn("[ai-manager-history] user message has non-string content:", message);
+				messageBlock.textContent = "(missing content)";
+			} else {
+			// Turn file-path-looking strings (bare paths and @path tags) into clickable file chips,
+			// matching the styling/behaviour of the edit_file tool card.
+			messageBlock.innerHTML = this._renderWithFileChips(this.md.render(message.content), targetSession, { skipText: false, skipLinks: true });
+			}
 			wrapper.append(messageBlock);
 
 			const { wrapper: actionsWrapper, buttons: actionsButtons } = this._createTurnActionsWrapper();
@@ -1306,7 +1317,10 @@ class AIManagerHistory {
 			const contentDiv = new Block();
 			contentDiv.className = "model-turn-content";
 			const skipXml = this.manager.isKnownReasoningModel(targetSession);
-			contentDiv.innerHTML = this.manager.messageRenderer.renderResponseContent(message.content, message, isNew, skipXml, targetSession);
+			const responseHtml = this.manager.messageRenderer.renderResponseContent(message.content, message, isNew, skipXml, targetSession);
+			// Turn file-path-looking strings (bare paths and @path tags) into clickable file chips,
+			// matching the styling/behaviour of the edit_file tool card.
+			contentDiv.innerHTML = this._renderWithFileChips(responseHtml, targetSession, { skipText: false, skipLinks: true });
 
 			header.onclick = (e) => {
 				if (e.target.closest('.delete-history-button') || e.target.closest('.delete-turn-btn') || e.target.closest('.replay-history-button') || e.target.closest('.replay-turn-btn')) return;
@@ -1832,6 +1846,33 @@ class AIManagerHistory {
 		}
 
 		return element;
+	}
+
+	/**
+	 * Render HTML with file-path-looking strings converted to clickable file chips (see
+	 * AIManagerMessageRenderer.applyFileChipsToHtml). Never throws — falls back to the raw HTML.
+	 * @param {string} html Rendered message HTML.
+	 * @param {object|null} session Session the message belongs to (scopes the path lookup to its effective roots).
+	 * @param {object} opts Pass-through options (skipText: only @tags, skipLinks: ignore <a> content).
+	 * @returns {string} HTML with chips injected.
+	 */
+	_renderWithFileChips(html, session, opts = {}) {
+		const result = (() => {
+			try {
+				return this.manager.messageRenderer.applyFileChipsToHtml(html, session, opts);
+			} catch (e) {
+				console.warn("[AIManager] File chip pass failed:", e);
+				return html;
+			}
+		})();
+		// Safety net: if the renderer ever returns a non-string, fall back to the raw HTML
+		// rather than assigning `undefined` to innerHTML (which renders the literal text
+		// "undefined").
+		if (typeof result !== "string") {
+			console.warn("[ai-manager-history] _renderWithFileChips returned non-string, falling back to input html:", result);
+			return typeof html === "string" ? html : "";
+		}
+		return result;
 	}
 
 	_createExpanderMessageElement(message, index) {

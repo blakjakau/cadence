@@ -331,6 +331,24 @@ iconTabBar = new IconTabBar();
 		// as we need global app/workspace config loaded before aiManager fully initializes.
 		// So this append happens here, but init() is external.
 
+		// The AI history renders on first load BEFORE the file index is built (it's generated
+		// asynchronously), so file chips — which require the index — are skipped for those
+		// messages and they stay as plain text. Re-render once when the index lands so those
+		// messages get their file chips applied. Guarded to run only the first time (avoid
+		// double-firing) and to never interrupt an in-flight model generation.
+		const reRenderHistoryForChips = () => {
+			if (window._chipIndexReadyHandled) return;
+			if (!uiManager.fileList.index?.files?.length) return;
+			if (aiManager.conversationArea && aiManager.historyManager && !aiManager._isProcessing) {
+				window._chipIndexReadyHandled = true;
+				aiManager.historyManager.render();
+			}
+		};
+		uiManager.fileList.on("file-list-index-ready", reRenderHistoryForChips);
+		// Also invoke once now in case the index was already built before this listener
+		// attached (race guard). The flag + guards make a redundant call a no-op.
+		reRenderHistoryForChips();
+
 		const scratchPanel = new SidebarPanel();
 		const scratchEditorElement = new Block();
 		scratchEditorElement.setAttribute("id", "scratchpad-editor");
