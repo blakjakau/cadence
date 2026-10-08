@@ -10,6 +10,7 @@ import { Agent } from "./agent/agent.mjs"
 	import { normalizePolicy, mergePolicies, evaluateCommand, segmentMatchesRule, segmentPrograms, subChipsFor } from "./util/command-rules.mjs"
 import { parseCommandLine, classifyProgram, annotateCommand } from "./util/command-parser.mjs"
 import { buildCullIndex } from "./ai-manager-cull-index.mjs"
+import { shouldInjectScratchpadNudge, buildScratchpadNudgeContent } from "./ai-manager-scratchpad-nudge.mjs"
 export const MAX_RECENT_MESSAGES_TO_PRESERVE = 5
 export const MAX_DIRECT_CYCLE_SUMMARIES = 3
 
@@ -4375,6 +4376,9 @@ class AIManagerHistory {
 	prepareMessagesForAI(sessionObj = null) {
 		const targetSession = sessionObj || this.manager.activeSession;
 		const isAgentMode = targetSession ? (targetSession.agentMode ?? this.manager.agentMode) : this.manager.agentMode;
+		// Ephemeral scratchpad-nudge decision (agent mode only): computed in the agent block after the
+		// cull loop, consumed at the end of the reconstruction. Never persisted to session.messages.
+		let scratchpadNudge = null;
 		// Create a deep enough copy of messages to avoid modifying the original history.
 		let messages = (targetSession?.messages || []).map(msg => ({ ...msg }));
 
@@ -4696,6 +4700,27 @@ class AIManagerHistory {
 				source: "prepare"
 			});
 
+			// Ephemeral scratchpad-nudge gate: when the post-cull dynamic context (dialogue window +
+			// evergreen extras) is at/above 90% of the connection's maxPrefill AND the model hasn't
+			// already used scratchpad_write within the visible window, flag a one-shot [SYSTEM] directive
+		// for the end of the outgoing prompt. Never persisted — recomputed every turn, so it
+			// self-clears once the model writes to the scratchpad (the window scan finds the call)
+			// or the context drops below the threshold.
+			{
+				const windowTokens = fileContextTotalTokens + totalDialogueCosts - nonUserPrunedCostBefore[sliceIndex];
+				const dynamicContextTokens = windowTokens + extraTokens;
+				const gate = shouldInjectScratchpadNudge({
+					scratchpad: targetSession?.scratchpad,
+					visibleDialogue: dialogueHistory.slice(sliceIndex),
+					dynamicContextTokens,
+					maxTok
+				});
+				if (gate.shouldInject) {
+					scratchpadNudge = { pct: gate.pct, reason: gate.reason };
+					console.log(`[scratchpad-nudge] injecting ephemeral nudge: ${gate.reason}`);
+				}
+			}
+
 			if (sliceIndex > 0) {
 				const recentHistory = dialogueHistory.slice(sliceIndex);
 				const keepIds = new Set();
@@ -4997,6 +5022,18 @@ class AIManagerHistory {
 
 		if (currentTokens > allowedTokens) {
 			console.warn(`Context window exceeded headroom limit even after pruning. Estimated: ${currentTokens}, Allowed: ${allowedTokens}`);
+		}
+
+		// Ephemeral scratchpad nudge (agent mode, context pressure): pushed last so it's the final turn
+		// the model sees — a trailing push never splits a model tool call from its tool response, and it
+		// sits after this.cullIndex was built, so it doesn't disturb the cull_history index space.
+		// Never persisted to session.messages: recomputed every turn, so it disappears automatically
+		// once the model writes to the scratchpad or the context drops below the threshold.
+		if (scratchpadNudge) {
+			contextForAI.push({
+				role: "system",
+				content: buildScratchpadNudgeContent(scratchpadNudge.pct)
+			});
 		}
 
 		return contextForAI;
