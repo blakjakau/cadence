@@ -421,10 +421,7 @@
     margin: 0;
 }
 
-/* Collapse vertical space between adjacent system message blocks */
-.system-message-block + .system-message-block {
-    margin-top: 6px; /* completely squash the gap on stacked system prompts*/
-}
+.system-message-block + .system-message-block { margin-top: -6px; }
 
 .ai-provider-select {
     font-size: 0.85em;
