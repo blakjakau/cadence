@@ -28,7 +28,7 @@ export const tools = [
 	{
 		name: "run_command",
 		description:
-			"Run a shell command (working directory is the project root).",
+			"Run a shell command (default working directory is ALWAYS the project root).",
 		parameters: {
 			type: "object",
 			properties: {
