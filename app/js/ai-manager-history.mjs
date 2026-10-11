@@ -1829,6 +1829,18 @@ class AIManagerHistory {
 			const summary = document.createElement("summary");
 			summary.innerHTML = `<ui-icon style="font-size: 14px; vertical-align: middle;">terminal</ui-icon> <code>$ ${this._escapeHtml(message.command)}</code> <span style="opacity: 0.8; font-weight: normal; margin-left: auto;">[${statusText}]</span>`;
 
+			// Sandbox correlation badge: shows the shared instance id so the user
+			// can match this command to a sandboxed terminal tab's badge.
+			if (message.sandboxId) {
+				const badge = document.createElement("span");
+				badge.className = "agent-cmd-sandbox-badge";
+				const owners = Array.isArray(message.sandboxOwners) && message.sandboxOwners.length > 0 ? message.sandboxOwners.join(", ") : "you";
+				badge.textContent = `🔒 ${message.sandboxId}`;
+				badge.title = `Ran in shared sandbox ${message.sandboxId} (co-owners: ${owners})`;
+				badge.style.cssText = "font-size: 0.7rem; margin-left: 8px; padding: 1px 5px; border-radius: 4px; background: var(--theme-soft, rgba(120,120,120,0.15)); color: var(--theme, #4a9eff);";
+				summary.append(badge);
+			}
+
 			const pre = document.createElement("pre");
 			pre.style.maxHeight = "300px";
 			pre.style.overflowY = "auto";

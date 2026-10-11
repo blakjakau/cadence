@@ -384,8 +384,6 @@ func TestResolveGrepSearchRootsAllRoots(t *testing.T) {
 }
 
 func TestResolveGrepSearchRootsScoped(t *testing.T) {
-	im := getIndexManagerAPI()
-
 	origRoot := fileAPIRoot
 	defer func() { fileAPIRoot = origRoot }()
 	fileAPIRoot = t.TempDir()

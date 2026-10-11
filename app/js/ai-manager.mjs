@@ -88,6 +88,7 @@ class AIManager {
 			maxSubAgents: parseInt(localStorage.getItem("maxSubAgents") || "3"),
 			defaultAllowSubAgents: localStorage.getItem("defaultAllowSubAgents") !== "false",
 			defaultAllowRunCommand: localStorage.getItem("defaultAllowRunCommand") !== "false",
+			defaultSandboxCommands: localStorage.getItem("defaultSandboxCommands") !== "false",
 			defaultAutoMilestones: localStorage.getItem("defaultAutoMilestones") !== "false",
 			defaultAutoRollbackOnFailures: localStorage.getItem("defaultAutoRollbackOnFailures") === "true",
 			defaultAutoRollbackThreshold: parseInt(localStorage.getItem("defaultAutoRollbackThreshold") || "3", 10),
@@ -4580,6 +4581,13 @@ ${priorCycleContext}`;
 			this.config.defaultAllowRunCommand = storedDefaultAllowRunCommand === "true";
 		} else {
 			this.config.defaultAllowRunCommand = true;
+		}
+
+		const storedDefaultSandboxCommands = localStorage.getItem("defaultSandboxCommands");
+		if (storedDefaultSandboxCommands !== null) {
+			this.config.defaultSandboxCommands = storedDefaultSandboxCommands === "true";
+		} else {
+			this.config.defaultSandboxCommands = true; // default ON
 		}
 
 		// Master command allow/block policy (global, program-level rules)

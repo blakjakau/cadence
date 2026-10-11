@@ -100,7 +100,15 @@ class TerminalManager {
 		this.settingsButton.icon = "settings";
 		this.settingsButton.classList.add("settings-button");
 		this.settingsButton.onclick = () => this.toggleSettingsPanel();
-		this.sessionTabBar.append(newTerminalButton, this.settingsButton);
+
+		// Sandbox mode selector for the active terminal tab (unsandboxed /
+		// sandboxed / attach to an agent session's shared sandbox).
+		this.sandboxButton = new Button("");
+		this.sandboxButton.icon = "shield";
+		this.sandboxButton.classList.add("sandbox-button");
+		this.sandboxButton.title = "Sandbox mode for this terminal";
+		this.sandboxButton.onclick = () => this._showSandboxModeDialog();
+		this.sessionTabBar.append(newTerminalButton, this.sandboxButton, this.settingsButton);
 
 		// Wrapper for individual terminal instance containers
 		this.terminalContainersWrapper = document.createElement("div");
@@ -308,6 +316,23 @@ class TerminalManager {
 
 		if (dir) url += `&dir=${encodeURIComponent(dir)}`;
 
+		// Sandbox mode for this tab (see _showSandboxModeDialog). Default is
+		// unsandboxed (today's behavior); the user can opt into a shared
+		// namespace or attach to an agent session's sandbox.
+		const sess = this._sessions.get(sessionId);
+		const sandboxMode = sess?.sandboxMode || "unsandboxed";
+		if (sandboxMode === "sandboxed") {
+			url += `&sandbox=1&tab=${encodeURIComponent(sessionId)}`;
+			const folders = (window.workspace?.folders || [])
+				.map(f => typeof f === 'string' ? f : (f?.path || f?.name || ""))
+				.filter(Boolean);
+			if (folders.length > 0) {
+				url += `&sandbox_roots=${encodeURIComponent(folders.join(","))}`;
+			}
+		} else if (sandboxMode === "attach" && sess?.sandboxAttachSession) {
+			url += `&sandbox=attach&session=${encodeURIComponent(sess.sandboxAttachSession)}&tab=${encodeURIComponent(sessionId)}`;
+		}
+
 		const ws = new WebSocket(url);
 		ws.binaryType = 'arraybuffer';
 		ws.onopen = () => {
@@ -325,6 +350,12 @@ class TerminalManager {
 						if (session) {
 							session.hostname = msg.hostname;
 							session.cwd = msg.cwd;
+							// Sandbox metadata (shared instance id, co-owners, status)
+							session.sandboxId = msg.sandboxID || "";
+							session.sandboxOwners = Array.isArray(msg.sandboxOwners) ? msg.sandboxOwners : [];
+							session.sandboxStatus = msg.sandbox || "";
+							session.sandboxShared = msg.sandboxShared === true;
+							this._updateSandboxBadge(sessionId);
 							this._updateTerminalTabName(sessionId);
 						}
 						return; // Handled
@@ -574,6 +605,134 @@ class TerminalManager {
 			session.tabItem.name = tabDisplayName;
 			session.tabItem.setAttribute('title', fullPathTooltip); // Add full path as a title attribute (tooltip)
 		}
+	}
+
+	/**
+	 * Renders/updates the sandbox badge on a terminal tab. Shows a lock icon
+	 * with the shared instance id and a tooltip listing co-owners when the tab
+	 * is inside a (shared) namespace.
+	 * @param {string} sessionId - The terminal session id.
+	 */
+	_updateSandboxBadge(sessionId) {
+		const session = this._sessions.get(sessionId);
+		if (!session || !session.tabItem) return;
+
+		// Remove any existing badge
+		const existing = session.tabItem.querySelector(".terminal-sandbox-badge");
+		if (existing) existing.remove();
+
+		const sbxId = session.sandboxId;
+		const status = session.sandboxStatus;
+		if (!sbxId || (status && status === "off")) return;
+
+		const badge = document.createElement("span");
+		badge.className = "terminal-sandbox-badge";
+		const owners = Array.isArray(session.sandboxOwners) ? session.sandboxOwners : [];
+		const ownerList = owners.length > 0 ? owners.join(", ") : "you";
+		const shared = session.sandboxShared === true;
+		badge.innerHTML = `🔒 ${sbxId}`;
+		badge.title = `Sandbox ${sbxId} (${status})${shared ? " — shared" : ""}\nCo-owners: ${ownerList}`;
+		session.tabItem.append(badge);
+	}
+
+	/**
+	 * Shows a dialog to select this terminal tab's sandbox mode:
+	 *  - unsandboxed: today's behavior (default)
+	 *  - sandboxed: a shared namespace bound to the workspace folders
+	 *  - attach: join an agent session's shared sandbox
+	 * Reconnects the tab's WebSocket to apply the change.
+	 */
+	async _showSandboxModeDialog() {
+		const sessionId = this._activeSessionId;
+		const session = sessionId ? this._sessions.get(sessionId) : null;
+		if (!session) {
+			await window.modal.notice("Open a terminal tab first, then choose its sandbox mode.", "Sandbox Mode");
+			return;
+		}
+
+		const modal = window.modal;
+		modal.snapshot();
+		modal.inner.innerHTML = `
+			<h1>Sandbox Mode</h1>
+			<p class="sandbox-mode-desc">Choose how this terminal connects. Changing the mode reconnects the terminal.</p>
+			<div class="sandbox-mode-options">
+				<label class="sandbox-mode-option"><input type="radio" name="sandbox-mode" value="unsandboxed" ${session.sandboxMode !== "sandboxed" && session.sandboxMode !== "attach" ? "checked" : ""}> <span><strong>Unsandboxed</strong> — direct shell, no namespace (default).</span></label>
+				<label class="sandbox-mode-option"><input type="radio" name="sandbox-mode" value="sandboxed" ${session.sandboxMode === "sandboxed" ? "checked" : ""}> <span><strong>Sandboxed</strong> — shared Linux namespace bound to the workspace folders.</span></label>
+				<label class="sandbox-mode-option"><input type="radio" name="sandbox-mode" value="attach" ${session.sandboxMode === "attach" ? "checked" : ""}> <span><strong>Attach to agent sandbox</strong> — join a running agent session's shared sandbox.</span></label>
+			</div>
+		`;
+		modal.actionBar.empty();
+
+		const attachSelect = document.createElement("select");
+		attachSelect.className = "sandbox-attach-select";
+		attachSelect.style.display = "none";
+		modal.inner.append(attachSelect);
+
+		// Populate the attach dropdown with agent sessions that have a live
+		// sandbox (sandboxId is captured from the last terminalInfo message).
+		const running = window.ui?.aiManager?.runningSessions;
+		const sandboxedSessions = [];
+		if (running) {
+			for (const [id, entry] of running.entries()) {
+				const s = entry?.instance?.session || entry?.session;
+				if (s && s.sandboxId) {
+					sandboxedSessions.push({ id, session: s });
+				}
+			}
+		}
+		for (const { id, session: s } of sandboxedSessions) {
+			const opt = document.createElement("option");
+			opt.value = id;
+			opt.textContent = `${s.name || id} (${s.sandboxId})`;
+			attachSelect.append(opt);
+		}
+		if (session.sandboxMode === "attach") {
+			attachSelect.style.display = "";
+		}
+
+		// Toggle the attach dropdown when the "attach" radio is selected
+		modal.inner.querySelectorAll('input[name="sandbox-mode"]').forEach(radio => {
+			radio.addEventListener("change", () => {
+				attachSelect.style.display = radio.value === "attach" && radio.checked ? "" : "none";
+			});
+		});
+
+		const okButton = new Button("Apply");
+		okButton.classList.add("themed");
+		const cancelButton = new Button("Cancel");
+		cancelButton.classList.add("cancel");
+		okButton.on("click", async () => {
+			const selected = modal.inner.querySelector('input[name="sandbox-mode"]:checked');
+			const mode = selected ? selected.value : "unsandboxed";
+			session.sandboxMode = mode;
+			if (mode === "attach") {
+				const target = attachSelect.value;
+				if (!target) {
+					window.modal.toast("No agent sessions with a live sandbox are available to attach to.");
+					return;
+				}
+				session.sandboxAttachSession = target;
+			} else {
+				session.sandboxAttachSession = null;
+			}
+			modal.hide(true);
+			this._reconnectSession(sessionId);
+		});
+		cancelButton.on("click", () => modal.hide(false));
+		modal.actionBar.append(okButton, cancelButton);
+		await modal.show();
+	}
+
+	/**
+	 * Reconnects a terminal session's WebSocket (to apply a sandbox mode change).
+	 * @param {string} sessionId - The terminal session id.
+	 */
+	_reconnectSession(sessionId) {
+		const session = this._sessions.get(sessionId);
+		if (!session) return;
+		try { session.ws?.close(); } catch (e) {}
+		const ws = this._connectWebSocket(sessionId, session.term);
+		session.ws = ws;
 	}
 
 	/**

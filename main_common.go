@@ -4,6 +4,7 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
@@ -106,6 +107,7 @@ func createServerMux() *http.ServeMux {
 	mux.HandleFunc("/api/session-archive", sessionArchiveHandler)
 	mux.HandleFunc("/api/session-copy", sessionCopyHandler)
 	mux.HandleFunc("/api/db-stats", dbStatsHandler)
+	mux.HandleFunc("/api/sandbox", sandboxStatusHandler)
 	mux.HandleFunc("/api/restart", restartHandler)
 	mux.HandleFunc("/api/stop", stopHandler)
 	mux.HandleFunc("/kill", installationHandler(killHandler))
@@ -386,6 +388,22 @@ func stopHandler(w http.ResponseWriter, r *http.Request) {
 		log.Println("Exiting process.")
 		os.Exit(0)
 	}()
+}
+
+// sandboxStatusHandler serves GET /api/sandbox: the sandbox capability probe
+// result plus a snapshot of live sandbox instances. Used by the frontend for a
+// capability indicator and to list attachable agent sandboxes.
+func sandboxStatusHandler(w http.ResponseWriter, r *http.Request) {
+	if !checkRequestAuthorization(r) {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(sandboxStatus())
 }
 
 var activeListener net.Listener

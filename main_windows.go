@@ -31,6 +31,10 @@ func init() {
 }
 
 func main() {
+	// If reexeced as a sandbox keeper, run the keeper loop (never returns).
+	if sandboxKeeperEntry() {
+		return
+	}
 	// On Windows, after potentially attaching to a console, we run the server directly.
 	getIsCompiled()
 	parseFlags()

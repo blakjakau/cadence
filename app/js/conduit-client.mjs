@@ -110,6 +110,19 @@ class ConduitClient {
         return response.status === 201;
     }
 
+    // Sandbox capability probe + live sandbox instance list (GET /api/sandbox).
+    // Returns { available, method, reason, instances: [{ id, roots, owners, shared }] }.
+    // Used for a capability indicator and to list attachable agent sandboxes.
+    async wsGetSandboxStatus() {
+        const url = new URL(`${this.baseUrl}/api/sandbox`);
+        const headers = {};
+        if (this.apiKey) headers['X-Cadence-Key'] = this.apiKey;
+
+        const response = await fetch(url, { headers });
+        if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+        return response.json();
+    }
+
     // --- WebSocket ---
     connect(retryCount = 0) {
         if (this.isConnected || this.isConnecting) return;

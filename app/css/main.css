@@ -507,6 +507,56 @@ ui-tab-item[data-status-icon-type="image"]:not([active]) .status-icon {
     display: none;
 }
 
+/* Sandbox badge on terminal tabs (shared instance indicator) */
+.terminal-session-tabs ui-tab-item .terminal-sandbox-badge {
+    font-size: 0.7rem;
+    margin-left: 6px;
+    padding: 1px 5px;
+    border-radius: 4px;
+    background: var(--theme-soft, rgba(120, 120, 120, 0.15));
+    color: var(--theme, #4a9eff);
+    white-space: nowrap;
+    user-select: none;
+    pointer-events: auto;
+}
+.terminal-sandbox-badge {
+    font-size: 0.7rem;
+    padding: 1px 5px;
+    border-radius: 4px;
+    background: var(--theme-soft, rgba(120, 120, 120, 0.15));
+    color: var(--theme, #4a9eff);
+    white-space: nowrap;
+}
+.sandbox-mode-desc {
+    margin: 0 0 10px 0;
+    opacity: 0.8;
+    font-size: 0.9rem;
+}
+.sandbox-mode-option {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    padding: 6px 4px;
+    border-radius: 6px;
+    cursor: pointer;
+}
+.sandbox-mode-option:hover {
+    background: var(--theme-soft, rgba(120, 120, 120, 0.1));
+}
+.sandbox-mode-option input[type="radio"] {
+    margin-top: 3px;
+    accent-color: var(--theme, #4a9eff);
+}
+.sandbox-attach-select {
+    width: 100%;
+    margin-top: 8px;
+    padding: 6px 8px;
+    border-radius: 6px;
+    background: var(--bg-secondary, #2a2a2a);
+    color: var(--fg-primary, #eee);
+    border: 1px solid var(--theme-dark, #555);
+}
+
 .ai-session-tabs ui-tab-item,
 .terminal-session-tabs ui-tab-item {
     padding-left: 8px; /* Adjust padding to compensate for the removed icon */

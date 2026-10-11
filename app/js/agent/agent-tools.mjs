@@ -2654,27 +2654,58 @@ Snippet: ${r.content || r.snippet || ""}`;
             let outputBuffer = "";
             let isFinished = false;
             const timeoutDuration = (typeof timeoutMs === 'number' && timeoutMs > 0) ? timeoutMs : 60000;
+            // Sandbox metadata from the server's `terminalInfo` message (status,
+            // shared instance id, co-owners). Captured so the chat output block
+            // can show a sandbox badge and the session can be joined by a user
+            // terminal.
+            let sandboxInfo = null;
 
             const port = window.location.port || 3022;
             const wsHost = window.location.host || `localhost:${port}`;
             const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
             let wsUrl = `${wsProtocol}//${wsHost}/terminal?sessionId=agent_${Date.now()}`;
-            
+
+            // Sandbox: run the command inside a shared, sticky per-session
+            // namespace (default on; disable via session.sandboxCommands=false or
+            // the global defaultSandboxCommands setting). `session=<id>` makes the
+            // agent session a STICKY owner of the instance so it persists across
+            // commands and is joinable by a user terminal at any time.
+            const _sbxSessionObj = this._resolveSession(targetSessionId);
+            const sandboxEnabled = _sbxSessionObj?.sandboxCommands !== false
+                && aiManager?.config?.defaultSandboxCommands !== false;
+            let sandboxRequested = false;
+            if (sandboxEnabled && targetSessionId) {
+                wsUrl += `&session=${encodeURIComponent(targetSessionId)}`;
+            }
+
             let targetDir = cwdOverride;
             if (targetDir) {
                 try {
                     targetDir = this._resolveAndValidatePath(targetDir, targetSessionId);
                 } catch (e) {}
             }
+            const effectiveFolders = this._getEffectiveWorkspaceFolders(targetSessionId);
             if (!targetDir) {
-                const folders = this._getEffectiveWorkspaceFolders(targetSessionId);
-                if (folders.length > 0) {
-                    const item = folders[0];
+                if (effectiveFolders.length > 0) {
+                    const item = effectiveFolders[0];
                     targetDir = typeof item === 'string' ? item : (item?.path || item?.name || "");
                 }
             }
             if (targetDir) {
                 wsUrl += `&dir=${encodeURIComponent(targetDir)}`;
+            }
+            if (sandboxEnabled && targetSessionId) {
+                // Exact root layout (effective workspace folders) so this session's
+                // commands join one shared instance by fingerprint.
+                const rootsCsv = effectiveFolders
+                    .map(f => typeof f === 'string' ? f : (f?.path || f?.name || ""))
+                    .filter(Boolean)
+                    .join(",");
+                if (rootsCsv) {
+                    wsUrl += `&sandbox_roots=${encodeURIComponent(rootsCsv)}`;
+                    wsUrl += `&sandbox=1`;
+                    sandboxRequested = true;
+                }
             }
 
             const activeSession = this._resolveSession(targetSessionId);
@@ -2760,6 +2791,27 @@ Snippet: ${r.content || r.snippet || ""}`;
                 clearTimeout(timeoutTimer);
 
                 streamMsg.status = isTimedOut ? "timed_out" : (code === 0 ? "completed" : "failed");
+
+                // Sandbox correlation + graceful-degradation notice. If the sandbox
+                // was requested but the server fell back to unsandboxed (e.g. the
+                // AppArmor userns restriction on Ubuntu 24.04), say so explicitly —
+                // never silently pretend.
+                if (sandboxInfo) {
+                    // Always set explicitly (even empty) so a stale id from a
+                    // prior command on the same message object never renders a
+                    // misleading badge.
+                    streamMsg.sandboxId = sandboxInfo.sandboxId || "";
+                    streamMsg.sandboxShared = sandboxInfo.shared;
+                    streamMsg.sandboxOwners = sandboxInfo.owners;
+                    if (sandboxInfo.status === "unavailable" || sandboxInfo.status === "off") {
+                        const reason = sandboxInfo.reason ? ` (${sandboxInfo.reason})` : "";
+                        streamMsg.output = `[sandbox unavailable${reason} — command ran UNSANDBOXED]\n${cleanedOutput || "(No output)"}`;
+                    }
+                } else if (sandboxRequested) {
+                    // No terminalInfo sandbox metadata arrived (non-Linux host, etc.)
+                    streamMsg.output = `[sandbox not applied — command ran UNSANDBOXED]\n${cleanedOutput || "(No output)"}`;
+                }
+
                 if (activeSession) {
                     workspaceClient.setSession(targetSessionId, activeSession).catch(() => {});
                 }
@@ -2768,9 +2820,9 @@ Snippet: ${r.content || r.snippet || ""}`;
                 }
 
                 if (isTimedOut) {
-                    resolve(`Command execution timed out after ${(timeoutDuration / 1000).toFixed(0)}s.\nOutput captured:\n${cleanedOutput || "(No output)"}`);
+                    resolve(`Command execution timed out after ${(timeoutDuration / 1000).toFixed(0)}s.\nOutput captured:\n${streamMsg.output || "(No output)"}`);
                 } else {
-                    resolve(`Command execution completed.\nOutput:\n${cleanedOutput || "(No output)"}`);
+                    resolve(`Command execution completed.\nOutput:\n${streamMsg.output || "(No output)"}`);
                 }
             };
 
@@ -2801,6 +2853,22 @@ Snippet: ${r.content || r.snippet || ""}`;
                     try {
                         const jsonMsg = JSON.parse(event.data);
                         if (jsonMsg && jsonMsg.type === "terminalInfo") {
+                            if (jsonMsg.sandbox && jsonMsg.sandbox !== "off" && jsonMsg.sandbox !== "unsupported") {
+                                sandboxInfo = {
+                                    status: jsonMsg.sandbox,
+                                    reason: jsonMsg.sandboxReason || "",
+                                    sandboxId: jsonMsg.sandboxID || "",
+                                    owners: Array.isArray(jsonMsg.sandboxOwners) ? jsonMsg.sandboxOwners : [],
+                                    shared: jsonMsg.sandboxShared === true
+                                };
+                                streamMsg.sandbox = sandboxInfo;
+                                // Sticky: remember the instance id on the session so a
+                                // user terminal can "attach" to this agent's sandbox.
+                                if (sandboxInfo.sandboxId && activeSession) {
+                                    activeSession.sandboxId = sandboxInfo.sandboxId;
+                                    workspaceClient.setSession(targetSessionId, activeSession).catch(() => {});
+                                }
+                            }
                             return;
                         }
                     } catch (e) {}

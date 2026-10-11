@@ -237,6 +237,7 @@ export class SessionArtifactsPanel extends Block {
             runCommandWrapper.classList.add("has-cog");
             runCommandWrapper.appendChild(cog);
         }
+        this.sandboxCommandsCheckbox = createToggleRow("accordion-sandbox-commands", "Sandbox Terminal Commands", "Run this session's commands in a shared Linux namespace (sticky; joinable from a user terminal). Inherits the Agent Config default when unset.", "run-command-toggle-wrapper");
         this.autoMilestonesCheckbox = createToggleRow("accordion-auto-milestones", "Auto-Milestones on 'done'", "Automatically freeze a checkpoint milestone when the agent finishes a cycle.", "auto-milestones-toggle-wrapper");
         this.autoRollbackCheckbox = createToggleRow("accordion-auto-rollback", "Auto-Rollback on Edit Failures", "Automatically rollback a file if consecutive edit attempts fail.", "auto-rollback-toggle-wrapper");
         this.modelLeadPruningCheckbox = createToggleRow("accordion-model-lead-pruning", "Model-Led Context Pruning", "Allow Cadence to proactively cull old context via the cull_history tool (per-session; inherits the Agent Config default when unset).", "auto-milestones-toggle-wrapper");
@@ -356,6 +357,17 @@ export class SessionArtifactsPanel extends Block {
             localStorage.setItem("aiAllowRunCommand", checked);
             if (session) {
                 session.allowRunCommand = checked;
+                await workspaceClient.setSession(session.id, session);
+            }
+        });
+
+        this.sandboxCommandsCheckbox.addEventListener("change", async (e) => {
+            const checked = e.target.checked;
+            const session = this._getTargetSession();
+            if (session) {
+                // Tri-state: false = explicitly off; true = explicitly on;
+                // (unset = inherits the global defaultSandboxCommands default).
+                session.sandboxCommands = checked;
                 await workspaceClient.setSession(session.id, session);
             }
         });
@@ -856,6 +868,7 @@ export class SessionArtifactsPanel extends Block {
         this._updateOpenEditsReviewState(isForgiveness, session.openEditsForReview);
         this.allowSubAgentsCheckbox.checked = session.allowSubAgents !== false;
         this.allowRunCommandCheckbox.checked = session.allowRunCommand !== false;
+        this.sandboxCommandsCheckbox.checked = session.sandboxCommands ?? (ui.aiManager.config?.defaultSandboxCommands !== false);
         this.autoMilestonesCheckbox.checked = session.autoMilestones ?? (ui.aiManager.config?.defaultAutoMilestones !== false);
         this.autoRollbackCheckbox.checked = session.autoRollbackOnFailures ?? (ui.aiManager.config?.defaultAutoRollbackOnFailures === true);
         this.modelLeadPruningCheckbox.checked = session.enableModelLeadPruning ?? (ui.aiManager.config?.modelLeadPruning === true);
