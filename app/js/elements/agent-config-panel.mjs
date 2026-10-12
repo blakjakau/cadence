@@ -113,7 +113,7 @@ export class AgentConfigPanel extends Block {
 			const input = document.createElement("input");
 			input.type = "checkbox";
 			input.id = id;
-			if (key === "defaultAllowSubAgents" || key === "defaultAllowRunCommand" || key === "defaultPlanningMode" || key === "defaultAutoMilestones" || key === "defaultOpenEditsForReview") {
+			if (key === "defaultAllowSubAgents" || key === "defaultAllowRunCommand" || key === "defaultPlanningMode" || key === "defaultAutoMilestones" || key === "defaultOpenEditsForReview" || key === "defaultSandboxCommands") {
 				input.checked = localStorage.getItem(key) !== "false";
 			} else {
 				input.checked = localStorage.getItem(key) === "true";
@@ -133,9 +133,10 @@ export class AgentConfigPanel extends Block {
 					if (key === "defaultPlanningMode") window.ui.aiManager.config.defaultPlanningMode = input.checked;
 					if (key === "defaultAllowSubAgents") window.ui.aiManager.config.defaultAllowSubAgents = input.checked;
 					if (key === "defaultAllowRunCommand") window.ui.aiManager.config.defaultAllowRunCommand = input.checked;
-if (key === "defaultAutoMilestones") window.ui.aiManager.config.defaultAutoMilestones = input.checked;
-		if (key === "modelLeadPruning") window.ui.aiManager.config.modelLeadPruning = input.checked;
-	window.ui.aiManager._updatePromptAreaPlaceholder();
+					if (key === "defaultSandboxCommands") window.ui.aiManager.config.defaultSandboxCommands = input.checked;
+					if (key === "defaultAutoMilestones") window.ui.aiManager.config.defaultAutoMilestones = input.checked;
+					if (key === "modelLeadPruning") window.ui.aiManager.config.modelLeadPruning = input.checked;
+					window.ui.aiManager._updatePromptAreaPlaceholder();
 				}
 			};
 
@@ -173,6 +174,7 @@ if (key === "defaultAutoMilestones") window.ui.aiManager.config.defaultAutoMiles
 		const openEditsToggle = createToggleRow("default-open-edits-for-review", "Default Open Edits for Review", "Open files in editor for diff review (optional in Forgiveness Mode).", "defaultOpenEditsForReview");
 		createToggleRow("default-allow-sub-agents", "Default Allow Sub-Agents", "Start new sessions with sub-agents allowed.", "defaultAllowSubAgents");
 		const runCommandRow = createToggleRow("default-allow-run-command", "Default Allow Terminal Commands", "Start new sessions with terminal commands allowed.", "defaultAllowRunCommand");
+		createToggleRow("default-sandbox-commands", "Default Sandbox Terminal Commands", "Start new sessions with Sandboxed Terminals.", "defaultSandboxCommands");
 		{
 			const cog = new Button();
 			cog.className = "setting-cog-btn";

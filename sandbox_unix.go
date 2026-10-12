@@ -1285,10 +1285,25 @@ func runSandboxKeeper(id, socketPath string) {
 	// Reaper: join-children are this keeper's children. Reap them so they don't
 	// accumulate as zombies. (The keeper is a fresh Go process — x/sys/unix is
 	// safe here; only the single-threaded clone children must avoid it.)
+	// A child's death is signalled by wait4 returning its pid; we loop to catch
+	// siblings. When there are NO live children wait4 returns ECHILD immediately
+	// (wpid==0) instead of blocking â so we sleep to avoid a 100% busy-spin on an
+	// idle keeper. The sleep only delays zombie reaping by the window (the pty
+	// master's EOF, not this reaper, is what signals shell exit to the parent).
 	go func() {
 		for {
 			var ws unix.WaitStatus
-			unix.Wait4(-1, &ws, 0, nil)
+			wpid, err := unix.Wait4(-1, &ws, 0, nil)
+			if wpid > 0 {
+				continue // reaped a child; loop to catch siblings
+			}
+			if err == syscall.EINTR {
+				continue // interrupted; retry immediately
+			}
+			// wpid == 0 (ECHILD: no children) or other error â back off so an
+			// idle keeper doesn't spin the CPU. A newly spawned child is reaped
+			// within the window.
+			time.Sleep(200 * time.Millisecond)
 		}
 	}()
 
