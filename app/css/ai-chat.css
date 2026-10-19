@@ -1763,6 +1763,21 @@
     box-sizing: border-box;
 }
 
+/* Sandbox-state tint on run_command cards: bronze when the command ran in a
+   shared sandbox (the lock chip is present), grey/silver otherwise. */
+.agent-cmd-output-block details {
+    border-left-color: var(--color-silver, #9aa0a6);
+}
+
+.agent-cmd-output-block details:has(.agent-cmd-sandbox-badge) {
+    border-left-color: var(--color-bronze, #c8863a);
+    background: color-mix(in srgb, var(--color-bronze, #c8863a) 7%, var(--bg-secondary));
+}
+
+.agent-cmd-output-block details:has(.agent-cmd-sandbox-badge) summary {
+    background: color-mix(in srgb, var(--color-bronze, #c8863a) 8%, transparent) !important;
+}
+
 .agent-cmd-output-block summary {
     display: flex;
     align-items: center;
@@ -1773,6 +1788,31 @@
     font-weight: 500 !important;
     user-select: none;
     outline: none;
+}
+
+/* Sandbox correlation badge on a run_command card. Clickable: opens a terminal
+   tab attached to this session's shared sandbox. */
+.agent-cmd-sandbox-badge {
+    font-size: 0.7rem;
+    margin-left: 8px;
+    padding: 1px 4px;
+    border-radius: 4px;
+    background: var(--color-bronze-soft, rgba(200, 134, 58, 0.18));
+    color: var(--color-bronze, #c8863a);
+    cursor: pointer;
+    white-space: nowrap;
+    user-select: none;
+    transition: filter 0.15s ease;
+}
+
+.agent-cmd-sandbox-badge:hover {
+    filter: brightness(1.25);
+}
+
+.agent-cmd-sandbox-badge ui-icon {
+    font-size: 11px;
+    line-height: 1;
+    vertical-align: -1px;
 }
 
 .agent-query-header {

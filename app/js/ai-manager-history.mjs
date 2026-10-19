@@ -1831,13 +1831,19 @@ class AIManagerHistory {
 
 			// Sandbox correlation badge: shows the shared instance id so the user
 			// can match this command to a sandboxed terminal tab's badge.
+			// Clicking it opens a terminal tab attached to this session's sandbox.
 			if (message.sandboxId) {
 				const badge = document.createElement("span");
 				badge.className = "agent-cmd-sandbox-badge";
 				const owners = Array.isArray(message.sandboxOwners) && message.sandboxOwners.length > 0 ? message.sandboxOwners.join(", ") : "you";
-				badge.textContent = `🔒 ${message.sandboxId}`;
-				badge.title = `Ran in shared sandbox ${message.sandboxId} (co-owners: ${owners})`;
-				badge.style.cssText = "font-size: 0.7rem; margin-left: 8px; padding: 1px 5px; border-radius: 4px; background: var(--theme-soft, rgba(120,120,120,0.15)); color: var(--theme, #4a9eff);";
+				const lockIcon = document.createElement("ui-icon");
+				lockIcon.textContent = "lock";
+				badge.append(lockIcon);
+				badge.title = `Ran in shared sandbox ${message.sandboxId} (co-owners: ${owners}). Click to open a terminal in this sandbox.`;
+				badge.addEventListener("click", (e) => {
+					e.stopPropagation(); // Don't toggle the <details> open/closed
+					window.terminalManager?.openTerminalInAgentSandbox(message.subSessionId || this.manager.activeSessionId);
+				});
 				summary.append(badge);
 			}
 

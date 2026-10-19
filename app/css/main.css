@@ -26,6 +26,10 @@
     --color-error: #f44336;
     --color-warning: #ffc107;
     --color-warning-dark: #ffa000;
+    --color-bronze: #c8863a;
+    --color-bronze-soft: rgba(200, 134, 58, 0.18);
+    --color-silver: #9aa0a6;
+    --color-silver-soft: rgba(154, 160, 166, 0.14);
 
     /* Diff Highlight Colors */
     --diff-green: rgb(128, 164, 128);
@@ -513,8 +517,8 @@ ui-tab-item[data-status-icon-type="image"]:not([active]) .status-icon {
     margin-left: 6px;
     padding: 1px 5px;
     border-radius: 4px;
-    background: var(--theme-soft, rgba(120, 120, 120, 0.15));
-    color: var(--theme, #4a9eff);
+    background: var(--color-bronze-soft, rgba(200, 134, 58, 0.18));
+    color: var(--color-bronze, #c8863a);
     white-space: nowrap;
     user-select: none;
     pointer-events: auto;
@@ -523,9 +527,28 @@ ui-tab-item[data-status-icon-type="image"]:not([active]) .status-icon {
     font-size: 0.7rem;
     padding: 1px 5px;
     border-radius: 4px;
-    background: var(--theme-soft, rgba(120, 120, 120, 0.15));
-    color: var(--theme, #4a9eff);
+    background: var(--color-bronze-soft, rgba(200, 134, 58, 0.18));
+    color: var(--color-bronze, #c8863a);
     white-space: nowrap;
+}
+
+/* Terminal tabs inside a shared sandbox (lock chip present) get a bronze
+   tint to match the run_command card coloring. */
+ui-tabbar[slim].terminal-session-tabs > ui-tab-item:has(.terminal-sandbox-badge) {
+    background: var(--color-bronze-soft, rgba(200, 134, 58, 0.18));
+    color: var(--color-bronze, #c8863a);
+}
+ui-tabbar[slim].terminal-session-tabs > ui-tab-item:has(.terminal-sandbox-badge):not([active]):hover {
+    background: color-mix(in srgb, var(--color-bronze, #c8863a) 28%, var(--bg-tertiary));
+}
+ui-tabbar[slim].terminal-session-tabs > ui-tab-item:has(.terminal-sandbox-badge)[active] {
+    background: var(--color-bronze, #c8863a);
+    border-color: var(--color-bronze, #c8863a);
+    color: var(--text-inverted);
+}
+ui-tabbar[slim].terminal-session-tabs > ui-tab-item:has(.terminal-sandbox-badge)[active] .terminal-sandbox-badge {
+    background: none;
+    color: var(--text-inverted);
 }
 .sandbox-mode-desc {
     margin: 0 0 10px 0;

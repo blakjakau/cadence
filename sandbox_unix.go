@@ -252,8 +252,50 @@ func rawMkdirPaths(paths []string) syscall.Errno {
 	return 0
 }
 
-// rawDetachOldRoot hides the host fs by detaching every mount whose point is
-// under /oldroot, deepest-first. It runs in the single-threaded clone child
+// rawIsDetachTarget reports whether the mountpoint buf[start:end) is a host-fs
+// leak that must be detached. Two classes:
+//  1. /oldroot or /oldroot/<...> — the pivot-relocated host root (and its
+//     submounts: dev, run, sys, proc, snap, lxcfs, ...).
+//  2. the pre-pivot STAGING bind .../newroot/oldroot — the temp dir under
+//     /tmp/cadence-sbx-*/newroot that pivot_root used as the old-root target.
+//     It is ALSO a full host-/ bind (the staging dir itself was bind-mounted
+//     from host / before the pivot), so it is a second host-fs backdoor that
+//     survives the /oldroot detaches. Any mountpoint whose path contains the
+//     "/newroot/oldroot" segment is a leak.
+//
+// Pure byte-compare (no allocation) so it is safe in the single-threaded child.
+func rawIsDetachTarget(start, end int, buf []byte) bool {
+	l := end - start
+	// Class 1: exactly "/oldroot" or "/oldroot/...".
+	if l >= 8 &&
+		buf[start] == '/' && buf[start+1] == 'o' && buf[start+2] == 'l' &&
+		buf[start+3] == 'd' && buf[start+4] == 'r' && buf[start+5] == 'o' &&
+		buf[start+6] == 'o' && buf[start+7] == 't' &&
+		(l == 8 || buf[start+8] == '/') {
+		return true
+	}
+	// Class 2: contains the "/newroot/oldroot" segment (the staging bind).
+	const seg = "/newroot/oldroot"
+	if l < len(seg) {
+		return false
+	}
+	for i := 0; i+len(seg) <= l; i++ {
+		match := true
+		for k := 0; k < len(seg); k++ {
+			if buf[start+i+k] != seg[k] {
+				match = false
+				break
+			}
+		}
+		if match {
+			return true
+		}
+	}
+	return false
+}
+
+// rawDetachOldRoot hides the host fs by detaching every host-fs-leak mount
+// (see rawIsDetachTarget), deepest-first. It runs in the single-threaded clone child
 // using ONLY raw syscalls (no allocation beyond stack arrays — the child must
 // not touch the heap or the runtime).
 //
@@ -272,7 +314,10 @@ func rawMkdirPaths(paths []string) syscall.Errno {
 // Returns the number of /oldroot* mounts detached (for the trace marker).
 func rawDetachOldRoot() int {
 	const maxMounts = 512
-	var buf [16384]byte
+	// 64 KiB: a fully-loaded mountinfo (this host: ~18.5 KiB, 124 /oldroot*
+	// submounts) must fit in ONE read or the last lines (the deepest /oldroot*
+	// submounts) are silently truncated and never detached. 16 KiB was too small.
+	var buf [65536]byte
 	var pts [maxMounts]*byte // pointers into the buffer (no alloc)
 	var lens [maxMounts]int
 	var depth [maxMounts]int
@@ -348,25 +393,18 @@ func rawDetachOldRoot() int {
 				f5End = pos
 			}
 		}
-		if fields >= 5 && f5Start >= 0 && f5End > f5Start {
-			// Collect if it is /oldroot or /oldroot/<something>.
-			if f5End-f5Start >= 8 &&
-				buf[f5Start] == '/' && buf[f5Start+1] == 'o' && buf[f5Start+2] == 'l' &&
-				buf[f5Start+3] == 'd' && buf[f5Start+4] == 'r' && buf[f5Start+5] == 'o' &&
-				buf[f5Start+6] == 'o' && buf[f5Start+7] == 't' &&
-				(f5End-f5Start == 8 || buf[f5Start+8] == '/') {
-				if n < maxMounts {
-					pts[n] = &buf[f5Start]
-					lens[n] = f5End - f5Start
-					d := 0
-					for i := f5Start; i < f5End; i++ {
-						if buf[i] == '/' {
-							d++
-						}
+		if fields >= 5 && f5Start >= 0 && f5End > f5Start && rawIsDetachTarget(f5Start, f5End, buf[:]) {
+			if n < maxMounts {
+				pts[n] = &buf[f5Start]
+				lens[n] = f5End - f5Start
+				d := 0
+				for i := f5Start; i < f5End; i++ {
+					if buf[i] == '/' {
+						d++
 					}
-					depth[n] = d
-					n++
 				}
+				depth[n] = d
+				n++
 			}
 		}
 		if nl >= 0 {
@@ -388,7 +426,11 @@ func rawDetachOldRoot() int {
 		pts[j+1], lens[j+1], depth[j+1] = pi, li, di
 	}
 
-	// Detach each, deepest first. MNT_DETACH = 0x2 (NOT 0x2000).
+	// Detach each, deepest first. MNT_DETACH = 0x2 (NOT 0x2000). Deepest-first
+	// means each mountpoint path still resolves at the time we detach it (we
+	// have not yet detached its parent), so each umount2 should succeed. Any
+	// failure is exceptional — capture its errno into the trace so a failing
+	// keeper is diagnosable instead of silently no-oping.
 	detached := 0
 	for i := 0; i < n; i++ {
 		// Build a NUL-terminated copy of the mountpoint for the umount2 call.
@@ -405,6 +447,11 @@ func rawDetachOldRoot() int {
 		if _, _, e := syscall.RawSyscall6(syscall.SYS_UMOUNT2,
 			uintptr(unsafe.Pointer(&path[0])), uintptr(syscall.MNT_DETACH), 0, 0, 0, 0); e == 0 {
 			detached++
+		} else {
+			// Trace the failing errno (diagnostic only; the top-level /oldroot
+			// detach is what actually hides the host fs, so a submount failure
+			// here is non-fatal).
+			traceInt(int(e))
 		}
 	}
 
@@ -956,12 +1003,19 @@ func spawnKeeper(cfg *SandboxConfig, id string) (int, string, error) {
 	if pid == 0 {
 		// CHILD (single-threaded, raw syscalls only):
 		// 0. Redirect stderr to a trace file so a failing keeper leaves a trace.
-		//    rawTraceFd is the open fd (also dup'd onto 2) for per-step markers.
+		//    rawTraceFd is the OPEN fd used for per-step markers (mk/traceInt).
+		//    We dup it onto fd 2 (so a runtime panic is ALSO captured in the
+		//    trace) but do NOT close the source fd â
+		//    rawTraceFd dangling and every trace write would silently no-op, so
+		//    a failing keeper would leave a 0-byte trace (the very bug this
+		//    fixes). The child inherits the parent's fd table (plain
+		//    clone), so the newly-opened fd is the lowest available slot; its
+		//    exact number is irrelevant because we write through rawTraceFd
+		//    directly.
 		if rawStderrPath != "" {
 			if f2, _, pe := syscall.RawSyscall6(syscall.SYS_OPEN, strPtr(rawStderrPath), 0x441 /*O_WRONLY|O_CREAT|O_APPEND*/, 0644, 0, 0, 0); pe == 0 {
 				rawTraceFd = int(f2)
 				syscall.RawSyscall(syscall.SYS_DUP2, f2, 2, 0)
-				syscall.RawSyscall(syscall.SYS_CLOSE, f2, 0, 0)
 			}
 		}
 		mk(1)

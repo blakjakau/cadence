@@ -2738,7 +2738,8 @@ Snippet: ${r.content || r.snippet || ""}`;
                 if (!rawStr) return "";
                 let s = rawStr;
                 // 1. Strip OSC escape sequences (e.g. \x1b]9;9;...\x1b\ or \x1b]0;...\x07)
-                s = s.replace(/\x1b\][^\x1b\x07]*[\x1b\x07\\]/g, "");
+                //    Terminators: BEL (\x07), ST (ESC \, two bytes), or bare ESC
+                s = s.replace(/\x1b\][^\x1b\x07]*(?:\x07|\x1b\\|\x1b)/g, "");
                 // 2. Strip standard ANSI color/cursor escape sequences
                 s = s.replace(/\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g, "");
                 // 3. Strip non-printable ASCII control characters except newlines/tabs
@@ -2767,7 +2768,8 @@ Snippet: ${r.content || r.snippet || ""}`;
                 }
 
                 // 3. Strip trailing exit command, standalone 'exit' lines, and prompt noise
-                s = s.replace(/(?:^|\n)(?:[^\n]*?[#$]\s*)?exit(?:\s+status\s+\d+)?(?=\n|$)/gi, "");
+                //    (tolerate a stray backslash left behind by an unterminated OSC before the prompt)
+                s = s.replace(/(?:^|\n)(?:[^\n]*?\\?[#$]\s*)?exit(?:\s+status\s+\d+)?(?=\n|$)/gi, "");
                 s = s.replace(/^.*?[#$]\s*/gm, "");
                 s = s.trim();
 

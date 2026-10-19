@@ -1,6 +1,7 @@
 
 import { Button, Icon } from "./elements.mjs";
 import { loadScript, addStylesheet } from "./elements/utils.mjs";
+import conduitClient from "./conduit-client.mjs";
 import { TabBar } from "./elements/tabbar.mjs";
 import { SettingsPanel } from "./elements/settings-panel.mjs";
 import { TabItem } from "./elements/tabitem.mjs";
@@ -455,7 +456,7 @@ class TerminalManager {
 	/**
 	 * Creates a new terminal session, including a new tab, xterm.js instance, and WebSocket connection.
 	 */
-	async createNewTerminalSession() {
+	async createNewTerminalSession(options = {}) {
 		// Ensure xterm.js scripts are loaded globally first (verifies the
 		// globals actually exist, re-loading any that are missing).
 		if (!await this._ensureScripts()) {
@@ -475,25 +476,111 @@ class TerminalManager {
 			terminalContainer.remove(); // Clean up if terminal creation failed
 			return;
 		}
-		// Establish WebSocket connection for this terminal
-		const ws = this._connectWebSocket(sessionId, term);
 		// Create a new tab item for this session
 		const tab = this.sessionTabBar.add({ name: sessionName, id: sessionId });
 		tab.config.id = sessionId; // Ensure config has the session ID
-		// Store all relevant data for this new session
+		// Store all relevant data for this new session BEFORE connecting, so that
+		// _connectWebSocket can pick up any preset sandbox mode. (Previously the
+		// session was registered after the WebSocket connect, which meant the
+		// connection always saw the default unsandboxed mode.)
 		const sessionData = {
 			term,
 			fitAddon,
-			ws,
 			containerElement: terminalContainer,
 			tabItem: tab,
+			// Parsed from `options`, used to pre-join an existing sandbox.
+			sandboxMode: options.sandboxMode || "unsandboxed",
+			sandboxAttachSession: options.sandboxAttachSession || null,
 		};
 		this._sessions.set(sessionId, sessionData);
 		// Hide the empty state message now that we have a session
 		if (this._emptyStateElement) this._emptyStateElement.style.display = 'none';
+		// Establish WebSocket connection for this terminal (reads sandboxMode/
+		// sandboxAttachSession from sessionData above)
+		const ws = this._connectWebSocket(sessionId, term);
+		sessionData.ws = ws;
 
 		sessionData.tabItem.click(); // Activate the tab which triggers switchTerminalSession
 		sessionData.term.focus(); // Focus the new terminal for immediate typing after tab activation
+	}
+
+	/**
+	 * Creates a new terminal session that joins an agent session's shared
+	 * sandbox. Used by the sandbox chip on agent run_command output cards.
+	 * @param {string} agentSessionId - The AI agent session id whose sandbox to join.
+	 */
+	openTerminalInAgentSandbox(agentSessionId) {
+		if (!agentSessionId) return;
+		if (!this.conduitStatus?.isRunning) {
+			window.modal?.toast?.("Conduit is not running — start it to open a sandboxed terminal.");
+			return;
+		}
+		// Reveal the terminal drawer so the new tab is visible, matching the
+		// other "open terminal here" triggers (file/chat context menus,
+		// _openTerminalForSession).
+		if (window.ui?.toggleDrawer) window.ui.toggleDrawer(true);
+		this.createNewTerminalSession({
+			sandboxMode: "attach",
+			sandboxAttachSession: agentSessionId,
+		});
+	}
+
+	/**
+	 * Lists agent sessions whose shared sandbox is currently live, so the
+	 * sandbox-mode dialog can offer them as attach targets. Sources:
+	 *  1. Live sandbox instances from the backend (GET /api/sandbox via
+	 *     wsGetSandboxStatus) — the authoritative list; instances persist for
+	 *     their owners' lifetimes, so this covers sessions that have gone
+	 *     idle but whose sticky sandbox is still alive.
+	 *  2. In-memory agent sessions that captured a sandboxId (from their last
+	 *     terminalInfo) — covers running sessions whose instance the status
+	 *     call may have missed (e.g. backend just restarted).
+	 * @returns {Promise<Array<{ id: string, name: string, sandboxId: string, live: boolean }>>}
+	 */
+	async listAttachableSandboxes() {
+		const seen = new Map(); // agentSessionId -> entry
+		// 1. Live instances from the backend. Owners are labels like
+		//    "session:<agentSessionId>" or "terminal:<tabId>"; an agent
+		//    session's sandbox is attachable by its session id.
+		try {
+			const status = await conduitClient.wsGetSandboxStatus();
+			for (const inst of status?.instances || []) {
+				const agentOwners = (inst.owners || [])
+					.filter(o => typeof o === "string" && o.startsWith("session:"))
+					.map(o => o.slice("session:".length));
+				if (agentOwners.length === 0) continue;
+				for (const sid of agentOwners) {
+					const existing = seen.get(sid);
+					if (!existing) {
+						seen.set(sid, { id: sid, name: `Agent ${sid.slice(0, 8)}`, sandboxId: inst.id, live: true });
+					} else {
+						existing.live = true;
+						existing.sandboxId = inst.id;
+					}
+				}
+			}
+		} catch (e) {
+			// Backend unreachable or sandbox unsupported — fall back to the
+			// in-memory list below; the attach attempt itself will report
+			// "attach failed" via terminalInfo if it can't join.
+		}
+		// 2. In-memory agent sessions with a captured sandboxId (running
+		//    sessions, or ones the status call didn't cover).
+		const running = window.ui?.aiManager?.runningSessions;
+		if (running) {
+			for (const [id, entry] of running.entries()) {
+				const s = entry?.instance?.session || entry?.session;
+				if (s && s.sandboxId) {
+					const existing = seen.get(id);
+					if (existing) {
+						existing.name = s.name || existing.name;
+					} else {
+						seen.set(id, { id, name: s.name || `Agent ${String(id).slice(0, 8)}`, sandboxId: s.sandboxId, live: false });
+					}
+				}
+			}
+		}
+		return [...seen.values()];
 	}
 
 	/**
@@ -608,9 +695,9 @@ class TerminalManager {
 	}
 
 	/**
-	 * Renders/updates the sandbox badge on a terminal tab. Shows a lock icon
-	 * with the shared instance id and a tooltip listing co-owners when the tab
-	 * is inside a (shared) namespace.
+	 * Renders/updates the sandbox badge on a terminal tab. Shows a bronze
+	 * lock-icon chip (label lives in the tooltip: shared instance id, status
+	 * and co-owners) when the tab is inside a (shared) namespace.
 	 * @param {string} sessionId - The terminal session id.
 	 */
 	_updateSandboxBadge(sessionId) {
@@ -630,7 +717,9 @@ class TerminalManager {
 		const owners = Array.isArray(session.sandboxOwners) ? session.sandboxOwners : [];
 		const ownerList = owners.length > 0 ? owners.join(", ") : "you";
 		const shared = session.sandboxShared === true;
-		badge.innerHTML = `🔒 ${sbxId}`;
+		const lockIcon = document.createElement("ui-icon");
+		lockIcon.textContent = "lock";
+		badge.append(lockIcon);
 		badge.title = `Sandbox ${sbxId} (${status})${shared ? " — shared" : ""}\nCo-owners: ${ownerList}`;
 		session.tabItem.append(badge);
 	}
@@ -668,25 +757,33 @@ class TerminalManager {
 		attachSelect.style.display = "none";
 		modal.inner.append(attachSelect);
 
-		// Populate the attach dropdown with agent sessions that have a live
-		// sandbox (sandboxId is captured from the last terminalInfo message).
-		const running = window.ui?.aiManager?.runningSessions;
-		const sandboxedSessions = [];
-		if (running) {
-			for (const [id, entry] of running.entries()) {
-				const s = entry?.instance?.session || entry?.session;
-				if (s && s.sandboxId) {
-					sandboxedSessions.push({ id, session: s });
-				}
-			}
+		// Populate the attach dropdown with agent sessions whose shared
+		// sandbox is live: live instances from the backend (GET /api/sandbox,
+		// covers idle sessions whose sticky sandbox persists) plus in-memory
+		// sessions that captured a sandboxId from their last terminalInfo.
+		let attachable = [];
+		try {
+			attachable = await this.listAttachableSandboxes();
+		} catch (e) {
+			console.warn("[TerminalManager] Failed to list attachable sandboxes:", e);
 		}
-		for (const { id, session: s } of sandboxedSessions) {
+		for (const { id, name, sandboxId, live } of attachable) {
 			const opt = document.createElement("option");
 			opt.value = id;
-			opt.textContent = `${s.name || id} (${s.sandboxId})`;
+			opt.textContent = `${name || id} (${sandboxId}${live ? "" : ", possibly stale"})`;
 			attachSelect.append(opt);
 		}
+		if (attachable.length === 0) {
+			const hint = document.createElement("option");
+			hint.disabled = true;
+			hint.textContent = "No agent sandboxes are currently live.";
+			attachSelect.append(hint);
+		}
 		if (session.sandboxMode === "attach") {
+			// Preselect the previously-attached session if it's still offered.
+			if (session.sandboxAttachSession && [...attachSelect.options].some(o => o.value === session.sandboxAttachSession)) {
+				attachSelect.value = session.sandboxAttachSession;
+			}
 			attachSelect.style.display = "";
 		}
 

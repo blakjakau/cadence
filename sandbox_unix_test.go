@@ -142,23 +142,29 @@ func TestNativeSandboxEndToEnd(t *testing.T) {
 		t.Logf("host fs hidden: %s=%q", f, string(got))
 	}
 
-	// (b2) The /oldroot backdoor is CLOSED: the pivot-relocated old root and
-	// all /oldroot/* submounts must be detached (a single umount2("/oldroot")
-	// leaves them in place, so `ls /oldroot` = host / and the user could
-	// navigate to the real host fs, e.g. cat /oldroot/etc/shadow). The
-	// authoritative check is that /proc/self/mountinfo has ZERO entries whose
-	// mountpoint is /oldroot or /oldroot/<...>. We also assert that the
-	// relocated host fs is not reachable through /oldroot (no /oldroot/etc
-	// directory) and that the rw root bind is still writable.
+	// (b2) The host-fs backdoors are CLOSED. Two leaks must be detached:
+	//   1. the pivot-relocated old root (/oldroot) and all /oldroot/* submounts
+	//      (a single umount2("/oldroot") leaves them in place, so `ls /oldroot`
+	//      = host / and the user could navigate to the real host fs, e.g.
+	//      cat /oldroot/etc/shadow).
+	//   2. the pre-pivot STAGING bind .../newroot/oldroot — the temp dir under
+	//      /tmp/cadence-sbx-*/newroot used as pivot_root's oldroot target. It
+	//      is ALSO a full host-/ bind, so it is a second host-fs backdoor that
+	//      survives the /oldroot detaches.
+	// The authoritative check is that /proc/self/mountinfo has ZERO entries
+	// whose mountpoint is /oldroot or /oldroot/<...> OR contains the
+	// /newroot/oldroot segment (the staging bind). We also assert the
+	// relocated host fs is not reachable through /oldroot (no /oldroot/etc)
+	// and that the rw root bind is still writable.
 	// NOTE: runInSandboxShell wraps cmd in bash -c '<cmd>' (single quotes), so
 	// the command must contain NO single quotes. The awk below counts
-	// mountinfo entries whose field 5 (mount_point) is /oldroot or
-	// /oldroot/<...> and writes the marker itself (no shell variable — the
-	// inner bash would expand $n at parse time, before the assignment runs).
-	// The \$5 is backslash-escaped so the inner bash passes a literal $5 to
-	// awk (an unescaped $5 would be expanded to an empty positional param).
+	// mountinfo entries whose field 5 (mount_point) is /oldroot, /oldroot/<...>,
+	// or contains /newroot/oldroot, and writes the marker itself (no shell
+	// variable â the inner bash would expand $n at parse time, before the
+	// assignment runs). The \$5 is backslash-escaped so the inner bash passes
+	// a literal $5 to awk (an unescaped $5 would be an empty positional param).
 	runInSandboxShell(t, h, root,
-		"awk \"\\$5==\\\"/oldroot\\\"||\\$5~/^\\/oldroot\\//{c++}END{if(c+0==0) print \\\"oldroot-ok\\\" > \\\"oldroot.txt\\\"; else print \\\"oldroot-FAIL:\\\" c > \\\"oldroot.txt\\\"}\" /proc/self/mountinfo; "+
+		"awk \"\\$5==\\\"/oldroot\\\"||\\$5~/^\\/oldroot\\//||\\$5~/\\/newroot\\/oldroot/{c++}END{if(c+0==0) print \\\"oldroot-ok\\\" > \\\"oldroot.txt\\\"; else print \\\"oldroot-FAIL:\\\" c > \\\"oldroot.txt\\\"}\" /proc/self/mountinfo; "+
 			"(test ! -d /oldroot/etc && echo oretc-ok > oretc.txt || echo oretc-FAIL > oretc.txt); "+
 			"echo post-fix > postfix.txt",
 		"oldroot.txt", "oldroot-ok")
