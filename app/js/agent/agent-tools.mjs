@@ -2771,6 +2771,15 @@ Snippet: ${r.content || r.snippet || ""}`;
                 //    (tolerate a stray backslash left behind by an unterminated OSC before the prompt)
                 s = s.replace(/(?:^|\n)(?:[^\n]*?\\?[#$]\s*)?exit(?:\s+status\s+\d+)?(?=\n|$)/gi, "");
                 s = s.replace(/^.*?[#$]\s*/gm, "");
+                // 4. Drop bash PS2 continuation prompts: when a command spans
+                //    multiple lines (e.g. a quoted multi-line git commit message),
+                //    bash prints its PS2 ">" prompt before each continuation line
+                //    until the command is complete. Echo is disabled in this PTY,
+                //    so a line that is exactly ">" (possibly with trailing space)
+                //    is always a prompt, never command output.
+                s = s.replace(/^>[ \t]*$/gm, "");
+                // Collapse the blank lines left behind (3+ newlines → 2).
+                s = s.replace(/\n{3,}/g, "\n\n");
                 s = s.trim();
 
                 cleanedOutput = s;
