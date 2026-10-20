@@ -1005,11 +1005,11 @@ isNativeReasoning,
 					<ui-icon class="prefill-progress-icon">sync</ui-icon>
 					<span class="prefill-progress-title">Context prefill processing...</span>
 					<span class="prefill-progress-percent">0%</span>
+					<span class="prefill-progress-details">0 / 0 tokens</span>
 				</div>
 				<div class="prefill-progress-bar">
 					<div class="prefill-progress-fill" style="width: 0%;"></div>
 				</div>
-				<div class="prefill-progress-details">0 / 0 tokens</div>
 			`;
 			responseBlock.appendChild(container);
 		}
