@@ -57,6 +57,8 @@ sudo apparmor_parser -r /etc/apparmor.d/extras/bwrap-userns-restrict
 
 As an alternative, disabling the sysctl requires root (`sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0`). The server detects this at startup and surfaces the reason in the settings panel so you know why the sandbox badge is absent.
 
+For the full implementation details — the reexec keeper model, mount layout, API surface, hardening, and tests — see [docs/sandbox.md](docs/sandbox.md).
+
 ## Poking around
 
 If you want to run it yourself, you'll need Go installed:
