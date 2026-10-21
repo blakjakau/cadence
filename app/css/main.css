@@ -1080,6 +1080,47 @@ ui-sidebar-panel pre::-webkit-scrollbar-thumb {
     background-color: var(--bg-terminal);
 }
 
+/* Sandbox mode selector: panel chrome at the top-right of the terminal panel,
+   sitting just left of the drawer minimize toggle (drawerToggle, right:8px,
+   width 58px = 16px padding + 42px icon). A 1px border separates the two. */
+ui-sidebar-panel.terminal-panel-container .sandbox-button {
+    position: absolute;
+    top: 0;
+    right: 48px; /* 8px (toggle right offset) + 58px (toggle width) + 1px (border) */
+    width: 36px;
+    height: 34px;
+    min-height: 34px;
+    line-height: 34px;
+    padding: 0 8px;
+    box-sizing: border-box;
+    z-index: 20;
+    background: none;
+    color: var(--text-inverted);
+    border-right: 1px solid var(--border-secondary);
+    border-radius:0;
+}
+
+ui-sidebar-panel.terminal-panel-container .sandbox-button:hover {
+    background: var(--bg-tertiary);
+}
+
+ui-sidebar-panel.terminal-panel-container .sandbox-button[disabled] {
+    opacity: 0.4;
+    cursor: default;
+    background: none;
+}
+
+/* Filled shield for the sandboxed / attach states (Material Symbols FILL axis). */
+ui-sidebar-panel.terminal-panel-container .sandbox-button--filled ui-icon {
+    font-variation-settings: 'FILL' 1;
+}
+
+/* Bronze shield when attached to an agent session's shared sandbox. */
+ui-sidebar-panel.terminal-panel-container .sandbox-button--attached,
+ui-sidebar-panel.terminal-panel-container .sandbox-button--attached ui-icon {
+    color: var(--color-bronze);
+}
+
 /* Styles for the terminal content wrapper within the panel */
 ui-sidebar-panel.terminal-panel-container .terminal-containers-wrapper {
     flex: 1; /* Allows the terminal content area to grow and fill available space */

@@ -103,13 +103,21 @@ class TerminalManager {
 		this.settingsButton.onclick = () => this.toggleSettingsPanel();
 
 		// Sandbox mode selector for the active terminal tab (unsandboxed /
-		// sandboxed / attach to an agent session's shared sandbox).
+		// sandboxed / attach to an agent session's shared sandbox). Rendered
+		// as panel chrome at the top-right of the terminal panel (just left of
+		// the drawer minimize toggle), not in the tab bar.
 		this.sandboxButton = new Button("");
 		this.sandboxButton.icon = "shield";
 		this.sandboxButton.classList.add("sandbox-button");
-		this.sandboxButton.title = "Sandbox mode for this terminal";
-		this.sandboxButton.onclick = () => this._showSandboxModeDialog();
-		this.sessionTabBar.append(newTerminalButton, this.sandboxButton, this.settingsButton);
+		this.sandboxButton.onclick = () => {
+			// The custom Button element doesn't natively swallow clicks when
+			// disabled, so guard here: no active tab means nothing to configure.
+			if (this.sandboxButton.hasAttribute("disabled")) return;
+			this._showSandboxModeDialog();
+		};
+
+		// The 'New Terminal' and settings controls live in the tab bar.
+		this.sessionTabBar.append(newTerminalButton, this.settingsButton);
 
 		// Wrapper for individual terminal instance containers
 		this.terminalContainersWrapper = document.createElement("div");
@@ -121,7 +129,9 @@ class TerminalManager {
 		this.terminalContainersWrapper.append(this._loadingStateElement, this._emptyStateElement);
 
 		// Append UI elements. The containing panel should use flexbox to manage layout.
-		this.panel.append(this.terminalContainersWrapper, this.sessionTabBar);
+		// The sandbox button is absolutely positioned (see .sandbox-button in
+		// main.css) so its DOM order among the panel's children is irrelevant.
+		this.panel.append(this.sandboxButton, this.terminalContainersWrapper, this.sessionTabBar);
 
 		// ResizeObserver to fit the *active* terminal when its container (this panel) resizes
 		const resizeObserver = new ResizeObserver(() => this.fit());
@@ -337,6 +347,10 @@ class TerminalManager {
 		const ws = new WebSocket(url);
 		ws.binaryType = 'arraybuffer';
 		ws.onopen = () => {
+			// A new pty session means a fresh screen. term.clear() only wipes the
+			// visible viewport, so also reset() to clear the scrollback buffer
+			// (and terminal state) left over from the previous session.
+			term.reset();
 			term.clear();
 			term.writeln(`Connected to terminal session: ${sessionId}\r\n`);
 			this.fit(); // Fit immediately after connection is established
@@ -597,7 +611,10 @@ class TerminalManager {
 				}
 				this.fit();
 				session.term.focus(); // Focus the terminal
+			} else {
+				this._activeSessionId = null;
 			}
+			this._updateSandboxButton();
 			return;
 		}
 		this._sessions.forEach((session) => {
@@ -613,6 +630,34 @@ class TerminalManager {
 		} else {
 			console.warn(`Attempted to switch to non-existent session: ${sessionId}`);
 			this._activeSessionId = null; // Clear active session if not found
+		}
+		this._updateSandboxButton();
+	}
+
+	/**
+	 * Updates the sandbox mode button (panel top-right chrome) to reflect the
+	 * active terminal tab's sandbox state:
+	 *  - unsandboxed: outline shield, neutral color
+	 *  - sandboxed:   filled shield, neutral color
+	 *  - attach:      filled shield, bronze (joined an agent session's sandbox)
+	 */
+	_updateSandboxButton() {
+		if (!this.sandboxButton) return;
+		const session = this._activeSessionId ? this._sessions.get(this._activeSessionId) : null;
+		const mode = (session && session.sandboxMode) || "unsandboxed";
+		const tabName = session && session.tabItem ? session.tabItem.name : "";
+		this.sandboxButton.classList.toggle("sandbox-button--filled", mode !== "unsandboxed");
+		this.sandboxButton.classList.toggle("sandbox-button--attached", mode === "attach");
+		const label = mode === "attach"
+			? "Sandbox mode: attached to agent sandbox"
+			: mode === "sandboxed"
+			? "Sandbox mode: sandboxed"
+			: "Sandbox mode: unsandboxed";
+		this.sandboxButton.title = tabName ? `${label} — ${tabName}` : label;
+		if (session) {
+			this.sandboxButton.removeAttribute("disabled");
+		} else {
+			this.sandboxButton.setAttribute("disabled", "");
 		}
 	}
 
@@ -722,6 +767,10 @@ class TerminalManager {
 		badge.append(lockIcon);
 		badge.title = `Sandbox ${sbxId} (${status})${shared ? " — shared" : ""}\nCo-owners: ${ownerList}`;
 		session.tabItem.append(badge);
+
+		// The badge reflects live sandbox info; if this is the active tab,
+		// the panel's sandbox button may need its state refreshed too.
+		if (sessionId === this._activeSessionId) this._updateSandboxButton();
 	}
 
 	/**
@@ -812,6 +861,7 @@ class TerminalManager {
 			} else {
 				session.sandboxAttachSession = null;
 			}
+			this._updateSandboxButton();
 			modal.hide(true);
 			this._reconnectSession(sessionId);
 		});
