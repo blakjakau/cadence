@@ -76,6 +76,13 @@ go run . -serve ./app
 
 Once it's running, the backend listens on `3022` (`3023` in dev mode).
 
+## Documentation
+
+Beyond the sandbox write-up above, the `docs/` folder holds two deeper dives worth reading:
+
+- **[The Cadence Harness Standard (Oct 2026)](docs/harness-sota-oct26.md)** — a state-of-the-art reference for how a modern agentic-coding *harness* should be built, paired with a self-evaluation of how Cadence itself measures up. Each theme (tool design, agentic loops, error recovery, safety & sandboxing, memory, multi-agent, evaluation, human-in-the-loop, self-improvement, concurrency) gets a frontier reference, a "the standard" rubric, and a 1–5 maturity score for Cadence's implementation with concrete gaps to close. It's the living spec for where the agent is heading — the August 2026 edition ([`harness-sota-aug26.md`](docs/harness-sota-aug26.md)) is kept for the historical record.
+- **[AI Context Management in Cadence](docs/context-management.md)** — a source-level assessment of how the agent keeps long sessions from exhausting the model's prefill window: a token-driven sliding window, automated multi-cycle compaction with archive separation, the evergreen scratchpad and its ephemeral pressure nudge, model-led culling (`cull_history`), and sub-agent context isolation.
+
 ## Status
 
 This is very much a "work in progress" and a bit of a mess in places. I'm mostly building it for myself to see what sticks. Feel free to use it, break it, or take bits of it.
