@@ -57,6 +57,22 @@ export class MarkdownPreviewPanel extends Block {
 
         this.activeTab = null;
         this._md = null;
+
+        // Delegated link handling: the body is re-rendered wholesale on every
+        // `update()`, so a single listener on the (stable) body element is the
+        // only way to intercept clicks without re-wiring after each render.
+        //
+        // Both the primary (`click`) and middle (`auxclick`) buttons route to the
+        // same handler: a click on a RELATIVE link opens the target in a new tab
+        // (or focuses the existing tab if it's already open). We also
+        // preventDefault on `mousedown` for middle-clicks to stop the browser's
+        // native "open in new tab" default (which would otherwise open a broken
+        // relative URL in a new browser tab).
+        this.body.addEventListener("click", (e) => this._onBodyClick(e));
+        this.body.addEventListener("auxclick", (e) => this._onBodyClick(e));
+        this.body.addEventListener("mousedown", (e) => {
+            if (e.button === 1 && e.target.closest("a")) e.preventDefault();
+        });
     }
 
         connectedCallback() {
@@ -110,6 +126,113 @@ export class MarkdownPreviewPanel extends Block {
             return;
         }
         this.body.innerHTML = md.render(text);
+    }
+
+    /**
+     * Delegated click handler for rendered markdown links. Both the primary
+     * (`click`) and middle (`auxclick`) buttons route here.
+     *
+     * - A RELATIVE link opens the target in a new editor tab (or focuses the
+     *   existing tab if one is already open for that path).
+     * - `http(s)://` / protocol-relative `//` opens in a new browser tab.
+     * - `mailto:` / `tel:` hands off to the OS handler.
+     * - `javascript:` / `data:` are ignored (unsafe, do nothing).
+     * - `#anchor` smooth-scrolls the preview body to the heading.
+     *
+     * The default action is always prevented so the SPA never navigates.
+     */
+    _onBodyClick(e) {
+        const a = e.target.closest("a");
+        if (!a) return;
+        e.preventDefault();
+        e.stopPropagation();
+
+        const href = a.getAttribute("href");
+        if (!href) return;
+
+        // Pure in-page anchor: smooth-scroll the preview body.
+        if (href.startsWith("#")) {
+            this._scrollToAnchor(href.slice(1));
+            return;
+        }
+
+        // External web links: open in a new browser tab.
+        if (/^(https?:)?\/\//i.test(href)) {
+            window.open(href, "_blank", "noopener");
+            return;
+        }
+
+        // mailto: / tel: → hand off to the OS handler.
+        if (/^(mailto|tel):/i.test(href)) {
+            window.location.href = href;
+            return;
+        }
+
+        // javascript: / data: → unsafe, ignore entirely.
+        if (/^(javascript|data):/i.test(href)) return;
+
+        // Relative file link.
+        // Strip any trailing #anchor / ?query before resolving the path.
+        const hashIdx = href.indexOf("#");
+        const queryIdx = href.indexOf("?");
+        let pathPart = href;
+        const cut = [hashIdx, queryIdx].filter((i) => i >= 0);
+        if (cut.length) {
+            pathPart = href.slice(0, Math.min(...cut));
+        }
+        if (!pathPart) return; // e.g. href was only a query with no path
+
+        const basePath = this.activeTab?.config?.path;
+        const resolved = this._resolvePath(basePath, pathPart);
+        if (resolved === null) return;
+
+        // Open the target in a new tab (or focus the existing tab if one is
+        // already open for this path). `openFileHandle` handles both cases.
+        if (window.ui?.openFileHandle) {
+            window.ui.openFileHandle(resolved, resolved, window.ui.currentEditor);
+        }
+    }
+
+    /**
+     * Resolve a relative `href` against the directory of `basePath`.
+     * Returns a normalized workspace-relative path, or `null` if it cannot be
+     * resolved (e.g. the active tab is an in-memory tab with no real path).
+     */
+    _resolvePath(basePath, href) {
+        if (!basePath) return null;
+        const base = basePath.replace(/\\/g, "/");
+        const hrefNorm = href.replace(/\\/g, "/");
+
+        // Absolute workspace path (leading /) → use as-is (strip the leading /).
+        let parts;
+        if (hrefNorm.startsWith("/")) {
+            parts = hrefNorm.slice(1).split("/");
+        } else {
+            const dir = base.includes("/") ? base.slice(0, base.lastIndexOf("/")) : "";
+            const baseParts = dir ? dir.split("/") : [];
+            parts = baseParts.concat(hrefNorm.split("/"));
+        }
+
+        // Normalize ./ and ../ segments.
+        const out = [];
+        for (const seg of parts) {
+            if (!seg || seg === ".") continue;
+            if (seg === "..") {
+                if (out.length) out.pop();
+                continue;
+            }
+            out.push(seg);
+        }
+        return out.join("/");
+    }
+
+    /**
+     * Smooth-scroll the preview body to the element with the given id.
+     */
+    _scrollToAnchor(id) {
+        if (!id) return;
+        const el = this.body.querySelector("#" + CSS.escape(id));
+        if (el) el.scrollIntoView({ behavior: "smooth" });
     }
 }
 

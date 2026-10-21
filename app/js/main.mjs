@@ -2193,6 +2193,10 @@ const openFileHandle = async (handle, knownPath = null, targetEditor = currentEd
 	}
 }
 
+// Expose the opener so panels (e.g. the markdown preview) can open files in
+// tabs. Reuses an existing tab when one matches the path, else opens a new one.
+ui.openFileHandle = openFileHandle
+
 const fileMenu = document.getElementById("file_context")
 const folderMenu = document.getElementById("folder_context")
 const topfolderMenu = document.getElementById("top_folder_context")
