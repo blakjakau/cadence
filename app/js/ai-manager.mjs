@@ -88,6 +88,7 @@ class AIManager {
 			maxSubAgents: parseInt(localStorage.getItem("maxSubAgents") || "3"),
 			defaultAllowSubAgents: localStorage.getItem("defaultAllowSubAgents") !== "false",
 			defaultAllowRunCommand: localStorage.getItem("defaultAllowRunCommand") !== "false",
+			defaultSandboxCommands: localStorage.getItem("defaultSandboxCommands") !== "false",
 			defaultAutoMilestones: localStorage.getItem("defaultAutoMilestones") !== "false",
 			defaultAutoRollbackOnFailures: localStorage.getItem("defaultAutoRollbackOnFailures") === "true",
 			defaultAutoRollbackThreshold: parseInt(localStorage.getItem("defaultAutoRollbackThreshold") || "3", 10),
@@ -321,6 +322,47 @@ isNativeReasoning,
 		}
 
 		return allFolders;
+	}
+
+	/**
+	 * Builds the short display path inserted by the "@" autocomplete.
+	 * - Single effective root: the path relative to that root (e.g. app/js/agent/agent-tools.mjs)
+	 * - Multiple effective roots: the root's basename plus the relative path
+	 *   (e.g. dev.jakbox.cadence/app/js/agent/agent-tools.mjs), so files are unambiguous
+	 *   without exposing the full path to the root.
+	 * Accepts a relative (fileList) path or an absolute (symbol indexer) path.
+	 * Returns the input unchanged when no root relationship can be established.
+	 */
+	_shortDisplayPath(path, effectiveRoots = []) {
+		const p = String(path || '').replace(/\\/g, '/');
+		const normRoots = effectiveRoots
+			.map(r => String(r).replace(/\\/g, '/').replace(/^\/+/, '').replace(/\/+$/, ''))
+			.filter(r => r.length > 0);
+		if (!p || normRoots.length === 0) return p;
+
+		// Find the longest root the path is under (relatively or as a slash-bounded
+		// segment of an absolute path). Longest-first avoids prefix collisions.
+		let matchRoot = '';
+		for (const root of [...normRoots].sort((a, b) => b.length - a.length)) {
+			const rel = p.startsWith(root + '/') ? p.slice(root.length + 1) : null;
+			const relInAbs = !rel && p.includes(`/${root}/`) ? p.slice(p.lastIndexOf(`/${root}/`) + root.length + 1) : null;
+			const candidate = rel || relInAbs;
+			if (candidate) {
+				matchRoot = root;
+				break;
+			}
+		}
+		if (!matchRoot) return p;
+
+		const rel = p.startsWith(matchRoot + '/')
+			? p.slice(matchRoot.length + 1)
+			: p.slice(p.lastIndexOf(`/${matchRoot}/`) + matchRoot.length + 1);
+
+		if (normRoots.length === 1) {
+			return rel;
+		}
+		const basename = matchRoot.split('/').filter(Boolean).pop() || matchRoot;
+		return `${basename}/${rel}`;
 	}
 
 	async _loadAllParsedSkills(session = null) {
@@ -963,11 +1005,11 @@ isNativeReasoning,
 					<ui-icon class="prefill-progress-icon">sync</ui-icon>
 					<span class="prefill-progress-title">Context prefill processing...</span>
 					<span class="prefill-progress-percent">0%</span>
+					<span class="prefill-progress-details">0 / 0 tokens</span>
 				</div>
 				<div class="prefill-progress-bar">
 					<div class="prefill-progress-fill" style="width: 0%;"></div>
 				</div>
-				<div class="prefill-progress-details">0 / 0 tokens</div>
 			`;
 			responseBlock.appendChild(container);
 		}
@@ -1194,7 +1236,21 @@ isNativeReasoning,
 		this.promptEditor = ace.edit(this.promptArea);
 		this._updatePromptAreaPlaceholder();
 		this.promptEditor.id = "ai-prompt-editor"
-		this.promptEditor.session.setMode("ace/mode/markdown");
+		// "ai-prompt" is a markdown mode variant (app/ace/mode-ai-prompt.js) that
+		// adds an "at.mention" token so @tag references render as chips.
+		//
+		// The markdown mode is NOT bundled into ace.js — it lives in
+		// ace/mode-markdown.js and is only fetched on demand. Our mode's
+		// factory does `require("./markdown").Mode` at the top, so if the
+		// markdown bundle isn't loaded by the time our mode factory runs,
+		// it throws and the mode never registers (editor silently falls
+		// back to text mode, @tags render as plain text). Pre-load the
+		// markdown bundle first; its `ace.define` calls register the
+		// markdown mode + all transitive deps, after which our mode's
+		// synchronous `require("./markdown")` resolves correctly.
+		ace.config.loadModule("ace/mode/markdown", () => {
+			this.promptEditor.session.setMode("ace/mode/ai-prompt");
+		});
 		this.promptEditor.setOptions(promptEditorSettings)
 		this.promptEditor.renderer.setScrollMargin(4, 4, 4, 4);
 
@@ -1262,6 +1318,49 @@ isNativeReasoning,
 			exec: () => this._previewActiveSessionHistory(),
 		});
 
+		// Whole-chip deletion for @tag chips. The completer above emits @tags
+		// like @app/js/file.mjs or @file.mjs#Symbol; the ai-prompt mode renders
+		// them as chips (ace_at.ace_mention). These commands make Backspace /
+		// Delete remove the entire chip atomically when the cursor is touching
+		// it (at its end for Backspace, at its start for Delete, or anywhere
+		// inside). When the cursor isn't on a chip we return undefined so ACE
+		// falls through to its normal Backspace/Delete behaviour (our commands
+		// are registered last, so they take precedence and can decline).
+		const chipTokenRe = () => /@[\w\-./#]+/g;
+		const findChipSpan = (line, cursorCol, side) => {
+			const re = chipTokenRe();
+			let m;
+			while ((m = re.exec(line)) !== null) {
+				const start = m.index;
+				const end = start + m[0].length;
+				// "left"  = Backspace: cursor at the end or inside the chip.
+				// "right" = Delete:    cursor at the start or inside the chip.
+				const hit = side === "left"
+					? (cursorCol === end || (start < cursorCol && cursorCol < end))
+					: (cursorCol === start || (start < cursorCol && cursorCol < end));
+				if (hit) return [start, end];
+			}
+			return null;
+		};
+		// this.promptEditor.commands.addCommand({
+		// 	name: "deleteAtChipBackspace",
+		// 	bindKey: { win: "Backspace", mac: "Backspace" },
+		// 	exec: (editor) => {
+		// 		const cursor = editor.getCursorPosition();
+		// 		const span = findChipSpan(editor.session.getLine(cursor.row), cursor.column, "left");
+		// 		if (span) editor.session.remove(new ace.Range(cursor.row, span[0], cursor.row, span[1]));
+		// 	},
+		// });
+		// this.promptEditor.commands.addCommand({
+		// 	name: "deleteAtChipDelete",
+		// 	bindKey: { win: "Delete", mac: "Delete" },
+		// 	exec: (editor) => {
+		// 		const cursor = editor.getCursorPosition();
+		// 		const span = findChipSpan(editor.session.getLine(cursor.row), cursor.column, "right");
+		// 		if (span) editor.session.remove(new ace.Range(cursor.row, span[0], cursor.row, span[1]));
+		// 	},
+		// });
+
 		this.promptEditor.on("change", () => this._resizePromptArea());
 		this.promptEditor.resize(); // Perform initial resize
 	}
@@ -1292,7 +1391,12 @@ isNativeReasoning,
 					}
 					
 					const searchTerm = match[1];
-					
+
+					// Scope file & symbol completions to the current session's effective
+					// workspace roots. With no pinned roots this is the full workspace
+					// (current behavior); with pinned roots it is the pinned subset.
+					const effectiveRoots = this.getEffectiveWorkspaceFolders(this.activeSession) || [];
+
 					// Handle Symbol Lookup (@file.js#symbol)
 					// 1. Handle Skill Lookup (@skill...)
 					if (searchTerm.startsWith('skill')) {
@@ -1321,9 +1425,30 @@ isNativeReasoning,
 							if (fileFilter) {
 								filtered = filtered.filter(s => s.filePath.toLowerCase().includes(fileFilter.toLowerCase()));
 							}
+							// Scope to the session's effective roots. Symbol filePaths come from the Go
+							// indexer as ABSOLUTE paths (e.g. /home/user/repo/dev.jakbox.cadence/foo.go)
+							// while effectiveRoots are RELATIVE to the file-API root (e.g.
+							// repo/dev.jakbox.cadence). Because the relative root is always a suffix of
+							// the absolute path, a symbol is under a root iff its absolute path contains
+							// the root as a slash-bounded segment: "/<root>/". Padding both ends with '/'
+							// gives the boundary for free. A no-op when effectiveRoots is empty.
+							if (effectiveRoots.length > 0) {
+								const normRoots = effectiveRoots
+									.map(r => String(r).replace(/\\/g, '/').replace(/^\/+/, '').replace(/\/+$/, ''))
+									.filter(r => r.length > 0);
+								if (normRoots.length > 0) {
+									filtered = filtered.filter(s => {
+										const path = String(s.filePath || '').replace(/\\/g, '/');
+										const padded = `/${path}/`;
+										return normRoots.some(root => padded.includes(`/${root}/`));
+									});
+								}
+							}
 							const completions = filtered.map(sym => ({
 								caption: `${sym.name} (${sym.type}) - ${sym.filePath.split('/').pop()}`,
-								value: `${sym.filePath}#${sym.name}`,
+								// Insert a short path (relative to the effective root) so the
+								// expanded @-mention stays easy to read and for the agent to match.
+								value: `${this._shortDisplayPath(sym.filePath, effectiveRoots)}#${sym.name}`,
 								meta: "Symbol"
 							}));
 							callback(null, completions);
@@ -1331,10 +1456,16 @@ isNativeReasoning,
 						return;
 					}
 
-					const fileResults = window.ui.fileList.find(searchTerm, 20);
+					// Scope file completions to the session's effective roots (no-op when empty).
+					const fileResults = effectiveRoots.length > 0
+						? window.ui.fileList.find(searchTerm, 20, effectiveRoots)
+						: window.ui.fileList.find(searchTerm, 20);
 					const fileCompletions = fileResults.map(item => ({
 						caption: item.name,
-						value: item.path, // Insert the full path when selected.
+						// Insert a short display path (relative to the effective root; when
+						// multiple roots are effective, prefixed with the root's basename)
+						// so the expanded @-mention stays short and easy for the agent to match.
+						value: this._shortDisplayPath(item.path, effectiveRoots),
 						meta: "File Context"
 					}));
 					// 2. Define and filter our default static options.
@@ -2788,7 +2919,7 @@ isNativeReasoning,
 		// Auto-rename if this is the first message and the name is default
 		if (targetSession.messages.filter(m => m.type === 'user').length === 1 && targetSession.name.startsWith("Chat ")) {
 			// Don't await it, let it run in the background
-			this.sessionsManager.autoRenameSession(userMessage.content);
+			this.sessionsManager.autoRenameSession(userMessage.content, targetSession);
 		}
 
 		if (targetAgentMode) {
@@ -4450,6 +4581,13 @@ ${priorCycleContext}`;
 			this.config.defaultAllowRunCommand = storedDefaultAllowRunCommand === "true";
 		} else {
 			this.config.defaultAllowRunCommand = true;
+		}
+
+		const storedDefaultSandboxCommands = localStorage.getItem("defaultSandboxCommands");
+		if (storedDefaultSandboxCommands !== null) {
+			this.config.defaultSandboxCommands = storedDefaultSandboxCommands === "true";
+		} else {
+			this.config.defaultSandboxCommands = true; // default ON
 		}
 
 		// Master command allow/block policy (global, program-level rules)

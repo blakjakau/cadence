@@ -46,6 +46,10 @@ func registerAndRunURLHandler() {
 	<-urlRunLoop
 }
 func main() {
+	// If reexeced as a sandbox keeper, run the keeper loop (never returns).
+	if sandboxKeeperEntry() {
+		return
+	}
 	// On macOS, we must explicitly activate the application to signal to the
 	// operating system that we have launched and are ready. This is what
 	// dismisses the "opening application" dialog immediately.

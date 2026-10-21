@@ -35,6 +35,24 @@ The agent is the part I actually care about. It's not a chat box that *talks* ab
 
 It's got **modes** too: a **planning mode** that refuses to touch files until a plan is agreed, a **forgiveness edit mode** with auto-backups and rollback checkpoints, and **per-session** settings so one chaotic session doesn't bleed into the next. The UI streams the agent's work live — tool cards, token counts, and cycle summaries — so you're watching it think rather than staring at a spinner.
 
+## Sandboxed Execution (Linux Only)
+
+`run_command` and the user terminal can run inside an **optional user-namespace sandbox** (Linux-only; no-op on macOS/Windows). The sandbox is *path-scoped*, not user-scoped: it bind-mounts your project roots (writable) plus read-only system passthroughs into a fresh mount namespace, so a command sees only the roots it's given and can't read `/etc/shadow` or wander into other directories.
+
+A sandbox is a **persistent, addressable instance** (not a per-command bubble), keyed by a layout fingerprint (sorted roots + flags). Agent sessions hold a **sticky** owner for the session's lifetime, and user terminal tabs can **attach** to an agent session's instance by ID — so the user sees exactly the agent's workspace (same file view, and the same in-namespace processes when the PID namespace is enabled). A `🔒 sbx-<id>` badge on a terminal tab and on the `run_command` output block shows the shared instance and who else is inside.
+
+### Ubuntu 24.04+ user-namespace restriction
+
+Ubuntu 23.10+/24.04 set `kernel.apparmor_restrict_unprivileged_userns=1`, which blocks unprivileged `unshare(CLONE_NEWUSER)` by default. On such a host the sandbox probe reports *unavailable* and the feature degrades to the unsandboxed fallback. To enable it, install the upstream AppArmor profile that permits it:
+
+```bash
+# From the apparmor package's extras/ directory (Ubuntu 24.04+):
+sudo apparmor_parser -r /etc/apparmor.d/extras/bwrap-userns-restrict
+# (or load the profile that matches your sandbox binary)
+```
+
+As an alternative, disabling the sysctl requires root (`sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0`). The server detects this at startup and surfaces the reason in the settings panel so you know why the sandbox badge is absent.
+
 ## Poking around
 
 If you want to run it yourself, you'll need Go installed:
@@ -51,6 +69,14 @@ go run . -serve ./app
 ```
 
 Once it's running, the backend listens on `3022` (`3023` in dev mode).
+
+## Extra Documentation
+
+Beyond the sandbox write-up above, the `docs/` folder holds two deeper dives worth reading:
+
+- **[Sandbox Execution](docs/sandbox.md)** - full implementation details — the reexec keeper model, mount layout, API surface, hardening, tests and reference to external projects that informed the implementation.
+- **[The Cadence Harness Standard (Oct 2026)](docs/harness-sota-oct26.md)** — a researched "state-of-the-art" reference for how a modern agentic-coding *harness* should be built, paired with a self-evaluation of how Cadence itself measures up. Each theme (tool design, agentic loops, error recovery, safety & sandboxing, memory, multi-agent, evaluation, human-in-the-loop, self-improvement, concurrency) gets a frontier reference, a "the standard" rubric, and a 1–5 maturity score for Cadence's implementation with concrete gaps to close. It's the living spec for where the agent is heading — the August 2026 edition ([`harness-sota-aug26.md`](docs/harness-sota-aug26.md)) is kept for the historical record.
+- **[AI Context Management in Cadence](docs/context-management.md)** — a source-level assessment of how the agent keeps long sessions from exhausting the model's prefill window: a token-driven sliding window, automated multi-cycle compaction with archive separation, the evergreen scratchpad and its ephemeral pressure nudge, model-led culling (`cull_history`), and sub-agent context isolation.
 
 ## Status
 

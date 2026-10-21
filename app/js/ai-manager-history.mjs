@@ -10,6 +10,7 @@ import { Agent } from "./agent/agent.mjs"
 	import { normalizePolicy, mergePolicies, evaluateCommand, segmentMatchesRule, segmentPrograms, subChipsFor } from "./util/command-rules.mjs"
 import { parseCommandLine, classifyProgram, annotateCommand } from "./util/command-parser.mjs"
 import { buildCullIndex } from "./ai-manager-cull-index.mjs"
+import { shouldInjectScratchpadNudge, buildScratchpadNudgeContent } from "./ai-manager-scratchpad-nudge.mjs"
 export const MAX_RECENT_MESSAGES_TO_PRESERVE = 5
 export const MAX_DIRECT_CYCLE_SUMMARIES = 3
 
@@ -1085,7 +1086,9 @@ class AIManagerHistory {
 
 				responseBlock.classList.remove("streaming");
 				summarySpan.innerHTML = this.manager.messageRenderer.getModelTurnSummary(fullResponse, finalizedMessage, skipXml, targetSession);
-				contentDiv.innerHTML = this.manager.messageRenderer.renderResponseContent(fullResponse, finalizedMessage, true, skipXml, targetSession);
+				// Turn file-path-looking strings (bare paths and @path tags) into clickable file chips,
+				// matching the styling/behaviour of the edit_file tool card.
+				contentDiv.innerHTML = this._renderWithFileChips(this.manager.messageRenderer.renderResponseContent(fullResponse, finalizedMessage, true, skipXml, targetSession), targetSession, { skipText: false, skipLinks: true });
 				// Attach code block buttons to the complete finalized message
 				this.manager.messageRenderer.addCodeBlockButtons(contentDiv, finalizedMessage, targetSession);
 
@@ -1256,7 +1259,16 @@ class AIManagerHistory {
 
 			const messageBlock = new Block();
 			messageBlock.classList.add("prompt-pill");
-			messageBlock.innerHTML = this.md.render(message.content);
+			// Guard against missing/non-string content (would otherwise render the literal
+			// word "undefined" into the pill).
+			if (typeof message.content !== "string") {
+				console.warn("[ai-manager-history] user message has non-string content:", message);
+				messageBlock.textContent = "(missing content)";
+			} else {
+			// Turn file-path-looking strings (bare paths and @path tags) into clickable file chips,
+			// matching the styling/behaviour of the edit_file tool card.
+			messageBlock.innerHTML = this._renderWithFileChips(this.md.render(message.content), targetSession, { skipText: false, skipLinks: true });
+			}
 			wrapper.append(messageBlock);
 
 			const { wrapper: actionsWrapper, buttons: actionsButtons } = this._createTurnActionsWrapper();
@@ -1306,7 +1318,10 @@ class AIManagerHistory {
 			const contentDiv = new Block();
 			contentDiv.className = "model-turn-content";
 			const skipXml = this.manager.isKnownReasoningModel(targetSession);
-			contentDiv.innerHTML = this.manager.messageRenderer.renderResponseContent(message.content, message, isNew, skipXml, targetSession);
+			const responseHtml = this.manager.messageRenderer.renderResponseContent(message.content, message, isNew, skipXml, targetSession);
+			// Turn file-path-looking strings (bare paths and @path tags) into clickable file chips,
+			// matching the styling/behaviour of the edit_file tool card.
+			contentDiv.innerHTML = this._renderWithFileChips(responseHtml, targetSession, { skipText: false, skipLinks: true });
 
 			header.onclick = (e) => {
 				if (e.target.closest('.delete-history-button') || e.target.closest('.delete-turn-btn') || e.target.closest('.replay-history-button') || e.target.closest('.replay-turn-btn')) return;
@@ -1814,6 +1829,24 @@ class AIManagerHistory {
 			const summary = document.createElement("summary");
 			summary.innerHTML = `<ui-icon style="font-size: 14px; vertical-align: middle;">terminal</ui-icon> <code>$ ${this._escapeHtml(message.command)}</code> <span style="opacity: 0.8; font-weight: normal; margin-left: auto;">[${statusText}]</span>`;
 
+			// Sandbox correlation badge: shows the shared instance id so the user
+			// can match this command to a sandboxed terminal tab's badge.
+			// Clicking it opens a terminal tab attached to this session's sandbox.
+			if (message.sandboxId) {
+				const badge = document.createElement("span");
+				badge.className = "agent-cmd-sandbox-badge";
+				const owners = Array.isArray(message.sandboxOwners) && message.sandboxOwners.length > 0 ? message.sandboxOwners.join(", ") : "you";
+				const lockIcon = document.createElement("ui-icon");
+				lockIcon.textContent = "lock";
+				badge.append(lockIcon);
+				badge.title = `Ran in shared sandbox ${message.sandboxId} (co-owners: ${owners}). Click to open a terminal in this sandbox.`;
+				badge.addEventListener("click", (e) => {
+					e.stopPropagation(); // Don't toggle the <details> open/closed
+					window.terminalManager?.openTerminalInAgentSandbox(message.subSessionId || this.manager.activeSessionId);
+				});
+				summary.append(badge);
+			}
+
 			const pre = document.createElement("pre");
 			pre.style.maxHeight = "300px";
 			pre.style.overflowY = "auto";
@@ -1832,6 +1865,33 @@ class AIManagerHistory {
 		}
 
 		return element;
+	}
+
+	/**
+	 * Render HTML with file-path-looking strings converted to clickable file chips (see
+	 * AIManagerMessageRenderer.applyFileChipsToHtml). Never throws — falls back to the raw HTML.
+	 * @param {string} html Rendered message HTML.
+	 * @param {object|null} session Session the message belongs to (scopes the path lookup to its effective roots).
+	 * @param {object} opts Pass-through options (skipText: only @tags, skipLinks: ignore <a> content).
+	 * @returns {string} HTML with chips injected.
+	 */
+	_renderWithFileChips(html, session, opts = {}) {
+		const result = (() => {
+			try {
+				return this.manager.messageRenderer.applyFileChipsToHtml(html, session, opts);
+			} catch (e) {
+				console.warn("[AIManager] File chip pass failed:", e);
+				return html;
+			}
+		})();
+		// Safety net: if the renderer ever returns a non-string, fall back to the raw HTML
+		// rather than assigning `undefined` to innerHTML (which renders the literal text
+		// "undefined").
+		if (typeof result !== "string") {
+			console.warn("[ai-manager-history] _renderWithFileChips returned non-string, falling back to input html:", result);
+			return typeof html === "string" ? html : "";
+		}
+		return result;
 	}
 
 	_createExpanderMessageElement(message, index) {
@@ -4334,6 +4394,9 @@ class AIManagerHistory {
 	prepareMessagesForAI(sessionObj = null) {
 		const targetSession = sessionObj || this.manager.activeSession;
 		const isAgentMode = targetSession ? (targetSession.agentMode ?? this.manager.agentMode) : this.manager.agentMode;
+		// Ephemeral scratchpad-nudge decision (agent mode only): computed in the agent block after the
+		// cull loop, consumed at the end of the reconstruction. Never persisted to session.messages.
+		let scratchpadNudge = null;
 		// Create a deep enough copy of messages to avoid modifying the original history.
 		let messages = (targetSession?.messages || []).map(msg => ({ ...msg }));
 
@@ -4655,6 +4718,27 @@ class AIManagerHistory {
 				source: "prepare"
 			});
 
+			// Ephemeral scratchpad-nudge gate: when the post-cull dynamic context (dialogue window +
+			// evergreen extras) is at/above 90% of the connection's maxPrefill AND the model hasn't
+			// already used scratchpad_write within the visible window, flag a one-shot [SYSTEM] directive
+		// for the end of the outgoing prompt. Never persisted — recomputed every turn, so it
+			// self-clears once the model writes to the scratchpad (the window scan finds the call)
+			// or the context drops below the threshold.
+			{
+				const windowTokens = fileContextTotalTokens + totalDialogueCosts - nonUserPrunedCostBefore[sliceIndex];
+				const dynamicContextTokens = windowTokens + extraTokens;
+				const gate = shouldInjectScratchpadNudge({
+					scratchpad: targetSession?.scratchpad,
+					visibleDialogue: dialogueHistory.slice(sliceIndex),
+					dynamicContextTokens,
+					maxTok
+				});
+				if (gate.shouldInject) {
+					scratchpadNudge = { pct: gate.pct, reason: gate.reason };
+					console.log(`[scratchpad-nudge] injecting ephemeral nudge: ${gate.reason}`);
+				}
+			}
+
 			if (sliceIndex > 0) {
 				const recentHistory = dialogueHistory.slice(sliceIndex);
 				const keepIds = new Set();
@@ -4956,6 +5040,18 @@ class AIManagerHistory {
 
 		if (currentTokens > allowedTokens) {
 			console.warn(`Context window exceeded headroom limit even after pruning. Estimated: ${currentTokens}, Allowed: ${allowedTokens}`);
+		}
+
+		// Ephemeral scratchpad nudge (agent mode, context pressure): pushed last so it's the final turn
+		// the model sees — a trailing push never splits a model tool call from its tool response, and it
+		// sits after this.cullIndex was built, so it doesn't disturb the cull_history index space.
+		// Never persisted to session.messages: recomputed every turn, so it disappears automatically
+		// once the model writes to the scratchpad or the context drops below the threshold.
+		if (scratchpadNudge) {
+			contextForAI.push({
+				role: "system",
+				content: buildScratchpadNudgeContent(scratchpadNudge.pct)
+			});
 		}
 
 		return contextForAI;

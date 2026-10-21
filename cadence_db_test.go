@@ -32,7 +32,7 @@ func TestCadenceDB(t *testing.T) {
 	}
 
 	// Open DB (triggers migration)
-	db, err := openCadenceDB(tempDir)
+	db, err := openCadenceDB(tempDir, "cadence.db")
 	if err != nil {
 		t.Fatalf("Failed to open CadenceDB: %v", err)
 	}
@@ -171,7 +171,7 @@ func TestCadenceDB(t *testing.T) {
 
 	// Verify database can be closed and re-opened cleanly with backup and compaction
 	db.Close()
-	reopened, err := openCadenceDB(tempDir)
+	reopened, err := openCadenceDB(tempDir, "cadence.db")
 	if err != nil {
 		t.Fatalf("Failed to reopen CadenceDB: %v", err)
 	}
@@ -194,7 +194,7 @@ func TestCadenceDB_FreshAndDeleted(t *testing.T) {
 	defer os.RemoveAll(tempDir)
 
 	// Case 1: Fresh instance (empty directory, brand new DB creation)
-	db, err := openCadenceDB(tempDir)
+	db, err := openCadenceDB(tempDir, "cadence.db")
 	if err != nil {
 		t.Fatalf("Failed to open brand new CadenceDB in empty dir: %v", err)
 	}
@@ -229,7 +229,7 @@ func TestCadenceDB_FreshAndDeleted(t *testing.T) {
 	}
 
 	// Reopen after DB file deletion
-	recreatedDB, err := openCadenceDB(tempDir)
+	recreatedDB, err := openCadenceDB(tempDir, "cadence.db")
 	if err != nil {
 		t.Fatalf("Failed to reopen/recreate CadenceDB after cadence.db deletion: %v", err)
 	}
@@ -277,7 +277,7 @@ func TestCadenceDB_ArchiveCycleSpan(t *testing.T) {
 	}
 	defer os.RemoveAll(tempDir)
 
-	db, err := openCadenceDB(tempDir)
+	db, err := openCadenceDB(tempDir, "cadence.db")
 	if err != nil {
 		t.Fatalf("Failed to open CadenceDB: %v", err)
 	}
@@ -440,7 +440,7 @@ func TestCadenceDB_CopySession(t *testing.T) {
 	}
 	defer os.RemoveAll(tempDir)
 
-	db, err := openCadenceDB(tempDir)
+	db, err := openCadenceDB(tempDir, "cadence.db")
 	if err != nil {
 		t.Fatalf("Failed to open CadenceDB: %v", err)
 	}
@@ -562,6 +562,44 @@ func TestCadenceDB_CopySession(t *testing.T) {
 	}
 	if _, _, err := db.GetSession("ai-session-ghost"); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("Expected ghost session not created on failed copy, got %v", err)
+	}
+}
+
+// TestCadenceDB_DevFilename verifies that passing a dev-mode filename opens the
+// database at the requested path and derives its side files (.bak / .compact)
+// from that same filename rather than the default cadence.db. This ensures a
+// dev instance never locks or mutates the production cadence.db.
+func TestCadenceDB_DevFilename(t *testing.T) {
+	tempDir, err := ioutil.TempDir("", "cadence_db_devfile_test_*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	devFile := "cadence-dev.db"
+	db, err := openCadenceDB(tempDir, devFile)
+	if err != nil {
+		t.Fatalf("Failed to open dev CadenceDB: %v", err)
+	}
+	defer db.Close()
+
+	// The dev database file itself must exist at the requested path.
+	if _, err := os.Stat(filepath.Join(tempDir, devFile)); err != nil {
+		t.Errorf("Expected dev db file %s to exist: %v", devFile, err)
+	}
+
+	// Launch-time backup/compaction must produce side files derived from the
+	// dev filename (not the default cadence.db).
+	if _, err := os.Stat(filepath.Join(tempDir, devFile+".bak")); err != nil {
+		t.Errorf("Expected dev backup %s.bak to exist: %v", devFile, err)
+	}
+
+	// The default production filename must NOT have been touched.
+	if _, err := os.Stat(filepath.Join(tempDir, "cadence.db")); !os.IsNotExist(err) {
+		t.Errorf("Expected default cadence.db to NOT be created in dev mode, got err=%v", err)
+	}
+	if _, err := os.Stat(filepath.Join(tempDir, "cadence.db.bak")); !os.IsNotExist(err) {
+		t.Errorf("Expected default cadence.db.bak to NOT be created in dev mode, got err=%v", err)
 	}
 }
 

@@ -76,6 +76,7 @@ class AIManagerSettings {
             defaultPlanningMode: aiManager.config.defaultPlanningMode,
             defaultAllowSubAgents: aiManager.config.defaultAllowSubAgents ?? true,
             defaultAllowRunCommand: aiManager.config.defaultAllowRunCommand ?? true,
+            defaultSandboxCommands: aiManager.config.defaultSandboxCommands ?? true,
             defaultAutoMilestones: aiManager.config.defaultAutoMilestones ?? true,
             defaultAutoRollbackOnFailures: aiManager.config.defaultAutoRollbackOnFailures ?? false,
             defaultAutoRollbackThreshold: aiManager.config.defaultAutoRollbackThreshold ?? 3,
@@ -103,6 +104,7 @@ class AIManagerSettings {
             { type: "checkbox", id: "defaultPlanningMode", label: "Default Planning Mode for New Chats" },
             { type: "checkbox", id: "defaultAllowSubAgents", label: "Default Allow Sub-Agents for New Chats" },
             { type: "checkbox", id: "defaultAllowRunCommand", label: "Default Allow Terminal Commands for New Chats" },
+            { type: "checkbox", id: "defaultSandboxCommands", label: "Run Terminal Commands in a Shared Sandbox (Linux)" },
             { type: "checkbox", id: "defaultAutoMilestones", label: "Default Auto-Milestones on 'done' for New Chats" },
             { type: "checkbox", id: "defaultAutoRollbackOnFailures", label: "Auto-Rollback on Repeated Edit Failures" },
             { type: "number", id: "defaultAutoRollbackThreshold", label: "Auto-Rollback Edit Failure Threshold" },
@@ -212,6 +214,7 @@ class AIManagerSettings {
         aiManager.config.defaultPlanningMode = !!values.defaultPlanningMode;
         aiManager.config.defaultAllowSubAgents = !!values.defaultAllowSubAgents;
         aiManager.config.defaultAllowRunCommand = !!values.defaultAllowRunCommand;
+        aiManager.config.defaultSandboxCommands = !!values.defaultSandboxCommands;
         aiManager.config.defaultAutoMilestones = !!values.defaultAutoMilestones;
         aiManager.config.defaultAutoRollbackOnFailures = !!values.defaultAutoRollbackOnFailures;
         aiManager.config.defaultAutoRollbackThreshold = parseInt(values.defaultAutoRollbackThreshold) || 3;
@@ -221,6 +224,7 @@ class AIManagerSettings {
         localStorage.setItem("defaultPlanningMode", aiManager.config.defaultPlanningMode);
         localStorage.setItem("defaultAllowSubAgents", aiManager.config.defaultAllowSubAgents);
         localStorage.setItem("defaultAllowRunCommand", aiManager.config.defaultAllowRunCommand);
+        localStorage.setItem("defaultSandboxCommands", aiManager.config.defaultSandboxCommands);
         localStorage.setItem("defaultAutoMilestones", aiManager.config.defaultAutoMilestones);
         localStorage.setItem("defaultAutoRollbackOnFailures", aiManager.config.defaultAutoRollbackOnFailures);
         localStorage.setItem("defaultAutoRollbackThreshold", aiManager.config.defaultAutoRollbackThreshold);

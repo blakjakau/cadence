@@ -58,6 +58,11 @@ export class FileChip extends Button {
             }));
         };
 
+        // Idempotency: the constructor always (re)builds its own toggle/text/close children.
+        // When the element is created from an HTML string that already carries children
+        // (e.g. a pre-built chip embedded in markdown), those would otherwise survive the
+        // parse and this append would duplicate the whole set. Clear them first.
+        this.innerHTML = "";
         this.append(this._modeToggle, this._textElement, this._close);
 
         this.onclick = (e) => {
@@ -106,6 +111,18 @@ export class FileChip extends Button {
     }
 
     connectedCallback() {
+        // Idempotency guard: ensure exactly one set of toggle/text/close children.
+        // The constructor already clears + appends its own set; if this element is
+        // (re)created from an HTML string that carries pre-built children, or is ever
+        // re-connected after a partial re-render, strip any extras so the content is
+        // never rendered twice.
+        const canonical = [this._modeToggle, this._textElement, this._close];
+        for (const child of [...this.children]) {
+            if (!canonical.includes(child)) child.remove();
+        }
+        // Re-adopt the canonical set in order (no-op if already present and ordered).
+        for (const el of canonical) this.append(el);
+
         if (!this.config) {
             const filename = this.getAttribute('filename') || this.getAttribute('data-filename');
             const path = this.getAttribute('path') || this.getAttribute('data-path');

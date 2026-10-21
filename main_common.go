@@ -4,6 +4,7 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
@@ -106,6 +107,7 @@ func createServerMux() *http.ServeMux {
 	mux.HandleFunc("/api/session-archive", sessionArchiveHandler)
 	mux.HandleFunc("/api/session-copy", sessionCopyHandler)
 	mux.HandleFunc("/api/db-stats", dbStatsHandler)
+	mux.HandleFunc("/api/sandbox", sandboxStatusHandler)
 	mux.HandleFunc("/api/restart", restartHandler)
 	mux.HandleFunc("/api/stop", stopHandler)
 	mux.HandleFunc("/kill", installationHandler(killHandler))
@@ -164,6 +166,7 @@ func parseFlags() {
 	flag.BoolVar(&installServiceFlag, "install-service", false, "Install Cadence as a systemd service (requires root).")
 	flag.BoolVar(&uninstallFlag, "uninstall", false, "Uninstall user and/or system Cadence installations.")
 	flag.StringVar(&rootFlag, "root", "", "Set the root directory for the file API (defaults to user's home directory).")
+	flag.StringVar(&port, "port", port, "Override the listen port (default 3022, or 3023 when --serve is set).")
 	flag.BoolVar(&noIdleShutdownFlag, "no-idle-shutdown", true, "Disable automatic shutdown due to inactivity. Recommended for services.")
 	flag.StringVar(&serveFlag, "serve", "", "Serve live static files from this directory instead of embedded assets.")
 	flag.BoolVar(&browserFlag, "browser", false, "Open in the default browser instead of a native window.")
@@ -172,7 +175,16 @@ func parseFlags() {
 	flag.Parse()
 
 	if serveFlag != "" {
-		port = "3023"
+		// Only apply the serve-mode port default if --port was not given explicitly.
+		explicitPort := false
+		flag.Visit(func(f *flag.Flag) {
+			if f.Name == "port" {
+				explicitPort = true
+			}
+		})
+		if !explicitPort {
+			port = "3023"
+		}
 	}
 
 	if keyFlag {
@@ -376,6 +388,22 @@ func stopHandler(w http.ResponseWriter, r *http.Request) {
 		log.Println("Exiting process.")
 		os.Exit(0)
 	}()
+}
+
+// sandboxStatusHandler serves GET /api/sandbox: the sandbox capability probe
+// result plus a snapshot of live sandbox instances. Used by the frontend for a
+// capability indicator and to list attachable agent sandboxes.
+func sandboxStatusHandler(w http.ResponseWriter, r *http.Request) {
+	if !checkRequestAuthorization(r) {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(sandboxStatus())
 }
 
 var activeListener net.Listener

@@ -698,6 +698,29 @@ class AIManagerSessions {
 		this.manager._dispatchContextUpdate(hasModelResponse ? "session_closed" : "session_deleted", { closedSessionId: sessionId });
 	}
 
+	/**
+	 * Releases the session's sticky sandbox owner via a short-lived WebSocket
+	 * handshake. The server opens the sandbox endpoint with `sandbox_release=1`,
+	 * drops the `session:<id>` owner, and (if it was the last owner) reaps the
+	 * shared instance. Never throws.
+	 */
+	_releaseSessionSandbox(sessionId) {
+		if (!sessionId) return;
+		try {
+			const port = window.location.port || 3022;
+			const wsHost = window.location.host || `localhost:${port}`;
+			const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+			const ws = new WebSocket(`${wsProtocol}//${wsHost}/terminal?sandbox_release=1&session=${encodeURIComponent(sessionId)}`);
+			const close = () => { try { ws.close(); } catch (e) {} };
+			const timer = setTimeout(close, 1500);
+			ws.onopen = () => { clearTimeout(timer); setTimeout(close, 250); };
+			ws.onerror = () => { clearTimeout(timer); close(); };
+			ws.onclose = () => clearTimeout(timer);
+		} catch (e) {
+			console.warn("[Sessions] Failed to release sandbox owner:", e);
+		}
+	}
+
 	async deleteSession(sessionId, tab, sessionName = null) {
 		const sessionMeta = this.allSessionMetadata.find(s => s.id === sessionId);
 		const name = sessionMeta ? sessionMeta.name : (sessionName || "this session");
@@ -706,6 +729,11 @@ class AIManagerSessions {
 		if (!confirmed) {
 			return false;
 		}
+
+		// Release this session's sticky sandbox owner (fire-and-forget). If the
+		// session was the last owner of its shared instance, the server reaps the
+		// keeper. Best-effort: never block deletion on the sandbox handshake.
+		this._releaseSessionSandbox(sessionId);
 
 		// Delete data
 		await this._deleteSessionDataWithCascade(sessionId);
@@ -1023,10 +1051,17 @@ class AIManagerSessions {
 
 	/**
 	 * Automatically renames the session based on the first prompt.
+	 * @param {string} firstPromptContent - The first user prompt.
+	 * @param {object} [targetSession] - The session to rename. Defaults to the active session (legacy callers).
 	 */
-	async autoRenameSession(firstPromptContent) {
+	async autoRenameSession(firstPromptContent, targetSession = null) {
 		// Yield immediately to let the initial prompt generation and UI rendering proceed async
 		await new Promise(resolve => setTimeout(resolve, 500));
+
+		// Pin to the session being renamed; the active session may have changed while the rename is in flight.
+		const target = targetSession || this.activeSession;
+		const targetId = target?.id;
+		if (!target || !targetId) return;
 
 		const sizeRank = {
 			tiny: 1,
@@ -1072,21 +1107,21 @@ class AIManagerSessions {
 				
 				const newName = cleanResponse.replace(/["']/g, '').trim();
 				
-				this.activeSession.name = newName;
-				const meta = this.allSessionMetadata.find(s => s.id === this.activeSession.id);
+				target.name = newName;
+				const meta = this.allSessionMetadata.find(s => s.id === targetId);
 				if (meta) {
 					meta.name = newName;
 					meta.lastModified = Date.now();
 				}
-				await workspaceClient.setSession(this.activeSession.id, this.activeSession);
+				await workspaceClient.setSession(targetId, target);
 
-				const tabToRename = this.manager.sessionTabBar.tabs.find(t => t.config.id === this.activeSessionId);
+				const tabToRename = this.manager.sessionTabBar.tabs.find(t => t.config.id === targetId);
 				if (tabToRename) {
 					tabToRename.name = newName; 
 				}
 
 				this.manager._dispatchContextUpdate("session_renamed");
-				this._broadcast('session_renamed', { sessionId: this.activeSession.id, name: newName });
+				this._broadcast('session_renamed', { sessionId: targetId, name: newName });
 			}
 		} catch (e) {
 			console.error("Auto rename failed:", e);

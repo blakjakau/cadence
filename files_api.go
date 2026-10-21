@@ -48,6 +48,7 @@ type fileRequest struct {
 	Content   string `json:"content,omitempty"`   // Base64 encoded content for "write"
 	Type      string `json:"type,omitempty"`      // For "search"
 	Query     string `json:"query,omitempty"`     // For "search"
+	Agent     bool   `json:"agent,omitempty"`     // For "search": apply agent-specific resource limits
 	StartLine int    `json:"startLine,omitempty"` // For "read" partial (1-indexed)
 	LineCount int    `json:"lineCount,omitempty"` // For "read" partial
 }
@@ -217,34 +218,124 @@ func filesApiHandler(w http.ResponseWriter, r *http.Request) {
 
 // --- Security Helper ---
 
-// securePath cleans and validates a path against the root directory.
+// securePath cleans and validates a path against the allowed root set.
+// The allowed set is the global file API root (process home or -root flag)
+// plus any active indexer (workspace) roots, so workspace-relative or
+// absolute paths under an open workspace folder are accepted even when the
+// folder lies outside the global file API root.
 func securePath(path string) (string, error) {
+	allowedRoots := []string{fileAPIRoot}
+
+	im := getIndexManagerAPI()
+	im.mu.RLock()
+	for root := range im.Indexes {
+		allowedRoots = append(allowedRoots, root)
+	}
+	im.mu.RUnlock()
+
+	for _, root := range allowedRoots {
+		if absPath, ok := resolvePathUnderRoot(root, path); ok {
+			return absPath, nil
+		}
+	}
+	return "", os.ErrPermission
+}
+
+// resolvePathUnderRoot attempts to resolve `path` against the given root.
+// It returns the canonical absolute path and true if the path lies under
+// (or equal to) the root; otherwise ok is false.
+func resolvePathUnderRoot(root, path string) (string, bool) {
 	// 1. Get absolute path of the root
-	absRoot, err := filepath.Abs(fileAPIRoot)
+	absRoot, err := filepath.Abs(root)
 	if err != nil {
-		return "", err
+		return "", false
 	}
 	// 2. Resolve symlinks for the root itself, important if root is a symlink
-	absRoot, err = filepath.EvalSymlinks(absRoot)
-	if err != nil {
-		return "", err // e.g., root doesn't exist or permissions issue
+	if resolvedRoot, err := filepath.EvalSymlinks(absRoot); err == nil {
+		absRoot = resolvedRoot
 	}
 
-	// If the path is absolute and under absRoot, make it relative to absRoot first
-	// to avoid duplicate path prefix issues.
 	cleanedPath := filepath.Clean(path)
+
+	// If the path is absolute and under absRoot, make it relative to absRoot
+	// first to avoid duplicate path prefix issues.
 	if filepath.IsAbs(cleanedPath) {
-		if rel, err := filepath.Rel(absRoot, cleanedPath); err == nil && !strings.HasPrefix(rel, "..") {
-			path = rel
+		rel, relErr := filepath.Rel(absRoot, cleanedPath)
+		if relErr != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			// Not under absRoot as a true absolute path. It may instead be a
+			// workspace-relative path that carries a leading slash (the
+			// frontend historically normalized to "/repo/dev.jakbox.cadence").
+			// Only accept that interpretation if the stripped form genuinely
+			// exists under the root — otherwise a true absolute path outside
+			// every root (e.g. "/etc/passwd") would be silently remapped to
+			// "<absRoot>/etc/passwd", a security hole.
+			stripped := strings.TrimPrefix(cleanedPath, string(filepath.Separator))
+			candidate := filepath.Join(absRoot, stripped)
+			if !strings.HasPrefix(candidate, absRoot+string(filepath.Separator)) {
+				return "", false
+			}
+			if _, statErr := os.Stat(candidate); statErr != nil {
+				return "", false
+			}
+			cleanedPath = stripped
+		} else {
+			cleanedPath = rel
 		}
 	}
 
 	// 3. Join and clean the requested path relative to the root
-	absPath := filepath.Join(absRoot, filepath.Clean(path))
-	if !strings.HasPrefix(absPath, absRoot) {
-		return "", os.ErrPermission
+	absPath := filepath.Join(absRoot, cleanedPath)
+	if absPath != absRoot && !strings.HasPrefix(absPath, absRoot+string(filepath.Separator)) {
+		return "", false
 	}
-	return absPath, nil
+	return absPath, true
+}
+
+// isAllRootsSearchPath reports whether a search path represents the
+// "search all active workspace roots" intent. The frontend sends "." for a
+// global grep; securePath would otherwise resolve it to the file API root
+// (home), causing a global search to walk the entire home directory instead
+// of the indexer roots.
+func isAllRootsSearchPath(p string) bool {
+	switch strings.TrimSpace(p) {
+	case "", ".", "/":
+		return true
+	}
+	return false
+}
+
+// effectiveSearchRoots returns the directories a "search all" request should
+// walk: every active indexer (workspace) root, or the file API root as a
+// fallback when no indexer roots are set.
+func effectiveSearchRoots() []string {
+	im := getIndexManagerAPI()
+	im.mu.RLock()
+	roots := make([]string, 0, len(im.Indexes))
+	for root := range im.Indexes {
+		roots = append(roots, root)
+	}
+	im.mu.RUnlock()
+	if len(roots) == 0 {
+		roots = append(roots, fileAPIRoot)
+	}
+	return roots
+}
+
+// rebasePathToRoot rebases a match path that is relative to `root` into one
+// relative to `base`, so results from multiple roots stay consistent with the
+// file API root (which is what the frontend uses to re-open match paths).
+// If the rebase fails (e.g. the paths are on different drives), the original
+// path relative to `root` is returned unchanged.
+func rebasePathToRoot(rel, root, base string) string {
+	if rel == "" || rel == "." {
+		rel = "."
+	}
+	abs := filepath.Join(root, rel)
+	rebased, err := filepath.Rel(base, abs)
+	if err != nil {
+		return rel
+	}
+	return strings.ReplaceAll(filepath.ToSlash(rebased), "\\", "/")
 }
 
 // --- REST Implementation ---
@@ -480,22 +571,80 @@ func handleWsRequest(ws *websocket.Conn, req fileRequest) {
 		// No immediate response needed for watch, confirmations are implicit
 		return
 	case "search":
+		// A path of "." (or empty) means "search all active workspace
+		// roots". securePath would resolve it to the file API root (home),
+		// which would make a global search walk the entire home directory
+		// instead of the indexer roots.
+		allRoots := isAllRootsSearchPath(req.Path)
 		if req.Type == "folder" {
-			results, err := walkAndSearchFolders(fileAPIRoot, req.Query)
+			// Walk the caller's (already validated) path rather than the
+			// hardcoded global file API root.
+			var results []fileInfo
+			var err error
+			if allRoots {
+				// Merge folder matches across all indexer roots, deduped by
+				// name (folder results are names only).
+				seen := make(map[string]bool)
+				for _, root := range effectiveSearchRoots() {
+					rootResults, err := walkAndSearchFolders(root, req.Query)
+					if err != nil {
+						resp.Error = err.Error()
+						break
+					}
+					for _, f := range rootResults {
+						if !seen[f.Name] {
+							seen[f.Name] = true
+							results = append(results, f)
+						}
+					}
+				}
+			} else {
+				results, err = walkAndSearchFolders(fullPath, req.Query)
+			}
 			if err != nil {
 				resp.Error = err.Error()
 			} else {
 				resp.Data = results
 			}
 		} else if req.Type == "content" {
-			results, err := walkAndSearchContent(fullPath, req.Query)
+			var results []searchMatch
+			var err error
+			if allRoots {
+				// Walk each indexer root and rebase match paths to the file
+				// API root so the frontend can re-open them (securePath
+				// resolves relative paths against the file API root first).
+				for _, root := range effectiveSearchRoots() {
+					rootResults, err := walkAndSearchContent(root, req.Query, req.Agent)
+					if err != nil {
+						resp.Error = err.Error()
+						break
+					}
+					for _, m := range rootResults {
+						results = append(results, searchMatch{
+							Path:    rebasePathToRoot(m.Path, root, fileAPIRoot),
+							Line:    m.Line,
+							Content: m.Content,
+						})
+					}
+				}
+			} else {
+				results, err = walkAndSearchContent(fullPath, req.Query, req.Agent)
+			}
 			if err != nil {
 				resp.Error = err.Error()
 			} else {
 				resp.Data = results
 			}
 		} else if req.Type == "grep" {
-			go startGrepSearch(ws, req.RequestId, req.Query)
+			// A "." search means "search all active workspace roots": pass an
+			// empty scope so startGrepSearch walks every indexer root (with
+			// match paths relative to the file API root). A specific path
+			// keeps the previous single-root scoping behavior.
+			scoped := fullPath
+			if allRoots {
+				scoped = ""
+			}
+			go startGrepSearch(ws, req.RequestId, req.Query, scoped, req.Agent)
 			return // Return early, streaming handles responses
 		} else {
 			resp.Error = "Unsupported search type"
@@ -689,7 +838,10 @@ func walkAndSearchFoldersHelper(path, query string, visited map[string]bool, dep
 }
 
 // walkAndSearchContent recursively searches text files under rootPath for occurrences of query.
-func walkAndSearchContent(rootPath, query string) ([]searchMatch, error) {
+// All returned match paths are relative to rootPath (the actual walked root).
+// When agent is true, agent-specific resource limits are applied: a total cap
+// of 50 matches, at most 10 lines per file, and a hard 5 second time limit.
+func walkAndSearchContent(rootPath, query string, agent bool) ([]searchMatch, error) {
 	im := getIndexManagerAPI()
 	var matchingIdx *WorkspaceIndex
 	im.mu.RLock()
@@ -704,9 +856,20 @@ func walkAndSearchContent(rootPath, query string) ([]searchMatch, error) {
 	var matches []searchMatch
 	queryLower := strings.ToLower(query)
 	limit := 100 // Cap results at 100 to prevent overwhelming memory or socket
+	if agent {
+		limit = 50 // Agent-specific total result cap
+	}
 
 	startTime := time.Now()
 	timeout := 5 * time.Second
+
+	// Per-file line cap (only applies to agent requests) to prevent a single
+	// huge file from dominating the results.
+	perFileCap := 0
+	if agent {
+		perFileCap = 10
+	}
+	fileLineCounts := make(map[string]int)
 
 	// Map to prevent processing the same file multiple times via symlinks
 	visitedFiles := make(map[string]bool)
@@ -800,14 +963,22 @@ func walkAndSearchContent(rootPath, query string) ([]searchMatch, error) {
 
 		if strings.Contains(strings.ToLower(content), queryLower) {
 			lines := strings.Split(content, "\n")
-			relPath, err := filepath.Rel(fileAPIRoot, path)
-			if err != nil {
+			// Compute the match path relative to the actual walked root so the
+			// caller can deterministically re-join it.
+			relPath, relErr := filepath.Rel(rootPath, path)
+			if relErr != nil {
 				relPath = path
 			}
 			relPath = strings.ReplaceAll(filepath.ToSlash(relPath), "\\", "/")
 
 			for idx, line := range lines {
 				if strings.Contains(strings.ToLower(line), queryLower) {
+					if perFileCap > 0 {
+						if fileLineCounts[relPath] >= perFileCap {
+							break // Per-file line cap reached (agent mode)
+						}
+						fileLineCounts[relPath]++
+					}
 					matches = append(matches, searchMatch{
 						Path:    relPath,
 						Line:    idx + 1,
@@ -909,25 +1080,87 @@ func cancelActiveSearch(ws *websocket.Conn) {
 	}
 }
 
-func startGrepSearch(ws *websocket.Conn, reqId int, query string) {
+// rootInfo describes a single directory to walk during a grep search, plus
+// the ignore patterns that apply to it.
+type rootInfo struct {
+	path        string
+	ignorePaths []string
+}
+
+// resolveGrepSearchRoots determines the walk roots and the base directory used
+// to compute relative match paths for a grep search.
+//
+// If scopedPath is non-empty and exists, it restricts the walk: a directory
+// walks only that directory (walkBase = that directory), a file walks its
+// parent directory but only reports matches for that file (walkBase = the
+// parent dir, scopedFileFilter = the file). If scopedPath is empty (or does
+// not exist), it falls back to all indexer (workspace) roots with walkBase
+// left as the file API root, so match paths remain relative to the file API
+// root (which is what the frontend uses to re-open them). This is the
+// "search all active workspace roots" path that a "." search maps to.
+func resolveGrepSearchRoots(scopedPath string) (roots []rootInfo, walkBase string, scopedFileFilter string) {
+	walkBase = fileAPIRoot // All-roots mode: match paths relative to the file API root
+	scopedFileFilter = ""
+
+	scoped := strings.TrimSpace(scopedPath)
+	if scoped != "" {
+		if stat, err := os.Stat(scoped); err == nil {
+			if stat.IsDir() {
+				walkBase = scoped
+				roots = append(roots, rootInfo{path: scoped})
+			} else {
+				// Scoped to a single file: walk its parent dir, filter to that file.
+				walkBase = filepath.Dir(scoped)
+				scopedFileFilter = scoped
+				roots = append(roots, rootInfo{path: walkBase})
+			}
+		}
+	}
+	if len(roots) == 0 {
+		// No valid scoped path: fall back to all indexer roots (backward compat).
+		im := getIndexManagerAPI()
+		im.mu.RLock()
+		for path, idx := range im.Indexes {
+			idx.mu.RLock()
+			ignores := make([]string, len(idx.IgnorePaths))
+			copy(ignores, idx.IgnorePaths)
+			idx.mu.RUnlock()
+			roots = append(roots, rootInfo{path: path, ignorePaths: ignores})
+		}
+		im.mu.RUnlock()
+	}
+
+	// Attach ignore paths to the scoped root(s) if a matching indexer exists.
+	im := getIndexManagerAPI()
+	for i, root := range roots {
+		if len(root.ignorePaths) == 0 {
+			if idx, ok := im.Indexes[root.path]; ok {
+				idx.mu.RLock()
+				root.ignorePaths = make([]string, len(idx.IgnorePaths))
+				copy(root.ignorePaths, idx.IgnorePaths)
+				idx.mu.RUnlock()
+			}
+		}
+		roots[i] = root
+	}
+	return roots, walkBase, scopedFileFilter
+}
+
+// startGrepSearch runs a streaming grep search. If scopedPath is non-empty it
+// is an already-validated absolute path that restricts the walk: a directory
+// walks only that directory, a file walks its parent directory but only
+// reports matches for that file. All returned match paths are relative to the
+// walked root (the scoped directory/file in scoped mode, the global file API
+// root in all-roots mode). When agent is true, agent-specific resource limits
+// are applied: a total cap of 50 matches, at most 10 lines per file, and a
+// hard 5 second time limit.
+func startGrepSearch(ws *websocket.Conn, reqId int, query string, scopedPath string, agent bool) {
 	// Cancel previous search
 	cancelActiveSearch(ws)
 
-	im := getIndexManagerAPI()
-	im.mu.RLock()
-	type rootInfo struct {
-		path        string
-		ignorePaths []string
-	}
-	var roots []rootInfo
-	for path, idx := range im.Indexes {
-		idx.mu.RLock()
-		ignores := make([]string, len(idx.IgnorePaths))
-		copy(ignores, idx.IgnorePaths)
-		idx.mu.RUnlock()
-		roots = append(roots, rootInfo{path: path, ignorePaths: ignores})
-	}
-	im.mu.RUnlock()
+	// Determine the walk roots and the base directory used to compute
+	// relative match paths.
+	roots, walkBase, scopedFileFilter := resolveGrepSearchRoots(scopedPath)
 
 	if len(roots) == 0 {
 		safeWriteJSON(ws, fileResponse{
@@ -952,14 +1185,28 @@ func startGrepSearch(ws *websocket.Conn, reqId int, query string) {
 	matchChan := make(chan []interface{}, 200)
 	var wg sync.WaitGroup
 
+	// Per-file line cap (agent mode) shared across all grep goroutines.
+	var perFileMu sync.Mutex
+	perFileCounts := make(map[string]int)
+	perFileCap := 0
+	if agent {
+		perFileCap = 10
+	}
+	agentDeadline := time.Now().Add(5 * time.Second) // Hard time limit (agent mode)
+
 	for _, root := range roots {
 		wg.Add(1)
 		go func(r rootInfo) {
 			defer wg.Done()
 
 			args := []string{"-rnIi", "--line-buffered"}
-			args = append(args, "--exclude-dir=.*")
-			args = append(args, "--exclude=.*")
+			// Skip dot-prefixed directories (.git, .agents, .pkgconfig, ...).
+			// grep's --exclude-dir uses fnmatch: "." is a LITERAL dot and only
+			// "?" and "*" are wildcards. So ".?*" = literal "." + any char +
+			// anything, which matches dot-folders but NOT plain names like
+			// "sub"/"dist". (A naive ".*" would also match the search-root
+			// "." itself and exclude the entire tree — do not use it.)
+			args = append(args, "--exclude-dir=.?*")
 			args = append(args, "--exclude-dir=node_modules")
 			args = append(args, "--exclude-dir=dist")
 			args = append(args, "--exclude-dir=build")
@@ -1036,7 +1283,30 @@ func startGrepSearch(ws *websocket.Conn, reqId int, query string) {
 						continue
 					}
 
-					relPath, err := filepath.Rel(fileAPIRoot, filePath)
+					// Scoped-to-file mode: only report the exact file.
+					if scopedFileFilter != "" && filePath != scopedFileFilter {
+						continue
+					}
+
+					// Agent mode: hard time limit and per-file line cap.
+					if agent {
+						if time.Now().After(agentDeadline) {
+							return
+						}
+						perFileMu.Lock()
+						if perFileCap > 0 && perFileCounts[filePath] >= perFileCap {
+							perFileMu.Unlock()
+							continue
+						}
+						if perFileCap > 0 {
+							perFileCounts[filePath]++
+						}
+						perFileMu.Unlock()
+					}
+
+					// Compute the match path relative to the actual walked root so
+					// the caller can deterministically re-join it.
+					relPath, err := filepath.Rel(walkBase, filePath)
 					if err != nil {
 						relPath = filePath
 					}
@@ -1060,6 +1330,9 @@ func startGrepSearch(ws *websocket.Conn, reqId int, query string) {
 
 		limit := 500
 		count := 0
+		if agent {
+			limit = 50 // Agent-specific total result cap
+		}
 
 		for {
 			select {
@@ -1094,6 +1367,16 @@ func startGrepSearch(ws *websocket.Conn, reqId int, query string) {
 		activeSearchesMu.Unlock()
 
 		if !wasCancelled && ctx.Err() == nil {
+			// When the result count hit the total cap, the results are a partial
+			// set; surface that via the data payload so callers can re-scope.
+			if count >= limit {
+				safeWriteJSON(ws, fileResponse{
+					RequestId: reqId,
+					Action:    "search_done",
+					Data:      map[string]interface{}{"count": count, "truncated": true},
+				})
+				return
+			}
 			safeWriteJSON(ws, fileResponse{
 				RequestId: reqId,
 				Action:    "search_done",
@@ -1102,7 +1385,7 @@ func startGrepSearch(ws *websocket.Conn, reqId int, query string) {
 		}
 	}()
 
-	// Wait for searches and close chan
+	// Wait for searches and close the channel once all grep goroutines finish.
 	go func() {
 		wg.Wait()
 		close(matchChan)

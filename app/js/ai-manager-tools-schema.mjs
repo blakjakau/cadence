@@ -28,7 +28,7 @@ export const tools = [
 	{
 		name: "run_command",
 		description:
-			"Run a shell command (defaults to project root).",
+			"Run a shell command (default working directory is ALWAYS the project root).",
 		parameters: {
 			type: "object",
 			properties: {
@@ -70,7 +70,7 @@ export const tools = [
 	},
 	{
 		name: "search_files",
-		description: "Search for an exact string across project files, optionally limited to a path or file.",
+		description: "Search for an exact string across project files, optionally limited to a path or file. Results are capped (max 50 matches, 10 lines per file, ~5s), so a broad query may be partial — narrow the `path` scope or use a more specific query rather than assuming the result set is complete.",
 		parameters: {
 			type: "object",
 			properties: {

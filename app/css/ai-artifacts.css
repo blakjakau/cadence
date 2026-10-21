@@ -976,14 +976,6 @@ ui-tab-item.plan-tasks-tab.active .status-icon {
     transform: translateY(-1px);
 }
 
-/* Hide close button and make padding symmetric for filechips inside chat history */
-.conversation-area ui-filechip {
-    padding-right: 8px;
-}
-.conversation-area ui-filechip > ui-icon[close] {
-    display: none;
-}
-
 /* Premium trigger banner for Implementation Plan in chat history */
 .ai-implementation-plan-banner {
     position: sticky;

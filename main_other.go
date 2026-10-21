@@ -46,6 +46,10 @@ func handleStartup() {
 }
 
 func main() {
+	// If reexeced as a sandbox keeper, run the keeper loop (never returns).
+	if sandboxKeeperEntry() {
+		return
+	}
 	getIsCompiled()
 	parseFlags()
 	handleStartup()

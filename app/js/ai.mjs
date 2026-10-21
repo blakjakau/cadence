@@ -391,7 +391,7 @@ export default class AI {
             }
         }
 
-		if (this.editor && prompt.includes("@")) {
+		if(this.editor && prompt.includes("@") && !agentMode) {
 			// --- Phase 1: Handle @/path/to/file.ext tags ---
 			// Regex to find any @-mention followed by non-space characters.
 			const fileTagRegex = /@(\S+)/g;

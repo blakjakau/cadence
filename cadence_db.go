@@ -43,12 +43,12 @@ type CadenceDB struct {
 
 var globalDB *CadenceDB
 
-func openCadenceDB(dir string) (*CadenceDB, error) {
+func openCadenceDB(dir, name string) (*CadenceDB, error) {
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return nil, fmt.Errorf("failed to create config dir: %w", err)
 	}
 
-	dbPath := filepath.Join(dir, "cadence.db")
+	dbPath := filepath.Join(dir, name)
 	db, err := bolt.Open(dbPath, 0600, &bolt.Options{Timeout: 3 * time.Second})
 	if err != nil {
 		return nil, fmt.Errorf("failed to open bbolt database at %s: %w", dbPath, err)
@@ -78,7 +78,7 @@ func openCadenceDB(dir string) (*CadenceDB, error) {
 		log.Printf("[CadenceDB] Warning: migration encountered issue: %v", err)
 	}
 
-	// Create a backup copy (cadence.db.bak) and compact the database on launch
+	// Create a backup copy (<dbfile>.bak) and compact the database on launch
 	if err := cdb.backupAndCompact(); err != nil {
 		log.Printf("[CadenceDB] Launch-time backup/compaction notice: %v", err)
 	}
@@ -834,20 +834,19 @@ func formatByteSize(bytes int64) string {
 	return fmt.Sprintf("%.1f %cB", float64(bytes)/float64(div), "KMGTPE"[exp])
 }
 
-// backupAndCompact copies the current database to cadence.db.bak for safety,
+// backupAndCompact copies the current database to <dbfile>.bak for safety,
 // and compacts the live database if free space is available.
 func (c *CadenceDB) backupAndCompact() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	dir := filepath.Dir(c.path)
-	bakPath := filepath.Join(dir, "cadence.db.bak")
-	compactPath := filepath.Join(dir, "cadence.db.compact")
+	bakPath := c.path + ".bak"
+	compactPath := c.path + ".compact"
 
 	// Clean up any stale compact file from a previously interrupted process
 	_ = os.Remove(compactPath)
 
-	// Step 1: Create atomic backup of the database to cadence.db.bak
+	// Step 1: Create atomic backup of the database to <dbfile>.bak
 	bakFile, err := os.OpenFile(bakPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
 	if err != nil {
 		return fmt.Errorf("failed to open backup file: %w", err)
@@ -910,8 +909,8 @@ func (c *CadenceDB) backupAndCompact() error {
 	c.db = reopenedDB
 
 	if origFi != nil {
-		log.Printf("[CadenceDB] Launch backup created (cadence.db.bak) & compacted: %s -> %s",
-			formatByteSize(origFi.Size()), formatByteSize(compactFi.Size()))
+		log.Printf("[CadenceDB] Launch backup created (%s) & compacted: %s -> %s",
+			bakPath, formatByteSize(origFi.Size()), formatByteSize(compactFi.Size()))
 	}
 
 	return nil

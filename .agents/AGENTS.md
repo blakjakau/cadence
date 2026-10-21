@@ -17,7 +17,6 @@ When building or modifying UI elements, use the custom web components defined in
 
 ## actions ##
 `./build.sh` - builds the backend server
-`curl -X POST http://localhost:3022/api/restart` - restarts the backend server (use port 3023 in dev mode)
 
 Don't build the project unless explicitly requested by the user, or essential for testing
 Don't or `git add` or `git commit` unless explicitly requested by the user

@@ -89,6 +89,10 @@ ui-markdown-preview-panel .md-preview-body {
     line-height: 1.6;
     color: var(--text-primary);
     word-wrap: break-word;
+    /* #mainContent sets `user-select: none` (for UI chrome); the rendered
+       markdown is real content, so allow selecting/copying it here. */
+    user-select: text;
+    -webkit-user-select: text;
 }
 
 /* Empty-state placeholder. */
@@ -120,6 +124,15 @@ ui-markdown-preview-panel .md-preview-body p {
 ui-markdown-preview-panel .md-preview-body a {
     color: var(--theme);
     text-decoration: underline;
+    cursor: pointer;
+    transition: color 0.12s ease;
+}
+
+/* Links are intercepted by the panel (see _onBodyClick): relative links
+   open the target in a new editor tab (or focus the existing tab), web
+   links open in a new browser tab. */
+ui-markdown-preview-panel .md-preview-body a:hover {
+    color: var(--themeDark, var(--theme));
 }
 
 ui-markdown-preview-panel .md-preview-body ul,

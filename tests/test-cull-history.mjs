@@ -1,6 +1,6 @@
 // test-cull-history.mjs — Runtime verification of cull_history model-lead pruning.
 //
-// Usage: node test/test-cull-history.mjs
+// Usage: node tests/test-cull-history.mjs
 //
 // Architecture note: the user DISABLED the old string-intercept (parsing "cull_history(N)"
 // out of model prose in agent.mjs L526-551). cull_history is now a REAL, schema-defined

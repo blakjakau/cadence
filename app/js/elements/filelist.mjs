@@ -222,6 +222,11 @@ export class FileList extends ContentFill {
 				files: files,
 			}
 
+			// Notify listeners that the file index is ready. The AI history renders on first
+			// load before this index is built, so file chips (which require the index) are
+			// skipped for those messages. Re-rendering when the index lands applies the chips.
+			this.dispatch("file-list-index-ready")
+
 			if(this.indexIsStale) {
 				return this.generateIndex(this._tree)
 			} else {
@@ -504,11 +509,29 @@ export class FileList extends ContentFill {
 		}
 	}
 	
-	find(match, limit = 50) {
+	find(match, limit = 50, rootFilter = null) {
 		const matches = [];
 		if (!this?.index?.files) return [];
 
+		// Optional root scoping. When a non-empty array of root paths is provided,
+		// only files located under one of those roots are considered. Comparisons use
+		// forward-slash, leading-slash-stripped paths so the (relative) fileList paths
+		// line up with the (also relative) root strings. A null/empty rootFilter leaves
+		// existing callers (whole-workspace search) completely unchanged.
+		const hasRootFilter = Array.isArray(rootFilter) && rootFilter.length > 0;
+		const normRoots = hasRootFilter
+			? rootFilter
+					.map((r) => String(r).replace(/\\/g, "/").replace(/^\/+/, "").replace(/\/+$/, ""))
+					.filter((r) => r.length > 0)
+			: [];
+		const underRoot = (p) => {
+			const np = String(p).replace(/\\/g, "/").replace(/^\/+/, "");
+			return normRoots.some((root) => np === root || np.startsWith(root + "/"));
+		};
+
 		for (let item of this.index.files) {
+			// Scope to the session's effective roots when a root filter is provided.
+			if (hasRootFilter && !underRoot(item.path)) continue;
 			// The AI often provides a path with the beginning truncated. `endsWith` is a great check for this.
 			// We also check for `includes` as a fallback for other partial matches.
 			if (item.path.endsWith(match) || item.path.includes(match)) {
@@ -537,6 +560,28 @@ export class FileList extends ContentFill {
 		});
 
 		return uniqueMatches.slice(0, limit);
+	}
+	
+	/**
+	 * Resolve a path (or the tail of a path, e.g. "app/js/main.mjs") to the file item(s) in the index.
+	 * Accepts backslashes and leading slashes. Returns the single best match when unambiguous,
+	 * or the list of candidates when multiple indexed files share the tail. Empty array when not found.
+	 */
+	getFilesByPath(path, { tailOnly = false } = {}) {
+		if (!path || !this?.index?.files) return [];
+		const norm = String(path).replace(/\\/g, "/").replace(/^\/+/, "").replace(/\/+$/, "");
+		if (!norm) return [];
+		const normFiles = this.index.files.map(f => ({
+			file: f,
+			path: String(f.path).replace(/\\/g, "/").replace(/^\/+/, ""),
+		}));
+		// Exact match wins outright.
+		const exact = normFiles.filter(f => f.path === norm).map(f => f.file);
+		if (exact.length) return exact;
+		if (tailOnly) return [];
+		// Fall back to tail (suffix) matching: "repo/foo/app/main.mjs" matches "app/main.mjs".
+		const suffix = normFiles.filter(f => f.path.endsWith("/" + norm)).map(f => f.file);
+		return suffix;
 	}
 	
 	addFileToIndex(filePath) {

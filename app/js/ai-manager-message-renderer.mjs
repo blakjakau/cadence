@@ -793,6 +793,144 @@ export default class AIManagerMessageRenderer {
         return finalHtml;
     }
 
+    /**
+     * Scan rendered message HTML and turn file-path-looking strings (bare relative paths and
+     * @path tags) into clickable <ui-filechip> elements with the SAME markup/styling as the
+     * edit_file tool card, so clicking one opens the file in the editor (the chat container
+     * already listens for the chip's `file-focus-request` event).
+     *
+     * A token becomes a chip only when it resolves to an entry in the workspace file index AND
+     * that file sits under one of the session's effective roots (a pinned session only chips
+     * files from its pinned roots). Tokens inside code blocks, inline code, existing links, or
+     * existing chips are left untouched. Never throws — returns the input HTML on any error.
+     *
+     * @param {string} html Rendered message HTML.
+     * @param {object|null} session Session the message belongs to (scopes the path lookup to its effective roots).
+     * @param {object} [opts] { skipText: only chip @path tags (not bare paths) }
+     * @returns {string} HTML with path tokens replaced by chips.
+     */
+        applyFileChipsToHtml(html, session, opts = {}) {
+            if (!html || typeof html !== "string") {
+                return html || "";
+            }
+        try {
+            const fileList = window.ui?.fileList;
+            if (!fileList || !fileList.index?.files?.length) return html;
+
+            // Effective roots for the session (all folders when nothing is pinned).
+            let roots = null;
+            try {
+                roots = this.aiManager.getEffectiveWorkspaceFolders(session);
+            } catch (_) { /* fall back to whole index */ }
+            const normRoots = (Array.isArray(roots) && roots.length > 0)
+                ? roots.map(r => String(r).replace(/\\/g, "/").replace(/^\/+/, "").replace(/\/+$/, "")).filter(Boolean)
+                : null;
+            const underRoot = (p) => {
+                if (!normRoots) return true;
+                const np = String(p).replace(/\\/g, "/").replace(/^\/+/, "");
+                return normRoots.some(root => np === root || np.startsWith(root + "/"));
+            };
+
+            // Resolve a token to a single indexed file item under the session's roots (or null).
+            // getFilesByPath prefers exact matches, then tail/suffix matches. We accept the result
+            // only when it resolves to exactly one file within the session's effective roots —
+            // ambiguous (multiple) or out-of-root candidates are left as plain text.
+            const resolveToken = (raw) => {
+                const matches = fileList.getFilesByPath(raw);
+                if (matches.length === 0) return null;
+                const valid = matches.filter(m => underRoot(m.path));
+                return valid.length === 1 ? valid[0] : null;
+            };
+
+            const chipHtml = (fileItem, displayToken) => {
+                const shortFile = (fileItem.name || (fileItem.path || "").split("/").pop());
+                const display = (displayToken || "").replace(/^@/, "");
+                const title = this._escapeHtml(display || shortFile);
+                return `<ui-filechip class="message-filechip" filename="${this._escapeHtml(shortFile)}" path="${this._escapeHtml(fileItem.path)}" title="${title}"></ui-filechip>`;
+            };
+
+            // Use a plain detached <div> as the working container. (<template>.content is a
+            // DocumentFragment, which lacks .innerHTML, so serializing it yielded undefined.)
+            const container = document.createElement("div");
+            container.innerHTML = html;
+
+            // Skip code blocks, inline code, existing links, and existing chips.
+            const isProtected = (el) => !!(el && el.closest && el.closest("pre, code, a, ui-filechip, .tool-call-block, .tool-call-card"));
+
+            // Candidate patterns. `@path` tokens and bare relative paths ending in a file
+            // extension. Bare paths require at least one "/" to avoid matching plain words.
+            const ext = String.raw`\.[a-zA-Z][a-zA-Z0-9]{0,9}`;
+            const seg = String.raw`[A-Za-z0-9_][A-Za-z0-9_.\-]*`;
+            const atPattern = new RegExp(String.raw`@(${seg}(?:/${seg})*${ext})`, "g");
+            const barePattern = new RegExp(String.raw`(?<![\w@.])((?:${seg}/)+${seg}${ext})(?![\w])`, "g");
+
+            const processText = (node, isTextOnly) => {
+                const text = node.nodeValue;
+                if (!text) return;
+                const patterns = [];
+                if (!isTextOnly) patterns.push(barePattern);
+                patterns.push(atPattern);
+
+                // Collect all matches across both patterns with their raw tokens, then merge
+                // by position (dedup overlapping spans).
+                const spans = [];
+                for (const re of patterns) {
+                    re.lastIndex = 0;
+                    let m;
+                    while ((m = re.exec(text)) !== null) {
+                        // atPattern's token (m[1]) excludes the leading `@`, but the span covers the
+                        // FULL match (m[0], including the `@`) so the chip replaces the whole `@tag`.
+                        const token = m[1];
+                        spans.push({ startIdx: m.index, endIdx: m.index + m[0].length, token, fileItem: resolveToken(token) });
+                    }
+                }
+                if (spans.length === 0) return;
+                // Sort by position; drop spans that are fully contained in an earlier, longer span.
+                spans.sort((a, b) => a.startIdx - b.startIdx || (b.endIdx - b.startIdx) - (a.endIdx - a.startIdx));
+                const kept = [];
+                for (const s of spans) {
+                    const prev = kept[kept.length - 1];
+                    if (prev && prev.endIdx >= s.startIdx) {
+                        // Overlap: keep the earlier (longer) span.
+                        continue;
+                    }
+                    kept.push(s);
+                }
+                const good = kept.filter(s => s.fileItem);
+                if (good.length === 0) return;
+
+                const frag = document.createDocumentFragment();
+                let lastIdx = 0;
+                for (const s of good) {
+                    if (s.startIdx > lastIdx) frag.appendChild(document.createTextNode(text.slice(lastIdx, s.startIdx)));
+                    const chipEl = document.createElement("span");
+                    chipEl.className = "message-filechip-wrap";
+                    chipEl.innerHTML = chipHtml(s.fileItem, s.token);
+                    frag.appendChild(chipEl.firstChild);
+                    lastIdx = s.endIdx;
+                }
+                if (lastIdx < text.length) frag.appendChild(document.createTextNode(text.slice(lastIdx)));
+                node.parentNode.replaceChild(frag, node);
+            };
+
+            const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT, {
+                acceptNode: (node) => (isProtected(node.parentElement) ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT)
+            });
+            // Note: for text nodes directly under the container, isProtected() resolves
+            // against the container itself, which matches no protected selector, so such
+            // nodes are still scanned.
+            const nodes = [];
+            let n;
+            while ((n = walker.nextNode())) nodes.push(n);
+            for (const node of nodes) processText(node, opts.skipText === true);
+
+            return container.innerHTML;
+        } catch (e) {
+            console.warn("[AIManagerMessageRenderer] applyFileChipsToHtml failed:", e);
+            return html;
+        }
+    }
+
     _renderSingleToolCallCard(toolName, args, tc, tcIdx = 0, message = null, session = null) {
         // Source session: the session this message belongs to (not necessarily the active tab).
         const srcSession = session || this.aiManager.activeSession;
@@ -1818,6 +1956,9 @@ export default class AIManagerMessageRenderer {
                 const nonThoughtMessage = (message && (message.thought || message.isThinking))
                     ? { ...message, thought: "", isThinking: false }
                     : message;
+                // Chips are applied once on the finalized render (see _createMessageElement /
+                // _renderWithFileChips), not here â running the pass per streaming tick would
+                // risk chipifying partial paths mid-token and add a template parse per token.
                 containerDiv.innerHTML = this.renderResponseContent(bodyContent, nonThoughtMessage, isNew, shouldSkip, session);
             }
         }

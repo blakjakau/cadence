@@ -135,6 +135,27 @@
     display: none !important; /* Hide print margin and gutter for the prompt editor */
 }
 
+/* @tag chips in the AI prompt editor. The ace/mode/ai-prompt tokenizer emits an
+   "at.mention" token, which ACE renders as <span class="ace_at ace_mention">.
+   The chip is styled with the SAME colours as the tool-call file chips
+   (ui-filechip in elements.css: --bg-secondary fill, --theme border,
+   --text-primary text, 16px pill) so a typed @file tag visually matches the
+   file chip the agent echoes back in the response. The padding/margin trick
+   keeps the chip from pushing the cursor. */
+.prompt-area .ace_at.ace_mention {
+    display: inline-block;
+    vertical-align: baseline;
+    color: var(--text-primary);
+    background-color: var(--bg-secondary);
+    border: 1px solid var(--theme);
+    border-radius: 16px;
+    padding: 0 4px;
+    margin: 0 -5px;
+    font-weight: 600;
+    line-height: 1.2;
+    white-space: nowrap;
+}
+
 .prompt-placeholder-overlay {
     position: absolute;
     left: 0;
@@ -385,10 +406,22 @@
     position: relative;
 }
 
-/* Collapse vertical space between adjacent system message blocks */
-.system-message-block + .system-message-block {
-    margin-top: -42px; /* completely squash the gap on stacked system prompts*/
+/* Lay the markdown text and the delete button out as a flex row: the text
+   wraps inside its own (growing) cell, and the button sits in its own cell.
+   Excluded for the context-stale-notice, which reuses this class but keeps
+   its own column layout. */
+.system-message-block:not(.context-stale-notice) {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
 }
+.system-message-block > p {
+    flex: 1;
+    margin: 0;
+}
+
+.system-message-block + .system-message-block { margin-top: -6px; }
 
 .ai-provider-select {
     font-size: 0.85em;
@@ -607,6 +640,26 @@
 .conversation-area .response-block pre .hljs-tag {
     color: var(--hljs-tag, #e06c75);
 }
+
+
+/* Hide close button and make padding symmetric for filechips inside chat history */
+.conversation-area ui-filechip {
+    padding-right: 8px;
+}
+.conversation-area ui-filechip > ui-icon[close] {
+    display: none;
+}
+
+/* Inline message file chips render as a bare clickable path: no Full/Outline
+   toggle, no close icon, no extra margin beyond what a normal path occupies. */
+.conversation-area .message-filechip .chip-mode-toggle,
+.conversation-area .message-filechip > ui-icon[close] {
+    display: none;
+}
+.conversation-area .message-filechip {
+    margin: 0;
+}
+
 
 /* Thinking Block Styles */
 .thought-block {
@@ -1710,6 +1763,21 @@
     box-sizing: border-box;
 }
 
+/* Sandbox-state tint on run_command cards: bronze when the command ran in a
+   shared sandbox (the lock chip is present), grey/silver otherwise. */
+.agent-cmd-output-block details {
+    border-left-color: var(--color-silver, #9aa0a6);
+}
+
+.agent-cmd-output-block details:has(.agent-cmd-sandbox-badge) {
+    border-left-color: var(--color-bronze, #c8863a);
+    background: color-mix(in srgb, var(--color-bronze, #c8863a) 7%, var(--bg-secondary));
+}
+
+.agent-cmd-output-block details:has(.agent-cmd-sandbox-badge) summary {
+    background: color-mix(in srgb, var(--color-bronze, #c8863a) 8%, transparent) !important;
+}
+
 .agent-cmd-output-block summary {
     display: flex;
     align-items: center;
@@ -1720,6 +1788,31 @@
     font-weight: 500 !important;
     user-select: none;
     outline: none;
+}
+
+/* Sandbox correlation badge on a run_command card. Clickable: opens a terminal
+   tab attached to this session's shared sandbox. */
+.agent-cmd-sandbox-badge {
+    font-size: 0.7rem;
+    margin-left: 8px;
+    padding: 1px 4px;
+    border-radius: 4px;
+    background: var(--color-bronze-soft, rgba(200, 134, 58, 0.18));
+    color: var(--color-bronze, #c8863a);
+    cursor: pointer;
+    white-space: nowrap;
+    user-select: none;
+    transition: filter 0.15s ease;
+}
+
+.agent-cmd-sandbox-badge:hover {
+    filter: brightness(1.25);
+}
+
+.agent-cmd-sandbox-badge ui-icon {
+    font-size: 11px;
+    line-height: 1;
+    vertical-align: -1px;
 }
 
 .agent-query-header {

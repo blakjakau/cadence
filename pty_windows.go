@@ -10,9 +10,10 @@ import (
 	"github.com/UserExistsError/conpty"
 )
 
-// startPty returns an io.ReadWriteCloser and the *exec.Cmd for the PTY process.
-// On modern Windows, this automatically uses the native ConPTY API.
-func startPty(shell string, homeDir string, prompt string) (io.ReadWriteCloser, *exec.Cmd, func(cols, rows int), error) {
+// startPty returns an io.ReadWriteCloser and a process handle for the PTY
+// process. On modern Windows, this automatically uses the native ConPTY API.
+// Sandbox is a no-op on Windows (sandboxing is Linux-only).
+func startPty(shell string, homeDir string, prompt string, sandbox *SandboxConfig) (io.ReadWriteCloser, *ptyProcess, func(cols, rows int), error) {
 	// We create a placeholder exec.Cmd. The conpty library starts the process,
 	// but does not expose the underlying *os.Process object.
 	// Therefore, ptyCmd.Process will be nil. This is handled in handlers.go.
@@ -36,5 +37,7 @@ func startPty(shell string, homeDir string, prompt string) (io.ReadWriteCloser, 
 		ptmx.Write([]byte("cd /d \"" + homeDir + "\"\r\n"))
 	}
 
-	return ptmx, ptyCmd, resizeFunc, nil
+	// Expose the conpty pid and a kill via Close (closing the pty kills the
+	// process; the caller's ptmx.Close() also covers this).
+	return ptmx, &ptyProcess{Pid: p.Pid(), Kill: func() { p.Close() }}, resizeFunc, nil
 }

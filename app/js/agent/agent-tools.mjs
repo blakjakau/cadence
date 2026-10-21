@@ -29,11 +29,14 @@ class AgentTools {
     _resolveSession(sourceId = null) {
         try {
             const aiManager = window.ui?.aiManager;
-            const targetSessionId = sourceId || aiManager?.activeSessionId;
-            const running = targetSessionId ? aiManager?.runningSessions?.get(targetSessionId) : null;
-            const session = running?.instance?.session || running?.session
-                || (targetSessionId === aiManager?.activeSessionId ? aiManager?.activeSession : null)
-                || aiManager?.activeSession;
+            // Legacy callers with no sourceId resolve to the active session.
+            if (!sourceId) {
+                return aiManager?.activeSession || null;
+            }
+            // A specific session was requested: never silently fall back to the active session.
+            const entry = aiManager?.runningSessions?.get(sourceId) || null;
+            const session = entry?.instance?.session || entry?.session
+                || (sourceId === aiManager?.activeSessionId ? aiManager?.activeSession : null);
             return session || null;
         } catch (e) {
             return null;
@@ -203,7 +206,7 @@ class AgentTools {
     _cleanNormalizedPath(rawPath, sourceId = null) {
         const folders = this._getEffectiveWorkspaceFolders(sourceId);
         rawPath = rawPath.replace(/\\/g, '/');
-
+        
         // Resolve traversal sequences
         const parts = rawPath.split('/');
         const resolvedParts = [];
@@ -218,22 +221,31 @@ class AgentTools {
             }
         }
 
-        const finalResolvedPath = '/' + resolvedParts.join('/');
-        const cleanFinalPath = finalResolvedPath.replace(/\/+/g, '/');
+        // Build both a leading-slash (absolute) and a bare (relative) form.
+        // The resolved path may itself be relative, so containment must be
+        // checked in *both* normalized forms — otherwise a relative
+        // workspace folder (e.g. "repo/dev.jakbox.cadence") can never
+        // match a forced-absolute path like "/repo/dev.jakbox.cadence/x".
+        const bare = resolvedParts.join('/').replace(/\/+/g, '/');
+        const cleanFinalPath = bare ? '/' + bare : '/';
 
-        // Verify security against open workspace folders
+        // Verify security against open workspace folders. Require the
+        // resolved path to actually lie under an open workspace folder in
+        // *both* normalized forms (leading-slash and bare). No short-circuit
+        // for relative folders: containment must genuinely hold.
         const isSafe = folders.some(folder => {
             const normalizedFolder = folder.replace(/\\/g, '/').replace(/\/+/g, '/').replace(/\/+$/, '');
-            if (normalizedFolder === '.' || normalizedFolder === '' || !normalizedFolder.startsWith('/')) {
-                return true;
-            }
-            return cleanFinalPath === normalizedFolder || cleanFinalPath.startsWith(normalizedFolder + '/');
+            if (normalizedFolder === '.' || normalizedFolder === '') return false;
+            const underAbsolute = cleanFinalPath === normalizedFolder || cleanFinalPath.startsWith(normalizedFolder + '/');
+            const underRelative = bare === normalizedFolder || bare.startsWith(normalizedFolder + '/');
+            return underAbsolute || underRelative;
         }) || (window.ui?.fileList?.index?.files || []).some(file => {
-            const normalizedFilePath = file.path.replace(/\\/g, '/').replace(/\/+/g, '/');
-            if (cleanFinalPath !== normalizedFilePath) return false;
+            const normalizedFilePath = file.path.replace(/\\/g, '/').replace(/\/+/g, '/').replace(/^\/+/, '');
+            if (bare !== normalizedFilePath) return false;
             return folders.some(folder => {
                 const normFolder = folder.replace(/\\/g, '/').replace(/\/+/g, '/').replace(/\/+$/, '');
-                return cleanFinalPath === normFolder || cleanFinalPath.startsWith(normFolder + '/');
+                if (normFolder === '.' || normFolder === '') return false;
+                return bare === normFolder || bare.startsWith(normFolder + '/');
             });
         });
 
@@ -244,6 +256,11 @@ class AgentTools {
                 cleanFinalPath
             });
             throw new Error(`Security Exception: Access to path '${rawPath}' is denied. It lies outside the allowed workspace folders.`);
+        }
+        
+        // if it all checks out, ensure it's actually relative
+        if(cleanFinalPath.startsWith("/")) {
+        	return cleanFinalPath.substring(1)
         }
 
         return cleanFinalPath;
@@ -968,6 +985,66 @@ Snippet: ${r.content || r.snippet || ""}`;
     }
 
     /**
+     * Determines whether a path refers to an existing *file* (as opposed to a
+     * directory). Used by the search_files dispatcher to decide between the
+     * line-numbered `searchInFile` output and the directory-walking
+     * `searchFiles` (backend grep).
+     *
+     * Resolution strategy:
+     *  1. Fast path: exact match in the file index. `index.files` contains
+     *     file entries only (directories live in `index.folders`), so a hit
+     *     confirms the path is a file.
+     *  2. Backend probe: `wsList` on the resolved path. The backend `list`
+     *     handler returns an array of entries for a directory and an error
+     *     for a file or missing path, so a non-error response with a
+     *     non-array payload confirms a file.
+     *
+     * Any failure (offline, missing path, outside workspace) returns false —
+     * "not confirmed a file". The worst case is falling through to
+     * `searchFiles`, which is correct for directories, files, and missing
+     * paths alike (the backend falls back to searching all indexer roots).
+     * @param {string} path
+     * @param {string|null} [sourceId]
+     * @returns {Promise<boolean>} true only when the path is confirmed to be a file.
+     */
+    async _isFilePath(path, sourceId = null) {
+        let resolved;
+        try {
+            resolved = this._resolveAndValidatePath(path, sourceId);
+        } catch (e) {
+            return false;
+        }
+        if (!resolved) return false;
+
+        // 1. Fast path: exact match in the file index (file entries only ⇒ confirmed file).
+        const normTarget = resolved.replace(/\\/g, '/').replace(/\/+/g, '/').replace(/^\/+/, '').toLowerCase();
+        const indexedFiles = window.ui?.fileList?.index?.files || [];
+        if (indexedFiles.length) {
+            const hit = indexedFiles.some(f => {
+                const fPath = f.path.replace(/\\/g, '/').replace(/\/+/g, '/').replace(/^\/+/, '').toLowerCase();
+                return fPath === normTarget;
+            });
+            if (hit) return true;
+        }
+
+        // 2. Backend probe: array payload ⇒ directory; non-error non-array ⇒ file.
+        if (this.conduit && this.conduit.isConnected) {
+            try {
+                const result = await this.conduit.wsList(resolved);
+                if (result && !result.error) {
+                    return !Array.isArray(result.data);
+                }
+            } catch (e) {
+                // Fall through: unknown path kind.
+            }
+        }
+
+        // Unknown (missing / offline / error): treat as "not a file" so the
+        // caller falls back to the directory-capable backend search.
+        return false;
+    }
+
+    /**
      * Searches for text across files (Grep) accelerating using Go and local buffers.
      * @param {string} query 
      */
@@ -1002,9 +1079,13 @@ Snippet: ${r.content || r.snippet || ""}`;
             const effectiveFolders = this._getEffectiveWorkspaceFolders(sourceId);
             let searchRoots = [];
             if (targetFolder) {
+                // targetFolder may be in leading-slash form while the effective
+                // folder is relative (or vice versa) - compare both sides in a
+                // canonicalized form (slash-normalized, leading slashes stripped).
+                const normTarget = targetFolder.replace(/\\/g, '/').replace(/\/+/g, '/').replace(/^\/+/, '');
                 const isWithinEffective = effectiveFolders.some(f => {
-                    const normF = f.replace(/\\/g, '/').replace(/\/+$/, '');
-                    return targetFolder === normF || targetFolder.startsWith(normF + '/');
+                    const normF = f.replace(/\\/g, '/').replace(/\/+/g, '/').replace(/^\/+/, '');
+                    return normTarget === normF || normTarget.startsWith(normF + '/');
                 });
                 if (!isWithinEffective) {
                     return `Security Exception: Access to path '${targetPath}' is denied. It lies outside the allowed workspace folders.`;
@@ -1049,17 +1130,34 @@ Snippet: ${r.content || r.snippet || ""}`;
             }
 
             // 2. Search remaining files using backend Go server if connected
+            let droppedBackendMatches = 0;
             if (this.conduit.isConnected) {
                 console.debug(`[AgentTools] Running backend Go search for query: "${query}" in roots:`, searchRoots);
                 try {
                     for (const rootFolder of searchRoots) {
                         try {
-                            const res = await this.conduit.wsSearch(rootFolder, "content", query);
+                            // Backend returns match paths relative to this exact
+                            // search root, so re-join them deterministically —
+                            // no heuristic re-anchoring against fileAPIRoot.
+                            // The backend resolves relative paths against the workspace
+                            // root but treats leading-slash paths as absolute filesystem
+                            // paths (Forbidden) — send the root in bare (relative) form.
+                            const bareRoot = rootFolder.replace(new RegExp('' + String.fromCharCode(94, 47, 43)), '');
+                            const res = await this.conduit.wsSearch(bareRoot, "content", query, { agent: true });
                             if (res && !res.error && Array.isArray(res.data)) {
                                 for (const match of res.data) {
+                                    if (!match || typeof match.path !== 'string') continue;
                                     try {
-                                        const resolved = this._resolveAndValidatePath(match.path, sourceId);
-                                        if (targetFolder && !resolved.startsWith(targetFolder)) continue;
+                                        const raw = match.path.replace(/\\/g, '/');
+                                        const normRoot = rootFolder.replace(/\\/g, '/').replace(/\/+$/, '');
+                                        const joined = raw === '.' || raw === ''
+                                            ? normRoot
+                                            : `${normRoot}/${raw.replace(/^\/+/, '')}`;
+                                        const resolved = this._cleanNormalizedPath(joined, sourceId);
+                                        if (targetFolder && !resolved.startsWith(targetFolder)) {
+                                            droppedBackendMatches++;
+                                            continue;
+                                        }
                                         if (searchedPaths.has(resolved)) continue; // Already searched
                                         searchedPaths.add(resolved);
                                         matches.push({
@@ -1067,8 +1165,11 @@ Snippet: ${r.content || r.snippet || ""}`;
                                             line: match.line,
                                             content: match.content
                                         });
-                                    } catch (e) {
-                                        // Skip files that fail path resolution or lie outside pinned roots
+                                    } catch (eMatch) {
+                                        // A match we could not re-anchor is excluded
+                                        // and reported below rather than silently lost.
+                                        droppedBackendMatches++;
+                                        console.warn(`[AgentTools] Excluded backend match ${match.path} from root ${rootFolder}:`, eMatch.message);
                                     }
                                 }
                             }
@@ -1124,7 +1225,15 @@ Snippet: ${r.content || r.snippet || ""}`;
                 }
             }
 
-            if (matches.length === 0) return "No matches found.";
+            if (matches.length === 0) {
+                return droppedBackendMatches > 0
+                    ? `No matches found. (${droppedBackendMatches} backend match(es) outside the search scope were excluded)`
+                    : "No matches found.";
+            }
+
+            const droppedNote = droppedBackendMatches > 0
+                ? `\n(${droppedBackendMatches} backend match(es) outside the search scope were excluded)`
+                : "";
 
             // Group matches by path to count hits per file
             const matchesByPath = {};
@@ -1206,10 +1315,10 @@ Snippet: ${r.content || r.snippet || ""}`;
                 }
 
                 const header = `Too many search matches, showing ${bestX} of ${Y}\n\n`;
-                return header + bestLines.map(ld => ld.text).join('\n');
+                return header + bestLines.map(ld => ld.text).join('\n') + droppedNote;
             }
 
-            return lineData.map(ld => ld.text).join('\n');
+            return lineData.map(ld => ld.text).join('\n') + droppedNote;
         } catch (error) {
             return `Error searching files: ${error.message}`;
         }
@@ -1547,13 +1656,10 @@ Snippet: ${r.content || r.snippet || ""}`;
                 editList = [{ search: searchString || "", replace: replacementString || "" }];
             }
 
-            const resolvedPath = this._resolveAndValidatePath(path);
+            const resolvedPath = this._resolveAndValidatePath(path, sourceId);
 
-            const targetSessionId = sourceId || window.ui?.aiManager?.activeSessionId;
             const aiManager = window.ui?.aiManager;
-            const activeSession = (targetSessionId && aiManager?.runningSessions?.get(targetSessionId)?.instance?.session)
-                || (targetSessionId === aiManager?.activeSessionId ? aiManager?.activeSession : null)
-                || window.ui?.aiManager?.activeSession;
+            const activeSession = this._resolveSession(sourceId);
 
             const isForgivenessMode = (activeSession?.forgivenessMode ?? window.ui?.aiManager?.forgivenessMode) === true;
             const shouldOpenForReview = !isForgivenessMode || (activeSession?.openEditsForReview ?? window.ui?.aiManager?.openEditsForReview ?? window.ui?.aiManager?.config?.defaultOpenEditsForReview ?? true);
@@ -1926,11 +2032,7 @@ Snippet: ${r.content || r.snippet || ""}`;
                 throw new Error("You must provide either 'search' or both 'startLine' and 'lineCount'.");
             }
 
-            const targetSessionId = sourceId || window.ui?.aiManager?.activeSessionId;
-            const aiManager = window.ui?.aiManager;
-            const activeSession = (targetSessionId && aiManager?.runningSessions?.get(targetSessionId)?.instance?.session)
-                || (targetSessionId === aiManager?.activeSessionId ? aiManager?.activeSession : null)
-                || window.ui?.aiManager?.activeSession;
+            const activeSession = this._resolveSession(sourceId);
 
             const isForgivenessMode = (activeSession?.forgivenessMode ?? window.ui?.aiManager?.forgivenessMode) === true;
 
@@ -2057,11 +2159,7 @@ Snippet: ${r.content || r.snippet || ""}`;
                 destinationExists = false;
             }
 
-            const targetSessionId = sourceId || window.ui?.aiManager?.activeSessionId;
-            const aiManager = window.ui?.aiManager;
-            const activeSession = (targetSessionId && aiManager?.runningSessions?.get(targetSessionId)?.instance?.session)
-                || (targetSessionId === aiManager?.activeSessionId ? aiManager?.activeSession : null)
-                || window.ui?.aiManager?.activeSession;
+            const activeSession = this._resolveSession(sourceId);
 
             const isForgivenessMode = (activeSession?.forgivenessMode ?? window.ui?.aiManager?.forgivenessMode) === true;
             const actId = sourceId || activeSession?.id || "default";
@@ -2462,8 +2560,7 @@ Snippet: ${r.content || r.snippet || ""}`;
         const targetSessionId = subSessionId || aiManager?.activeSessionId;
         
         // 0. Check session / global toggle
-        const sessionObj = aiManager?.runningSessions.get(targetSessionId)?.instance?.session ||
-                           aiManager?.activeSession;
+        const sessionObj = this._resolveSession(targetSessionId);
 
         if (sessionObj && sessionObj.allowRunCommand === false) {
             return "Tool Error: Terminal command execution (`run_command`) is disabled for this session.";
@@ -2505,9 +2602,8 @@ Snippet: ${r.content || r.snippet || ""}`;
         // 3. User Approval Workflow if not whitelisted
         if (!isApproved) {
             const runningSub = aiManager?.runningSessions.get(targetSessionId);
-            const activeSession = (runningSub && runningSub.instance?.session)
-                ? runningSub.instance.session
-                : (aiManager?.activeSessionId === targetSessionId ? aiManager.activeSession : await workspaceClient.getSession(targetSessionId));
+            const activeSession = (runningSub && (runningSub.instance?.session || runningSub.session))
+                || (aiManager?.activeSessionId === targetSessionId ? aiManager.activeSession : await workspaceClient.getSession(targetSessionId));
             
             if (!activeSession) {
                 return "Error: Session context not found for command approval.";
@@ -2558,30 +2654,61 @@ Snippet: ${r.content || r.snippet || ""}`;
             let outputBuffer = "";
             let isFinished = false;
             const timeoutDuration = (typeof timeoutMs === 'number' && timeoutMs > 0) ? timeoutMs : 60000;
+            // Sandbox metadata from the server's `terminalInfo` message (status,
+            // shared instance id, co-owners). Captured so the chat output block
+            // can show a sandbox badge and the session can be joined by a user
+            // terminal.
+            let sandboxInfo = null;
 
             const port = window.location.port || 3022;
             const wsHost = window.location.host || `localhost:${port}`;
             const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
             let wsUrl = `${wsProtocol}//${wsHost}/terminal?sessionId=agent_${Date.now()}`;
-            
+
+            // Sandbox: run the command inside a shared, sticky per-session
+            // namespace (default on; disable via session.sandboxCommands=false or
+            // the global defaultSandboxCommands setting). `session=<id>` makes the
+            // agent session a STICKY owner of the instance so it persists across
+            // commands and is joinable by a user terminal at any time.
+            const _sbxSessionObj = this._resolveSession(targetSessionId);
+            const sandboxEnabled = _sbxSessionObj?.sandboxCommands !== false
+                && aiManager?.config?.defaultSandboxCommands !== false;
+            let sandboxRequested = false;
+            if (sandboxEnabled && targetSessionId) {
+                wsUrl += `&session=${encodeURIComponent(targetSessionId)}`;
+            }
+
             let targetDir = cwdOverride;
             if (targetDir) {
                 try {
                     targetDir = this._resolveAndValidatePath(targetDir, targetSessionId);
                 } catch (e) {}
             }
+            const effectiveFolders = this._getEffectiveWorkspaceFolders(targetSessionId);
             if (!targetDir) {
-                const folders = this._getEffectiveWorkspaceFolders(targetSessionId);
-                if (folders.length > 0) {
-                    const item = folders[0];
+                if (effectiveFolders.length > 0) {
+                    const item = effectiveFolders[0];
                     targetDir = typeof item === 'string' ? item : (item?.path || item?.name || "");
                 }
             }
             if (targetDir) {
                 wsUrl += `&dir=${encodeURIComponent(targetDir)}`;
             }
+            if (sandboxEnabled && targetSessionId) {
+                // Exact root layout (effective workspace folders) so this session's
+                // commands join one shared instance by fingerprint.
+                const rootsCsv = effectiveFolders
+                    .map(f => typeof f === 'string' ? f : (f?.path || f?.name || ""))
+                    .filter(Boolean)
+                    .join(",");
+                if (rootsCsv) {
+                    wsUrl += `&sandbox_roots=${encodeURIComponent(rootsCsv)}`;
+                    wsUrl += `&sandbox=1`;
+                    sandboxRequested = true;
+                }
+            }
 
-            const activeSession = aiManager?.runningSessions.get(targetSessionId)?.instance?.session || aiManager?.activeSession;
+            const activeSession = this._resolveSession(targetSessionId);
             const executionMsgId = crypto.randomUUID();
             const streamMsg = {
                 id: executionMsgId,
@@ -2611,7 +2738,8 @@ Snippet: ${r.content || r.snippet || ""}`;
                 if (!rawStr) return "";
                 let s = rawStr;
                 // 1. Strip OSC escape sequences (e.g. \x1b]9;9;...\x1b\ or \x1b]0;...\x07)
-                s = s.replace(/\x1b\][^\x1b\x07]*[\x1b\x07\\]/g, "");
+                //    Terminators: BEL (\x07), ST (ESC \, two bytes), or bare ESC
+                s = s.replace(/\x1b\][^\x1b\x07]*(?:\x07|\x1b\\|\x1b)/g, "");
                 // 2. Strip standard ANSI color/cursor escape sequences
                 s = s.replace(/\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g, "");
                 // 3. Strip non-printable ASCII control characters except newlines/tabs
@@ -2640,8 +2768,18 @@ Snippet: ${r.content || r.snippet || ""}`;
                 }
 
                 // 3. Strip trailing exit command, standalone 'exit' lines, and prompt noise
-                s = s.replace(/(?:^|\n)(?:[^\n]*?[#$]\s*)?exit(?:\s+status\s+\d+)?(?=\n|$)/gi, "");
+                //    (tolerate a stray backslash left behind by an unterminated OSC before the prompt)
+                s = s.replace(/(?:^|\n)(?:[^\n]*?\\?[#$]\s*)?exit(?:\s+status\s+\d+)?(?=\n|$)/gi, "");
                 s = s.replace(/^.*?[#$]\s*/gm, "");
+                // 4. Drop bash PS2 continuation prompts: when a command spans
+                //    multiple lines (e.g. a quoted multi-line git commit message),
+                //    bash prints its PS2 ">" prompt before each continuation line
+                //    until the command is complete. Echo is disabled in this PTY,
+                //    so a line that is exactly ">" (possibly with trailing space)
+                //    is always a prompt, never command output.
+                s = s.replace(/^>[ \t]*$/gm, "");
+                // Collapse the blank lines left behind (3+ newlines → 2).
+                s = s.replace(/\n{3,}/g, "\n\n");
                 s = s.trim();
 
                 cleanedOutput = s;
@@ -2664,6 +2802,27 @@ Snippet: ${r.content || r.snippet || ""}`;
                 clearTimeout(timeoutTimer);
 
                 streamMsg.status = isTimedOut ? "timed_out" : (code === 0 ? "completed" : "failed");
+
+                // Sandbox correlation + graceful-degradation notice. If the sandbox
+                // was requested but the server fell back to unsandboxed (e.g. the
+                // AppArmor userns restriction on Ubuntu 24.04), say so explicitly —
+                // never silently pretend.
+                if (sandboxInfo) {
+                    // Always set explicitly (even empty) so a stale id from a
+                    // prior command on the same message object never renders a
+                    // misleading badge.
+                    streamMsg.sandboxId = sandboxInfo.sandboxId || "";
+                    streamMsg.sandboxShared = sandboxInfo.shared;
+                    streamMsg.sandboxOwners = sandboxInfo.owners;
+                    if (sandboxInfo.status === "unavailable" || sandboxInfo.status === "off") {
+                        const reason = sandboxInfo.reason ? ` (${sandboxInfo.reason})` : "";
+                        streamMsg.output = `[sandbox unavailable${reason} — command ran UNSANDBOXED]\n${cleanedOutput || "(No output)"}`;
+                    }
+                } else if (sandboxRequested) {
+                    // No terminalInfo sandbox metadata arrived (non-Linux host, etc.)
+                    streamMsg.output = `[sandbox not applied — command ran UNSANDBOXED]\n${cleanedOutput || "(No output)"}`;
+                }
+
                 if (activeSession) {
                     workspaceClient.setSession(targetSessionId, activeSession).catch(() => {});
                 }
@@ -2672,9 +2831,9 @@ Snippet: ${r.content || r.snippet || ""}`;
                 }
 
                 if (isTimedOut) {
-                    resolve(`Command execution timed out after ${(timeoutDuration / 1000).toFixed(0)}s.\nOutput captured:\n${cleanedOutput || "(No output)"}`);
+                    resolve(`Command execution timed out after ${(timeoutDuration / 1000).toFixed(0)}s.\nOutput captured:\n${streamMsg.output || "(No output)"}`);
                 } else {
-                    resolve(`Command execution completed.\nOutput:\n${cleanedOutput || "(No output)"}`);
+                    resolve(`Command execution completed.\nOutput:\n${streamMsg.output || "(No output)"}`);
                 }
             };
 
@@ -2705,6 +2864,22 @@ Snippet: ${r.content || r.snippet || ""}`;
                     try {
                         const jsonMsg = JSON.parse(event.data);
                         if (jsonMsg && jsonMsg.type === "terminalInfo") {
+                            if (jsonMsg.sandbox && jsonMsg.sandbox !== "off" && jsonMsg.sandbox !== "unsupported") {
+                                sandboxInfo = {
+                                    status: jsonMsg.sandbox,
+                                    reason: jsonMsg.sandboxReason || "",
+                                    sandboxId: jsonMsg.sandboxID || "",
+                                    owners: Array.isArray(jsonMsg.sandboxOwners) ? jsonMsg.sandboxOwners : [],
+                                    shared: jsonMsg.sandboxShared === true
+                                };
+                                streamMsg.sandbox = sandboxInfo;
+                                // Sticky: remember the instance id on the session so a
+                                // user terminal can "attach" to this agent's sandbox.
+                                if (sandboxInfo.sandboxId && activeSession) {
+                                    activeSession.sandboxId = sandboxInfo.sandboxId;
+                                    workspaceClient.setSession(targetSessionId, activeSession).catch(() => {});
+                                }
+                            }
                             return;
                         }
                     } catch (e) {}
@@ -2873,16 +3048,30 @@ Snippet: ${r.content || r.snippet || ""}`;
                 return await this.readFileOutline(args.path, sourceId);
             case 'read_symbol':
                 return await this.readSymbol(args.query || args.symbol, sourceId);
-            case 'search_files':
+            case 'search_files': {
+                const targetPath = args.path || args.folder || args.directory || null;
+                // Route by the ACTUAL path kind, not a "last atom contains a dot"
+                // guess (a directory like `dev.jakbox.cadence` would otherwise be
+                // misrouted to searchInFile and fail with "is a directory").
+                // A confirmed file gets the line-numbered searchInFile output;
+                // directories / missing / unknown paths fall back to the backend
+                // grep (searchFiles), which handles both kinds correctly.
+                const isFile = targetPath ? await this._isFilePath(targetPath, sourceId) : false;
+                if (isFile) {
+                    return await this.searchInFile(targetPath, args.query, sourceId);
+                }
+                return await this.searchFiles(args.query, targetPath, sourceId);
+            }
             case 'search_in_file': {
                 const targetPath = args.path || args.folder || args.directory || null;
+                // search_in_file is a file-scoped tool: keep the lightweight regex
+                // heuristic. A directory here yields the same informative error as
+                // before (no silent misrouting, no extra round-trip).
                 if (targetPath && /\.[a-zA-Z0-9_-]+$/.test(targetPath)) {
                     return await this.searchInFile(targetPath, args.query, sourceId);
                 }
                 return await this.searchFiles(args.query, targetPath, sourceId);
             }
-            // case 'search_in_file':
-            //     return await this.searchInFile(args.path, args.query, sourceId);
             case 'edit_file':
                 return await this.editFile(
                     args.path,
@@ -3060,13 +3249,11 @@ Snippet: ${r.content || r.snippet || ""}`;
             case 'checkpoint':
                 return await this.checkpoint(args.name, sourceId);
             case 'scratchpad_write': {
-                const targetSessionId = sourceId || window.ui?.aiManager?.activeSessionId;
+                const session = this._resolveSession(sourceId);
                 const aiManager = window.ui?.aiManager;
-                const session = (targetSessionId && aiManager?.runningSessions?.get(targetSessionId)?.instance?.session)
-                    || (targetSessionId === aiManager?.activeSessionId ? aiManager?.activeSession : null);
 
                 if (!session) {
-                    throw new Error("No active session found to update scratchpad.");
+                    throw new Error("Could not resolve session to update scratchpad.");
                 }
 
                 const mode = (args.mode || "replace").toLowerCase();
@@ -3104,13 +3291,11 @@ Snippet: ${r.content || r.snippet || ""}`;
                 return `Scratchpad ${actionVerb} (${byteSize} bytes). Notes are active and evergreen in context.`;
             }
             case 'scratchpad_clear': {
-                const targetSessionId = sourceId || window.ui?.aiManager?.activeSessionId;
+                const session = this._resolveSession(sourceId);
                 const aiManager = window.ui?.aiManager;
-                const session = (targetSessionId && aiManager?.runningSessions?.get(targetSessionId)?.instance?.session)
-                    || (targetSessionId === aiManager?.activeSessionId ? aiManager?.activeSession : null);
 
                 if (!session) {
-                    throw new Error("No active session found to clear scratchpad.");
+                    throw new Error("Could not resolve session to clear scratchpad.");
                 }
 
                 // Snapshot the previous content before clearing
@@ -3163,13 +3348,10 @@ Snippet: ${r.content || r.snippet || ""}`;
      */
     async checkpoint(name, sourceId = null) {
         try {
-            const targetSessionId = sourceId || window.ui?.aiManager?.activeSessionId;
-            const aiManager = window.ui?.aiManager;
-            const session = (targetSessionId && aiManager?.runningSessions?.get(targetSessionId)?.instance?.session)
-                || (targetSessionId === aiManager?.activeSessionId ? aiManager?.activeSession : null);
+            const session = this._resolveSession(sourceId);
 
             if (!session) {
-                throw new Error("No active session found to create a checkpoint.");
+                throw new Error("Could not resolve session to create a checkpoint.");
             }
 
             const checkpointTs = Date.now();
