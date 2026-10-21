@@ -176,15 +176,50 @@ func TestNativeSandboxEndToEnd(t *testing.T) {
 		t.Fatalf("/oldroot backdoor NOT closed (%s=%q) — host fs reachable via /oldroot", "oldroot.txt", string(got))
 	}
 	t.Logf("/oldroot backdoor closed: %s=%q", "oldroot.txt", string(got))
-	for _, f := range []string{"oretc.txt", "postfix.txt"} {
-		got, err := os.ReadFile(filepath.Join(root, f))
-		if err != nil {
-			t.Fatalf("marker %s not visible on host: %v", f, err)
+	// oretc.txt carries -ok (the /oldroot/etc check passed); postfix.txt is a
+	// bare completion sentinel (written unconditionally as "post-fix"), so it
+	// only needs to exist and be non-empty.
+	got, err = os.ReadFile(filepath.Join(root, "oretc.txt"))
+	if err != nil {
+		t.Fatalf("oretc marker not visible on host: %v", err)
+	}
+	if !strings.Contains(string(got), "oretc-ok") {
+		t.Fatalf("/oldroot/etc still reachable (%s=%q) — detach removed the wrong mounts", "oretc.txt", string(got))
+	}
+	t.Logf("sandbox layout intact: oretc.txt=%q", string(got))
+	got, err = os.ReadFile(filepath.Join(root, "postfix.txt"))
+	if err != nil {
+		t.Fatalf("postfix marker not visible on host: %v", err)
+	}
+	if strings.TrimSpace(string(got)) == "" {
+		t.Fatalf("postfix marker empty — command sequence did not complete (postfix.txt)")
+	}
+	t.Logf("command sequence completed: postfix.txt=%q", string(got))
+
+	// (b3) The keeper binary's PARENT dir is NOT leaked: the setup binds the
+	// binary FILE (not its dir) so the keeper can re-exec itself after the
+	// pivot. A host marker in that dir must be invisible in-ns (only the binary
+	// file is present; the rest of the dir stays hidden). The bound binary is
+	// the one the sandbox re-execs (CADENCE_SANDBOX_REEXEC, set by buildServer).
+	if sbxExe := os.Getenv("CADENCE_SANDBOX_REEXEC"); sbxExe != "" {
+		spvBinDir := filepath.Dir(sbxExe)
+		if spvBinDir != "/" {
+			binDirMarker := filepath.Join(spvBinDir, "sbxbindirmarker")
+			if err := os.WriteFile(binDirMarker, []byte("bin-dir-secret"), 0644); err == nil {
+				defer os.Remove(binDirMarker)
+				runInSandboxShell(t, h, root,
+					"(test ! -e "+binDirMarker+" && echo bindir-ok > bindir.txt || echo bindir-FAIL > bindir.txt)",
+					"bindir.txt", "bindir-ok")
+				got, err := os.ReadFile(filepath.Join(root, "bindir.txt"))
+				if err != nil {
+					t.Fatalf("bindir marker not visible on host: %v", err)
+				}
+				if !strings.Contains(string(got), "bindir-ok") {
+					t.Fatalf("binary's dir LEAKED (%s=%q) — the whole dir (e.g. the user's home) is visible in-ns", "bindir.txt", string(got))
+				}
+				t.Logf("binary's dir not leaked: %s=%q", "bindir.txt", string(got))
+			}
 		}
-		if !strings.Contains(string(got), "-ok") {
-			t.Fatalf("sandbox layout broken (%s=%q) — detach removed the wrong mounts", f, string(got))
-		}
-		t.Logf("sandbox layout intact: %s=%q", f, string(got))
 	}
 
 	// (c) The shell exits cleanly: `exit` (in the parent shell, not a subshell)

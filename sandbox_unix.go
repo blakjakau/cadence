@@ -98,7 +98,9 @@ var (
 	rawNewRoot        string           // newroot dir (inside the socket dir) for pivot_root
 	rawOldRoot        string           // newroot/oldroot — host / is bind-mounted here
 	rawSocketDir      string           // the socket dir, bind-mounted at its real path in the new root
-	rawBinDir         string           // the keeper binary's dir, bind-mounted so the keeper can exec itself
+	rawBinDir         string           // the keeper binary's PARENT dir (mkdir'd empty in newroot so the file bind has a destination)
+	rawBinPath        string           // the keeper binary's full path, bind-mounted (file bind) so the keeper can exec itself
+	rawBinDestPtr     uintptr          // precomputed ptr to the post-pivot binary-destination path (the child creates the placeholder file here)
 	rawMkdirPathsList []string         // precomputed mkdir -p paths (newroot targets)
 	rawTraceFd        int              // the child's stderr fd (trace file), for per-step markers
 	rawStepPtrs       []unsafe.Pointer // precomputed pointers to single step-bytes (parent allocates)
@@ -965,6 +967,13 @@ func spawnKeeper(cfg *SandboxConfig, id string) (int, string, error) {
 		binDir = ""
 	}
 	rawBinDir = binDir
+	// Bind the binary FILE (not its directory) so the keeper can exec itself
+	// after the pivot: the parent dir is mkdir'd empty in newroot, but only
+	// the binary file is present. Binding the whole dir would leak its entire
+	// contents (e.g. the user's home, if the binary lives there).
+	if binDir != "" && binDir != "/" {
+		rawBinPath = exe
+	}
 	// CRITICAL: the new root (newroot) is an EMPTY dir after the pivot, so
 	// every bind DESTINATION must pre-exist INSIDE newroot. After the pivot,
 	// the new-root path <P> (absolute) corresponds to newroot<P> on the host,
@@ -988,6 +997,13 @@ func spawnKeeper(cfg *SandboxConfig, id string) (int, string, error) {
 	}
 	mkdirTargets = append(mkdirTargets, rawNewRoot+dir)
 	rawMkdirPathsList = expandMkdirAll(mkdirTargets)
+	// Precompute the post-pivot binary-destination path pointer for the child.
+	// A file bind onto a non-existent path fails with ENOENT, so the child
+	// creates an empty placeholder at <binPath> post-pivot (the new root is
+	// empty after the pivot; the parent dir was mkdir'd empty above). The file
+	// bind then overlays the real binary onto the placeholder (same path,
+	// different inode); the placeholder's zero content is shadowed.
+	rawBinDestPtr = strPtr(rawBinPath)
 
 	// Pre-warm the strPtr cache for the string literals rawDetachOldRoot uses
 	// in the child (it parses /proc/self/mountinfo and detaches /oldroot*).
@@ -1071,11 +1087,24 @@ func spawnKeeper(cfg *SandboxConfig, id string) (int, string, error) {
 		syscall.RawSyscall6(syscall.SYS_MOUNT, strPtr("/oldroot"+rawSocketDir), strPtr(rawSocketDir), 0, uintptr(syscall.MS_BIND|syscall.MS_REC), 0, 0)
 		mk(14)
 		// 5c. Bind /dev (rw â the pty needs /dev/pts + /dev/tty) and the
-		//     binary's dir (so the keeper can exec itself after the pivot).
+		//     the binary FILE (so the keeper can exec itself after the pivot).
 		syscall.RawSyscall6(syscall.SYS_MOUNT, strPtr("/oldroot/dev"), strPtr("/dev"), 0, uintptr(syscall.MS_BIND|syscall.MS_REC), 0, 0)
 		mk(15)
-		if rawBinDir != "" && rawBinDir != "/" {
-			syscall.RawSyscall6(syscall.SYS_MOUNT, strPtr("/oldroot"+rawBinDir), strPtr(rawBinDir), 0, uintptr(syscall.MS_BIND|syscall.MS_REC), 0, 0)
+		// Bind the binary file (NOT its dir) at its real path. The parent dir
+		// is already mkdir'd empty (rawBinDir); only the binary is present,
+		// so the rest of the dir (e.g. the user's home, if the binary lives
+		// there) stays hidden. A file bind onto a non-existent path fails with
+		// ENOENT, so first create an empty placeholder at the destination
+		// (post-pivot; the new root is empty after the pivot). The bind then
+		// overlays the real binary onto the placeholder (same path, different
+		// inode); the placeholder's zero content is shadowed.
+		if rawBinPath != "" && rawBinPath != "/" {
+			if f, _, pe := syscall.RawSyscall6(syscall.SYS_OPEN, rawBinDestPtr, 0x441 /*O_WRONLY|O_CREAT|O_APPEND*/, 0755, 0, 0, 0); pe == 0 {
+				syscall.RawSyscall(syscall.SYS_CLOSE, f, 0, 0)
+			} else {
+				traceInt(int(pe))
+			}
+			syscall.RawSyscall6(syscall.SYS_MOUNT, strPtr("/oldroot"+rawBinPath), strPtr(rawBinPath), 0, uintptr(syscall.MS_BIND), 0, 0)
 		}
 		mk(16)
 		// 5d. Hide the host fs: detach EVERY /oldroot* mount (deepest-first),

@@ -121,7 +121,8 @@ with a `pivot_root` sequence (all raw syscalls, all paths precomputed):
 
 1. `mkdir` the new-root tree inside a private temp dir
    (`/tmp/cadence-sbx-*/newroot`): `newroot/oldroot`, `newroot/dev`,
-   `newroot/proc`, `newroot/tmp`, the binary's dir, and every ro/rw root
+   `newroot/proc`, `newroot/tmp`, the binary's **parent** dir (mkdir'd
+   *empty*), and every ro/rw root
    target. (The new root is *empty* after the pivot, so every bind
    **destination** must pre-exist inside it — hence the host-side
    `newroot<P>` mkdirs, computed by `expandMkdirAll`.)
@@ -136,7 +137,13 @@ with a `pivot_root` sequence (all raw syscalls, all paths precomputed):
    - the **socket dir** (keeper IPC + `keeper.err` trace), so the parent can
      reach the keeper's socket;
    - `/dev` (rw — the pty needs `/dev/pts` + `/dev/tty`);
-   - the **binary's dir**, so the keeper can exec itself after the pivot.
+   - the **binary file** (not its dir), so the keeper can exec itself after
+     the pivot. Binding the whole dir would leak its entire contents (e.g. the
+     user's home, if the binary lives there). A file bind needs a destination
+     file, so the child creates an empty placeholder at the binary's path
+     post-pivot, then bind-mounts the real binary over it (same path,
+     different inode; the placeholder's zero content is shadowed). Only the
+     binary file is present in-ns — the rest of the dir stays hidden.
 6. **Hide the host fs** — see below.
 7. `prctl(PR_SET_PDEATHSIG, SIGKILL)` so a crashed server can't leak the
    keeper (persists across the exec).
