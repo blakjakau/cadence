@@ -174,7 +174,35 @@ export class AgentConfigPanel extends Block {
 		const openEditsToggle = createToggleRow("default-open-edits-for-review", "Default Open Edits for Review", "Open files in editor for diff review (optional in Forgiveness Mode).", "defaultOpenEditsForReview");
 		createToggleRow("default-allow-sub-agents", "Default Allow Sub-Agents", "Start new sessions with sub-agents allowed.", "defaultAllowSubAgents");
 		const runCommandRow = createToggleRow("default-allow-run-command", "Default Allow Terminal Commands", "Start new sessions with terminal commands allowed.", "defaultAllowRunCommand");
-		createToggleRow("default-sandbox-commands", "Default Sandbox Terminal Commands", "Start new sessions with Sandboxed Terminals.", "defaultSandboxCommands");
+		// Open (creating if missing) the user's Cadence shell config
+		// (~/.config/cadence/.bashrc), which sandboxed terminals ro-bind onto
+		// $HOME/.bashrc so interactive shells auto-source it. Relative path is
+		// resolved against the file-API root (home); the backend write action
+		// auto-creates parent dirs, so a missing file is created empty.
+		const openUserBashrc = async () => {
+			const path = ".config/cadence/.bashrc";
+			const conduit = window.conduit;
+			if (conduit?.isConnected) {
+				try {
+					const res = await conduit.wsRead(path);
+					if (res?.error) await conduit.wsWrite(path, "");
+				} catch (e) { /* ignore read/write hiccups; open below reports */ }
+			}
+			if (window.ui?.fileList?.open) await window.ui.fileList.open(path, path);
+		};
+		const sandboxRow = createToggleRow("default-sandbox-commands", "Default Sandbox Terminal Commands", "Start new sessions with Sandboxed Terminals.", "defaultSandboxCommands");
+		{
+			const bashrcBtn = new Button();
+			bashrcBtn.className = "setting-cog-btn";
+			bashrcBtn.icon = "edit";
+			bashrcBtn.title = "Edit ~/.config/cadence/.bashrc (sourced by sandboxed shells)";
+			bashrcBtn.onclick = (e) => {
+				e.stopPropagation();
+				openUserBashrc();
+			};
+			sandboxRow.wrapper.classList.add("has-cog");
+			sandboxRow.wrapper.appendChild(bashrcBtn);
+		}
 		{
 			const cog = new Button();
 			cog.className = "setting-cog-btn";

@@ -3,6 +3,15 @@ This application uses a Go backend server, hosting a HTML/JavaScript frontend
 REST and Websocket APIs are used for communications between the frontend and backend
 All frontend code is found in `app/js`
 
+## Code patterns
+** Always **
+- Avoid complex multi-byte characters (mojibakes)
+
+** JavaScript **
+- respect lowerCamelCase varible names
+- respect UpperCamelCase class names
+- avoid inline CSS styles, prefer CSS rules in the relevant stylesheet files
+
 ## UI Component Patterns
 When building or modifying UI elements, use the custom web components defined in `app/js/elements.mjs` instead of standard HTML elements:
 

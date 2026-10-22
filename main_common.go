@@ -57,7 +57,9 @@ func runCadenceServer(block bool) {
 		go startIdleShutdownManager(60 * time.Minute)
 	}
 	startTime = time.Now()
-	
+
+	ensureUserBashRC() // Create ~/.config/cadence/.bashrc if missing so the config panel can open it
+
 	initWorkspaceManager() // Initialize workspace persistence
 
 	mux := createServerMux()

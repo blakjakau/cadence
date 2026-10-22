@@ -101,6 +101,8 @@ var (
 	rawBinDir         string           // the keeper binary's PARENT dir (mkdir'd empty in newroot so the file bind has a destination)
 	rawBinPath        string           // the keeper binary's full path, bind-mounted (file bind) so the keeper can exec itself
 	rawBinDestPtr     uintptr          // precomputed ptr to the post-pivot binary-destination path (the child creates the placeholder file here)
+	rawBashrcSrcPtr   uintptr          // precomputed ptr to the post-pivot SOURCE path of the .bashrc remap (/oldroot<host src>); 0 = no remap
+	rawBashrcDestPtr  uintptr          // precomputed ptr to the post-pivot DESTINATION path (<home>/.bashrc)
 	rawMkdirPathsList []string         // precomputed mkdir -p paths (newroot targets)
 	rawTraceFd        int              // the child's stderr fd (trace file), for per-step markers
 	rawStepPtrs       []unsafe.Pointer // precomputed pointers to single step-bytes (parent allocates)
@@ -620,6 +622,20 @@ func bwrapArgv(cfg *SandboxConfig) []string {
 	for _, r := range cfg.Roots {
 		argv = append(argv, "--bind", r, r)
 	}
+	// .bashrc remap: ro-bind the user's shell config (host source) onto
+	// $HOME/.bashrc so interactive non-login bash auto-sources it (home is NOT
+	// mounted, so ~/.bashrc is otherwise absent in-ns). bwrap auto-creates the
+	// destination file (and its parent dir) for a file bind, so no placeholder
+	// is needed (unlike the native keeper). Placed after the ro passthroughs so
+	// the remap wins over any same-path passthrough.
+	if src := strings.TrimSpace(cfg.UserBashRC); src != "" {
+		// Guard matches the native keeper (home must be a real subpath, not ""
+		// or "/"); bwrap auto-creates the dest file + parent dir for a file
+		// bind, so no placeholder is needed.
+		if home := os.Getenv("HOME"); home != "" && home != "/" {
+			argv = append(argv, "--ro-bind", src, home+"/.bashrc")
+		}
+	}
 	argv = append(argv, shell)
 	return argv
 }
@@ -845,8 +861,11 @@ func attachToOwner(cfg *SandboxConfig, targetOwner, myOwner string) *SandboxHand
 		addOwner(inst, targetOwner)
 	}
 
-	// Spawn the user's shell inside the instance's namespace.
-	h, err := spawnShellIn(inst, inst.cfg.Cwd, nil, probe.Method)
+	// Spawn the user's shell inside the instance's namespace. Pass cfg.Env so
+	// the attached shell gets the same per-shell env injection as the fresh-shell
+	// path (e.g. the user's global git identity); the instance's layout (roots,
+	// .bashrc remap) is shared regardless.
+	h, err := spawnShellIn(inst, inst.cfg.Cwd, cfg.Env, probe.Method)
 	if err != nil {
 		return nil
 	}
@@ -996,6 +1015,15 @@ func spawnKeeper(cfg *SandboxConfig, id string) (int, string, error) {
 		mkdirTargets = append(mkdirTargets, rawNewRoot+p)
 	}
 	mkdirTargets = append(mkdirTargets, rawNewRoot+dir)
+	// Pre-create the .bashrc remap destination's parent dir (= $HOME) in
+	// newroot so the post-pivot file bind has a destination to bind onto.
+	// (home is NOT a root, so it is not covered by the ReadOnlyRoots/Roots
+	// loops above; the file bind would otherwise fail with ENOENT.)
+	if src := strings.TrimSpace(cfg.UserBashRC); src != "" {
+		if home := os.Getenv("HOME"); home != "" && home != "/" {
+			mkdirTargets = append(mkdirTargets, rawNewRoot+home)
+		}
+	}
 	rawMkdirPathsList = expandMkdirAll(mkdirTargets)
 	// Precompute the post-pivot binary-destination path pointer for the child.
 	// A file bind onto a non-existent path fails with ENOENT, so the child
@@ -1004,6 +1032,25 @@ func spawnKeeper(cfg *SandboxConfig, id string) (int, string, error) {
 	// bind then overlays the real binary onto the placeholder (same path,
 	// different inode); the placeholder's zero content is shadowed.
 	rawBinDestPtr = strPtr(rawBinPath)
+
+	// Precompute the .bashrc remap destination/source path pointers for the
+	// child (source -> $HOME/.bashrc ro bind). The child creates the dest
+	// placeholder post-pivot and ro-binds the real file onto it. (0 pointers =
+	// no remap.) The dest's parent dir is pre-created in newroot via
+	// mkdirTargets above.
+	rawBashrcSrcPtr = 0
+	rawBashrcDestPtr = 0
+	if src := strings.TrimSpace(cfg.UserBashRC); src != "" {
+		home := os.Getenv("HOME")
+		// Only enable the remap when we actually pre-created the $HOME dir in
+		// newroot (the file bind's dest parent). Guard matches the mkdirTargets
+		// block above (home must be a real subpath, not "" or "/").
+		if home != "" && home != "/" {
+			dest := home + "/.bashrc"
+			rawBashrcSrcPtr = strPtr("/oldroot" + src)
+			rawBashrcDestPtr = strPtr(dest)
+		}
+	}
 
 	// Pre-warm the strPtr cache for the string literals rawDetachOldRoot uses
 	// in the child (it parses /proc/self/mountinfo and detaches /oldroot*).
@@ -1107,6 +1154,22 @@ func spawnKeeper(cfg *SandboxConfig, id string) (int, string, error) {
 			syscall.RawSyscall6(syscall.SYS_MOUNT, strPtr("/oldroot"+rawBinPath), strPtr(rawBinPath), 0, uintptr(syscall.MS_BIND), 0, 0)
 		}
 		mk(16)
+		// 5e. .bashrc remap: ro-bind the user's shell config (a source at
+		//     /oldroot<src>) onto $HOME/.bashrc so interactive non-login bash
+		//     auto-sources it (home is NOT mounted, so ~/.bashrc is otherwise
+		//     absent in-ns). The dest's parent dir ($HOME) was pre-created in
+		//     newroot; a file bind onto a non-existent path fails with ENOENT,
+		//     so create an empty placeholder at the destination first, then
+		//     ro-bind the real file onto it (source != destination path). Must
+		//     run BEFORE the /oldroot detach (the source is a /oldroot submount).
+		if rawBashrcSrcPtr != 0 && rawBashrcDestPtr != 0 {
+			if f, _, pe := syscall.RawSyscall6(syscall.SYS_OPEN, rawBashrcDestPtr, 0x441 /*O_WRONLY|O_CREAT|O_APPEND*/, 0644, 0, 0, 0); pe == 0 {
+				syscall.RawSyscall(syscall.SYS_CLOSE, f, 0, 0)
+			} else {
+				traceInt(int(pe))
+			}
+			syscall.RawSyscall6(syscall.SYS_MOUNT, rawBashrcSrcPtr, rawBashrcDestPtr, 0, uintptr(syscall.MS_BIND|syscall.MS_RDONLY), 0, 0)
+		}
 		// 5d. Hide the host fs: detach EVERY /oldroot* mount (deepest-first),
 		//     not just the top of the stack. A single umount2("/oldroot") left
 		//     the pivot-relocated old root + all /oldroot/* submounts in place

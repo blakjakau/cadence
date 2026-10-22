@@ -15,12 +15,21 @@ type SandboxFlags struct {
 // SandboxConfig describes the layout of a sandbox instance.
 type SandboxConfig struct {
 	Roots         []string // rw project roots (bind-mounted at their real path)
-	ReadOnlyRoots []string // ro passthroughs (e.g. /usr, /etc) — default set if nil
+	ReadOnlyRoots []string // ro passthroughs (e.g. /usr, /etc) â default set if nil
 	Cwd           string   // initial working directory (must be under a root)
 	Env           []string // extra env (scrubbed; see scrubEnv)
 	Flags         SandboxFlags
 	Shell         string // shell to exec (default /bin/bash)
 	Owner         string // owner label for refcounting (e.g. "session:42", "terminal:tab3")
+	// UserBashRC is the host path of the user's shell config (e.g.
+	// <home>/.config/cadence/.bashrc). The sandbox does NOT mount the user's
+	// home dir, so an interactive non-login bash finds no ~/.bashrc in-ns and
+	// sources nothing. To give the user a working shell config, this file is
+	// ro-bound onto $HOME/.bashrc INSIDE the sandbox (a sourceâ"dest remap), so
+	// bash auto-sources it exactly like a real home. Empty = no remap. Kept out
+	// of the layout fingerprint (it is a per-instance shell nicety, not a layout
+	// axis that should churn the instance id).
+	UserBashRC string
 }
 
 // ErrSandboxUnavailable is returned when the sandbox cannot be created; the
