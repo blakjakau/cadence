@@ -114,6 +114,39 @@ select.themed-select option {
     color: #e8a317 !important;
 }
 
+/* --- Sandbox-enabled AI session tabs --- */
+/* Sandbox tabs carry the bronze chip tint from main.css; keep their status
+   icons white at all times (a blue running / green completed icon clashes with
+   the bronze), and swap the status glow for a bronze one so the accent reads
+   as one hue instead of bronze vs blue/green fighting. */
+.ai-session-tabs ui-tab-item:has(.ai-sandbox-badge) .status-icon {
+    color: var(--text-inverted, #ffffff) !important;
+}
+.ai-session-tabs ui-tab-item:has(.ai-sandbox-badge):not([active]).tab-status-running {
+    animation: tab-shadow-pulse-bronze 2s infinite ease-in-out, tab-bg-pulse-bronze 2s infinite ease-in-out;
+}
+.ai-session-tabs ui-tab-item:has(.ai-sandbox-badge):not([active]).tab-status-halted {
+    animation: tab-shadow-pulse-bronze 1.5s infinite ease-in-out, tab-bg-pulse-bronze 1.5s infinite ease-in-out;
+}
+.ai-session-tabs ui-tab-item:has(.ai-sandbox-badge):not([active]).tab-status-pending-query {
+    animation: tab-shadow-pulse-bronze 1.2s infinite ease-in-out, tab-bg-pulse-bronze 1.2s infinite ease-in-out;
+}
+
+/* The bronze active-tab background/border itself is set in main.css; here we
+   only replace the status accent (blue/gold/amber/green) with bronze. */
+.ai-session-tabs ui-tab-item:has(.ai-sandbox-badge).tab-status-completed {
+    box-shadow: inset 0 -3px 0 0 var(--color-bronze, #c8863a);
+}
+.ai-session-tabs ui-tab-item:has(.ai-sandbox-badge)[active].tab-status-running {
+    animation: tab-shadow-pulse-bronze 2s infinite ease-in-out;
+}
+.ai-session-tabs ui-tab-item:has(.ai-sandbox-badge)[active].tab-status-halted {
+    animation: tab-shadow-pulse-bronze 1.5s infinite ease-in-out;
+}
+.ai-session-tabs ui-tab-item:has(.ai-sandbox-badge)[active].tab-status-pending-query {
+    animation: tab-shadow-pulse-bronze 1.2s infinite ease-in-out;
+}
+
 /* --- Pending prompts list styles --- */
 .pending-prompt-pill-wrapper {
     position: relative;
@@ -132,6 +165,18 @@ select.themed-select option {
     padding: 4px 8px 8px 8px;
     border-bottom: 1px solid var(--border);
     margin-bottom: 8px;
+}
+
+@keyframes tab-shadow-pulse-bronze {
+    0% { box-shadow: inset 0 -3px 0 0 var(--color-bronze, #c8863a), 0 0 2px rgba(200, 134, 58, 0.2); }
+    50% { box-shadow: inset 0 -3px 0 0 var(--color-bronze, #c8863a), 0 0 12px rgba(200, 134, 58, 0.6); }
+    100% { box-shadow: inset 0 -3px 0 0 var(--color-bronze, #c8863a), 0 0 2px rgba(200, 134, 58, 0.2); }
+}
+
+@keyframes tab-bg-pulse-bronze {
+    0% { background-color: rgba(200, 134, 58, 0.08); }
+    50% { background-color: rgba(200, 134, 58, 0.22); }
+    100% { background-color: rgba(200, 134, 58, 0.08); }
 }
 
 @keyframes tab-shadow-pulse-blue {

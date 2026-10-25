@@ -118,6 +118,13 @@ class AIManagerSessions {
 								}
 								const { session: migratedSession } = SessionMigrator.migrate(updatedSession);
 								this.activeSession = migratedSession;
+								// Sync the manager-level mirrors so the active session tab reflects
+								// capability overrides (planning mode, run commands) toggled elsewhere.
+								this.manager.planningMode = migratedSession.planningMode ?? (this.manager.config.defaultPlanningMode ?? true);
+								this.manager.allowRunCommand = migratedSession.allowRunCommand ?? (this.manager.config.defaultAllowRunCommand ?? true);
+								this.manager._updatePromptAreaPlaceholder?.();
+								this.manager._updateAgentProgressPanel?.();
+								this.manager._updateSessionSandboxBadge(msg.sessionId);
 								this.manager.historyManager.loadSessionMessages(migratedSession.messages, false);
 								this.manager._updateAIInfoDisplay();
 								this.manager._updateAgentProgressPanel?.();
@@ -407,6 +414,25 @@ class AIManagerSessions {
 	}
 
 	/**
+	 * Resolves a session object by id without a full tab switch: the active
+	 * session if it matches, else the running session's live instance, else a
+	 * fresh fetch. Used by the context menu for capability overrides and the
+	 * sandbox-aware terminal action. Returns null when unresolvable.
+	 */
+	async _getResolvedSession(sessionId) {
+		if (!sessionId) return null;
+		if (this.activeSessionId === sessionId && this.activeSession) return this.activeSession;
+		const running = this.manager?.runningSessions?.get(sessionId);
+		if (running && running.instance && running.instance.session) return running.instance.session;
+		try {
+			return await workspaceClient.getSession(sessionId);
+		} catch (err) {
+			console.warn(`[AIManagerSessions] _getResolvedSession failed for ${sessionId}:`, err);
+			return null;
+		}
+	}
+
+	/**
 	 * Switches session DATA. The UI state is already handled by the TabBar component.
 	 */
 	async switchSession(sessionId) {
@@ -476,6 +502,9 @@ class AIManagerSessions {
 		this.manager.openEditsForReview = newSessionData.openEditsForReview ?? (this.manager.config.defaultOpenEditsForReview ?? true);
 		this.manager.allowRunCommand = newSessionData.allowRunCommand ?? (this.manager.config.defaultAllowRunCommand ?? true);
 		this._unsentPromptBuffer = null; // Clear any pending unsent prompt from the previous session
+
+		// Reflect the session's live shared sandbox on its tab (bronze badge + tint).
+		this.manager._updateSessionSandboxBadge(sessionId);
 
 		// Update the rest of the UI based on the new data
 		this.manager.historyManager.loadSessionMessages(this.activeSession.messages, false);

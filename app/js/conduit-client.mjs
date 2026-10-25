@@ -8,9 +8,14 @@
  * import conduit from './conduit-client.mjs';
  * conduit.on('list', ({ path, data }) => console.log(`Files in ${path}:`, data));
  * conduit.on('notify', ({ path, data }) => console.log(`File change in ${path}:`, data));
+ * conduit.on('status', (s) => console.log('Conduit is', s.state));
  * conduit.connect();
  * conduit.wsList('.');
  * conduit.wsWatch('.');
+ * // Query live connection status:
+ * console.log(conduit.status); // { state, connected, connecting, attempts, nextRetryIn }
+ * // Guard an action on the connection being ready:
+ * conduit.ready.then(() => conduit.wsRead('README.md')).catch(err => console.warn(err));
  */
 class ConduitClient {
     constructor() {
@@ -24,6 +29,12 @@ class ConduitClient {
         this.eventListeners = new Map();
         this.requestIdCounter = 0;
         this.pendingRequests = new Map(); // For tracking responses to specific requests
+        // Reconnect engine
+        this._reconnectTimer = null; // setTimeout handle for the pending auto-reconnect
+        this._reconnectAttempt = 0; // consecutive failed attempts (resets on a successful open)
+        this._intentionalClose = false; // set by disconnect(); suppresses auto-reconnect
+        this._readyResolvers = []; // { resolve, reject } pairs for pending `ready` promises
+        this._state = 'disconnected';
     }
 
     // --- Configuration ---
@@ -124,46 +135,182 @@ class ConduitClient {
     }
 
     // --- WebSocket ---
-    connect(retryCount = 0) {
+    // Opens (or re-opens) the WebSocket connection. Idempotent: safe to call at
+    // any time. Clears any intentional-close flag and pending reconnect timer,
+    // then opens a socket immediately. If the connection drops later, the
+    // client auto-reconnects with exponential backoff (1s base, doubling,
+    // capped at 10s) until `disconnect()` is called.
+    connect() {
+        this._intentionalClose = false;
+        this._clearReconnectTimer();
         if (this.isConnected || this.isConnecting) return;
-
-        this.isConnecting = true;
-        console.debug(`[Conduit] Connecting to WebSocket (Attempt ${retryCount + 1}):`, this.wsUrl);
-        this.ws = new WebSocket(this.wsUrl);
-
-        this.ws.onopen = () => {
-            this.retryCount = 0;
-            this._handleWsOpen();
-        };
-        this.ws.onmessage = (event) => this._handleWsMessage(event);
-        this.ws.onclose = () => {
-            if (!this.isConnected && retryCount < 5) {
-                console.warn(`[Conduit] Connection failed, retrying in 500ms...`);
-                this.isConnecting = false;
-                this.ws = null;
-                setTimeout(() => this.connect(retryCount + 1), 500);
-            } else {
-                this._handleWsClose();
-            }
-        };
-        this.ws.onerror = (error) => this._handleWsError(error);
+        this._reconnectAttempt = 0;
+        this._openSocket();
     }
 
+    // Intentionally closes the connection and stops auto-reconnecting.
+    // Call `connect()` again to re-establish (resets the backoff counter).
     disconnect() {
-        if (this.ws) {
-            this.ws.close();
+        this._intentionalClose = true;
+        this._clearReconnectTimer();
+        const ws = this.ws;
+        this.ws = null; // detach first so the socket's onclose handler is a no-op
+        if (ws) {
+            try { ws.close(); } catch (e) { /* socket already closing */ }
         }
+        if (this.isConnected || this.isConnecting) {
+            this._handleWsClose();
+        } else {
+            // Nothing open; just refresh status so nextRetryIn clears.
+            this._setState('disconnected');
+        }
+    }
+
+    _clearReconnectTimer() {
+        if (this._reconnectTimer != null) {
+            clearTimeout(this._reconnectTimer);
+            this._reconnectTimer = null;
+        }
+    }
+
+    _openSocket() {
+        if (this.isConnected) return;
+        this.isConnecting = true;
+        this._setState('connecting');
+        console.debug(`[Conduit] Connecting to WebSocket (Attempt ${this._reconnectAttempt + 1}):`, this.wsUrl);
+
+        const ws = new WebSocket(this.wsUrl);
+        this.ws = ws;
+
+        ws.onopen = () => {
+            if (this.ws !== ws) return; // stale socket
+            this._handleWsOpen();
+        };
+        ws.onmessage = (event) => {
+            if (this.ws !== ws) return; // stale socket
+            this._handleWsMessage(event);
+        };
+        ws.onclose = () => {
+            if (this.ws !== ws) return; // stale socket
+            this._handleWsClose();
+        };
+        ws.onerror = (error) => {
+            if (this.ws !== ws) return; // stale socket
+            this._handleWsError(error);
+        };
     }
 
     _handleWsOpen() {
         console.log('[Conduit] WebSocket connected.');
+        this._reconnectAttempt = 0;
+        this._clearReconnectTimer();
         this.isConnecting = false;
         this.isConnected = true;
+        this._setState('connected');
         this.emit('connect');
 
         // Send any queued messages
         this.messageQueue.forEach(msg => this.ws.send(JSON.stringify(msg)));
         this.messageQueue = [];
+
+        // Resolve any pending `ready` promises
+        const resolvers = this._readyResolvers;
+        this._readyResolvers = [];
+        resolvers.forEach(({ resolve }) => resolve(this.status));
+    }
+
+    _handleWsClose() {
+        // Guard against a double-close (e.g. the socket's onclose handler firing
+        // after disconnect() already tore the socket down).
+        if (this.ws == null && !this.isConnected && !this.isConnecting) return;
+
+        const wasEstablished = this.isConnected;
+        const intentional = this._intentionalClose;
+        console.warn('[Conduit] WebSocket disconnected.');
+        this.ws = null;
+        this.isConnected = false;
+        this.isConnecting = false;
+
+        // A dropped *established* connection (or an intentional close) invalidates
+        // in-flight requests. A *failed attempt* (socket never opened) does not:
+        // the pending _send requests were never actually sent, so keep them alive
+        // and let the next successful connect flush them.
+        if (wasEstablished || intentional) {
+            this.emit('disconnect');
+            this.pendingRequests.forEach(({ reject }) => reject(new Error('WebSocket disconnected')));
+            this.pendingRequests.clear();
+            const resolvers = this._readyResolvers;
+            this._readyResolvers = [];
+            resolvers.forEach(({ reject }) => reject(new Error('WebSocket disconnected')));
+        }
+
+        if (intentional) {
+            this._setState('disconnected');
+            return;
+        }
+
+        // Schedule an auto-reconnect with exponential backoff:
+        // 1s, 2s, 4s, 8s, then capped at 10s while retries continue.
+        const wait = this._reconnectWait();
+        this._setState('disconnected', wait);
+        console.log(`[Conduit] Reconnecting in ${wait / 1000}s...`);
+        this._reconnectTimer = setTimeout(() => {
+            this._reconnectTimer = null;
+            this._reconnectAttempt++;
+            this._openSocket();
+        }, wait);
+    }
+
+    _reconnectWait() {
+        return Math.min(1000 * Math.pow(2, this._reconnectAttempt), 10000);
+    }
+
+    _handleWsError(error) {
+        console.error('[Conduit] WebSocket error for:', this.wsUrl, error);
+        // Let onclose handle the reconnect logic
+    }
+
+    // --- Connection Status ---
+    // Current connection state. `state` is one of:
+    //   'connected'    - the WebSocket is open and usable
+    //   'connecting'   - a socket is in the process of opening
+    //   'disconnected' - no socket; if not intentionally closed, an
+    //                    auto-reconnect is scheduled (see `nextRetryIn`)
+    get status() {
+        const state = this._state;
+        return {
+            state,
+            connected: this.isConnected,
+            connecting: this.isConnecting,
+            attempts: this._reconnectAttempt,
+            nextRetryIn: this._reconnectTimer != null ? this._reconnectWait() : null,
+        };
+    }
+
+    // A promise that resolves with the current status once the connection is
+    // (or becomes) established, and rejects if the connection drops while it
+    // is still pending. Use it to guard actions that require a live socket:
+    //   conduit.ready.then(() => conduit.wsRead('README.md'));
+    // Each call returns a fresh promise; all pending promises resolve together
+    // when the socket opens and reject together if it closes first.
+    get ready() {
+        if (this.isConnected) return Promise.resolve(this.status);
+        return new Promise((resolve, reject) => {
+            this._readyResolvers.push({ resolve, reject });
+        });
+    }
+
+    _setState(state, nextRetryIn = null) {
+        this._state = state;
+        const status = {
+            state,
+            connected: this.isConnected,
+            connecting: this.isConnecting,
+            attempts: this._reconnectAttempt,
+            nextRetryIn: nextRetryIn,
+        };
+        this.emit('status', status);
+        return status;
     }
 
     _handleWsMessage(event) {
@@ -192,23 +339,6 @@ class ConduitClient {
             console.error('[Conduit] Error parsing message:', e);
             this.emit('error', { error: 'Invalid JSON message from server' });
         }
-    }
-
-    _handleWsClose() {
-        console.warn('[Conduit] WebSocket disconnected.');
-        this.isConnected = false;
-        this.isConnecting = false;
-        this.ws = null;
-        this.emit('disconnect');
-
-        // Reject all pending requests
-        this.pendingRequests.forEach(({ reject }) => reject(new Error('WebSocket disconnected')));
-        this.pendingRequests.clear();
-    }
-
-    _handleWsError(error) {
-        console.error('[Conduit] WebSocket error for:', this.wsUrl, error);
-        // Let onclose handle the retry/disconnect logic
     }
 
     _send(payload, explicitRequestId = null) {

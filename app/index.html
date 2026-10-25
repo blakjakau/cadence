@@ -125,6 +125,7 @@
 
 
 	<ui-actionbar id="statusbar" slim hook="bottom">
+		<ui-inline id="conduit_status" hook="left" title="Conduit: disconnected"><span class="conduit-status-dot disconnected"></span></ui-inline>
 		<ui-inline id="indexer_status" hook="left" style="font-size: 11px; opacity: 0.7; padding-left: 10px;"></ui-inline>
 		<ui-inline id="db_status" hook="left" style="font-size: 11px; opacity: 0.7; padding-left: 14px; cursor: pointer;"></ui-inline>
 		<ui-button id="inspect_btn" icon="bug_report" hook=right title="Open Inspector" style="display:none"></ui-button>
@@ -253,6 +254,11 @@
 		<ui-menu-item command="copy" icon="arrow_split">Fork</ui-menu-item>
 		<ui-menu-split></ui-menu-split>
 		<ui-menu-item command="preview" icon="text_format">View History Summary</ui-menu-item>
+		<ui-menu-split></ui-menu-split>
+		<ui-menu-item command="toggle_run_command" icon="terminal" keyTag="">Run Commands</ui-menu-item>
+		<ui-menu-item command="toggle_sandbox" icon="shield" keyTag="">Sandbox Commands</ui-menu-item>
+		<ui-menu-item command="toggle_subagents" icon="hub" keyTag="">Sub-Agents</ui-menu-item>
+		<ui-menu-item command="toggle_planning" icon="flag" keyTag="">Planning Mode</ui-menu-item>
 		<ui-menu-split></ui-menu-split>
 		<ui-menu-item command="terminal" icon="terminal">Open Terminal Here</ui-menu-item>
 		<ui-menu-split></ui-menu-split>

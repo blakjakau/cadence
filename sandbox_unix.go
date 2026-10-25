@@ -507,7 +507,8 @@ func probeSandbox() *probeResult {
 
 	res := &probeResult{}
 
-	// 1. Check kernel sysctls first (cheap, no fork).
+	// 1. Kernel-wide disable is absolute (no profile can exempt it), so check it
+	//    first (cheap, no fork).
 	if b, err := os.ReadFile("/proc/sys/kernel/unprivileged_userns_clone"); err == nil {
 		if strings.TrimSpace(string(b)) == "0" {
 			res.Available = false
@@ -517,18 +518,14 @@ func probeSandbox() *probeResult {
 			return res
 		}
 	}
-	if b, err := os.ReadFile("/proc/sys/kernel/apparmor_restrict_unprivileged_userns"); err == nil {
-		if strings.TrimSpace(string(b)) == "1" {
-			res.Available = false
-			res.Reason = "AppArmor restricts unprivileged user namespaces (install the bwrap-userns-restrict profile or set kernel.apparmor_restrict_unprivileged_userns=0)"
-			sandboxManager.probe = res
-			sandboxManager.probeOnce = true
-			return res
-		}
-	}
 
-	// 2. Live probe: fork a single-threaded child that unshares CLONE_NEWUSER
-	//    and writes uid_map. Success => native is available.
+	// 2. Live probe FIRST: fork a single-threaded child that unshares CLONE_NEWUSER
+	//    and writes uid_map. Success => native is available. The live result is
+	//    authoritative: a process confined by an AppArmor profile that grants
+	//    `userns` (e.g. install-sandbox-profile.sh) is EXEMPT from the
+	//    apparmor_restrict_unprivileged_userns restriction, so it passes here
+	//    even when the sysctl is 1. (Reading the sysctl first, as this code used
+	//    to, made that exemption unreachable.)
 	if nativeProbe() {
 		res.Available = true
 		res.Method = "native"
@@ -537,8 +534,16 @@ func probeSandbox() *probeResult {
 		res.Method = "bwrap"
 		res.Reason = "native userns unavailable; using bwrap fallback"
 	} else {
+		// 3. Native failed. Only now consult the sysctls to explain WHY
+		//    (a more actionable reason than a bare "blocked"), then bail.
+		reason := "unprivileged user namespaces blocked and bwrap not found on PATH"
+		if b, err := os.ReadFile("/proc/sys/kernel/apparmor_restrict_unprivileged_userns"); err == nil {
+			if strings.TrimSpace(string(b)) == "1" {
+				reason = "AppArmor restricts unprivileged user namespaces (install the bwrap-userns-restrict profile or set kernel.apparmor_restrict_unprivileged_userns=0)"
+			}
+		}
 		res.Available = false
-		res.Reason = "unprivileged user namespaces blocked and bwrap not found on PATH"
+		res.Reason = reason
 	}
 
 	sandboxManager.probe = res

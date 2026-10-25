@@ -77,14 +77,14 @@ I am reading app.js to locate the issue.
 
     let thinkingRule = "";
     if (isNativeReasoning) {
-        thinkingRule = `- Thinking: Leverage your thinking/reasoning capability to analyze the task before making tool calls.`;
+        thinkingRule = `- Thinking: Assess the current state of tasks and plan, then advise the user of your intention, then make tool calls, or engage with the user to gather requirements.`;
     } else {
         thinkingRule = "- Thinking: Start your response with your reasoning, wrapped in <thought>...</thought> blocks. Explain your logic before calling tools. If there is genuinely nothing new to reason about, you may skip the <thought> block.";
     }
 
     let taskFocusRule = "";
     if (isNativeReasoning) {
-        taskFocusRule = hasTasks?"- Task Focus: Reference the specific task you are currently working on. When you finish a task, call `complete_task`. When all tasks and objectives are fully satisfied, call `done`.":"";
+        taskFocusRule = hasTasks?"- Task Focus: Focus on the next unchecked task on the tasklist. When you finish a task, call `complete_task` for that task. When all tasks and objectives are fully satisfied, call `done`.":"";
     } else {
         taskFocusRule = hasTasks?"- Task Focus: In your <thought> block, reference the specific task you are currently working on (if a task list is active). When you finish a task, call `complete_task`. When all tasks and objectives are fully satisfied, call `done`.":"";
     }
@@ -94,7 +94,7 @@ I am reading app.js to locate the issue.
     
     let loopingRule = "";
     if (isNativeReasoning) {
-        loopingRule = "- Looping Prevention: Review your last 3 turns. If you are repeating tool calls, executing identical searches, or failing edits, you must explain why progress has stalled and immediately propose an alternative approach or different tool. Do not repeat failed edits or duplicate search queries.";
+        // loopingRule = "- Looping Prevention: Review your last 3 turns. If you are repeating tool calls, executing identical searches, or failing edits, you must explain why progress has stalled and immediately propose an alternative approach or different tool. Do not repeat failed edits or duplicate search queries.";
     } else {
         loopingRule = "- Looping Prevention: In your <thought> block, actively review your last 3 turns. If you are repeating tool calls, executing identical searches, or failing edits, you must explain why progress has stalled and immediately propose an alternative approach or different tool. Do not repeat failed edits or duplicate search queries.";
     }
@@ -111,7 +111,7 @@ Note: The active model does not support native function calling/tools. Tools are
     let toolCallingRule;
     if (supportsNativeTools) {
         toolCallingRule = supportsParallelTools
-            ? "- Prefer batching independent tool calls (e.g. multiple reads/searches) in a single turn. Only serialize calls where one call's result is required by the next."
+            ? "- Prefer batching independent tool calls (e.g. multiple reads/searches) in a single turn. Only serialize calls where one call's result is required for a future call."
             : "- Call exactly ONE tool per turn — the host aborts the turn on a second tool call, so issue one call, observe its result, then continue.";
     }
 
@@ -119,12 +119,11 @@ Note: The active model does not support native function calling/tools. Tools are
     if (supportsNativeTools) {
         coreRules = `
 ${toolCallingRule}
-- ALWAYS prefer direct tools over running commands
-- File Modifications: Smallest viable change per edit; on a failed match, \`read_file\` the source section and retry.
-- Scratchpad: Use \`scratchpad_write\` to keep concise notes/discoveries (max 4KB, Markdown, supports \`mode: 'append'\` or \`'replace'\`) hoisted to the end of context across turns without risk of eviction. Use \`scratchpad_clear\` to wipe.
-- Checkpoints & Rollbacks: \`checkpoint\` after a verified sub-step; \`rollback_file\`/\`rollback_cycle\` to undo.
-- External Knowledge: For time-sensitive info use \`research\`/\`web_fetch\` (codebase tools first; \`web_fetch\` supports \`no_summary: true\`, \`grep\`, and \`startLine\`/\`lineCount\` for exact remote code or content). Date: ${new Intl.DateTimeFormat('en-US', { dateStyle: 'medium' }).format(new Date())}.
-- Context Limits: Context evctions are strictly managed by the system. Explore via ${isSubAgent ? "\`read_file_outline\`/\`search_in_file\`" : "\`find_file\`/\`read_file_outline\`/\`search_in_file\`"}; read targeted sections, never whole files; small atomic edits. Commit important notes to concisely your scratchpad to avoid loss
+- ** ALWAYS ** prefer specific tools over running commands, where available
+- File Modifications: Make the smallest viable change per edit; on a failed match, \`read_file\` the source lines and retry.
+- Scratchpad: Use \`scratchpad_write\` to keep concise notes/discoveries (max 4KB, Markdown, supports \`mode: 'append'\` or \`'replace'\`) kept evergreen in context without risk of eviction. Use \`scratchpad_clear\` to wipe clear.
+- External Knowledge: For time-sensitive info use \`research\`/\`web_fetch\` (codebase tools; \`web_fetch\` supports \`no_summary: true\`, \`grep\`, and \`startLine\`/\`lineCount\` for exact remote code or content). Date: ${new Intl.DateTimeFormat('en-US', { dateStyle: 'medium' }).format(new Date())}.
+- Context Limits: Context evctions are managed strictly to reduce context growthExplore via ${isSubAgent ? "\`read_file_outline\`/\`search_in_file\`" : "\`find_file\`/\`read_file_outline\`/\`search_in_file\`"}; read targeted sections, never whole files; small atomic edits. Commit important notes to concisely your scratchpad to avoid loss
 `;
     } else {
         coreRules = `
@@ -147,11 +146,10 @@ You are a specialized sub-agent spawned to complete a single objective with a li
     } else if (planningMode) {
         projectManagementSection = `
 # Project Management & Orchestration (Planning Mode Active)
-In planning mode, code modifications should be deferred until a plan is structured and reviewed.${!hasPlan ? " Explore the codebase read-only (search/read/outline/subagents) and propose a plan." : ""}
-- Call \`create_implementation_plan\` to define your overarching approach and optionally supply the \`tasks\` parameter for the initial task list.
-- Call \`update_task_list\` to provide or update a markdown checkbox list (e.g., \`- [ ] Step 1\`).
+Code modifications should be deferred until a plan is structured and reviewed. ${!hasPlan ? " Explore the codebase read-only (search/read/outline and subagents) and propose a plan." : ""}
+${!hasPlan ? " - Call \`create_implementation_plan\` to define your overarching approach and optionally supply the \`tasks\` parameter for the initial task list.":""}
+${!hasTasks ? " - Call \`update_task_list\` to provide or update a markdown checkbox list (e.g., \`- [ ] Step 1\`).":""}
 - When you finish a task during execution, call \`complete_task\` with the task name. The host will mark it [x] automatically. DO NOT rewrite the full task list just to check a box. 
-- When all tasks and objectives are satisfied, call the \`done\` tool.
 - Call \`create_sub_agent\` to delegate discrete exploration, search, or research tasks to specialized sub-agents to keep your main context clean.
 - Avoid rambling or repetitive content outputs`;
     } else {
@@ -160,7 +158,6 @@ In planning mode, code modifications should be deferred until a plan is structur
 ${hasPlan?"The host maintains your plan and task list when provided":""}
 - For complex, multi-file or architectural changes, you are encouraged to call \`create_implementation_plan\` (and optional \`tasks\`) or \`update_task_list\` to outline your roadmap. For localized or straightforward changes, you may proceed directly with code edits.
 ${hasTasks?"- Call \`complete_task\` with the task name as you finish each task. DO NOT rewrite the full task list just to check a box. ":""}
-${hasTasks?"- When all tasks and objectives are satisfied, call the \`done\` tool.":""}
 - Call \`create_sub_agent\` to delegate discrete exploration, search, or research tasks to specialized sub-agents to keep your main context clean.`;
     }
 
@@ -176,9 +173,10 @@ ${hasTasks?"- When all tasks and objectives are satisfied, call the \`done\` too
         } else {
             verificationSection = `
 # Verification & Completion Protocol
-- Syntax validation and code style is automatically enforced when using \`edit_file\` or \`create_file\`
+- Syntax validation and code style is automatically performed when using \`edit_file\` or \`create_file\`, you don't need to do it separately.
 - As appropriate verify edits with \`run_command\` for any applicable unit tests; re-read the edited sections before \`done\`
-- As appropriate verify your work by running unit tests with \`run_command\', if no test coverage exists, create them or consult the user.
+- As appropriate verify your work by running unit tests with \`run_command\', if no test coverage exists, consult the user, propose tests where appropriate.
+- When all tasks and objectives are satisfied, call the \`done\` tool.
 `;
         }
     }

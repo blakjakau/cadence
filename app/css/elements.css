@@ -708,6 +708,7 @@ ui-menu {
     position: absolute;
     left: 0px;
     top: 0px;
+    opacity: 0;
     transition: opacity 200ms ease-in-out;
     z-index: 102;
     background: var(--bg-primary);
@@ -732,6 +733,10 @@ ui-menu:not([active]) {
     display: none;
 }
 
+ui-menu[active] {
+    opacity: 1;
+}
+
 ui-menu ui-menu-item {
     position: relative;
     cursor: pointer;
@@ -754,6 +759,17 @@ ui-menu ui-menu-item ui-inline {
 ui-menu ui-menu-item ui-inline[hook="right"] {
     opacity: 0.5;
     margin-left: 25px;
+    /* A float sits at the top of the line box and ignores vertical-align, so
+       make the slot a line-height-tall flex box and center its content
+       (the capability slider, or plain keyTag text on other items). */
+    display: flex;
+    align-items: center;
+    height: 42px;
+    box-sizing: border-box;
+}
+
+ui-menu[slim] ui-menu-item ui-inline[hook="right"] {
+    height: 24px;
 }
 ui-menu ui-menu-item:hover {
     background: var(--bg-secondary);
@@ -779,6 +795,59 @@ ui-menu[slim] ui-menu-item ui-icon {
 ui-menu ui-menu-item:hover ui-icon {
     color: var(--text-primary);
     opacity: 0.5;
+}
+
+/* Capability override sliders in the session-tab context menu (run commands /
+   sandbox / sub-agents / planning). Same visual language as the artifacts
+   settings panel `.switch`: a hidden checkbox drives a `.slider` track. */
+ui-menu-item .menu-capability-switch {
+    position: relative;
+    display: inline-block;
+    width: 28px;
+    height: 16px;
+    flex-shrink: 0;
+}
+ui-menu-item .menu-capability-switch input {
+    opacity: 0;
+    width: 0;
+    height: 0;
+}
+ui-menu-item .menu-capability-slider {
+    position: absolute;
+    cursor: pointer;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background-color: var(--border-primary);
+    transition: 0.3s;
+    border-radius: 16px;
+}
+ui-menu-item .menu-capability-slider:before {
+    position: absolute;
+    content: "";
+    height: 10px;
+    width: 10px;
+    left: 3px;
+    bottom: 3px;
+    background-color: #ffffff;
+    transition: 0.3s;
+    border-radius: 50%;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+}
+ui-menu-item input.menu-capability-toggle:checked + .menu-capability-slider {
+    background-color: var(--theme);
+}
+ui-menu-item input.menu-capability-toggle:checked + .menu-capability-slider:before {
+    transform: translateX(12px);
+}
+/* Inherited (session field unset): the whole item dims so the knob state is
+   clearly a global default, not an explicit per-session override. */
+ui-menu-item.menu-inherited {
+    opacity: 0.55;
+}
+ui-menu-item.menu-inherited:hover {
+    opacity: 0.8;
 }
 
 ui-menu-item:first-child {

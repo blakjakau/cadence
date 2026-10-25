@@ -515,6 +515,10 @@ ui-tab-item[data-status-icon-type="image"]:not([active]) .status-icon {
 .terminal-session-tabs ui-tab-item .terminal-sandbox-badge {
     font-size: 0.7rem;
     margin-left: 6px;
+    /* Always render at the tab's right edge (next to the hover close
+       button) regardless of DOM order: re-attaching a tab item re-runs
+       connectedCallback, which can move the badge ahead of the label. */
+    order: 3;
     padding: 1px 5px;
     border-radius: 4px;
     background: var(--color-bronze-soft, rgba(200, 134, 58, 0.18));
@@ -547,6 +551,45 @@ ui-tabbar[slim].terminal-session-tabs > ui-tab-item:has(.terminal-sandbox-badge)
     color: var(--text-inverted);
 }
 ui-tabbar[slim].terminal-session-tabs > ui-tab-item:has(.terminal-sandbox-badge)[active] .terminal-sandbox-badge {
+    background: none;
+    color: var(--text-inverted);
+}
+
+/* Sandbox badge on AI session tabs — mirrors the terminal tab treatment so a
+   session whose agent is running in a shared sandbox gets the same bronze
+   chip + tint. Clicking the chip opens a terminal joined to the sandbox. */
+.ai-session-tabs ui-tab-item .ai-sandbox-badge {
+    font-size: 0.7rem;
+    margin-left: 6px;
+    /* Always render at the tab's right edge (next to the hover close
+       button) regardless of DOM order: re-attaching a tab item re-runs
+       connectedCallback, which can move the badge ahead of the label. */
+    order: 3;
+    padding: 1px 5px;
+    border-radius: 4px;
+    background: var(--color-bronze-soft, rgba(200, 134, 58, 0.18));
+    color: var(--color-bronze, #c8863a);
+    white-space: nowrap;
+    user-select: none;
+    pointer-events: auto;
+    cursor: pointer;
+}
+.ai-session-tabs ui-tab-item .ai-sandbox-badge ui-icon {
+    font-size: 0.75rem;
+}
+ui-tabbar[slim].ai-session-tabs > ui-tab-item:has(.ai-sandbox-badge) {
+    background: var(--color-bronze-soft, rgba(200, 134, 58, 0.18));
+    color: var(--color-bronze, #c8863a);
+}
+ui-tabbar[slim].ai-session-tabs > ui-tab-item:has(.ai-sandbox-badge):not([active]):hover {
+    background: color-mix(in srgb, var(--color-bronze, #c8863a) 28%, var(--bg-tertiary));
+}
+ui-tabbar[slim].ai-session-tabs > ui-tab-item:has(.ai-sandbox-badge)[active] {
+    background: var(--color-bronze, #c8863a);
+    border-color: var(--color-bronze, #c8863a);
+    color: var(--text-inverted);
+}
+ui-tabbar[slim].ai-session-tabs > ui-tab-item:has(.ai-sandbox-badge)[active] .ai-sandbox-badge {
     background: none;
     color: var(--text-inverted);
 }
@@ -659,6 +702,31 @@ ui-file-list {
     margin-left: 8px;
 }
 
+/* Conduit connection status dot: green = connected, yellow = connecting, red = disconnected */
+#conduit_status {
+    display: inline-flex;
+    align-items: center;
+    padding-left: 10px;
+    cursor: default;
+}
+.conduit-status-dot {
+    display: inline-block;
+    width: 10px;
+    height: 10px;
+    border-radius: var(--borderRadius);
+    background: var(--color-silver);
+    transition: background var(--animRate);
+}
+.conduit-status-dot.connected {
+    background: var(--color-success);
+}
+.conduit-status-dot.connecting {
+    background: var(--color-warning);
+}
+.conduit-status-dot.disconnected {
+    background: var(--color-error);
+}
+
 #statusbar ui-button {
     color: inherit;
 }
@@ -707,7 +775,7 @@ ui-file-list {
     /* Inverted text is for use on theme-colored backgrounds */
     --text-inverted: #ffffff;
     --border-primary: #555555;
-    --border-secondary: #444444;
+    --border-secondary: #222222;
     --icon-color: #2b2b2b;
     --shadow-color: rgba(0, 0, 0, 0.25);
 

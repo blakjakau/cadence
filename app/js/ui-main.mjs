@@ -511,6 +511,39 @@ iconTabBar = new IconTabBar();
 			statusbar.hook = "top"
 		}
 
+		// Conduit connection status dot (green = connected, yellow = connecting, red = disconnected)
+		const conduitStatusEl = document.querySelector("#conduit_status")
+		if (conduitStatusEl) {
+			const conduitDot = conduitStatusEl.querySelector(".conduit-status-dot")
+			const updateConduitStatus = (status) => {
+				if (!conduitDot) return
+				conduitDot.className = "conduit-status-dot " + status.state
+				let title = "Conduit: " + status.state
+				if (status.state === "disconnected" && status.nextRetryIn != null) {
+					title += " - reconnecting in " + Math.ceil(status.nextRetryIn / 1000) + "s"
+				} else if (status.state === "disconnected") {
+					title += " - not connected"
+				}
+				conduitStatusEl.title = title
+			}
+			let conduitWasDisconnected = false
+			conduitClient.on("status", (status) => {
+				updateConduitStatus(status)
+				if (status.state === "disconnected") {
+					conduitWasDisconnected = true
+					const msg = status.nextRetryIn != null
+						? "Conduit disconnected - reconnecting in " + Math.ceil(status.nextRetryIn / 1000) + "s"
+						: "Conduit disconnected"
+					if (window.modal?.toast) window.modal.toast(msg)
+				} else if (status.state === "connected" && conduitWasDisconnected) {
+					conduitWasDisconnected = false
+					if (window.modal?.toast) window.modal.toast("Conduit reconnected")
+				}
+				// 'connecting' ticks are transient (one per backoff attempt) - dot only, no toast
+			})
+			updateConduitStatus(conduitClient.status)
+		}
+
 		toggleSplitViewBtn.setAttribute("hook", "right")
 
 		statusTheme = document.querySelector("#theme_select")

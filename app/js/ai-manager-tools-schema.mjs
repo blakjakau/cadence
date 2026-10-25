@@ -25,24 +25,6 @@ export const subAgentToolsList = [
 ]
 
 export const tools = [
-	{
-		name: "run_command",
-		description:
-			"Run a shell command (default working directory is ALWAYS the project root). Avoid use for edits, " +
-			"prefer `edit_file` and `create_file`, we have automatic validation and rollback protections",
-		parameters: {
-			type: "object",
-			properties: {
-				command: { type: "string", description: "The shell command to run." },
-				cwd: {
-					type: "string",
-					description: "Working directory (if not root) relative to root",
-				},
-				timeoutMs: { type: "number", description: "Timeout in ms before terminating (default: 60000)." },
-			},
-			required: ["command"],
-		},
-	},
 	// {
 	// 	name: "validate_syntax",
 	// 	description:
@@ -231,7 +213,9 @@ export const tools = [
 	{
 		name: "scratchpad_write",
 		description:
-			"Write or update concise notes in the session scratchpad. Kept evergreen in context across turns to retain important discoveries (max 4KB, Markdown format recommended). Use `mode: 'append'` to add new notes to existing scratchpad content.",
+			"Write or update concise notes in the session scratchpad. Kept evergreen in context across "+
+			"turns to retain important discoveries (max 4KB, Markdown format recommended). Use `mode: "+
+			"'append'` to add new notes to existing scratchpad content.",
 		parameters: {
 			type: "object",
 			properties: {
@@ -266,7 +250,9 @@ export const tools = [
 	},
 	{
 		name: "create_sub_agent",
-		description: "Spawns a sub-agent with a clean context and limited toolset. Sub-agent reports it's finding to conserver main context.",
+		description: 
+			"Spawns a sub-agent with a clean context and limited toolset. Sub-agent reports " +
+			"it's finding to conserver main context.",
 		parameters: {
 			type: "object",
 			properties: {
@@ -288,7 +274,8 @@ export const tools = [
 	{
 		name: "query",
 		description:
-			"Ask the user a question and wait for a response. Use for clarifications or decisions you cannot determine from the codebase.",
+			"Ask the user a question and wait for a response. Use for clarifications or decisions " +
+			"you cannot determine from the codebase.",
 		parameters: {
 			type: "object",
 			properties: {
@@ -357,7 +344,9 @@ export const tools = [
 	{
 		name: "web_fetch",
 		description:
-			"Fetch a web URL. Set `no_summary: true` to return full content without AI summarisation. Use `startLine` and `lineCount` to read specific portions. Use `grep` to search within the page lines and locate relevant line numbers.",
+			"Fetch a web URL. Set `no_summary: true` to return full content without AI summarisation (cached for multple reads). " +
+			"Use `startLine` and `lineCount` to read specific portions. Use `grep` to search within the "+
+			"page lines and locate relevant line numbers.",
 		parameters: {
 			type: "object",
 			properties: {
@@ -405,25 +394,27 @@ export const tools = [
 			required: ["path"],
 		},
 	},
-	{
-		name: "rollback_cycle",
-		description: "Revert all files changed this cycle to `cycle_start` or `last_checkpoint`.",
-		parameters: {
-			type: "object",
-			properties: {
-				target: {
-					type: "string",
-					enum: ["cycle_start", "last_checkpoint"],
-					description:
-						"Revert to cycle start ('cycle_start', default) or the last checkpoint ('last_checkpoint').",
-				},
-			},
-		},
-	},
+	// {
+	// 	name: "rollback_cycle",
+	// 	description: "Revert all files changed this cycle to `cycle_start` or `last_checkpoint`.",
+	// 	parameters: {
+	// 		type: "object",
+	// 		properties: {
+	// 			target: {
+	// 				type: "string",
+	// 				enum: ["cycle_start", "last_checkpoint"],
+	// 				description:
+	// 					"Revert to cycle start ('cycle_start', default) or the last checkpoint ('last_checkpoint').",
+	// 			},
+	// 		},
+	// 	},
+	// },
 	{
 		name: "cull_history",
 		description:
-			"Cull the conversation from visible dialogue turn `idx` (0-based, in the order the model sees the turns) through the end. Evergreen plan/tasks, the scratchpad, and [SYSTEM] directives are never culled; an automatic prune safety net still runs as a backstop.",
+			"Cull the conversation from visible dialogue turn `idx` (0-based, in the order the model sees "+
+			"the turns) through the end. Evergreen plan/tasks, the scratchpad, and [SYSTEM] directives are "+
+			"never culled; an automatic prune safety net still runs as a backstop.",
 		parameters: {
 			type: "object",
 			properties: {
@@ -435,6 +426,26 @@ export const tools = [
 				},
 			},
 			required: ["idx"],
+		},
+	},
+	{
+		name: "run_command",
+		description:
+			"Run a shell command (default working directory is ALWAYS the project root). " +
+			"This tool is for running commands that are not covered by the dedicated tools. " +
+			"Avoid use for edits, and exploration, prefer `edit_file` and `create_file`, which have automatic validation and rollback protections" +
+			"Avoid for general find tasks, use `search_files` which is highly optimized for the workspace",
+		parameters: {
+			type: "object",
+			properties: {
+				command: { type: "string", description: "The shell command to run." },
+				cwd: {
+					type: "string",
+					description: "Working directory (if not project root) relative to project root",
+				},
+				timeoutMs: { type: "number", description: "Timeout in ms before terminating (default: 60000)." },
+			},
+			required: ["command"],
 		},
 	},
 ]
