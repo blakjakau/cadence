@@ -54,8 +54,7 @@ export class RootPicker extends Block {
             return;
         }
 
-        const session = this.aiManager.activeSession;
-        const pinnedRoots = session?.pinnedRoots || [];
+        const pinnedRoots = window.workspace?.pinnedRoots || [];
 
         for (const root of filtered) {
             const isPinned = pinnedRoots.some(p => p === root.path || p === root.name);
@@ -66,25 +65,29 @@ export class RootPicker extends Block {
     }
 
     async handlePinToggle({ path, name, pinned }) {
-        if (!this.aiManager.activeSession) return;
-
-        const session = this.aiManager.activeSession;
-        if (!session.pinnedRoots) session.pinnedRoots = [];
+        const workspace = window.workspace;
+        if (!workspace.pinnedRoots) workspace.pinnedRoots = [];
 
         if (pinned) {
-            if (!session.pinnedRoots.includes(path)) {
-                session.pinnedRoots.push(path);
+            if (!workspace.pinnedRoots.includes(path)) {
+                workspace.pinnedRoots.push(path);
             }
         } else {
-            session.pinnedRoots = session.pinnedRoots.filter(p => p !== path && p !== name);
+            workspace.pinnedRoots = workspace.pinnedRoots.filter(p => p !== path && p !== name);
         }
 
-        await workspaceClient.setSession(session.id, session);
+        await workspaceClient.setWorkspace(workspace);
         this.filterRoots(); // Refresh list to show new pin state
 
         // Update the FileBar to show/hide the root chip
         if (this.aiManager.historyManager) {
             this.aiManager.historyManager.populateFileBar();
+        }
+
+        // Refresh any Settings & Artifacts panels so the Workspaces accordion reflects the change
+        if (window.ui?.renderPlanTasksView) {
+            const containers = document.querySelectorAll(".plan-tasks-view");
+            containers.forEach(c => window.ui.renderPlanTasksView(c));
         }
     }
 }

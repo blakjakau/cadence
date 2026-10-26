@@ -79,7 +79,7 @@ export class FileBar extends Block {
         }
         const btn = new Button("");
         btn.icon = "folder_special";
-        btn.title = "Workspace Roots Filter";
+        btn.title = "Workspace Roots (all chats)";
         btn.className = "library-button";
         btn.onclick = onRootsClick;
         this.append(btn);

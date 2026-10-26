@@ -188,6 +188,8 @@ const workspace = {
 	// NEW: AI session metadata and active session ID
 	aiSessionsMetadata: [], // Array of {id, name, createdAt, lastModified}
 	activeAiSessionId: null, // The ID of the currently active AI session
+	// Global workspace roots pinned at the top: available to ALL agents/chats.
+	pinnedRoots: [],
 }
 
 // workspace state managment
@@ -677,6 +679,8 @@ const openWorkspace = (() => {
 
 			workspace.name = load.name || "default"
 			workspace.folders = load.folders || []
+			// Restore globally pinned roots so they remain available to all agents/chats.
+			workspace.pinnedRoots = load.pinnedRoots || []
 			workspace.files = load.files || []
 			try {
 				const cadenceResp = await conduitClient.wsRead(".cadence")
