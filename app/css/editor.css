@@ -57,13 +57,13 @@
 
 .editor-header-bar button.primary {
     background: var(--theme-dark);
-    color: #ffffff;
+    color: var(--text-inverted, #ffffff);
     border: none;
 }
 
 .editor-header-bar button.secondary {
     background: rgba(0, 0, 0, 0.33);
-    color: #ffffff;
+    color: var(--text-inverted, #ffffff);
     border: none;
 }
 
@@ -81,11 +81,11 @@
 }
 
 .editor-header-bar.modified-external {
-    border-bottom: 1px solid #d97706;
+    border-bottom: 1px solid var(--color-warning-dark, #d97706);
 }
 
 .editor-header-bar.pending-changes {
-    border-bottom: 1px solid #10b981;
+    border-bottom: 1px solid var(--color-success, #10b981);
 }
 
 .editor-header-bar.rollback-protected,

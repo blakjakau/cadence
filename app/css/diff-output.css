@@ -13,14 +13,14 @@
 /* Added lines */
 .diff-output .add {
     color: var(--green); /* Bright green for additions */
-    background-color: rgba(0, 128, 0, 0.2); /* Darken for better contrast */
+    background-color: color-mix(in srgb, var(--green, rgb(0, 128, 0)) 20%, transparent); /* Darken for better contrast */
     width: fit-content;
 }
 
 /* Removed lines */
 .diff-output .remove {
     color: var(--red); /* Bright red for removals */
-    background-color: rgba(128, 0, 0, 0.2); /* Darken for better contrast */
+    background-color: color-mix(in srgb, var(--red, rgb(128, 0, 0)) 20%, transparent); /* Darken for better contrast */
     width: fit-content;
 }
 

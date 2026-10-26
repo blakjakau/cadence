@@ -11,6 +11,9 @@ import {
 } from "./elements/utils.mjs"
 import ui from "./ui-main.mjs" // Assuming ui-main.mjs handles its own import of Modal via elements.mjs
 import {
+	applyOsPalette, clearOsPalette, fetchOsTheme,
+} from "./os-theme.mjs"
+import {
 	Modal, ActionBar, Block, Button, ContentFill, CounterButton, Element, Effects, Effect,
 	FileItem, FileList, Icon, Inline, Input, Inner, MediaView, Panel, Ripple, TabBar, TabItem,
 	View, Menu, MenuItem, FileUploadList, actionBars, promptSaveFile, promptAddFolder,
@@ -838,23 +841,77 @@ const clearInjectedTheme = () => {
 	// Instead, CSS handles light/dark mode with pre-defined variables.
 }
 
+// Live OS-theme tracking: the backend pushes "theme_changed" over the
+// existing conduit-client websocket whenever the desktop theme changes,
+// so the UI reacts instantly with no polling. The REST fetch below only
+// establishes the initial state (and re-syncs on mode switches).
+const applyOsUiTheme = (palette) => {
+	if (palette && palette.detected) {
+		applyOsPalette(palette)
+		if (palette.mode === "light") {
+			document.body.classList.remove("darkmode")
+		} else {
+			document.body.classList.add("darkmode")
+		}
+	} else {
+		clearOsPalette()
+		if (prefersDarkMode.matches) {
+			document.body.classList.add("darkmode")
+		} else {
+			document.body.classList.remove("darkmode")
+		}
+	}
+	updateThemeAndMode(false) // refresh the dark/light toggle icon
+}
+
+// Applies the active OS theme (if any) to the app palette and body
+// class. Falls back to the media query when no desktop theme is detected.
+const applySystemTheme = async (force = false) => {
+	if (app.darkmode !== "system") {
+		clearOsPalette()
+		return
+	}
+
+	subscribeOsThemePush() // backend pushes further changes; fetch once here
+	const palette = await fetchOsTheme()
+	if (!palette) return // Backend unreachable — leave existing state alone.
+
+	applyOsUiTheme(palette)
+}
+
+// Subscribe once to backend theme pushes. Listener lives on the conduit
+// client (not the socket), so it survives reconnects with no re-subscribe.
+let osThemePushSubscribed = false
+const subscribeOsThemePush = () => {
+	if (osThemePushSubscribed) return
+	osThemePushSubscribed = true
+	conduitClient.on("theme_changed", (msg) => {
+		if (app.darkmode !== "system") return
+		const palette = msg && msg.data !== undefined ? msg.data : msg
+		applyOsUiTheme(palette)
+	})
+}
+
 const execCommandSetDarkMode = (mode) => {
 	app.darkmode = mode
 
 	switch (mode) {
 		case "light":
+			clearOsPalette()
 			document.body.classList.remove("darkmode")
 			break
 		case "dark":
+			clearOsPalette()
 			document.body.classList.add("darkmode")
 			break
 		case "system":
+			// This only updates on initial load and system preference change
 			if (prefersDarkMode.matches) {
-				// This only updates on initial load and system preference change
 				document.body.classList.add("darkmode")
 			} else {
 				document.body.classList.remove("darkmode")
 			}
+			applySystemTheme(true)
 			break
 	}
 	saveAppConfig()
