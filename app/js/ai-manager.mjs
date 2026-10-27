@@ -545,28 +545,88 @@ isNativeReasoning,
 
 		const aiMenu = document.getElementById("ai_tab_context");
 		if (aiMenu) {
+			// Capability toggles keep the menu open (cancel the close-on-click
+			// timeout) so several toggles can be flipped in one session. The
+			// listeners attach once here (static menu items), not per right-click.
+			for (const cmd of ["toggle_run_command", "toggle_sandbox", "toggle_subagents", "toggle_planning"]) {
+				const item = aiMenu.querySelector(`ui-menu-item[command="${cmd}"]`);
+				if (!item) continue;
+				item.addEventListener("click", (ev) => ev.stopPropagation());
+				// The capability slider is a pure visual state indicator: it never
+				// toggles itself. The flip is driven solely by the MenuItem click
+				// (aiMenu.click -> _toggleSessionCapability), which re-syncs the
+				// checkbox via _refreshAiContextMenu. This keeps a single source of
+				// truth and avoids a double-flip from the native label toggle.
+				const switchEl = document.createElement("label");
+				switchEl.className = "menu-capability-switch";
+				const input = document.createElement("input");
+				input.type = "checkbox";
+				input.className = "menu-capability-toggle";
+				input.id = `ai_ctx_toggle_${cmd}`;
+				const slider = document.createElement("span");
+				slider.className = "menu-capability-slider round";
+				// The checkbox is a pure visual indicator: preventDefault the native
+				// toggle so the checkbox never flips on its own. The click still
+				// bubbles to the MenuItem handler (aiMenu.click -> _toggleSessionCapability)
+				// which is the sole flip path and re-syncs input.checked via
+				// _refreshAiContextMenu. No stopPropagation here — the item handler
+				// must still receive the event.
+				input.addEventListener("change", (ev) => {
+					ev.preventDefault();
+				});
+				input.addEventListener("click", (ev) => {
+					ev.preventDefault();
+				});
+				switchEl.appendChild(input);
+				switchEl.appendChild(slider);
+				// Replace the keyTag slot (on/off/inherited text) with the slider.
+				const tag = item._tag;
+				if (tag) {
+					tag.empty();
+					tag.appendChild(switchEl);
+				} else {
+					item.appendChild(switchEl);
+				}
+			}
+			// Store the right-clicked tab so the click handler can resolve its session.
 			this.sessionTabBar.context = (e) => {
 				aiMenu._activeTab = e.tab;
-				aiMenu.showAt(e);
+				// Await the async refresh (session fetch) so the toggle items show
+				// current values before the menu is positioned and faded in.
+				void (async () => {
+					const tab = e.tab;
+					await this._refreshAiContextMenu(tab);
+					// Guard against a stale tab: a newer right-click superseded this one.
+					if (aiMenu._activeTab !== tab) return;
+					aiMenu.showAt(e);
+				})();
 			};
 			aiMenu.click = (action) => {
 				const tab = aiMenu._activeTab;
 				if (!tab) return;
 				const sessionId = tab.config.id;
-				
+
 				if (action === "rename") {
 					this.switchSession(sessionId);
 					this.sessionsManager.renameCurrentSession();
 				} else if (action === "copy") {
 					this.sessionsManager.copySession(sessionId);
 				} else if (action === "terminal") {
-					this._openTerminalForSession(sessionId);
+					void this._openSandboxAwareTerminal(sessionId);
 				} else if (action === "archive") {
 					this.sessionsManager.closeSessionTab(sessionId, tab);
 				} else if (action === "delete") {
 					this.sessionsManager.deleteSession(sessionId, tab);
 				} else if (action === "preview") {
 					this.previewSessionHistory(sessionId);
+				} else if (action === "toggle_run_command" || action === "toggle_sandbox" || action === "toggle_subagents" || action === "toggle_planning") {
+					void (async () => {
+						await this._toggleSessionCapability(sessionId, action);
+						// The menu stays open for consecutive toggles; re-render the
+						// items in place so the flipped state (glyph/checked/tag)
+						// and the terminal item label are visible immediately.
+						if (aiMenu._activeTab === tab) void this._refreshAiContextMenu(tab);
+					})();
 				}
 			};
 		}
@@ -1639,6 +1699,245 @@ isNativeReasoning,
 			this.sessionsManager?._broadcast('session_processing_stop', { sessionId });
 		}
 		this._setButtonsDisabledState(this._isProcessing);
+	}
+
+	_updateSessionSandboxBadge(sessionId) {
+		if (!this.sessionTabBar) return;
+		const tab = this.sessionTabBar.tabs.find(t => t.config.id === sessionId);
+		if (!tab) return;
+
+		// Remove any existing badge (idempotent re-render)
+		const existing = tab.querySelector(".ai-sandbox-badge");
+		if (existing) existing.remove();
+		tab.classList.remove("ai-sandbox-enabled");
+
+		// The bronze badge + tab theme only render when the session has
+		// *explicitly* enabled sandboxed commands (sandboxCommands === true).
+		// In the off and inherit states the tab loses the bronze theme. No
+		// fetch: only render for sessions we hold in memory.
+		const session = sessionId === this.sessionsManager?.activeSessionId
+			? this.sessionsManager.activeSession
+			: this.runningSessions.get(sessionId)?.instance?.session;
+		if (!session || session.sandboxCommands !== true) return;
+
+		const owners = Array.isArray(session.sandboxOwners) ? session.sandboxOwners : [];
+		const ownerList = owners.length > 0 ? owners.join(", ") : "you";
+		const shared = session.sandboxShared === true;
+		// The live sandbox instance id may not exist yet (enabled but no
+		// sandboxed run_command has attached one), so keep it optional.
+		const shortId = session.sandboxId ? (session.sandboxId.length > 8 ? session.sandboxId.slice(0, 8) : session.sandboxId) : "";
+		const badge = document.createElement("span");
+		badge.className = "ai-sandbox-badge";
+		const lockIcon = document.createElement("ui-icon");
+		lockIcon.textContent = "lock";
+		badge.append(lockIcon);
+		badge.title = (session.sandboxId ? `Sandbox ${session.sandboxId} (${shortId})${shared ? " [shared]" : ""}\n` : "") + `Co-owners: ${ownerList}\nClick to open a terminal in this sandbox.`;
+		badge.addEventListener("click", (e) => {
+			e.stopPropagation();
+			window.terminalManager?.openTerminalInAgentSandbox(sessionId);
+		});
+		tab.append(badge);
+		tab.classList.add("ai-sandbox-enabled");
+	}
+
+	/**
+	 * Populates the AI session tab's right-click menu with the per-session
+	 * capability overrides (run_command / sandbox / sub-agents / planning mode).
+	 * Each toggle item keeps its capability icon static and carries a slider in
+	 * the keyTag slot: the knob reflects the effective value (on = the capability
+	 * resolves ON, inheriting the global default when the field is unset) and the
+	 * item is dimmed when the field is unset (inherited from global). The "Open
+	 * Terminal" item is relabeled to "Open Sandbox Terminal" when the session has
+	 * a live shared sandbox (or its sandbox policy is enabled), so the click
+	 * handler can join it.
+	 * @param {HTMLElement} tab - The ui-tab-item the context menu was opened on.
+	 */
+	async _refreshAiContextMenu(tab) {
+		const menu = document.getElementById("ai_tab_context");
+		if (!menu || !tab) return;
+		const sessionId = tab.config?.id;
+		const session = sessionId
+			? await this.sessionsManager._getResolvedSession(sessionId)
+			: null;
+
+		// Effective values (unset = inherit global default).
+		const effRunCommand = session ? (session.allowRunCommand !== false) : true;
+		const effSandbox = session ? (session.sandboxCommands !== false && this.config?.defaultSandboxCommands !== false) : true;
+		const effSubAgents = session ? (session.allowSubAgents !== false) : true;
+		const effPlanning = session ? (session.planningMode ?? (this.config?.defaultPlanningMode ?? true)) : true;
+
+		// Toggle items: command -> [effective value, session field (undefined = inherit)]
+		const toggles = {
+			"toggle_run_command": [effRunCommand, session?.allowRunCommand],
+			"toggle_sandbox": [effSandbox, session?.sandboxCommands],
+			"toggle_subagents": [effSubAgents, session?.allowSubAgents],
+			"toggle_planning": [effPlanning, session?.planningMode],
+		};
+
+		for (const item of menu.querySelectorAll("ui-menu-item[command]")) {
+			const command = item.getAttribute("command");
+			const toggle = toggles[command];
+			if (!toggle) continue;
+			const [effective, field] = toggle;
+			const inherited = field === undefined;
+			// Capability icon stays static (terminal/shield/hub/flag) for visual
+			// tracking — it no longer swaps to a "done" tick.
+			const iconEl = item._icon;
+			if (iconEl) {
+				iconEl.innerHTML = item.getAttribute("icon") || "";
+			}
+			// The slider is the state indicator: knob position = effective value
+			// (what actually resolves, inheriting the global default when the
+			// field is unset); dimness = whether the session has an explicit
+			// override or is inheriting the global default.
+			const input = item._tag ? item._tag.querySelector("input.menu-capability-toggle") : null;
+			if (input) input.checked = effective;
+			item.classList.toggle("menu-inherited", inherited);
+		}
+
+		// Terminal item: "Open Sandbox Terminal" only when the session has a live
+		// shared sandbox instance; otherwise "Open Terminal Here" (unsandboxed).
+		const terminalItem = menu.querySelector('ui-menu-item[command="terminal"]');
+		if (terminalItem) {
+			const live = !!session?.sandboxId && session.sandboxCommands !== false;
+			this._setMenuItemLabel(terminalItem, live ? "Open Sandbox Terminal" : "Open Terminal Here");
+			terminalItem.title = live
+				? "Open a terminal joined to this session's shared sandbox"
+				: "Open an unsandboxed terminal at this session's root";
+		}
+	}
+
+	/**
+	 * Sets a ui-menu-item's label. Static menu items render their label as a raw
+	 * text node (the _text Inline stays empty), so update the text node in place.
+	 * Falls back to the _text element when no raw text label is present.
+	 * @param {HTMLElement} item - The ui-menu-item to relabel.
+	 * @param {string} label - New label text.
+	 */
+	_setMenuItemLabel(item, label) {
+		for (const child of item.childNodes) {
+			if (child.nodeType === Node.TEXT_NODE && child.textContent.trim()) {
+				child.textContent = label;
+				return;
+			}
+		}
+		if (item._text) {
+			item._text.innerHTML = label;
+			if (!item.contains(item._text)) {
+				item.insertBefore(item._text, item._tag || null);
+			}
+		}
+	}
+
+	/**
+	 * Sandbox-aware "Open Terminal" action from the session tab menu: resolves the
+	 * session the same way the menu label does (so label and action can't
+	 * disagree), joins the session's live shared sandbox when it has one (or its
+	 * sandbox policy is on), otherwise opens a plain unsandboxed terminal at the
+	 * session's root.
+	 * @param {string} sessionId - Target session id.
+	 */
+	async _openSandboxAwareTerminal(sessionId) {
+		const session = await this.sessionsManager._getResolvedSession(sessionId);
+		// Join the session's live shared sandbox only when it actually exists;
+		// a policy-enabled but never-attached sandbox has no instance to join.
+		const sandboxTerminal = !!session?.sandboxId && session.sandboxCommands !== false;
+		if (sandboxTerminal) {
+			window.terminalManager?.openTerminalInAgentSandbox(sessionId);
+		} else {
+			this._openTerminalForSession(sessionId);
+		}
+	}
+
+	/**
+	 * Flips a per-session capability override from the right-click menu and persists
+	 * it. When the toggled session is the active one, the manager-level mirrors
+	 * (planningMode / allowRunCommand + their localStorage keys) are kept in sync,
+	 * matching the session-artifacts-panel handlers. A cross-tab
+	 * `session_updated` broadcast is emitted so the active session tab refreshes.
+	 * @param {string} sessionId - Target session id.
+	 * @param {string} action - One of toggle_run_command / toggle_sandbox / toggle_subagents / toggle_planning.
+	 */
+	async _toggleSessionCapability(sessionId, action) {
+		const session = await this.sessionsManager._getResolvedSession(sessionId);
+		if (!session) return;
+
+		let changed = false;
+		if (action === "toggle_run_command") {
+			// Two-way flip of the EFFECTIVE value (unset = inherits the global
+			// default, treated as on). The slider shows the effective state, so
+			// flipping it writes the negated effective value explicitly.
+			const eff = session.allowRunCommand !== false;
+			session.allowRunCommand = !eff;
+			changed = true;
+		} else if (action === "toggle_sandbox") {
+			// Two-way flip of the EFFECTIVE value: unset = inherit the global
+			// defaultSandboxCommands, which is what the slider shows.
+			const eff = session.sandboxCommands !== false && this.config?.defaultSandboxCommands !== false;
+			session.sandboxCommands = !eff;
+			changed = true;
+		} else if (action === "toggle_subagents") {
+			// Unset inherits the global default (on), so the effective state is
+			// "on" and the first flip turns it off explicitly.
+			const eff = session.allowSubAgents !== false;
+			session.allowSubAgents = !eff;
+			changed = true;
+		} else if (action === "toggle_planning") {
+			// planningMode has no global default: unset = the manager default (on).
+			const eff = session.planningMode ?? (this.config?.defaultPlanningMode ?? true);
+			session.planningMode = !eff;
+			changed = true;
+		}
+		if (!changed) return;
+
+		const now = Date.now();
+		session.lastModified = now;
+		const res = await workspaceClient.setSession(sessionId, session);
+		if (res) session.lastModified = now; // keep the broadcast's lastModified consistent with the persisted state
+
+		const isActive = this.sessionsManager.activeSessionId === sessionId;
+		if (isActive) {
+			if (action === "toggle_planning") {
+				this.planningMode = session.planningMode;
+				localStorage.setItem("aiPlanningMode", String(session.planningMode));
+				this._updatePromptAreaPlaceholder();
+				this._updateAgentProgressPanel();
+			} else if (action === "toggle_run_command") {
+				this.allowRunCommand = session.allowRunCommand;
+				localStorage.setItem("aiAllowRunCommand", String(session.allowRunCommand));
+			}
+		}
+
+		// A sandbox-policy flip doesn't drop the live instance id, but re-render the
+		// badge to keep its tooltip/state accurate after the persistence round-trip.
+		if (action === "toggle_sandbox") {
+			this._updateSessionSandboxBadge(sessionId);
+		}
+
+		// Notify other tabs (and refresh the active session tab in this tab) so the
+		// toggled override is visible immediately.
+		const revision = res && res.revision !== undefined ? res.revision : session.revision;
+		this.sessionsManager._broadcast('session_updated', {
+			sessionId,
+			lastModified: now,
+			revision,
+			name: session.name
+		});
+
+		// If the toggled session is the one shown in the Settings & Artifacts view,
+		// refresh that panel so its capability checkboxes reflect the new values.
+		// The panel is reached via the .plan-tasks-view element (see
+		// _updateAgentProgressPanel above); its sourceSession is the session object
+		// we just mutated, so re-render the fresh checkbox state for it.
+		document.querySelectorAll('.plan-tasks-view').forEach(view => {
+			// A panel with no sourceSession yet is targeting the active session.
+			const targetId = view.sourceSession ? view.sourceSession.id : this.sessionsManager.activeSessionId;
+			if (targetId === sessionId && typeof view.update === "function") {
+				// Pass the mutated session explicitly: update()'s fallback target is
+				// ui.aiManager.activeSession, which may differ from the toggled one.
+				view.update(session);
+			}
+		});
 	}
 
 	_updateTabStatus(sessionId, status) {

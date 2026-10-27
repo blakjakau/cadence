@@ -3,6 +3,15 @@ This application uses a Go backend server, hosting a HTML/JavaScript frontend
 REST and Websocket APIs are used for communications between the frontend and backend
 All frontend code is found in `app/js`
 
+## Code patterns
+** Always **
+- Avoid complex multi-byte characters (mojibakes)
+
+** JavaScript **
+- respect lowerCamelCase varible names
+- respect UpperCamelCase class names
+- avoid inline CSS styles, prefer CSS rules in the relevant stylesheet files
+
 ## UI Component Patterns
 When building or modifying UI elements, use the custom web components defined in `app/js/elements.mjs` instead of standard HTML elements:
 
@@ -16,7 +25,7 @@ When building or modifying UI elements, use the custom web components defined in
   - `window.modal.toast("Notification message")`
 
 ## actions ##
-`./build.sh` - builds the backend server
+`./scripts/build.sh` - builds the backend server
 
 Don't build the project unless explicitly requested by the user, or essential for testing
 Don't or `git add` or `git commit` unless explicitly requested by the user

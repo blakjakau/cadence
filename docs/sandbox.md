@@ -1,18 +1,24 @@
 # Sandboxed Execution
 
-Cadence can run agent `run_command` shells — and optionally user terminal tabs —
-inside a **shared Linux user-namespace sandbox**. The sandbox is *path-scoped*:
-the shell sees only the project roots (writable) plus a read-only system
-passthrough set; the rest of the host filesystem is hidden. Sandboxes are
-**persistent, addressable, shared workspaces** — not per-command security
-bubbles — so an agent session's sandbox persists for the session's lifetime and
-a user terminal can *attach* to it and see exactly the same workspace.
+Cadence can run agent `run_command` shells and optionally user terminal tabs
+inside a **shared Linux user-namespace sandbox**. The sandbox is
+*path-scoped*: the shell sees only the project roots (writable) plus a
+read-only system passthrough set; the rest of the host filesystem is hidden.
+Sandboxes are **persistent, addressable, shared workspaces** - not
+per-command security bubbles - so an agent session's sandbox persists for the
+session's lifetime and a user terminal can *attach* to it and see exactly the
+same workspace.
 
 - **Linux-only** (user namespaces). macOS/Windows report
   `sandbox: "unsupported"` and run unsandboxed.
 - **Never silently pretends**: if the sandbox is unavailable (AppArmor
-  restriction, no bwrap, …) the shell still starts *unsandboxed* and the client
-  is told why (`sandbox: "unavailable"` + `sandboxReason`).
+  restriction with no profile, no userns, ...) the shell still starts
+  *unsandboxed* and the client is told why (`sandbox: "unavailable"` +
+  `sandboxReason`).
+- **Two isolation layers**: the mount namespace is the *primary* isolation;
+  the **AppArmor profiles** (see [AppArmor confinement](#apparmor-confinement))
+  are the *second* layer, and are also what *enables* the sandbox on hosts
+  that restrict unprivileged user namespaces (Ubuntu 23.10+/24.04+).
 - **Zero new dependencies**: the native path uses only the stdlib plus
   `golang.org/x/sys` (already in `go.mod`).
 
@@ -23,13 +29,16 @@ a user terminal can *attach* to it and see exactly the same workspace.
 | File | Role |
 |---|---|
 | `sandbox_common.go` | Cross-platform types: `SandboxConfig`, `SandboxFlags`, `SandboxHandle`, `SandboxInstanceInfo`, `SandboxStatusResponse`, `ErrSandboxUnavailable`. |
-| `sandbox_unix.go` | The native implementation (build tag `linux`): capability probe, reexec keeper, mount layout, keeper IPC, refcounted registry, bwrap fallback. |
+| `sandbox_unix.go` | The native implementation (build tag `linux`): capability probe, reexec keeper, mount layout, AppArmor profile transitions (raw `/proc/self/attr/exec` writes), keeper IPC, refcounted registry, bwrap fallback. |
 | `sandbox_platform_linux.go` | `sandboxSupported() == true` on Linux. |
 | `sandbox_other.go` | Non-Linux stubs: everything is a no-op / "Linux-only". |
 | `sandbox_unix_test.go` | Linux tests: probe, end-to-end (bind-mount rw, host-fs hidden, `/oldroot` backdoor closed, pty EOF), shared-instance semantics, bwrap argv, env scrub, fingerprint. |
-| `pty_unix.go` | `startPty` — routes to `startSandboxedShell` when a `*SandboxConfig` is passed. |
-| `handlers.go` | `terminalServer` — parses the sandbox query params, validates roots, wires the handle into the WS, sends `terminalInfo` sandbox fields, releases owners on close. |
+| `pty_unix.go` | `startPty` - routes to `startSandboxedShell` when a `*SandboxConfig` is passed. |
+| `handlers.go` | `terminalServer` - parses the sandbox query params, validates roots, wires the handle into the WS, sends `terminalInfo` sandbox fields, releases owners on close. |
 | `main_common.go` | `GET /api/sandbox` (`sandboxStatusHandler`). |
+| `scripts/cadence_aa_profile.txt` | **Verbatim source** of the consolidated AppArmor profile file (four profiles; see below). Checked in as-is - the installer copies it byte-for-byte, nothing is generated. |
+| `scripts/install-apparmor-profile.sh` | Installs the profile: copies the source to `/etc/apparmor.d/cadence`, self-heals the load (`-R` then `-r -T`), removes stale profiles from older versions. `--check` mode is rootless (byte-diff against the source). |
+| `scripts/dev.sh` | Dev-loop entry: builds to a stable path (`dist/cadence-dev`), auto-installs the profile when AppArmor is active, then runs the server. |
 | `scratch/sandbox_poc/` | Throwaway Phase-0 spike that validated the technique unprivileged on Ubuntu 24.04 (see its `README.md`). |
 
 Frontend: `app/js/agent/agent-tools.mjs` (agent `run_command`),
@@ -57,14 +66,14 @@ instance; a layout change yields a different instance.
 
 ```
         server process (sandboxManager registry, keyed by fingerprint)
-        │
-        │ spawnKeeper: rawFork() → child unshares ns, applies layout,
-        │ reexecs this binary as `--sandbox-keeper <id> <socket>`
-        ▼
+        |
+        | spawnKeeper: rawFork() -> child unshares ns, applies layout,
+        | reexecs this binary as `--sandbox-keeper <id> <socket>`
+        v
    keeper coprocess (inside the ns, idling)
-        │  unix socket: {slave, cwd, env} → fork join-child → reply pid
-        ├── join-child 1: agent session's shell (pty A)   owner "session:<id>"
-        └── join-child 2: user terminal's shell (pty B)   owner "terminal:<tab>"
+        |  unix socket: {slave, cwd, env} -> fork join-child -> reply pid
+        +-- join-child 1: agent session's shell (pty A)   owner "session:<id>"
+        +-- join-child 2: user terminal's shell (pty B)   owner "terminal:<tab>"
 ```
 
 ### Why this shape (all empirically validated in `scratch/sandbox_poc/`)
@@ -79,10 +88,10 @@ instance; a layout change yields a different instance.
    argv/envv arrays, the ns mask, step-marker bytes) is **precomputed in the
    parent** and read from globals (COW-shared across the clone). See the
    `raw*` globals at the top of `sandbox_unix.go`.
-3. **A mount-namespace layout cannot be mutated from outside**, and there is no
-   unprivileged "enter namespace" syscall. (External `setns` into a user-ns-
-   owned mount namespace is *not* permitted — the POC confirmed the join
-   mechanism is **keeper-fork**, not external setns.) So the namespace is
+3. **A mount-namespace layout cannot be mutated from outside**, and there is
+   no unprivileged "enter namespace" syscall. (External `setns` into a
+   user-ns-owned mount namespace is *not* permitted - the POC confirmed the
+   join mechanism is **keeper-fork**, not external setns.) So the namespace is
    created once and kept alive by the keeper; joiners are forked into it.
 4. **The keeper is a reexec of the same binary** (`--sandbox-keeper <id>
    <socket>`), so no new binary or dependency is required. The layout is
@@ -100,11 +109,18 @@ rule: **no allocation, no `x/sys/unix`, no runtime.** Consequences:
 
 - Strings passed to raw syscalls must be **NUL-terminated** (raw `mount`/
   `chdir`/`execve` read until NUL). `strPtr()`/`strPtrPtr()` return stable
-  pointers to cached NUL-terminated copies — the cache is **pre-warmed in the
+  pointers to cached NUL-terminated copies - the cache is **pre-warmed in the
   parent** (e.g. `strPtr("/proc/self/mountinfo")`, `strPtr("/oldroot")` in
   `spawnKeeper`) so the child gets cache hits, not allocations.
 - `argv`/`envv` for a raw `execve` are built by `buildExecveStructures()`
   (parent-side); the child only takes their addresses.
+- **Profile transitions are raw too**: the keeper child writes
+  `exec cadence_sbx_keeper` and the join-child writes `exec
+  cadence_sbx_shell` to `/proc/self/attr/exec` (precomputed, verb-prefixed
+  strings - the kernel's `attr/exec` protocol requires the `exec ` prefix)
+  so the reexec lands in the hardened AppArmor profile. If the profile is not
+  installed, the write fails and the child simply runs unconfined (graceful
+  degradation).
 - Diagnostic markers: `mk(step)` writes a single precomputed step-byte to the
   child's stderr trace fd; `traceInt(v)` formats a small int into a stack
   buffer (no allocation). A failing keeper therefore leaves a trace in
@@ -112,9 +128,96 @@ rule: **no allocation, no `x/sys/unix`, no runtime.** Consequences:
 
 ---
 
+## AppArmor confinement
+
+### Why a profile at all
+
+Ubuntu 23.10+/24.04+ ship with
+`kernel.apparmor_restrict_unprivileged_userns=1`, which blocks *unconfined*
+processes from creating user namespaces. A *confining* AppArmor profile with
+a `userns` grant is exempt, so the fix is a profile - not a sysctl change.
+(The global `sysctl` override is left at its secure default; nothing system-
+wide is touched.)
+
+### The consolidated profile file
+
+One file - `/etc/apparmor.d/cadence` - holds four profiles (source:
+`scripts/cadence_aa_profile.txt`, copied verbatim by the installer):
+
+| Profile | Attach | Role |
+|---|---|---|
+| `cadence` | **path-glob** attached: `/**/cadence{-dev,-latest,-linux-x64,-linux-arm64}` | Host spawner. Covers every standard cadence binary location (`dist/cadence-dev`, `dist/cadence-linux-x64`, `dist/cadence-linux-arm64`, `~/cadence-latest`, ...), so there is **no per-path re-install** when you build or move the binary. Deliberately near-permissive (full user permissions + `userns` + `mount`/`umount`/`pivot_root` + `change_profile` rules to the three sandbox profiles) because the user's own PTY children (`bash`, `git`, `ssh`) inherit this label and must keep working unrestricted. |
+| `cadence_sbx_keeper` | named, `attach_disconnected` | The keeper. Entered by writing `exec cadence_sbx_keeper` to `/proc/self/attr/exec` before reexec (a transition, not a path attach - the keeper is the *same binary* as the parent). Hardened: `deny capability`, no network, unix sockets only, `ptrace` only toward the two shell profiles, `change_profile` rules to land its join-children in the shells. |
+| `cadence_sbx_shell` | named, `attach_disconnected` | The **offline** agent shell + descendants (the current default). Hardened: `deny network` (air-gapped), `deny capability`/`dbus`/`io_uring`/`mount`/`umount`/`pivot_root`/`ptrace`, plus deny rules for host credentials and shell config (`~/.ssh`, `~/.gnupg`, `~/.aws`, gcloud, `.bashrc`/`.profile`/`.zshrc`, systemd user units, XDG runtime dirs, `docker.sock`). |
+| `cadence_sbx_net` | named, `attach_disconnected` | The **networked** agent shell (same hardening, `network` allowed). Installed for **future use** - see [Future: the net profile](#future-the-net-profile-cadence_sbx_net). |
+
+All four are genuine confining profiles (`attach_disconnected`) - none run
+unconfined. The mount namespace remains the **primary** isolation; the
+AppArmor layer is the second, now-active one.
+
+### How the labels are attached
+
+- **Server (host spawner)**: the path-glob header attaches the `cadence`
+  profile at `execve` time, based purely on the binary's path. Launch method
+  (a script, a shell, a desktop entry) is irrelevant. Because the label is
+  bound at `execve`, a **running** server keeps its old label - restart the
+  server after (re)installing the profile.
+- **Keeper**: raw `attr/exec` write (`exec cadence_sbx_keeper`) in the
+  single-threaded child, immediately before reexec.
+- **Join-child (shell)**: raw `attr/exec` write (`exec cadence_sbx_shell`),
+  before the shell exec. The `inherit-exec` file grant (`allow file rwlkmix
+  /{**,}`) keeps the shell's own children in the same profile.
+
+### Installing
+
+```bash
+sudo scripts/install-apparmor-profile.sh   # no arguments needed
+```
+
+The installer copies `scripts/cadence_aa_profile.txt` **verbatim** to
+`/etc/apparmor.d/cadence` (nothing is generated; the source file *is* the
+staleness fingerprint), then self-heals the load (`apparmor_parser -R` then
+`-r -T`, so a stale profile already loaded under the same name is reliably
+swapped out), and removes stale profiles left by older versions of the
+script. Verification hints (loaded profiles, `aa-status`) are printed at the
+end.
+
+```bash
+scripts/install-apparmor-profile.sh --check   # rootless: byte-diff the on-disk
+                                              # file against the source
+```
+
+`scripts/dev.sh` runs the install automatically when AppArmor is active
+(rootless fast path: if a running cadence server already shows the
+`cadence (enforce)` label via the world-readable `/proc/<pid>/attr/current`,
+no sudo is needed), so the normal dev loop needs no manual steps.
+
+Uninstall:
+
+```bash
+sudo apparmor_parser -R /etc/apparmor.d/cadence
+sudo rm -f /etc/apparmor.d/cadence
+```
+
+If a legitimate server operation starts being denied (a library load, a
+browser helper), audit the denials (`sudo aa-logprof cadence`) and add the
+grant to the **source file** (`scripts/cadence_aa_profile.txt`) so it
+survives the next install - the installed file is a verbatim copy, so
+hand-edits there are flagged stale by `--check`.
+
+### Graceful degradation
+
+If the profile is not installed, the `attr/exec` writes fail and the keeper
+and shells run **unconfined** (the sandbox still works via the mount
+namespace - only the second layer and, on restricted hosts, the `userns`
+grant are missing). If the profile is installed but the label never attached
+(a running server started before the install), restart the server.
+
+---
+
 ## The mount layout (native path)
 
-After `unshare` and the uid/gid mapping (`uid_map`/`gid_map` = `0 → self`,
+After `unshare` and the uid/gid mapping (`uid_map`/`gid_map` = `0 -> self`,
 `setgroups` = `deny`), the child makes `/` private
 (`mount("", "/", MS_REC|MS_PRIVATE)`) and then **hides the host filesystem**
 with a `pivot_root` sequence (all raw syscalls, all paths precomputed):
@@ -124,27 +227,27 @@ with a `pivot_root` sequence (all raw syscalls, all paths precomputed):
    `newroot/proc`, `newroot/tmp`, the binary's **parent** dir (mkdir'd
    *empty*), and every ro/rw root
    target. (The new root is *empty* after the pivot, so every bind
-   **destination** must pre-exist inside it — hence the host-side
+   **destination** must pre-exist inside it - hence the host-side
    `newroot<P>` mkdirs, computed by `expandMkdirAll`.)
-2. Bind host `/` → `newroot/oldroot` (so the host fs can be re-bound).
-3. Bind `newroot` → `newroot` (pivot requires a mountpoint).
+2. Bind host `/` -> `newroot/oldroot` (so the host fs can be re-bound).
+3. Bind `newroot` -> `newroot` (pivot requires a mountpoint).
 4. `pivot_root(newroot, newroot/oldroot)`; `chdir /`.
 5. Bind back onto the new root:
    - **rw roots** at their real paths (`MS_BIND|MS_REC`, writable);
-   - **ro passthroughs** read-only (`MS_BIND|MS_REC|MS_RDONLY`) — the default
+   - **ro passthroughs** read-only (`MS_BIND|MS_REC|MS_RDONLY`) - the default
      set is `/usr /etc /lib /lib64 /bin /sbin /opt /var /proc`
      (`defaultRORoots()`; `/proc` gives a functional process view);
    - the **socket dir** (keeper IPC + `keeper.err` trace), so the parent can
      reach the keeper's socket;
-   - `/dev` (rw — the pty needs `/dev/pts` + `/dev/tty`);
+   - `/dev` (rw - the pty needs `/dev/pts` + `/dev/tty`);
    - the **binary file** (not its dir), so the keeper can exec itself after
      the pivot. Binding the whole dir would leak its entire contents (e.g. the
      user's home, if the binary lives there). A file bind needs a destination
      file, so the child creates an empty placeholder at the binary's path
      post-pivot, then bind-mounts the real binary over it (same path,
      different inode; the placeholder's zero content is shadowed). Only the
-     binary file is present in-ns — the rest of the dir stays hidden.
-6. **Hide the host fs** — see below.
+     binary file is present in-ns - the rest of the dir stays hidden.
+6. **Hide the host fs** - see below.
 7. `prctl(PR_SET_PDEATHSIG, SIGKILL)` so a crashed server can't leak the
    keeper (persists across the exec).
 8. Raw `execve` the keeper (the namespaces inherit across exec).
@@ -152,19 +255,19 @@ with a `pivot_root` sequence (all raw syscalls, all paths precomputed):
 ### The `/oldroot` backdoor (and its two fixes)
 
 `pivot_root` relocates the host `/` to `/oldroot`. Naively, a single
-`umount2("/oldroot", MNT_DETACH)` only detaches the *top* of the mount stack —
+`umount2("/oldroot", MNT_DETACH)` only detaches the *top* of the mount stack -
 the relocated old root and all its `/oldroot/*` submounts (dev, run, sys,
-proc, snap, …) remain, so `ls /oldroot` = host `/` and the user could
+proc, snap, ...) remain, so `ls /oldroot` = host `/` and the user could
 `cat /oldroot/etc/shadow`. Two host-fs leaks must be closed:
 
-1. **`/oldroot` and every `/oldroot/<...>` submount** — `rawDetachOldRoot()`
+1. **`/oldroot` and every `/oldroot/<...>` submount** - `rawDetachOldRoot()`
    parses `/proc/self/mountinfo` (into a 64 KiB stack buffer; the real file
    was ~18.5 KiB / 124 submounts, so a 16 KiB buffer silently truncated the
    deepest entries) and detaches every `/oldroot*` mountpoint, **deepest
-   first**, with the correct `MNT_DETACH` flag (`0x2` — a wrong flag like
+   first**, with the correct `MNT_DETACH` flag (`0x2` - a wrong flag like
    `0x2000` makes `umount2` fail with `EINVAL` and the detach silently
    no-ops). It then best-effort `rmdir`s the leftover `/oldroot` dir.
-2. **The pre-pivot staging bind `.../newroot/oldroot`** — the temp dir under
+2. **The pre-pivot staging bind `.../newroot/oldroot`** - the temp dir under
    `/tmp/cadence-sbx-*/newroot` used as pivot_root's oldroot target is *also*
    a full host-`/` bind, a second backdoor that survives the `/oldroot`
    detaches. `rawIsDetachTarget()` matches any mountpoint containing the
@@ -195,9 +298,9 @@ master EOFs after `exit`.
 Join-children are the keeper's children, so the keeper runs a `wait4(-1)`
 reaper goroutine to prevent zombie accumulation. A keeper with **no** live
 children gets `ECHILD` (`wpid == 0`) from `wait4` *immediately* instead of
-blocking — without a backoff the idle keeper busy-spins at 100% CPU. The
+blocking - without a backoff the idle keeper busy-spins at 100% CPU. The
 reaper now sleeps 200 ms on `ECHILD`/error (a newly spawned child is reaped
-within that window; the pty master's EOF — not the reaper — is what signals
+within that window; the pty master's EOF - not the reaper - is what signals
 shell exit to the parent).
 
 ---
@@ -208,35 +311,32 @@ shell exit to the parent).
 unprivileged user-namespace sandbox can be created, and how:
 
 1. **Cheap sysctl checks** (no fork):
-   - `/proc/sys/kernel/unprivileged_userns_clone == 0` → unavailable.
-   - `/proc/sys/kernel/apparmor_restrict_unprivileged_userns == 1` →
-     unavailable (Ubuntu 23.10+/24.04+ AppArmor restriction).
+   - `/proc/sys/kernel/unprivileged_userns_clone == 0` -> unavailable
+     (the kernel switch is off entirely - no profile can fix this).
+   - `/proc/sys/kernel/apparmor_restrict_unprivileged_userns == 1` ->
+     unavailable **unless the `cadence` profile is loaded** (the profile's
+     `userns` grant exempts cadence from the restriction).
 2. **Live native probe**: `nativeProbe()` forks a single-threaded child that
    attempts `unshare(CLONE_NEWUSER)` + writes its own `uid_map`/`gid_map`.
-   Success → `Method: "native"`.
-3. **bwrap fallback**: if native fails and `bwrap` is on PATH →
+   Success -> `Method: "native"`.
+3. **bwrap fallback**: if native fails and `bwrap` is on PATH ->
    `Method: "bwrap"`.
-4. Otherwise → unavailable with a reason.
+4. Otherwise -> unavailable with a reason.
 
-> **Ubuntu AppArmor userns restriction.** The biggest deployment risk. Two
-> remediations (see `scratch/sandbox_poc/README.md`):
-> - **Scoped profile** (preferred): install the `bwrap-userns-restrict`
->   profile from the AppArmor `extras/` tree so only our binary may create
->   user namespaces. This is the production path.
-> - **Global sysctl** (diagnostic only): `sudo sysctl -w
->   kernel.apparmor_restrict_unprivileged_userns=0`. Do **not** ship this as a
->   default — it disables the restriction for every process.
->
-> Note: bwrap uses the *same* unprivileged user-namespace mechanism, so it does
-> **not** bypass the AppArmor restriction — it is an escape hatch for
-> exotic-kernel issues only.
+> **Ubuntu AppArmor userns restriction** (the biggest deployment risk) is
+> handled by the profile above: `sudo scripts/install-apparmor-profile.sh`
+> (or just `scripts/dev.sh`, which runs it) exempts the cadence binary from
+> the restriction while the host sysctl stays at its secure default. If the
+> sandbox STILL reports unavailable after installing the profile, the host
+> likely has `kernel.unprivileged_userns_clone=0`, which no profile can
+> bypass.
 
 ---
 
 ## The bwrap fallback
 
 When the native path is unavailable but `bwrap` exists, each shell runs as its
-own `bwrap` process (there is **no persistent keeper** — the "instance" is a
+own `bwrap` process (there is **no persistent keeper** - the "instance" is a
 pure registry entry tracking owners). `bwrapArgv()` (a pure function, unit-
 tested without bwrap) builds the equivalent layout:
 
@@ -247,34 +347,36 @@ bwrap --tmpfs / --dev /dev --die-with-parent --new-session
       <shell>
 ```
 
-`/` is an **empty tmpfs** (the host fs is hidden — `--ro-bind / /` would
+`/` is an **empty tmpfs** (the host fs is hidden - `--ro-bind / /` would
 expose it), a minimal `/dev` is bound back, ro passthroughs + rw roots are
-bound at their real paths, and the shell runs with a scrubbed env.
+bound at their real paths, and the shell runs with a scrubbed env. Note that
+bwrap uses the *same* unprivileged user-namespace mechanism, so on a
+restricted host it needs the same profile (or the sysctl) as the native path.
 
 ---
 
 ## Registry, owners, and lifecycle
 
-`sandboxManager` (in-process, mutex-guarded) maps fingerprint →
+`sandboxManager` (in-process, mutex-guarded) maps fingerprint ->
 `SandboxInstance`. Each instance tracks its keeper pid, socket path, and an
 `owners` set.
 
 **Owner labels** (refcount keys):
-- `session:<id>` — an **agent session**. *Sticky*: `run_command` opens a fresh
+- `session:<id>` - an **agent session**. *Sticky*: `run_command` opens a fresh
   WS per command, so the owner must survive each WS close and persist for the
   session's lifetime. It is released only by an explicit
   `sandbox_release=1&session=<id>` handshake when the session is destroyed
-  (frontend: `ai-manager-sessions.mjs → _releaseSessionSandbox`).
-- `terminal:<tab>` — a **user terminal tab**. *Transient*: released when the
+  (frontend: `ai-manager-sessions.mjs` -> `_releaseSessionSandbox`).
+- `terminal:<tab>` - a **user terminal tab**. *Transient*: released when the
   tab's WS closes.
 
 Lifecycle:
-- `getOrCreateInstance(cfg, method)` — join the instance for the layout, or
+- `getOrCreateInstance(cfg, method)` - join the instance for the layout, or
   spawn the keeper (native) / register (bwrap).
-- `addOwner` / `removeOwner` — refcount; `removeOwner` reaps the instance when
+- `addOwner` / `removeOwner` - refcount; `removeOwner` reaps the instance when
   the last owner leaves (`reapInstance` kills the keeper + any bwrap children
   and removes the socket dir).
-- `findInstanceByOwner` / `attachToOwner` — the "user terminal attaches to an
+- `findInstanceByOwner` / `attachToOwner` - the "user terminal attaches to an
   agent session's sandbox" path. It locates the instance the target owner
   (`session:<id>`) co-owns and spawns the user's shell **inside that same
   namespace** (the user sees exactly the agent's workspace: same file view,
@@ -282,7 +384,7 @@ Lifecycle:
   not yet created one, one is created from the requested layout so the attach
   still succeeds and the two share it once the agent's first command lands on
   the same layout.
-- `releaseOwner` — drop an owner by label.
+- `releaseOwner` - drop an owner by label.
 
 ---
 
@@ -312,12 +414,12 @@ Roots are always re-validated through `securePath()`; invalid roots are
 rejected (logged) and the remaining valid ones are used. If no valid roots
 remain, the shell starts unsandboxed with `sandbox: "unavailable"`.
 
-### `terminalInfo` sandbox fields (server → client)
+### `terminalInfo` sandbox fields (server -> client)
 
 | Field | Values / meaning |
 |---|---|
 | `sandbox` | `"native"` \| `"bwrap"` \| `"off"` \| `"unavailable"` \| `"unsupported"` |
-| `sandboxReason` | Why unavailable (AppArmor, no roots, attach failed, …). |
+| `sandboxReason` | Why unavailable (AppArmor, no roots, attach failed, ...). |
 | `sandboxID` | The shared instance id (`sbx-xxxx`). |
 | `sandboxOwners` | All owners inside the same instance. |
 | `sandboxShared` | `true` when >1 owner shares the instance. |
@@ -338,27 +440,27 @@ for the session's lifetime** (one instance, not per-command). The
 (`ai-manager-history.mjs`) with the id + co-owners.
 
 **Enabling/disabling**:
-- Global default: Agent Config → "Default Sandbox Terminal Commands"
+- Global default: Agent Config -> "Default Sandbox Terminal Commands"
   (`defaultSandboxCommands`, default **on**).
-- Per-session: Session panel → "Sandbox Terminal Commands"
+- Per-session: Session panel -> "Sandbox Terminal Commands"
   (`session.sandboxCommands`, inherits the global default when unset).
 
 **Graceful degradation**: if the sandbox was requested but the server fell
 back to unsandboxed (or no sandbox metadata arrived on a non-Linux host), the
 command output is prefixed with a one-line notice
-(`[sandbox unavailable: <reason> — command ran UNSANDBOXED]`).
+(`[sandbox unavailable: <reason> - command ran UNSANDBOXED]`).
 
 ### User terminal (`terminal-manager.mjs`)
 
 Per-tab **sandbox mode selector** (default `unsandboxed`):
-- `unsandboxed` — today's behavior.
-- `sandboxed` — own layout from the workspace folders
+- `unsandboxed` - today's behavior.
+- `sandboxed` - own layout from the workspace folders
   (`sandbox=1&tab=<tabId>&sandbox_roots=<folders>`; since no `session=` is
   sent, the owner label is `terminal:<WS-session-id>`).
-- `attach` — join an agent session's sandbox
+- `attach` - join an agent session's sandbox
   (`sandbox=attach&session=<agentSessionId>&tab=<tabId>`). The attach
   dropdown is populated from `listAttachableSandboxes()`, which merges (a)
-  live instances from `GET /api/sandbox` (owners with a `session:` prefix →
+  live instances from `GET /api/sandbox` (owners with a `session:` prefix ->
   attachable by session id) with (b) in-memory running sessions that captured
   a `sandboxId`. The tab header shows a badge with the instance id and a
   shared indicator.
@@ -385,19 +487,36 @@ throws.
 - **Env scrub** (`scrubEnv`): strips `LD_PRELOAD`, `LD_LIBRARY_PATH`,
   `DYLD_INSERT_LIBRARIES`, `DYLD_LIBRARY_PATH`, `GIT_SSH_COMMAND`,
   `SSH_AUTH_SOCK`, `PROXY`, `HTTP(S)_PROXY`, `ALL_PROXY`, `NO_PROXY`. `HOME`
-  is kept (the userns keeps the real uid — the sandbox is *path-scoped*, not
+  is kept (the userns keeps the real uid - the sandbox is *path-scoped*, not
   user-scoped). `TERM=xterm-256color` is set.
+- **AppArmor**: the four-profile set (see [AppArmor confinement](#apparmor-confinement))
+  confines the keeper and shells - the shells run air-gapped (offline
+  profile) with host credentials and shell config denied.
 - **`PR_SET_PDEATHSIG`**: both the keeper and the join-children set
   `PR_SET_PDEATHSIG=SIGKILL` so a crashed server can't leak sandboxes (it
   persists across exec).
 - **Timeout enforcement** (agent commands only; user tabs have no timeout):
-  enforced **client-side** in `agent-tools.mjs` — after `timeoutMs` the
+  enforced **client-side** in `agent-tools.mjs` - after `timeoutMs` the
   frontend sends `^C` + `exit` over the WS and closes the connection
   (the shell's exit EOFs the pty master and closes the WS).
 - **Trust note**: attaching the user terminal to the agent sandbox is safe by
-  construction — the view is a bind of the same real paths the unsandboxed
+  construction - the view is a bind of the same real paths the unsandboxed
   shell already sees. Sharing adds co-visibility (same in-ns processes when
   the PID ns is on), which is the intended feature.
+
+---
+
+## Future: the net profile (`cadence_sbx_net`)
+
+The `cadence_sbx_net` profile is installed today but **unused**: the Go
+spawn path currently always writes `exec cadence_sbx_shell` (the offline,
+air-gapped profile), so every sandboxed shell is network-denied. The net
+profile preloads the same hardening with `network` allowed, so a future
+net-capable spawn path only needs to change the `attr/exec` target (and the
+keeper's `change_profile` grant is already in place) - no profile
+re-install. Likely shape when it lands: a per-session "sandbox network"
+toggle that makes `getOrCreateInstance` target the net profile, with a
+matching indicator on the sandbox badge.
 
 ---
 
@@ -413,22 +532,22 @@ throws.
 | `TestFingerprint` | The layout fingerprint is stable, order-insensitive for roots, changes when flags change, and is `sbx-`-prefixed. |
 
 The native tests build the real server binary (the test harness binary cannot
-run the keeper — its `main` is the Go test framework) and point
+run the keeper - its `main` is the Go test framework) and point
 `CADENCE_SANDBOX_REEXEC` at it. They skip cleanly when the native sandbox is
-unavailable (e.g. the AppArmor restriction).
+unavailable (e.g. the AppArmor restriction with no profile installed).
 
 ---
 
 ## Known limitations
 
 - **Linux-only** by design; macOS/Windows run unsandboxed.
-- **Ubuntu AppArmor userns restriction** is the biggest deployment risk —
-  mitigated by detection + graceful degradation + the documented
-  `bwrap-userns-restrict` profile.
+- **Ubuntu AppArmor userns restriction** is the biggest deployment risk -
+  mitigated by the consolidated cadence profile (install script included;
+  `dev.sh` runs it automatically) + detection + graceful degradation.
 - **Shared-ns surprises**: when the PID namespace is shared (opt-in), a user
   can see/kill an agent's background processes. The PID ns is **off by
   default** (host process view either way); when on, it's explicit opt-in and
   the shared badge shows co-owners.
 - **bwrap is per-shell** (no persistent keeper), so the bwrap "instance" is a
-  registry entry, not a shared namespace — attach semantics are approximate
+  registry entry, not a shared namespace - attach semantics are approximate
   under the bwrap method.

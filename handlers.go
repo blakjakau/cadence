@@ -8,8 +8,10 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 	"github.com/gorilla/websocket"
@@ -19,6 +21,101 @@ import (
 var activeConnections int32
 var sessionIdCounter int32
 var startTime time.Time
+
+// gitIdentity caches the user's global git identity (name + email) resolved on
+// first use. Only the GLOBAL layer is exported (repo-local identity, read from
+// .git/config inside a mounted workspace, still wins — env vars fill the missing
+// global layer).
+var (
+	gitIdentityOnce sync.Once
+	gitIdentityName string
+	gitIdentityEmail string
+)
+
+// resolveGitIdentity returns the user's global git name + email (git config
+// --global, falling back to --system per key). Cached for the process lifetime
+// (the global layer rarely changes; a restart re-reads it).
+func resolveGitIdentity() (name, email string) {
+	gitIdentityOnce.Do(func() {
+		gitIdentityName = gitConfigValue("user.name")
+		gitIdentityEmail = gitConfigValue("user.email")
+	})
+	return gitIdentityName, gitIdentityEmail
+}
+
+// gitConfigValue reads `git config --global <key>`, falling back to `--system`
+// (the user's global layer is what the sandbox lacks; the system layer is a
+// reasonable last resort). Empty string if unset or git is absent.
+func gitConfigValue(key string) string {
+	for _, scope := range []string{"--global", "--system"} {
+		cmd := exec.Command("git", "config", scope, key)
+		if out, err := cmd.Output(); err == nil {
+			if v := strings.TrimSpace(string(out)); v != "" {
+				return v
+			}
+		}
+	}
+	return ""
+}
+
+// userBashRCPath returns the user's Cadence shell-config path
+// (<home>/.config/cadence/.bashrc), or "" if home is unknown.
+func userBashRCPath() string {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return ""
+	}
+	return filepath.Join(home, ".config", "cadence", ".bashrc")
+}
+
+// ensureUserBashRC creates the user's Cadence shell-config file (blank, with
+// its parent dirs) if it does not already exist, so the config panel's
+// "Edit .bashrc" button always has a file to open. Existing content is never
+// touched. Called once at startup; failures are logged, not fatal.
+func ensureUserBashRC() {
+	rc := userBashRCPath()
+	if rc == "" {
+		return
+	}
+	if _, err := os.Stat(rc); err == nil {
+		return // already exists
+	}
+	if err := os.MkdirAll(filepath.Dir(rc), 0700); err != nil {
+		log.Printf("Failed to create directory for %s: %v", rc, err)
+		return
+	}
+	if f, err := os.OpenFile(rc, os.O_CREATE|os.O_WRONLY, 0600); err != nil {
+		log.Printf("Failed to create %s: %v", rc, err)
+	} else {
+		f.Close()
+	}
+}
+
+// applySandboxHomeEnv injects the user's global git identity (as env vars that
+// fill the sandbox's missing global layer) and the user's Cadence .bashrc path
+// (ro-bound onto $HOME/.bashrc inside the sandbox so interactive bash
+// auto-sources it) into cfg. This is the single choke point for both the
+// fresh-shell path (startSandboxedShell) and the attach path (attachToOwner),
+// since both consume this cfg's Env + UserBashRC. No-op on non-Linux or when
+// nothing is set.
+func applySandboxHomeEnv(cfg *SandboxConfig) {
+	if cfg == nil {
+		return
+	}
+	if name, email := resolveGitIdentity(); name != "" || email != "" {
+		if name != "" {
+			cfg.Env = append(cfg.Env, "GIT_AUTHOR_NAME="+name, "GIT_COMMITTER_NAME="+name)
+		}
+		if email != "" {
+			cfg.Env = append(cfg.Env, "GIT_AUTHOR_EMAIL="+email, "GIT_COMMITTER_EMAIL="+email)
+		}
+	}
+	if rc := userBashRCPath(); rc != "" {
+		if _, err := os.Stat(rc); err == nil {
+			cfg.UserBashRC = rc
+		}
+	}
+}
 
 // A simple struct to handle JSON messages from the client
 type wsMessage struct {
@@ -333,6 +430,11 @@ func terminalServer(w http.ResponseWriter, r *http.Request) {
 						}
 					}
 				}
+				// Inject the user's global git identity (env) + Cadence .bashrc
+				// (ro-bound onto $HOME/.bashrc) so the in-ns shell behaves like a
+				// real home. Covers BOTH the fresh-shell and attach paths below.
+				applySandboxHomeEnv(cfg)
+
 				if sandboxParam == "attach" {
 					// Join the target owner's instance and spawn THIS shell inside
 					// the same namespace — the user sees exactly the agent's

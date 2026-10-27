@@ -7,6 +7,7 @@ import AIConnections, { resolvePrefillTokens } from '../ai-connections.mjs';
 import syntaxValidator from '../syntax-validator.mjs';
 import { mergePolicies, evaluateCommand } from '../util/command-rules.mjs';
 import { resolveCullTarget } from '../ai-manager-cull-index.mjs';
+import { cleanOutput } from '../util/output-cleanup.mjs';
 
 /**
  * Implements the core tools for Cadence.
@@ -2734,53 +2735,14 @@ Snippet: ${r.content || r.snippet || ""}`;
 
             let cleanedOutput = "";
 
-            const sanitizeText = (rawStr) => {
-                if (!rawStr) return "";
-                let s = rawStr;
-                // 1. Strip OSC escape sequences (e.g. \x1b]9;9;...\x1b\ or \x1b]0;...\x07)
-                //    Terminators: BEL (\x07), ST (ESC \, two bytes), or bare ESC
-                s = s.replace(/\x1b\][^\x1b\x07]*(?:\x07|\x1b\\|\x1b)/g, "");
-                // 2. Strip standard ANSI color/cursor escape sequences
-                s = s.replace(/\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g, "");
-                // 3. Strip non-printable ASCII control characters except newlines/tabs
-                s = s.replace(/[\x00-\x08\x0B-\x1F\x7F-\x9F]/g, "");
-                return s;
-            };
-
             const updateOutputDom = (chunk) => {
                 outputBuffer += chunk;
-                
-                let s = sanitizeText(outputBuffer);
 
-                // 1. Strip the initial prologue line containing stty / export setup if present
-                s = s.replace(/^[^\n]*(?:stty\s+-echo|export\s+PAGER)[^\n]*\n?/gm, "");
-
-                // 2. Strip command input echo lines up to the first newline after the clean command
-                if (cleanCmd && s.includes(cleanCmd)) {
-                    const idx = s.indexOf(cleanCmd);
-                    const afterCmd = s.substring(idx + cleanCmd.length);
-                    const firstNewline = afterCmd.indexOf('\n');
-                    if (firstNewline !== -1) {
-                        s = afterCmd.substring(firstNewline + 1);
-                    } else {
-                        s = afterCmd;
-                    }
-                }
-
-                // 3. Strip trailing exit command, standalone 'exit' lines, and prompt noise
-                //    (tolerate a stray backslash left behind by an unterminated OSC before the prompt)
-                s = s.replace(/(?:^|\n)(?:[^\n]*?\\?[#$]\s*)?exit(?:\s+status\s+\d+)?(?=\n|$)/gi, "");
-                s = s.replace(/^.*?[#$]\s*/gm, "");
-                // 4. Drop bash PS2 continuation prompts: when a command spans
-                //    multiple lines (e.g. a quoted multi-line git commit message),
-                //    bash prints its PS2 ">" prompt before each continuation line
-                //    until the command is complete. Echo is disabled in this PTY,
-                //    so a line that is exactly ">" (possibly with trailing space)
-                //    is always a prompt, never command output.
-                s = s.replace(/^>[ \t]*$/gm, "");
-                // Collapse the blank lines left behind (3+ newlines → 2).
-                s = s.replace(/\n{3,}/g, "\n\n");
-                s = s.trim();
+                // Full cleaning pipeline lives in util/output-cleanup.mjs
+                // (unit-tested in tests/output-cleanup.test.mjs):
+                // sanitize -> prologue strip -> command echo strip -> exit strip
+                // -> bare prompt line filter -> PS2 strip -> blank collapse -> trim.
+                const s = cleanOutput(outputBuffer, cleanCmd);
 
                 cleanedOutput = s;
                 streamMsg.output = cleanedOutput;
@@ -2878,6 +2840,9 @@ Snippet: ${r.content || r.snippet || ""}`;
                                 if (sandboxInfo.sandboxId && activeSession) {
                                     activeSession.sandboxId = sandboxInfo.sandboxId;
                                     workspaceClient.setSession(targetSessionId, activeSession).catch(() => {});
+                                    // Reflect the live shared sandbox on the session tab
+                                    // (bronze badge + tint) as soon as it appears.
+                                    aiManager?._updateSessionSandboxBadge?.(targetSessionId);
                                 }
                             }
                             return;
