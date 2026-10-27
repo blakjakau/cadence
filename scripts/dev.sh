@@ -6,11 +6,15 @@
 # WHY THIS EXISTS
 #   `go run .` builds the server into a CONTENT-HASHED Go build-cache path
 #   (~/.cache/go-build/<hash>/conduit-server) that changes on every source
-#   change. The sandbox profile (scripts/install-sandbox-profile.sh) is
-#   path-attached, and AppArmor keys the label to a STABLE executable path,
-#   a profile can never match a cache path that moves.
+#   change. The profile (scripts/install-apparmor-profile.sh) is GLOB-attached
+#   to every standard cadence binary path (the /**/cadence{-dev,-latest,
+#   -linux-x64,-linux-arm64} brace-glob), so AppArmor keys the label to a
+#   STABLE set of executable paths, and a profile can never match a cache
+#   path that moves.
 #
-#   So dev mode uses a fixed output path instead:
+#   So dev mode uses a fixed output path instead (the glob attaches the
+#   profile to dist/cadence-dev at execve; a launch-time transition is NOT
+#   needed -- the label is bound purely by the path):
 #
 #       go build -o dist/cadence-dev .
 #       ./dist/cadence-dev --serve app/
@@ -24,7 +28,7 @@
 #
 # APPARMOR STEP (only when the platform uses AppArmor)
 #   If /sys/kernel/security/apparmor is present, this script installs the
-#   profile via scripts/install-sandbox-profile.sh (reusing sudo when not
+#   profile via scripts/install-apparmor-profile.sh (reusing sudo when not
 #   root). The profile is only (re)installed when it is not already loaded
 #   (checked via aa-status), so the normal dev loop needs no sudo at all.
 #   On non-AppArmor systems (or when AA is inactive) the step is skipped -
@@ -44,7 +48,7 @@ set -euo pipefail
 
 # --- Locate the repo root (this script lives in <root>/scripts/) --------------
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-INSTALLER="$ROOT/scripts/install-sandbox-profile.sh"
+INSTALLER="$ROOT/scripts/install-apparmor-profile.sh"
 BIN="${CADENCE_DEV_BIN:-$ROOT/dist/cadence-dev}"
 
 echo "=== dev.sh: building $BIN ==="
@@ -70,26 +74,31 @@ if command -v ldd >/dev/null 2>&1; then
 fi
 
 # --- AppArmor profile (only when this platform uses AppArmor) ------------------
-# The profile is path-attached to $BIN, so it only needs installing ONCE per
-# host; the check below skips the sudo dance when it is already loaded.
+# The profile is GLOB-attached (one consolidated file, four profiles:
+# cadence, cadence_sbx_keeper, cadence_sbx_shell, cadence_sbx_net), so it
+# only needs installing ONCE per host; the checks below skip the sudo dance
+# when the file is up to date AND the profiles are already loaded.
 if [[ "${NO_PROFILE:-0}" -eq 1 ]]; then
     echo "Profile step skipped (NO_PROFILE=1)."
 elif [[ ! -d /sys/kernel/security/apparmor ]]; then
     echo "AppArmor is not active on this system; skipping profile step."
 else
-    PROFILE_NAME="$(basename "$BIN")"
-    PROFILE_DIR="${APPARMOR_DIR:-/etc/apparmor.d}"
-    PROFILE_FILE="$PROFILE_DIR/$PROFILE_NAME"
+    PROFILE_FILE="${APPARMOR_DIR:-/etc/apparmor.d}/cadence"
+    # The main profile name (the glob-attached one); the sandbox profiles
+    # (cadence_sbx_keeper, cadence_sbx_shell, cadence_sbx_net) are loaded
+    # from the same file.
+    PROFILE_NAME="cadence"
 
     # Phase 1 (rootless): is the on-disk profile up to date? The installer's
-    # --check mode compares what it WOULD generate against the file on disk.
-    # This catches a MISSING file and a STALE file (old binary path, or an old
-    # restrictive profile written by an earlier version of the script) without
-    # needing any privilege.
+    # --check mode diffs the on-disk file against the verbatim source file
+    # (scripts/cadence_aa_profile.txt) -- no generation, just a byte compare.
+    # This catches a MISSING file and a STALE file (an old per-path profile
+    # written by an earlier version of the script, or an old restrictive
+    # profile) without needing any privilege.
     NEED_INSTALL=0
     if [[ $EUID -eq 0 || -r "$PROFILE_FILE" ]]; then
-        if "$INSTALLER" --check "$BIN" >/dev/null 2>&1; then
-            : # file present and matches what would be generated
+        if "$INSTALLER" --check >/dev/null 2>&1; then
+            : # file present and matches the source file
         else
             NEED_INSTALL=1
         fi
@@ -98,30 +107,73 @@ else
         NEED_INSTALL=1
     fi
 
-    # Phase 2 (only if the file is fine): confirm the profile is ACTUALLY
-    # loaded. apparmor_parser -r cannot replace a profile that is already
-    # loaded, so a stale/restrictive profile may remain loaded even when the
-    # on-disk file is correct (e.g. an earlier bad install was never removed).
-    # aa-status reads the kernel's loaded set; this needs privilege, so as a
-    # non-root user we only pay the sudo cost when we genuinely must.
+    # Phase 2 (only if the file is fine): confirm ALL FOUR profiles are
+    # ACTUALLY loaded. apparmor_parser -r cannot replace a profile that is
+    # already loaded, so a stale/restrictive profile may remain loaded even
+    # when the on-disk file is correct (e.g. an earlier bad install was never
+    # removed). Reading the kernel's loaded set needs privilege (the profiles
+    # file is root-only and aa-status refuses unprivileged), so a non-root
+    # user only pays the sudo cost when we genuinely must.
     if [[ $NEED_INSTALL -eq 0 ]]; then
-        if command -v aa-status >/dev/null 2>&1; then
-            # Root can read the profile set directly; non-root needs sudo.
-            if [[ $EUID -eq 0 ]]; then
-                if aa-status 2>/dev/null | grep -q "$PROFILE_NAME"; then
-                    LOADED=1
+        PROFILE_NAMES=("$PROFILE_NAME" "cadence_sbx_keeper" "cadence_sbx_shell" "cadence_sbx_net")
+        # Fast path: if a running cadence server process is already under the
+        # cadence profile, the install clearly succeeded and the glob attach
+        # worked -- no privilege needed to trust the load.
+        # /proc/<pid>/attr/current is world-readable, so we can
+        # check a running server's label without sudo. ANCHORED match: a bare
+        # substring grep would also match the cadence_sbx_* sandbox profiles,
+        # which are not the main profile.
+        CUR="$(cat /proc/self/attr/current 2>/dev/null || true)"
+        if [[ "$CUR" =~ ^cadence\ \(enforce\)$ ]]; then
+            : # this dev.sh process itself is running under the profile
+        else
+            # Check for a running cadence server (a sibling from another pane,
+            # or a prior run) and read its label.
+            CUR=""
+            for srv in $(pgrep -f 'cadence .*--serve' 2>/dev/null || true); do
+                CUR="$(cat "/proc/$srv/attr/current" 2>/dev/null || true)"
+                if [[ "$CUR" =~ ^cadence\ \(enforce\)$ ]]; then
+                    break
                 fi
-            elif command -v sudo >/dev/null 2>&1; then
-                if sudo -n aa-status 2>/dev/null | grep -q "$PROFILE_NAME"; then
-                    LOADED=1
-                else
-                    # -n (non-interactive) failed -> may need a password prompt.
-                    echo "Profile '$PROFILE_NAME' file is up to date; confirming it is loaded (may prompt for sudo):"
-                    if sudo aa-status 2>/dev/null | grep -q "$PROFILE_NAME"; then
+            done
+        fi
+        if [[ "$CUR" =~ ^cadence\ \(enforce\)$ ]]; then
+            echo "Already running under profile $CUR; profiles are loaded. Skipping install."
+            NEED_INSTALL=0
+        else
+            # Confirm all four profiles are loaded. Reading the loaded set needs
+            # privilege, so as a non-root user we only pay the sudo cost when
+            # we genuinely must.
+            # aa-status lists each profile as "name (mode)" (possibly indented),
+            # so grep for "<name> (" (name, space, open-paren) to match it
+            # regardless of indentation. The trailing space-paren anchors the
+            # name so 'cadence' does NOT false-match the 'cadence_sbx_*' lines.
+            if [[ $EUID -eq 0 ]]; then
+                for p in "${PROFILE_NAMES[@]}"; do
+                    if aa-status 2>/dev/null | grep -qE "^[[:space:]]*${p} \("; then
                         LOADED=1
                     else
-                        NEED_INSTALL=1
+                        echo "Profile '$p' is NOT loaded (will install/refresh)."
                     fi
+                done
+            elif command -v sudo >/dev/null 2>&1; then
+                # -n (non-interactive) only -- a failed check falls through to
+                # the install step (which uses an interactive sudo), so the
+                # normal dev loop needs no password at all.
+                if sudo -n true 2>/dev/null; then
+                    for p in "${PROFILE_NAMES[@]}"; do
+                        if sudo -n aa-status 2>/dev/null | grep -qE "^[[:space:]]*${p} \("; then
+                            LOADED=1
+                        else
+                            echo "Profile '$p' is NOT loaded (will install/refresh)."
+                        fi
+                    done
+                else
+                    # Can't confirm the load without a password; assume loaded
+                    # (the install step below will re-run with an interactive
+                    # sudo if the file genuinely needs updating).
+                    echo "Could not confirm the profiles are loaded without sudo; assuming loaded."
+                    LOADED=1
                 fi
             fi
             if [[ ${LOADED:-0} -eq 1 ]]; then
@@ -131,22 +183,23 @@ else
     fi
 
     if [[ ${NEED_INSTALL:-0} -eq 1 ]]; then
-        # Self-healing install: the installer REMOVES any stale/restrictive
-        # profile already loaded under this name, then loads the fresh one
-        # (-R then -r -T), so a bad profile never persists.
-        # NOTE: the installer only gets the binary path. Extra dev args like
-        # --headless are NOT forwarded to it (they would be misparsed).
+        # Self-healing install: the installer COPIES the verbatim source file
+        # (scripts/cadence_aa_profile.txt) into place, REMOVES any stale
+        # profiles already loaded under the old names, then loads the fresh
+        # file (-R then -r -T), so a bad profile never persists. No binary
+        # path is needed (the glob header covers all standard locations).
+        # NOTE: no dev args are forwarded to it (they would be misparsed).
         if [[ $EUID -eq 0 ]]; then
-            "$INSTALLER" "$BIN"
+            "$INSTALLER"
         else
             if command -v sudo >/dev/null 2>&1; then
                 echo "Installing/updating profile '$PROFILE_NAME' (will prompt for sudo):"
-                sudo "$INSTALLER" "$BIN"
+                sudo "$INSTALLER"
             else
                 echo "WARNING: profile '$PROFILE_NAME' needs updating but sudo is" >&2
                 echo "         not available; the sandbox may be unavailable if" >&2
                 echo "         the host restricts unprivileged userns (24.04+)." >&2
-                echo "         Install manually:  sudo $INSTALLER $BIN" >&2
+                echo "         Install manually:  sudo $INSTALLER" >&2
             fi
         fi
     fi

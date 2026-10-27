@@ -108,6 +108,42 @@ var (
 	rawStepPtrs       []unsafe.Pointer // precomputed pointers to single step-bytes (parent allocates)
 )
 
+// ---- AppArmor profile-transition names (precomputed NUL-terminated) ----
+// aa_change_onexec() semantics: a write of the profile name to
+// /proc/self/attr/exec makes the task TRANSITION into that profile at the
+// next execve, taking precedence over any exec transition rules. No
+// libapparmor needed -- the raw open/write/close below is the entire API, and
+// it is legal from our single-threaded raw-syscall children (the name is a
+// package-level constant string, so the child writes a stable pointer with
+// zero allocation). Path-independent: the transition targets a profile by
+// NAME, so the keeper (a re-exec of the same binary path) is confined even
+// though its path would otherwise re-attach the parent's unconfined profile.
+//
+// GRACEFUL DEGRADATION: if the named profiles are not installed on the host
+// (the installer was never run) the write fails and we ignore the error --
+// the child execs normally and stays unconfined, exactly as before. The
+// confinement is a second layer; the mount namespace remains the primary
+// isolation. Permission is not an issue here: the transition sources are
+// unconfined (the parent binary's allow-all profile, or the built-in
+// unprivileged_userns profile), and the kernel permits unconfined tasks to
+// transition into confinement even under no_new_privs. VERB PREFIX: the
+// kernel's attr/exec protocol requires a verb-prefixed target --
+// "exec <profile>" schedules the transition at the NEXT execve (verified
+// empirically on kernel 7.0: a bare profile name is rejected with EINVAL,
+// "exec <name>" succeeds) -- so the precomputed strings below carry the
+// "exec " prefix, built parent-side so the raw children never allocate.
+var (
+	keeperProfileName = "cadence_sbx_keeper" // the keeper + its join-children
+	shellProfileName  = "cadence_sbx_shell"  // the shell + its descendants
+
+	rawKeeperProfilePtr = rawCStringPtr("exec " + keeperProfileName)
+	rawKeeperProfileLen = len("exec " + keeperProfileName)
+	rawShellProfilePtr  = rawCStringPtr("exec " + shellProfileName)
+	rawShellProfileLen  = len("exec " + shellProfileName)
+	rawAttrExecPathPtr  = rawCStringPtr("/proc/self/attr/exec")
+	rawAttrExecPathLen  = len("/proc/self/attr/exec")
+)
+
 // mk writes a single step-byte to the child's trace fd (fd 2). Used to
 // pinpoint which raw-syscall step a failing keeper dies at. No allocation in
 // the child (pointers are precomputed in the parent before fork).
@@ -172,6 +208,15 @@ func cString(s string) *byte {
 	return &b[0]
 }
 
+// rawCStringPtr is a NUL-terminated stable *byte for a raw write() payload
+// (the profile name for the /proc/self/attr/exec transition). Unlike strPtr
+// (which returns a uintptr), this returns a *byte directly so the raw child
+// passes it to SYS_WRITE without any unsafe.Pointer cast. Parent-side only.
+func rawCStringPtr(s string) *byte {
+	b := append([]byte(s), 0)
+	return &b[0]
+}
+
 // buildExecveStructures precomputes the **byte argv/envv arrays for a raw
 // execve. All allocations happen here (parent); the child only takes addresses.
 func buildExecveStructures(argv, envv []string) (argv0 *byte, argvPtr, envvPtr unsafe.Pointer) {
@@ -192,13 +237,32 @@ func buildExecveStructures(argv, envv []string) (argv0 *byte, argvPtr, envvPtr u
 	return
 }
 
-// strPtr returns a stable pointer to a NUL-terminated copy of s. Raw syscalls
-// (mount, chdir, execve, ...) read the byte buffer until a NUL byte, so the
-// string MUST be NUL-terminated — a raw pointer to Go string data is not. The
-// copy is cached (leaked for process lifetime) so repeated calls with the same
-// string return the same stable pointer. Safe to call from the single-threaded
-// clone child (allocation there is the only "cost", but it is one-time and the
-// child execs/exits immediately).
+// rawSetExecProfile requests an AppArmor profile transition for this task's
+// NEXT execve (aa_change_onexec): raw open(O_WRONLY) /proc/self/attr/exec,
+// write the precomputed NUL-terminated "exec <profile>" command, close.
+// All raw syscalls, no
+// allocation -- legal in the single-threaded raw children. Errors (profile not
+// installed = ENOENT, confined task without permission = EACCES, AppArmor off
+// = EINVAL) are IGNORED: the child then execs normally and stays unconfined
+// (graceful degradation; confinement is defense-in-depth, the mount namespace
+// is the primary isolation). The write must happen in the CHILD (after fork),
+// since it applies to the calling task's next exec. namePtr is a *byte (not a
+// uintptr) so no unsafe.Pointer round-trip is needed at the write site.
+func rawSetExecProfile(namePtr *byte, nameLen int) {
+	if namePtr == nil || rawAttrExecPathPtr == nil {
+		return
+	}
+	// O_WRONLY = 1 (NOT 0, which is O_RDONLY -- a read-only fd cannot be
+	// written, so the write would fail EBADF and the transition would silently
+	// never engage even with the profiles installed).
+	fd, _, e := syscall.RawSyscall6(syscall.SYS_OPEN, uintptr(unsafe.Pointer(rawAttrExecPathPtr)), 1 /*O_WRONLY*/, 0, 0, 0, 0)
+	if e != 0 {
+		return // profile not installed / apparmor off -- stay unconfined
+	}
+	syscall.RawSyscall6(syscall.SYS_WRITE, fd, uintptr(unsafe.Pointer(namePtr)), uintptr(nameLen), 0, 0, 0)
+	syscall.RawSyscall(syscall.SYS_CLOSE, fd, 0, 0)
+}
+
 var strPtrCache = map[string]*byte{}
 
 // strPtrPtr returns a stable *byte to a NUL-terminated copy of s.
@@ -235,7 +299,7 @@ func rawFork() (pid int, err error) {
 }
 
 // writeMapFile writes s to path using raw syscalls (child-side, no alloc).
-// RawSyscall takes (number, a1, a2, a3) â 4 args total.
+// RawSyscall takes (number, a1, a2, a3) - 4 args total.
 func writeMapFile(path, s string) {
 	if fd, _, pe := syscall.RawSyscall(syscall.SYS_OPEN, strPtr(path), 0x41 /*O_WRONLY*/, 0); pe == 0 {
 		syscall.RawSyscall(syscall.SYS_WRITE, fd, strPtr(s), uintptr(len(s)))
@@ -522,7 +586,7 @@ func probeSandbox() *probeResult {
 	// 2. Live probe FIRST: fork a single-threaded child that unshares CLONE_NEWUSER
 	//    and writes uid_map. Success => native is available. The live result is
 	//    authoritative: a process confined by an AppArmor profile that grants
-	//    `userns` (e.g. install-sandbox-profile.sh) is EXEMPT from the
+	//	`userns` (e.g. install-apparmor-profile.sh) is EXEMPT from the
 	//    apparmor_restrict_unprivileged_userns restriction, so it passes here
 	//    even when the sysctl is 1. (Reading the sysctl first, as this code used
 	//    to, made that exemption unreachable.)
@@ -539,7 +603,7 @@ func probeSandbox() *probeResult {
 		reason := "unprivileged user namespaces blocked and bwrap not found on PATH"
 		if b, err := os.ReadFile("/proc/sys/kernel/apparmor_restrict_unprivileged_userns"); err == nil {
 			if strings.TrimSpace(string(b)) == "1" {
-				reason = "AppArmor restricts unprivileged user namespaces (install the bwrap-userns-restrict profile or set kernel.apparmor_restrict_unprivileged_userns=0)"
+				reason = "AppArmor restricts unprivileged user namespaces; install the cadence profile (sudo scripts/install-apparmor-profile.sh, then restart the server), or set kernel.apparmor_restrict_unprivileged_userns=0"
 			}
 		}
 		res.Available = false
@@ -985,7 +1049,7 @@ func spawnKeeper(cfg *SandboxConfig, id string) (int, string, error) {
 	rawSocketDir = dir
 	// The keeper binary's dir (so it can exec itself after the pivot). If the
 	// binary lives at / itself, we cannot bind / onto / (that would defeat
-	// the hiding) â the keeper's exec would fail and the parent surfaces it.
+	// the hiding) - the keeper's exec would fail and the parent surfaces it.
 	binDir := filepath.Dir(exe)
 	if binDir == "/" {
 		binDir = ""
@@ -1073,7 +1137,7 @@ func spawnKeeper(cfg *SandboxConfig, id string) (int, string, error) {
 		// 0. Redirect stderr to a trace file so a failing keeper leaves a trace.
 		//    rawTraceFd is the OPEN fd used for per-step markers (mk/traceInt).
 		//    We dup it onto fd 2 (so a runtime panic is ALSO captured in the
-		//    trace) but do NOT close the source fd â
+		//    trace) but do NOT close the source fd -
 		//    rawTraceFd dangling and every trace write would silently no-op, so
 		//    a failing keeper would leave a 0-byte trace (the very bug this
 		//    fixes). The child inherits the parent's fd table (plain
@@ -1138,7 +1202,7 @@ func spawnKeeper(cfg *SandboxConfig, id string) (int, string, error) {
 		//     path so the parent can reach the keeper's socket.
 		syscall.RawSyscall6(syscall.SYS_MOUNT, strPtr("/oldroot"+rawSocketDir), strPtr(rawSocketDir), 0, uintptr(syscall.MS_BIND|syscall.MS_REC), 0, 0)
 		mk(14)
-		// 5c. Bind /dev (rw â the pty needs /dev/pts + /dev/tty) and the
+		// 5c. Bind /dev (rw - the pty needs /dev/pts + /dev/tty) and the
 		//     the binary FILE (so the keeper can exec itself after the pivot).
 		syscall.RawSyscall6(syscall.SYS_MOUNT, strPtr("/oldroot/dev"), strPtr("/dev"), 0, uintptr(syscall.MS_BIND|syscall.MS_REC), 0, 0)
 		mk(15)
@@ -1183,11 +1247,37 @@ func spawnKeeper(cfg *SandboxConfig, id string) (int, string, error) {
 		//     MNT_DETACH flag (0x2), then rmdirs the leftover /oldroot dir.
 		detached := rawDetachOldRoot()
 		traceInt(detached)
+		// ISOLATION VERIFICATION (defense-in-depth): if rawDetachOldRoot
+		// detached ZERO /oldroot* mounts, pivot_root never took effect and the
+		// host fs is still fully visible in this namespace. This happens when
+		// every mount/pivot syscall above silently no-op'd -- e.g. on Ubuntu
+		// 24.04+ with kernel.apparmor_restrict_unprivileged_userns=1, an
+		// UNCONFINED server's child is re-confined by the kernel to the
+		// built-in "unprivileged_userns" profile (audit deny capability),
+		// which strips CAP_SYS_ADMIN so mount/pivot_root fail with EPERM.
+		// The raw syscalls above ignore all error returns, so without this
+		// check the child would exec the keeper with the HOST filesystem fully
+		// visible (zero isolation) and no error. A healthy sandbox always
+		// detaches >=1 (at minimum the /oldroot relocation), so detached<1
+		// unambiguously means the sandbox is broken. Die loudly: the parent's
+		// wait-loop sees the exit and surfaces a real cause (the trace shows
+		// ":0;" and stops before r/s), instead of silently serving the host fs.
+		// Fix on the host: install the unconfined AppArmor profile for this
+		// binary (scripts/install-apparmor-profile.sh) and restart the server.
+		if detached < 1 {
+			syscall.RawSyscall(syscall.SYS_EXIT, 1, 0, 0)
+		}
 		mk(17)
-		// 6. Die if the parent (server) dies â no orphaned keeper.
+		// 6. Die if the parent (server) dies - no orphaned keeper.
 		//    PR_SET_PDEATHSIG persists across exec.
 		syscall.RawSyscall6(syscall.SYS_PRCTL, 1 /*PR_SET_PDEATHSIG*/, 9 /*SIGKILL*/, 0, 0, 0, 0)
 		mk(18)
+		// 6b. Transition to the cadence_sbx_keeper profile at exec
+		//     (aa_change_onexec): the keeper runs confined (defense-in-depth; it
+		//     is a re-exec of the same binary path, which would otherwise
+		//     re-attach the parent's unconfined profile). Ignored if the
+		//     profile is not installed (stays unconfined, as before).
+		rawSetExecProfile(rawKeeperProfilePtr, rawKeeperProfileLen)
 		// 7. Exec the keeper (ns inherited across exec). Raw execve, no alloc.
 		syscall.RawSyscall6(syscall.SYS_EXECVE,
 			uintptr(unsafe.Pointer(rawKargv0)),
@@ -1438,7 +1528,7 @@ func runSandboxKeeper(id, socketPath string) {
 	// safe here; only the single-threaded clone children must avoid it.)
 	// A child's death is signalled by wait4 returning its pid; we loop to catch
 	// siblings. When there are NO live children wait4 returns ECHILD immediately
-	// (wpid==0) instead of blocking â so we sleep to avoid a 100% busy-spin on an
+	// (wpid==0) instead of blocking - so we sleep to avoid a 100% busy-spin on an
 	// idle keeper. The sleep only delays zombie reaping by the window (the pty
 	// master's EOF, not this reaper, is what signals shell exit to the parent).
 	go func() {
@@ -1451,7 +1541,7 @@ func runSandboxKeeper(id, socketPath string) {
 			if err == syscall.EINTR {
 				continue // interrupted; retry immediately
 			}
-			// wpid == 0 (ECHILD: no children) or other error â back off so an
+			// wpid == 0 (ECHILD: no children) or other error - back off so an
 			// idle keeper doesn't spin the CPU. A newly spawned child is reaped
 			// within the window.
 			time.Sleep(200 * time.Millisecond)
@@ -1529,6 +1619,11 @@ func handleSpawn(conn net.Conn, cfg SandboxConfig) {
 		if gJoinCwd != "" {
 			syscall.RawSyscall6(syscall.SYS_CHDIR, strPtr(gJoinCwd), 0, 0, 0, 0, 0)
 		}
+		// Transition to the cadence_sbx_shell profile at exec (aa_change_onexec):
+		// the shell + its descendants run confined. Ignored if the profile is
+		// not installed (stays unconfined, as before). The profile's self-stack
+		// rule keeps the shell's children confined even without this write.
+		rawSetExecProfile(rawShellProfilePtr, rawShellProfileLen)
 		syscall.RawSyscall6(syscall.SYS_EXECVE,
 			uintptr(unsafe.Pointer(gJoinArgv0)),
 			uintptr(gJoinArgv),

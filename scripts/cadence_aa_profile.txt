@@ -1,0 +1,128 @@
+abi <abi/4.0>,
+include <tunables/global>
+
+# =========================================================================
+# 1. HOST SPAWNER (cadence)
+# Grants 100% of normal user permissions + userns creation.
+# Normal user PTY children inherit this permissive state or run unconfined.
+# =========================================================================
+profile cadence /**/cadence{-dev,-latest,-linux-x64,-linux-arm64} flags=(attach_disconnected, mediate_deleted) {
+  userns,
+  capability,
+  network,
+  mount,
+  remount,
+  umount,
+  pivot_root,
+  ptrace,
+  signal,
+  mqueue,
+  unix,
+  dbus,
+  io_uring,
+
+  # Full read, write, lock, link, mmap, and inherit-exec on all files.
+  # Because this profile allows everything ABOVE, any command you run in
+  # the host user PTY (bash, ls, git, ssh) that inherits this profile
+  # has zero restrictions!
+  allow file rwlkmix /{**,},
+
+  # Allow programmatic transition into the sandbox keeper (and shells)
+  change_profile -> cadence_sbx_keeper,
+  change_profile -> cadence_sbx_shell,
+  change_profile -> cadence_sbx_net,
+  change_profile -> cadence,
+}
+
+# =========================================================================
+# 2. SANDBOX KEEPER (cadence_sbx_keeper)
+# Entered via writing "exec cadence_sbx_keeper" to /proc/self/attr/apparmor/exec
+# =========================================================================
+profile cadence_sbx_keeper flags=(attach_disconnected, mediate_deleted) {
+  deny capability,
+  network,
+  unix,
+  signal,
+  ptrace (read, trace) peer=cadence_sbx_shell,
+  ptrace (read, trace) peer=cadence_sbx_net,
+
+  # Full file rwlkm + inherit-exec inside its mount namespace
+  allow file rwlkmix /{**,},
+
+  # Allow keeper to transition spawned children into the sandbox shells
+  change_profile -> cadence_sbx_shell,
+  change_profile -> cadence_sbx_net,
+}
+
+# =========================================================================
+# 3. OFFLINE AGENT SHELL (cadence_sbx_shell)
+# =========================================================================
+profile cadence_sbx_shell flags=(attach_disconnected, mediate_deleted) {
+  # Hard blocks
+  deny capability,
+  deny network,
+  deny dbus,
+  deny io_uring,
+  deny mount,
+  deny umount,
+  deny pivot_root,
+  deny ptrace,
+
+  # Allow signals and anonymous/local pipes & unix sockets inside the sandbox
+  signal (send, receive) peer=cadence_sbx_shell,
+  signal (send, receive) peer=cadence_sbx_keeper,
+  signal (send, receive) peer=cadence,
+  unix,
+
+  # Allow reading/executing tools & writing inside whatever the mount
+  # namespace exposed (since unshare/pivot_root isolates the filesystem view),
+  # EXCEPT explicitly block sensitive host paths if shared into the namespace:
+  allow file rwlkmix /{**,},
+
+  deny @{HOME}/.ssh/** rwklx,
+  deny @{HOME}/.gnupg/** rwklx,
+  deny @{HOME}/.aws/** rwklx,
+  deny @{HOME}/.config/gcloud/** rwklx,
+  deny @{HOME}/.bashrc wkl,
+  deny @{HOME}/.profile wkl,
+  deny @{HOME}/.zshrc wkl,
+  deny @{HOME}/.config/systemd/** rwklx,
+  deny /run/user/*/** rwklx,
+  deny /var/run/docker.sock rwklx,
+}
+
+# =========================================================================
+# 4. NETWORKED AGENT SHELL (cadence_sbx_net)
+# =========================================================================
+profile cadence_sbx_net flags=(attach_disconnected, mediate_deleted) {
+  deny capability,
+  deny dbus,
+  deny io_uring,
+  deny mount,
+  deny umount,
+  deny pivot_root,
+  deny ptrace,
+
+  # Network allowed in this profile
+  network inet,
+  network inet6,
+  network netlink raw,
+
+  signal (send, receive) peer=cadence_sbx_net,
+  signal (send, receive) peer=cadence_sbx_keeper,
+  signal (send, receive) peer=cadence,
+  unix,
+
+  allow file rwlkmix /{**,},
+
+  deny @{HOME}/.ssh/** rwklx,
+  deny @{HOME}/.gnupg/** rwklx,
+  deny @{HOME}/.aws/** rwklx,
+  deny @{HOME}/.config/gcloud/** rwklx,
+  deny @{HOME}/.bashrc wkl,
+  deny @{HOME}/.profile wkl,
+  deny @{HOME}/.zshrc wkl,
+  deny @{HOME}/.config/systemd/** rwklx,
+  deny /run/user/*/** rwklx,
+  deny /var/run/docker.sock rwklx,
+}

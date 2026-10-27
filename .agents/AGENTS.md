@@ -25,7 +25,7 @@ When building or modifying UI elements, use the custom web components defined in
   - `window.modal.toast("Notification message")`
 
 ## actions ##
-`./build.sh` - builds the backend server
+`./scripts/build.sh` - builds the backend server
 
 Don't build the project unless explicitly requested by the user, or essential for testing
 Don't or `git add` or `git commit` unless explicitly requested by the user

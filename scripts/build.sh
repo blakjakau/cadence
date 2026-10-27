@@ -1,5 +1,9 @@
 #!/bin/bash
 
+# Anchor to the repo root so dist/, the build-osx script, and `go build .`
+# resolve correctly regardless of the caller's cwd.
+cd "$(dirname "${BASH_SOURCE[0]}")/.." || exit 1
+
 # Define build functions for clarity
 build_for_linux() {
   echo "build for ... linux amd64"
@@ -10,7 +14,7 @@ build_for_linux() {
 build_for_mac() {
   echo "--- Delegating macOS build and sign process to build-osx script ---"
   # Pass along any extra flags, like --no-recompile
-  ./build-osx "$1"
+  ./build-osx.sh "$1"
   if [ $? -ne 0 ]; then
     echo "Error: macOS remote build failed. Aborting."
     exit 1

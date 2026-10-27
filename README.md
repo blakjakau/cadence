@@ -43,15 +43,15 @@ A sandbox is a **persistent, addressable instance** (not a per-command bubble), 
 
 ### Ubuntu 24.04+ user-namespace restriction
 
-Ubuntu 23.10+/24.04 set `kernel.apparmor_restrict_unprivileged_userns=1`, which blocks unprivileged `unshare(CLONE_NEWUSER)` by default. On such a host the sandbox probe reports *unavailable* and the feature degrades to the unsandboxed fallback. To enable it, install the upstream AppArmor profile that permits it:
+Ubuntu 23.10+/24.04 set `kernel.apparmor_restrict_unprivileged_userns=1`, which blocks unprivileged `unshare(CLONE_NEWUSER)` by default. On such a host the sandbox probe reports *unavailable* and the feature degrades to the unsandboxed fallback - unless the **Cadence AppArmor profiles** are installed. They ship in one consolidated file (`scripts/cadence_aa_profile.txt`, installed verbatim to `/etc/apparmor.d/cadence`) with four profiles: `cadence` (glob-attached to every standard cadence binary path, permissive host-spawner profile with the `userns` grant that exempts it from the restriction), `cadence_sbx_keeper` (the hardened keeper), `cadence_sbx_shell` (the hardened, air-gapped agent shell), and `cadence_sbx_net` (the same shell with governed network - preloaded for future use).
 
 ```bash
-# From the apparmor package's extras/ directory (Ubuntu 24.04+):
-sudo apparmor_parser -r /etc/apparmor.d/extras/bwrap-userns-restrict
-# (or load the profile that matches your sandbox binary)
+# Install the profiles (no arguments needed) and restart the server:
+sudo scripts/install-apparmor-profile.sh
+# scripts/dev.sh runs this automatically when AppArmor is active.
 ```
 
-As an alternative, disabling the sysctl requires root (`sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0`). The server detects this at startup and surfaces the reason in the settings panel so you know why the sandbox badge is absent.
+No system-level changes: the kernel sysctl stays at its secure default and only the cadence profiles are exempt. As an alternative, disabling the sysctl globally requires root (`sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0`). The server detects this at startup and surfaces the reason in the settings panel so you know why the sandbox badge is absent.
 
 ## Poking around
 
