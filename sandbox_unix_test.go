@@ -514,6 +514,41 @@ func TestShellProfileForFlags(t *testing.T) {
 // remain. This is a PARSE check, not an enforcement check — it catches
 // malformed rule syntax (the allowlist rewrite) that would otherwise fail at
 // install time. Skips cleanly when apparmor_parser is absent.
+// sectionBetween returns the substring of `text` starting at `start` and ending
+// at `end` (exclusive). An empty `end` means "to end of text". This lets the
+// test scope its assertions to a single profile block instead of the whole
+// source file, so a blanket grant in the cadence (host spawner) or
+// cadence_sbx_keeper profiles doesn't produce a false positive.
+func sectionBetween(text, start, end string) string {
+	i := strings.Index(text, start)
+	if i < 0 {
+		return ""
+	}
+	if end == "" {
+		return text[i:]
+	}
+	j := strings.Index(text[i:], end)
+	if j < 0 {
+		return text[i:]
+	}
+	return text[i : i+j]
+}
+
+// ruleLines returns only the AppArmor rule lines of `sec`, dropping comments
+// and blank lines so assertions match rules, not the prose that explains them.
+func ruleLines(sec string) string {
+	var sb strings.Builder
+	for _, line := range strings.Split(sec, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		sb.WriteString(line)
+		sb.WriteByte('\n')
+	}
+	return sb.String()
+}
+
 func TestAllowlistProfileParses(t *testing.T) {
 	parser, err := exec.LookPath("apparmor_parser")
 	if err != nil {
@@ -526,14 +561,32 @@ func TestAllowlistProfileParses(t *testing.T) {
 	if err != nil {
 		t.Skipf("profile source %s not found; skipping: %v", rel, err)
 	}
-	// The air-gapped shell profile is the one with the allowlist rewrite.
-	// Confirm the rewrite is present before parsing (guards against a
-	// stale/regressed profile slipping past).
-	if !strings.Contains(string(src), "allow file rwlkm /{**,},") {
-		t.Fatalf("profile missing the allowlist baseline 'allow file rwlkm /{**,},'")
-	}
-	if !strings.Contains(string(src), "allow file ix /usr/{**,},") {
-		t.Fatalf("profile missing the tool-dir exec grant 'allow file ix /usr/{**,},'")
+	// Both shell profiles (offline + net) carry the allowlist rewrite.
+	// Confirm the rewrite is present in each before parsing (guards against a
+	// stale/regressed profile slipping past). The two shell blocks are the
+	// only profiles that must NOT retain the blanket "rwlkmix" exec-inheriting
+	// grant: that grant was the original hole (curl/python from /usr ran even
+	// when air-gapped, and anything exec'd anywhere inherited the profile).
+	text := string(src)
+	offline := sectionBetween(text, "profile cadence_sbx_shell", "profile cadence_sbx_net")
+	net := sectionBetween(text, "profile cadence_sbx_net", "")
+	for name, sec := range map[string]string{
+		"cadence_sbx_shell (offline)": offline,
+		"cadence_sbx_net (networked)": net,
+	} {
+		// Check only file *rules* (not comments): the offline block's comment
+		// explains the old grant in words, so a naive substring match on the
+		// whole section would false-positive on that explanation.
+		rules := ruleLines(sec)
+		if !strings.Contains(rules, "allow file rwlkm /{**,},") {
+			t.Fatalf("%s: missing the allowlist baseline 'allow file rwlkm /{**,},' (got blanket grant or no baseline)", name)
+		}
+		if !strings.Contains(rules, "allow file ix /usr/{**,},") {
+			t.Fatalf("%s: missing the tool-dir exec grant 'allow file ix /usr/{**,},' (blanket grant may still be in effect)", name)
+		}
+		if strings.Contains(rules, "rwlkmix") {
+			t.Fatalf("%s: still carries a blanket 'rwlkmix' exec-inheriting grant -- the allowlist rewrite was not applied", name)
+		}
 	}
 	// Parse-only, no kernel load, no cache: -Q = skip kernel load, -K = skip
 	// cache (a non-root user cannot write /var/cache/apparmor), -q = quiet.

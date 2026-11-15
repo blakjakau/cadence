@@ -130,7 +130,20 @@ profile cadence_sbx_net flags=(attach_disconnected, mediate_deleted) {
   signal (send, receive) peer=cadence,
   unix,
 
-  allow file rwlkmix /{**,},
+  # Same deny-then-allow tool allowlist as the offline shell (cadence_sbx_shell).
+  # A networked shell is strictly more dangerous than an air-gapped one: an
+  # exec'd binary here can reach out over the net, so the blanket exec grant
+  # would let a tool dropped into a project root phone home. rwlkm (no ix) on
+  # the mount-namespace exposure, ix only on the standard tool dirs.
+  allow file rwlkm /{**,},
+  allow file ix /usr/{**,},
+  allow file ix /lib/{**,},
+  allow file ix /lib64/{**,},
+  allow file ix /bin/{**,},
+  allow file ix /sbin/{**,},
+  allow file ix /opt/{**,},
+  allow file ix /proc/{**,},
+  allow file ix /etc/{**,},
 
   deny @{HOME}/.ssh/** rwklx,
   deny @{HOME}/.gnupg/** rwklx,
