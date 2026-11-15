@@ -133,6 +133,7 @@ type wsMessage struct {
 	SandboxOwners []string `json:"sandboxOwners,omitempty"` // other owners inside the same instance
 	SandboxShared bool     `json:"sandboxShared,omitempty"` // true when >1 owner shares the instance
 	SandboxRoots  []string `json:"sandboxRoots,omitempty"`  // the instance's rw root layout (for attach)
+	SandboxProfile string  `json:"sandboxProfile,omitempty"` // shell profile: cadence_sbx_shell | cadence_sbx_net
 }
 
 // Struct for the /up status response
@@ -545,6 +546,7 @@ func terminalServer(w http.ResponseWriter, r *http.Request) {
 		infoMsg.SandboxOwners = sbxHandle.Owners
 		infoMsg.SandboxShared = sbxHandle.Shared
 		infoMsg.SandboxRoots = sbxHandle.Roots
+		infoMsg.SandboxProfile = sbxHandle.ShellProfile
 	}
 	ws.WriteJSON(infoMsg) // Ignore error, best effort to send initial info
 

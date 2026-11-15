@@ -3,6 +3,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -377,7 +378,170 @@ func TestFingerprint(t *testing.T) {
 	if fingerprint(a) == fingerprint(c) {
 		t.Errorf("fingerprint should change when flags change")
 	}
+	// Net vs offline separation: a networked layout must yield a distinct
+	// instance id from an otherwise-identical offline layout, so a net
+	// terminal never attaches to an air-gapped instance (and vice versa).
+	netCfg := &SandboxConfig{Roots: []string{"/a", "/b"}, Cwd: "/a", Flags: SandboxFlags{NET: true}}
+	if fingerprint(a) == fingerprint(netCfg) {
+		t.Errorf("fingerprint should separate net from offline layouts")
+	}
 	if !strings.HasPrefix(fingerprint(a), "sbx-") {
 		t.Errorf("fingerprint should be prefixed sbx-, got %s", fingerprint(a))
 	}
+}
+
+// TestAuditRing verifies the parent-side audit ring: newest-first ordering,
+// the bounded cap (oldest dropped), and the copy-out semantics (a caller's
+// mutation of the returned slice does not corrupt the ring).
+func TestAuditRing(t *testing.T) {
+	inst := &SandboxInstance{id: "sbx-test"}
+
+	if got := inst.audits(); len(got) != 0 {
+		t.Fatalf("expected empty ring, got %d entries", len(got))
+	}
+
+	// Record N entries (N > cap) and assert the ring holds at most the cap,
+	// newest first.
+	n := sandboxAuditCap + 5
+	for i := 0; i < n; i++ {
+		inst.recordAudit(SandboxAuditEntry{Command: fmt.Sprintf("cmd-%d", i), Tool: "bash", Pid: i, Net: i%2 == 0})
+	}
+	got := inst.audits()
+	if len(got) != sandboxAuditCap {
+		t.Fatalf("expected ring capped at %d, got %d", sandboxAuditCap, len(got))
+	}
+	// Newest first: the most-recently-recorded command (cmd-<n-1>) is at the
+	// head; the oldest surviving command is cmd-<n-cap>.
+	if got[0].Command != fmt.Sprintf("cmd-%d", n-1) {
+		t.Errorf("expected head to be newest cmd-%d, got %s", n-1, got[0].Command)
+	}
+	if got[sandboxAuditCap-1].Command != fmt.Sprintf("cmd-%d", n-sandboxAuditCap) {
+		t.Errorf("expected tail to be cmd-%d (oldest surviving), got %s", n-sandboxAuditCap, got[sandboxAuditCap-1].Command)
+	}
+
+	// Copy-out: mutating the returned slice must not corrupt the ring.
+	got[0].Command = "MUTATED"
+	if inst.audits()[0].Command == "MUTATED" {
+		t.Errorf("audits() must return a copy; caller mutation corrupted the ring")
+	}
+}
+
+// TestAuditExposure verifies the audit ring is plumbed into the status payload:
+// a freshly-recorded spawn appears under the instance in sandboxStatus(), with
+// the correct tool, pid, and net tag. The net tag is what lets the UI show
+// "networked" vs "air-gapped" per spawn.
+func TestAuditExposure(t *testing.T) {
+	p := probeSandbox()
+	if !p.Available {
+		t.Skipf("sandbox unavailable: %s", p.Reason)
+	}
+	buildServer(t)
+	root, err := os.MkdirTemp("", "sbxaudit-")
+	if err != nil {
+		t.Fatalf("mkdtemp: %v", err)
+	}
+	defer os.RemoveAll(root)
+
+	cfg := &SandboxConfig{Roots: []string{root}, Cwd: root, Flags: SandboxFlags{NET: true}}
+	h, err := startSandboxedShell(cfg, "test:auditer")
+	if err != nil {
+		t.Fatalf("startSandboxedShell: %v", err)
+	}
+	defer h.Kill()
+	t.Logf("audit-test sandbox id=%s shell=%s net=%v pid=%d", h.ID, cfg.Shell, h.ShellProfile == "cadence_sbx_net", h.Pid)
+
+	// The spawn itself is recorded at the join-child exec (parent-side). The
+	// handle carries the audit entry the keeper recorded for this spawn.
+	if h.Audit == nil {
+		t.Fatalf("expected handle to carry an audit entry")
+	}
+	if h.Audit.Tool != "bash" {
+		t.Errorf("expected tool basename bash, got %q", h.Audit.Tool)
+	}
+	if h.Audit.Pid != h.Pid {
+		t.Errorf("expected audit pid %d to match handle pid %d", h.Pid, h.Audit.Pid)
+	}
+	if !h.Audit.Net {
+		t.Errorf("expected Net=true (NET flag set), got false")
+	}
+
+	// The status payload exposes the ring newest-first.
+	resp := sandboxStatus()
+	var found *SandboxInstanceInfo
+	for i := range resp.Instances {
+		if resp.Instances[i].ID == h.ID {
+			found = &resp.Instances[i]
+		}
+	}
+	if found == nil {
+		t.Fatalf("instance %s not present in status payload", h.ID)
+	}
+	if len(found.Audits) == 0 {
+		t.Fatalf("expected instance to expose audits, got none")
+	}
+	head := found.Audits[0]
+	if head.Command != h.Audit.Command || head.Tool != h.Audit.Tool || head.Pid != h.Audit.Pid || head.Net != h.Audit.Net {
+		t.Errorf("status audit head does not match handle audit: %+v vs %+v", head, *h.Audit)
+	}
+}
+
+// TestShellProfileForFlags is the net-exec-target unit test: the AppArmor shell
+// profile is a pure function of the NET flag. A networked spawn transitions to
+// cadence_sbx_net; an air-gapped spawn transitions to cadence_sbx_shell. This is
+// the parent-side selection that the join-child writes to /proc/self/attr/exec
+// (see shellProfileForFlags and gJoinProfilePtr), so asserting the pure function
+// is asserting the exec target without needing an installed AppArmor profile.
+func TestShellProfileForFlags(t *testing.T) {
+	if shellProfileForFlags(SandboxFlags{NET: true}) != netProfileName {
+		t.Errorf("NET=true should select the net profile %q", netProfileName)
+	}
+	if shellProfileForFlags(SandboxFlags{NET: false}) != shellProfileName {
+		t.Errorf("NET=false should select the offline shell profile %q", shellProfileName)
+	}
+	// Other flags must not influence the shell profile choice.
+	if got := shellProfileForFlags(SandboxFlags{NET: true, UTS: true, IPC: true}); got != netProfileName {
+		t.Errorf("UTS/IPC flags must not change the net selection, got %q", got)
+	}
+	if got := shellProfileForFlags(SandboxFlags{UTS: true, IPC: true}); got != shellProfileName {
+		t.Errorf("UTS/IPC flags must not change the offline selection, got %q", got)
+	}
+}
+
+// TestAllowlistProfileParses validates (via apparmor_parser --check, when
+// available) that the air-gapped shell profile's allowlist block parses as
+// well-formed AppArmor: the blanket baseline is now "rwlkm" (no ix) plus
+// explicit "ix" grants on the tool dirs only, and the sensitive-path denies
+// remain. This is a PARSE check, not an enforcement check — it catches
+// malformed rule syntax (the allowlist rewrite) that would otherwise fail at
+// install time. Skips cleanly when apparmor_parser is absent.
+func TestAllowlistProfileParses(t *testing.T) {
+	parser, err := exec.LookPath("apparmor_parser")
+	if err != nil {
+		t.Skipf("apparmor_parser not available; skipping allowlist parse check: %v", err)
+	}
+	// The profile source lives in the module tree (relative to the test's
+	// working directory, which is the package dir = module root here).
+	rel := "scripts/cadence_aa_profile.txt"
+	src, err := os.ReadFile(rel)
+	if err != nil {
+		t.Skipf("profile source %s not found; skipping: %v", rel, err)
+	}
+	// The air-gapped shell profile is the one with the allowlist rewrite.
+	// Confirm the rewrite is present before parsing (guards against a
+	// stale/regressed profile slipping past).
+	if !strings.Contains(string(src), "allow file rwlkm /{**,},") {
+		t.Fatalf("profile missing the allowlist baseline 'allow file rwlkm /{**,},'")
+	}
+	if !strings.Contains(string(src), "allow file ix /usr/{**,},") {
+		t.Fatalf("profile missing the tool-dir exec grant 'allow file ix /usr/{**,},'")
+	}
+	// Parse-only, no kernel load, no cache: -Q = skip kernel load, -K = skip
+	// cache (a non-root user cannot write /var/cache/apparmor), -q = quiet.
+	// A well-formed profile compiles to exit 0 with no output; a malformed
+	// rule syntax (the allowlist rewrite) yields a parser error + exit 1.
+	out, err := exec.Command(parser, "-Q", "-K", "-q", rel).CombinedOutput()
+	if err != nil {
+		t.Fatalf("apparmor_parser parse failed for %s: %v\n%s", rel, err, out)
+	}
+	t.Logf("allowlist profile parses OK (%s)", rel)
 }

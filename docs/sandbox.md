@@ -148,7 +148,7 @@ One file - `/etc/apparmor.d/cadence` - holds four profiles (source:
 |---|---|---|
 | `cadence` | **path-glob** attached: `/**/cadence{-dev,-latest,-linux-x64,-linux-arm64}` | Host spawner. Covers every standard cadence binary location (`dist/cadence-dev`, `dist/cadence-linux-x64`, `dist/cadence-linux-arm64`, `~/cadence-latest`, ...), so there is **no per-path re-install** when you build or move the binary. Deliberately near-permissive (full user permissions + `userns` + `mount`/`umount`/`pivot_root` + `change_profile` rules to the three sandbox profiles) because the user's own PTY children (`bash`, `git`, `ssh`) inherit this label and must keep working unrestricted. |
 | `cadence_sbx_keeper` | named, `attach_disconnected` | The keeper. Entered by writing `exec cadence_sbx_keeper` to `/proc/self/attr/exec` before reexec (a transition, not a path attach - the keeper is the *same binary* as the parent). Hardened: `deny capability`, no network, unix sockets only, `ptrace` only toward the two shell profiles, `change_profile` rules to land its join-children in the shells. |
-| `cadence_sbx_shell` | named, `attach_disconnected` | The **offline** agent shell + descendants (the current default). Hardened: `deny network` (air-gapped), `deny capability`/`dbus`/`io_uring`/`mount`/`umount`/`pivot_root`/`ptrace`, plus deny rules for host credentials and shell config (`~/.ssh`, `~/.gnupg`, `~/.aws`, gcloud, `.bashrc`/`.profile`/`.zshrc`, systemd user units, XDG runtime dirs, `docker.sock`). |
+| `cadence_sbx_shell` | named, `attach_disconnected` | The **offline** agent shell + descendants (the current default). Hardened: `deny network` (air-gapped), `deny capability`/`dbus`/`io_uring`/`mount`/`umount`/`pivot_root`/`ptrace`, **tool allowlist** (the blanket file grant is `rwlkm` with **no** exec transition; the inherit-exec grant `ix` is allowed only on the standard tool dirs `/usr /lib /lib64 /bin /sbin /opt /proc /etc`, so bash/curl/etc. still run and inherit this profile while a binary dropped in a project root or any non-tool dir cannot be executed - see [Tool allowlist: path-based, not identity-based](#tool-allowlist-path-based-not-identity-based)), plus deny rules for host credentials and shell config (`~/.ssh`, `~/.gnupg`, `~/.aws`, gcloud, `.bashrc`/`.profile`/`.zshrc`, systemd user units, XDG runtime dirs, `docker.sock`). |
 | `cadence_sbx_net` | named, `attach_disconnected` | The **networked** agent shell (same hardening, `network` allowed). Installed for **future use** - see [Future: the net profile](#future-the-net-profile-cadence_sbx_net). |
 
 All four are genuine confining profiles (`attach_disconnected`) - none run
@@ -164,9 +164,12 @@ AppArmor layer is the second, now-active one.
   server after (re)installing the profile.
 - **Keeper**: raw `attr/exec` write (`exec cadence_sbx_keeper`) in the
   single-threaded child, immediately before reexec.
-- **Join-child (shell)**: raw `attr/exec` write (`exec cadence_sbx_shell`),
-  before the shell exec. The `inherit-exec` file grant (`allow file rwlkmix
-  /{**,}`) keeps the shell's own children in the same profile.
+- **Join-child (shell)**: raw `attr/exec` write
+  (`exec cadence_sbx_shell`, or `exec cadence_sbx_net` when the net flag is
+  set - see [Future: the net profile](#future-the-net-profile-cadence_sbx_net)),
+  before the shell exec. The `inherit-exec` file grant (`allow file ix ...` on
+  the tool dirs) keeps the shell's own children in the same profile, and the
+  mount namespace hides everything that is not a tool dir or an rw root.
 
 ### Installing
 
@@ -212,6 +215,42 @@ and shells run **unconfined** (the sandbox still works via the mount
 namespace - only the second layer and, on restricted hosts, the `userns`
 grant are missing). If the profile is installed but the label never attached
 (a running server started before the install), restart the server.
+
+### Tool allowlist: path-based, not identity-based
+
+The `cadence_sbx_shell` profile confines the agent by **file path**, not by
+file identity. AppArmor has no notion of a "known-good binary" - it matches
+the *path* the `execve` syscall resolves to. This means the tool allowlist is
+a **fixed, path-based** set in the profile, not a dynamic allowlist of
+"approved executables":
+
+- **What it does**: the blanket file grant is `rwlkm` (read/write/mmap/lock/
+  link) with **no** exec transition, and the inherit-exec grant (`ix`) is
+  allowed only on the standard tool dirs (`/usr /lib /lib64 /bin /sbin /opt
+  /proc /etc`). So `bash` at `/usr/bin/bash` runs (and inherits this profile),
+  but a binary dropped into a project root (`./mytool`) or any non-tool dir
+  (`/home/.../tool`) **cannot be executed** - the `ix` grant does not cover
+  it, and the blanket `rwlkm` has no `x`.
+- **What it does NOT do**: it is **not** an allowlist of specific approved
+  programs. Every file *under* a tool dir is equally executable (there is no
+  per-file identity check). If an attacker can write a file into `/usr/bin/`
+  (they can't - those dirs are ro-bind-mounted), they could plant a binary
+  there and it would inherit the shell profile and run. The allowlist is
+  therefore **defense-in-depth on top of the mount isolation**, not a
+  standalone boundary.
+- **The mount namespace is the primary control**: the default ro-bind set
+  (`defaultRORoots()`) is exactly the tool dirs plus `/var /proc`. The shell
+  sees only what is bound in, and rw roots are writable but live *outside*
+  the tool dirs. So a binary that lands in an rw root (the agent's project
+  dir) is both (a) not under a tool dir (no `ix` grant) and (b) not under a
+  ro tool dir (not visible as an exec target) - it simply cannot be run.
+
+**Net effect**: the allowlist reduces the attack surface (a hostile process
+that lands in the project dir can read/edit its own dir but cannot *spawn*
+new tools from it), but it does not *eliminate* the risk that a writable tool
+dir (if one were ever configured) could be abused to plant binaries. The
+air-gap (`deny network`) is the binding constraint on what a spawned tool can
+*do* even if it does run.
 
 ---
 

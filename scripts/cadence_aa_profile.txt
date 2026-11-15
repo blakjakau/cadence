@@ -74,10 +74,27 @@ profile cadence_sbx_shell flags=(attach_disconnected, mediate_deleted) {
   signal (send, receive) peer=cadence,
   unix,
 
-  # Allow reading/executing tools & writing inside whatever the mount
-  # namespace exposed (since unshare/pivot_root isolates the filesystem view),
-  # EXCEPT explicitly block sensitive host paths if shared into the namespace:
-  allow file rwlkmix /{**,},
+  # Tool allowlist + project writes. AppArmor is deny-by-default, so a
+  # blanket exec grant is what let curl/python run even in an air-gapped
+  # shell. The old "rwlkmix" was rwlkm + ix, where ix = "inherit execute"
+  # (the exec'd program inherits THIS profile). A bare x is only legal in
+  # deny rules, so the fix is to drop the exec transition from the blanket
+  # baseline (rwlkm = read/write/mmap/lock/link on whatever the mount
+  # namespace exposes = the rw project roots) and grant ix ONLY on the
+  # standard tool dirs. bash/curl/etc. in /usr still run (inheriting this
+  # profile), but a binary that lands in a project root or any non-tool dir
+  # cannot be executed. The mount namespace hides non-tool, non-root paths
+  # anyway, so this is defense-in-depth on top of the mount isolation.
+  # Sensitive host paths are explicitly blocked even if shared in (below).
+  allow file rwlkm /{**,},
+  allow file ix /usr/{**,},
+  allow file ix /lib/{**,},
+  allow file ix /lib64/{**,},
+  allow file ix /bin/{**,},
+  allow file ix /sbin/{**,},
+  allow file ix /opt/{**,},
+  allow file ix /proc/{**,},
+  allow file ix /etc/{**,},
 
   deny @{HOME}/.ssh/** rwklx,
   deny @{HOME}/.gnupg/** rwklx,

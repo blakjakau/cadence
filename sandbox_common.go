@@ -1,6 +1,9 @@
 package main
 
-import "io"
+import (
+	"io"
+	"time"
+)
 
 // SandboxFlags controls which additional namespaces the instance joins.
 // NET and PID are OFF by default so git/network and the host process view keep
@@ -42,6 +45,23 @@ func (e *ErrSandboxUnavailable) Error() string {
 	return "sandbox unavailable: " + e.Reason
 }
 
+// SandboxAuditEntry records a single shell spawn inside a sandbox instance.
+// The keeper cannot see per-command argv (user input flows through the pty
+// master), so the finest grain available is the shell spawn itself. Tool is
+// the shell basename; Command is the argv[0] of the spawn. SensitivePathHit is
+// a SOFT signal (best-effort AppArmor DENIED attribution) and is empty when no
+// denial was observed.
+type SandboxAuditEntry struct {
+	Command string `json:"command"` // the shell argv[0] (e.g. "/bin/bash")
+	Tool    string `json:"tool"`    // basename of the shell (e.g. "bash")
+	Pid     int    `json:"pid"`     // the join-child pid (host pid namespace)
+	Wallclock time.Time `json:"wallclock"` // when the spawn was recorded (host wall time)
+	Net     bool   `json:"net"`     // networked profile (cadence_sbx_net) vs air-gapped
+	// SensitivePathHit names the sensitive path that an AppArmor DENIED rule
+	// fired on, best-effort. Empty = no denial attributed. Soft signal only.
+	SensitivePathHit string `json:"sensitivePathHit,omitempty"`
+}
+
 // SandboxInstanceInfo describes a live sandbox instance (for the UI to list
 // attachable agent sandboxes).
 type SandboxInstanceInfo struct {
@@ -49,6 +69,8 @@ type SandboxInstanceInfo struct {
 	Roots  []string `json:"roots"`
 	Owners []string `json:"owners"`
 	Shared bool     `json:"shared"`
+	// Audits is the instance's recent shell spawns (newest first, capped).
+	Audits []SandboxAuditEntry `json:"audits"`
 }
 
 // SandboxStatusResponse is the JSON payload for GET /api/sandbox: the sandbox
@@ -74,4 +96,12 @@ type SandboxHandle struct {
 	// Roots is the instance's rw root layout, so the frontend can echo it back
 	// as `sandbox_roots` for an exact-fingerprint attach.
 	Roots []string
+	// ShellProfile is the AppArmor profile the shell (and its descendants) run
+	// under: "cadence_sbx_shell" (air-gapped) or "cadence_sbx_net" (networked).
+	// Echoed as `sandboxProfile` in terminalInfo so the UI can badge net vs
+	// offline. Empty when the profile is not installed (unconfined fallback).
+	ShellProfile string
+	// Audit is the recorded spawn for THIS shell (one entry per join-child).
+	// Empty for unsandboxed handles.
+	Audit *SandboxAuditEntry
 }

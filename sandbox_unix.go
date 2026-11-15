@@ -54,6 +54,10 @@ import (
 // parent and read from globals (COW-shared across the clone).
 // ---------------------------------------------------------------------------
 
+// sandboxAuditCap bounds the per-instance audit ring (newest first). Keeps a
+// shared instance's audit trail from growing unbounded across many sessions.
+const sandboxAuditCap = 256
+
 // SandboxInstance is a live sandbox: a keeper coprocess + refcounted owners.
 type SandboxInstance struct {
 	id          string
@@ -66,6 +70,32 @@ type SandboxInstance struct {
 	// bwrapPids tracks the per-shell bwrap child pids (bwrap has no persistent
 	// keeper; each shell is its own bwrap process). Reaped with the instance.
 	bwrapPids map[int]bool
+	// auditMu guards auditRing (a parent-side ring; the raw child never touches it).
+	auditMu sync.Mutex
+	// auditRing is a bounded ring of shell-spawn records, newest first (the
+	// head is the newest; oldest entries are dropped when the cap is hit).
+	auditRing []SandboxAuditEntry
+}
+
+// recordAudit appends a shell-spawn entry to the instance's bounded ring
+// (newest first). Parent-side only: the raw child must never call this.
+func (inst *SandboxInstance) recordAudit(e SandboxAuditEntry) {
+	inst.auditMu.Lock()
+	defer inst.auditMu.Unlock()
+	inst.auditRing = append([]SandboxAuditEntry{e}, inst.auditRing...)
+	if len(inst.auditRing) > sandboxAuditCap {
+		inst.auditRing = inst.auditRing[:sandboxAuditCap]
+	}
+}
+
+// audits returns a copy of the instance's audit ring (newest first, capped).
+func (inst *SandboxInstance) audits() []SandboxAuditEntry {
+	inst.auditMu.Lock()
+	defer inst.auditMu.Unlock()
+	if len(inst.auditRing) == 0 {
+		return nil
+	}
+	return append([]SandboxAuditEntry(nil), inst.auditRing...)
 }
 
 // sandboxManager is the in-process registry keyed by layout fingerprint.
@@ -134,12 +164,15 @@ var (
 // "exec " prefix, built parent-side so the raw children never allocate.
 var (
 	keeperProfileName = "cadence_sbx_keeper" // the keeper + its join-children
-	shellProfileName  = "cadence_sbx_shell"  // the shell + its descendants
+	shellProfileName  = "cadence_sbx_shell"  // the offline shell + its descendants
+	netProfileName    = "cadence_sbx_net"    // the networked shell + its descendants
 
 	rawKeeperProfilePtr = rawCStringPtr("exec " + keeperProfileName)
 	rawKeeperProfileLen = len("exec " + keeperProfileName)
 	rawShellProfilePtr  = rawCStringPtr("exec " + shellProfileName)
 	rawShellProfileLen  = len("exec " + shellProfileName)
+	rawNetProfilePtr    = rawCStringPtr("exec " + netProfileName)
+	rawNetProfileLen    = len("exec " + netProfileName)
 	rawAttrExecPathPtr  = rawCStringPtr("/proc/self/attr/exec")
 	rawAttrExecPathLen  = len("/proc/self/attr/exec")
 )
@@ -200,6 +233,12 @@ var (
 	gJoinArgv0   *byte
 	gJoinArgv    unsafe.Pointer
 	gJoinEnvv    unsafe.Pointer
+	// The shell profile the join-child transitions to at exec, selected
+	// parent-side from cfg.Flags.NET (offline -> cadence_sbx_shell, net ->
+	// cadence_sbx_net). Precomputed pointers: the join-child never allocates,
+	// it only writes these to /proc/self/attr/exec and execs.
+	gJoinProfilePtr *byte
+	gJoinProfileLen int
 )
 
 // cString allocates a NUL-terminated copy of s (parent-side only).
@@ -855,6 +894,20 @@ func spawnShellIn(inst *SandboxInstance, cwd string, extraEnv []string, method s
 		}
 	}
 
+	// Audit: record this shell spawn parent-side (the raw child must never
+	// touch the ring). The join-child argv[0] is cfg.Shell (the pty shell);
+	// user-typed commands flow through the pty master and are not visible to
+	// the keeper, so the finest grain is the spawn itself. SensitivePathHit is
+	// a soft signal (AppArmor DENIED attribution), left empty here.
+	audit := &SandboxAuditEntry{
+		Command: inst.cfg.Shell,
+		Tool:    filepath.Base(inst.cfg.Shell),
+		Pid:     pid,
+		Wallclock: time.Now(),
+		Net:     inst.cfg.Flags.NET,
+	}
+	inst.recordAudit(*audit)
+
 	return &SandboxHandle{
 		Master: master,
 		Resize: func(cols, rows int) {
@@ -868,7 +921,21 @@ func spawnShellIn(inst *SandboxInstance, cwd string, extraEnv []string, method s
 		Pid:    pid,
 		Method: method,
 		Roots:  inst.cfg.Roots,
+		// Shell profile is a pure function of the instance's NET flag: networked
+		// shells run cadence_sbx_net, air-gapped ones cadence_sbx_shell.
+		ShellProfile: shellProfileForFlags(inst.cfg.Flags),
+		Audit:        audit,
 	}, nil
+}
+
+// shellProfileForFlags names the AppArmor shell profile for a flag layout:
+// networked -> cadence_sbx_net, air-gapped -> cadence_sbx_shell. A pure function
+// of the NET flag (no lookup map): the profile choice is NET ? net : shell.
+func shellProfileForFlags(flags SandboxFlags) string {
+	if flags.NET {
+		return netProfileName
+	}
+	return shellProfileName
 }
 
 // findInstanceByOwner returns the live instance that has owner as a co-owner
@@ -1366,8 +1433,17 @@ func sandboxStatus() *SandboxStatusResponse {
 		Instances: []SandboxInstanceInfo{},
 	}
 
+	// Gather the live instances under the manager lock, then read each
+	// instance's audit ring AFTER releasing the manager lock (the ring has its
+	// own mutex; never hold both at once).
+	var live []*SandboxInstance
 	sandboxManager.mu.Lock()
 	for _, inst := range sandboxManager.instances {
+		live = append(live, inst)
+	}
+	sandboxManager.mu.Unlock()
+
+	for _, inst := range live {
 		owners := make([]string, 0, len(inst.owners))
 		for o := range inst.owners {
 			owners = append(owners, o)
@@ -1378,10 +1454,10 @@ func sandboxStatus() *SandboxStatusResponse {
 			Roots:  inst.cfg.Roots,
 			Owners: owners,
 			Shared: len(inst.owners) > 1,
+			Audits: inst.audits(),
 		}
 		resp.Instances = append(resp.Instances, info)
 	}
-	sandboxManager.mu.Unlock()
 	return resp
 }
 
@@ -1598,6 +1674,14 @@ func handleSpawn(conn net.Conn, cfg SandboxConfig) {
 	gJoinArgv0, gJoinArgv, gJoinEnvv = buildExecveStructures(argv, req.Env)
 	gJoinSlaveFd = slaveFd
 	gJoinCwd = req.Cwd
+	// Select the shell profile the join-child will transition to at exec, from
+	// the instance's NET flag (air-gapped -> cadence_sbx_shell, networked ->
+	// cadence_sbx_net). Parent-side pointer selection; the child only writes.
+	if cfg.Flags.NET {
+		gJoinProfilePtr, gJoinProfileLen = rawNetProfilePtr, rawNetProfileLen
+	} else {
+		gJoinProfilePtr, gJoinProfileLen = rawShellProfilePtr, rawShellProfileLen
+	}
 
 	pid, err := rawFork()
 	if err != nil {
@@ -1619,11 +1703,13 @@ func handleSpawn(conn net.Conn, cfg SandboxConfig) {
 		if gJoinCwd != "" {
 			syscall.RawSyscall6(syscall.SYS_CHDIR, strPtr(gJoinCwd), 0, 0, 0, 0, 0)
 		}
-		// Transition to the cadence_sbx_shell profile at exec (aa_change_onexec):
-		// the shell + its descendants run confined. Ignored if the profile is
-		// not installed (stays unconfined, as before). The profile's self-stack
-		// rule keeps the shell's children confined even without this write.
-		rawSetExecProfile(rawShellProfilePtr, rawShellProfileLen)
+			// Transition to the selected shell profile at exec (aa_change_onexec):
+			// the shell + its descendants run confined. The profile was chosen
+			// parent-side from the instance's NET flag (offline -> cadence_sbx_shell,
+			// networked -> cadence_sbx_net); ignored if not installed (stays
+			// unconfined, as before). The profile's self-stack rule keeps the
+			// shell's children confined even without this write.
+			rawSetExecProfile(gJoinProfilePtr, gJoinProfileLen)
 		syscall.RawSyscall6(syscall.SYS_EXECVE,
 			uintptr(unsafe.Pointer(gJoinArgv0)),
 			uintptr(gJoinArgv),

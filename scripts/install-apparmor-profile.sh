@@ -44,13 +44,17 @@
 #      join-children in the two shell profiles.
 #   3. cadence_sbx_shell -- the sandbox shell + its descendants (the
 #      OFFLINE default). Named profile; the keeper's join-children transition
-#      into it at exec, and the inherit-exec grant (allow file rwlkmix
-#      /{**,}) keeps the shell's children in the same profile. Hardened:
-#      deny network (air-gapped; tools must use managed fetch paths), deny
-#      capability / dbus / io_uring / mount / umount / pivot_root / ptrace,
-#      and deny rules for host credentials and shell config
-#      (~/.ssh, ~/.gnupg, ~/.aws, gcloud, .bashrc/.profile/.zshrc, systemd
-#      user units, XDG runtime dirs, docker.sock).
+#      into it at exec. Tool allowlist: the blanket file grant is rwlkm
+#      (read/write/mmap/lock/link, NO exec transition) so the agent can edit
+#      the rw project roots; the inherit-exec grant (ix) is granted ONLY on
+#      the standard tool dirs (/usr /lib /lib64 /bin /sbin /opt /proc /etc)
+#      so bash/curl/etc. still run and inherit this profile, while a binary
+#      that lands in a project root or any non-tool dir cannot be executed.
+#      Hardened: deny network (air-gapped; tools must use managed fetch
+#      paths), deny capability / dbus / io_uring / mount / umount /
+#      pivot_root / ptrace, and deny rules for host credentials and shell
+#      config (~/.ssh, ~/.gnupg, ~/.aws, gcloud, .bashrc/.profile/.zshrc,
+#      systemd user units, XDG runtime dirs, docker.sock).
 #   4. cadence_sbx_net -- the sandbox shell + its descendants with GOVERNED
 #      outbound network (network inet/inet6 + netlink raw). Same hardening
 #      as the offline shell (minus the network deny). INSTALLED FOR FUTURE
