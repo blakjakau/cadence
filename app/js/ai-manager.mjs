@@ -89,6 +89,7 @@ class AIManager {
 			defaultAllowSubAgents: localStorage.getItem("defaultAllowSubAgents") !== "false",
 			defaultAllowRunCommand: localStorage.getItem("defaultAllowRunCommand") !== "false",
 			defaultSandboxCommands: localStorage.getItem("defaultSandboxCommands") !== "false",
+			defaultSandboxNet: localStorage.getItem("defaultSandboxNet") === "true",
 			defaultAutoMilestones: localStorage.getItem("defaultAutoMilestones") !== "false",
 			defaultAutoRollbackOnFailures: localStorage.getItem("defaultAutoRollbackOnFailures") === "true",
 			defaultAutoRollbackThreshold: parseInt(localStorage.getItem("defaultAutoRollbackThreshold") || "3", 10),
@@ -548,7 +549,7 @@ isNativeReasoning,
 			// Capability toggles keep the menu open (cancel the close-on-click
 			// timeout) so several toggles can be flipped in one session. The
 			// listeners attach once here (static menu items), not per right-click.
-			for (const cmd of ["toggle_run_command", "toggle_sandbox", "toggle_subagents", "toggle_planning"]) {
+			for (const cmd of ["toggle_run_command", "toggle_sandbox", "toggle_net", "toggle_subagents", "toggle_planning"]) {
 				const item = aiMenu.querySelector(`ui-menu-item[command="${cmd}"]`);
 				if (!item) continue;
 				item.addEventListener("click", (ev) => ev.stopPropagation());
@@ -619,7 +620,7 @@ isNativeReasoning,
 					this.sessionsManager.deleteSession(sessionId, tab);
 				} else if (action === "preview") {
 					this.previewSessionHistory(sessionId);
-				} else if (action === "toggle_run_command" || action === "toggle_sandbox" || action === "toggle_subagents" || action === "toggle_planning") {
+				} else if (action === "toggle_run_command" || action === "toggle_sandbox" || action === "toggle_net" || action === "toggle_subagents" || action === "toggle_planning") {
 					void (async () => {
 						await this._toggleSessionCapability(sessionId, action);
 						// The menu stays open for consecutive toggles; re-render the
@@ -1763,6 +1764,7 @@ isNativeReasoning,
 		// Effective values (unset = inherit global default).
 		const effRunCommand = session ? (session.allowRunCommand !== false) : true;
 		const effSandbox = session ? (session.sandboxCommands !== false && this.config?.defaultSandboxCommands !== false) : true;
+		const effNet = session ? (session.sandboxNet ?? (this.config?.defaultSandboxNet === true)) : (this.config?.defaultSandboxNet === true);
 		const effSubAgents = session ? (session.allowSubAgents !== false) : true;
 		const effPlanning = session ? (session.planningMode ?? (this.config?.defaultPlanningMode ?? true)) : true;
 
@@ -1770,6 +1772,7 @@ isNativeReasoning,
 		const toggles = {
 			"toggle_run_command": [effRunCommand, session?.allowRunCommand],
 			"toggle_sandbox": [effSandbox, session?.sandboxCommands],
+			"toggle_net": [effNet, session?.sandboxNet],
 			"toggle_subagents": [effSubAgents, session?.allowSubAgents],
 			"toggle_planning": [effPlanning, session?.planningMode],
 		};
@@ -1856,7 +1859,7 @@ isNativeReasoning,
 	 * matching the session-artifacts-panel handlers. A cross-tab
 	 * `session_updated` broadcast is emitted so the active session tab refreshes.
 	 * @param {string} sessionId - Target session id.
-	 * @param {string} action - One of toggle_run_command / toggle_sandbox / toggle_subagents / toggle_planning.
+	 * @param {string} action - One of toggle_run_command / toggle_sandbox / toggle_net / toggle_subagents / toggle_planning.
 	 */
 	async _toggleSessionCapability(sessionId, action) {
 		const session = await this.sessionsManager._getResolvedSession(sessionId);
@@ -1875,6 +1878,12 @@ isNativeReasoning,
 			// defaultSandboxCommands, which is what the slider shows.
 			const eff = session.sandboxCommands !== false && this.config?.defaultSandboxCommands !== false;
 			session.sandboxCommands = !eff;
+			changed = true;
+		} else if (action === "toggle_net") {
+			// Two-way flip of the EFFECTIVE value: unset = inherit the global
+			// defaultSandboxNet (off = air-gapped), which is what the slider shows.
+			const eff = session.sandboxNet ?? (this.config?.defaultSandboxNet === true);
+			session.sandboxNet = !eff;
 			changed = true;
 		} else if (action === "toggle_subagents") {
 			// Unset inherits the global default (on), so the effective state is

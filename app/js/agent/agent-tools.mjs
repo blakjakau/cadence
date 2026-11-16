@@ -2706,6 +2706,9 @@ Snippet: ${r.content || r.snippet || ""}`;
                     wsUrl += `&sandbox_roots=${encodeURIComponent(rootsCsv)}`;
                     wsUrl += `&sandbox=1`;
                     sandboxRequested = true;
+                    if (_sbxSessionObj?.sandboxNet === true || aiManager?.config?.defaultSandboxNet === true) {
+                        wsUrl += "&sandbox_net=1";
+                    }
                 }
             }
 
