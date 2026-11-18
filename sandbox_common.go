@@ -52,11 +52,11 @@ func (e *ErrSandboxUnavailable) Error() string {
 // a SOFT signal (best-effort AppArmor DENIED attribution) and is empty when no
 // denial was observed.
 type SandboxAuditEntry struct {
-	Command string `json:"command"` // the shell argv[0] (e.g. "/bin/bash")
-	Tool    string `json:"tool"`    // basename of the shell (e.g. "bash")
-	Pid     int    `json:"pid"`     // the join-child pid (host pid namespace)
+	Command   string    `json:"command"`   // the shell argv[0] (e.g. "/bin/bash")
+	Tool      string    `json:"tool"`      // basename of the shell (e.g. "bash")
+	Pid       int       `json:"pid"`       // the join-child pid (host pid namespace)
 	Wallclock time.Time `json:"wallclock"` // when the spawn was recorded (host wall time)
-	Net     bool   `json:"net"`     // networked profile (cadence_sbx_net) vs air-gapped
+	Net       bool      `json:"net"`       // networked profile (cadence_sbx_net) vs air-gapped
 	// SensitivePathHit names the sensitive path that an AppArmor DENIED rule
 	// fired on, best-effort. Empty = no denial attributed. Soft signal only.
 	SensitivePathHit string `json:"sensitivePathHit,omitempty"`

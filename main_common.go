@@ -13,11 +13,11 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"runtime"
+	"strings"
 	"sync/atomic"
 	"syscall"
-	"path/filepath"
-	"strings"
 	"time"
 )
 
@@ -28,19 +28,25 @@ func runCadenceServer(block bool) {
 	if installUserFlag {
 		msg, err := InstallUser()
 		log.Println(msg)
-		if err != nil { os.Exit(1) }
+		if err != nil {
+			os.Exit(1)
+		}
 		os.Exit(0)
 	}
 	if installServiceFlag {
 		msg, err := InstallService()
 		log.Println(msg)
-		if err != nil { os.Exit(1) }
+		if err != nil {
+			os.Exit(1)
+		}
 		os.Exit(0)
 	}
 	if uninstallFlag {
 		msg, err := Uninstall()
 		log.Println(msg)
-		if err != nil { os.Exit(1) }
+		if err != nil {
+			os.Exit(1)
+		}
 		os.Exit(0)
 	} else if len(flag.Args()) > 0 && flag.Args()[0] == "kill" {
 		log.Println("Shutting down Cadence via command line kill command.")
@@ -51,7 +57,11 @@ func runCadenceServer(block bool) {
 		fileAPIRoot = rootFlag
 	} else {
 		homeDir, err := os.UserHomeDir()
-		if err == nil { fileAPIRoot = homeDir } else { fileAPIRoot = "." }
+		if err == nil {
+			fileAPIRoot = homeDir
+		} else {
+			fileAPIRoot = "."
+		}
 	}
 	go fileWatcher.run()
 	updateLastActivity()
@@ -230,18 +240,19 @@ func initLogging() {
 
 // Global variables remain accessible
 const version = "0.1.2"
+
 var port = "3022"
 var allowedOrigins = map[string]bool{
 	"https://cadence.jakbox.dev": true,
 	"https://cadence.jakbox.net": true,
-	"https://code.jakbox.dev": true,
-	"https://code.jakbox.net": true,
-	"http://localhost:8083":  true,
-	"http://localhost:3022":  true,
-	"http://localhost:3023":  true,
-	"http://localhost":       true,
-	"http://127.0.0.1:3022": true,
-	"http://127.0.0.1:3023": true,
+	"https://code.jakbox.dev":    true,
+	"https://code.jakbox.net":    true,
+	"http://localhost:8083":      true,
+	"http://localhost:3022":      true,
+	"http://localhost:3023":      true,
+	"http://localhost":           true,
+	"http://127.0.0.1:3022":      true,
+	"http://127.0.0.1:3023":      true,
 }
 var rootFlag string
 var serveFlag string
@@ -259,6 +270,7 @@ var requiredAPIKey string
 var isCompiledBuild bool
 var fileAPIRoot string
 var lastActivityTimestamp atomic.Int64
+
 // (Keep all your other helper functions like updateLastActivity, etc., here too)
 // --- Helper Functions ---
 func getIsCompiled() {
@@ -279,6 +291,7 @@ func activityMiddleware(next http.Handler) http.Handler {
 		next.ServeHTTP(w, r)
 	})
 }
+
 // corsMiddleware adds the necessary headers to handle CORS requests.
 func corsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

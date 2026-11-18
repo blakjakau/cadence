@@ -6,8 +6,8 @@ package main
 import (
 	"fmt"
 	"io"
-	"os/exec"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 

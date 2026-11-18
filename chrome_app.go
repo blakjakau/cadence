@@ -31,7 +31,7 @@ func runChromeApp(chromePath string, url string) error {
 	}
 
 	cmd := exec.Command(chromePath, args...)
-	
+
 	log.Printf("Launching Chrome App Mode: %s %v", chromePath, args)
 
 	// We run it synchronously so the Go backend stays alive until the window is closed.

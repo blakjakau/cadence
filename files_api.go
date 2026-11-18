@@ -20,7 +20,6 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-
 var indexManagerInit2 sync.Once
 
 func getIndexManagerAPI() *IndexManager {
@@ -71,10 +70,10 @@ type searchMatch struct {
 }
 
 type fileInfo struct {
-	Name    string `json:"name"`
-	IsDir   bool   `json:"isDir"`
-	Size    int64  `json:"size"`
-	ModTime int64  `json:"modTime"` // Unix timestamp
+	Name     string     `json:"name"`
+	IsDir    bool       `json:"isDir"`
+	Size     int64      `json:"size"`
+	ModTime  int64      `json:"modTime"` // Unix timestamp
 	Children []fileInfo `json:"children,omitempty"`
 }
 
@@ -666,7 +665,7 @@ func handleWsRequest(ws *websocket.Conn, req fileRequest) {
 		}
 		var roots []string
 		var ignorePaths []string
-		
+
 		if err := json.Unmarshal([]byte(req.Content), &payload); err == nil && len(payload.Roots) > 0 {
 			roots = payload.Roots
 			ignorePaths = payload.IgnorePaths
@@ -676,7 +675,7 @@ func handleWsRequest(ws *websocket.Conn, req fileRequest) {
 				resp.Error = "Invalid roots format"
 			}
 		}
-		
+
 		if resp.Error == "" {
 			var secureRoots []string
 			for _, r := range roots {
@@ -918,7 +917,7 @@ func walkAndSearchContent(rootPath, query string, agent bool) ([]searchMatch, er
 			".tar": true, ".exe": true, ".bin": true, ".dll": true,
 			".mp4": true, ".mp3": true, ".wav": true, ".webp": true,
 			".conduit-server": true,
-			".gguf": true, ".sqlite": true, ".sqlite3": true, ".db": true,
+			".gguf":           true, ".sqlite": true, ".sqlite3": true, ".db": true,
 			".7z": true, ".rar": true, ".tgz": true, ".iso": true,
 			".so": true, ".dylib": true, ".onnx": true, ".mov": true,
 			".avi": true, ".mkv": true, ".webm": true,
@@ -933,7 +932,7 @@ func walkAndSearchContent(rootPath, query string, agent bool) ([]searchMatch, er
 			return nil // Skip files whose info we can't read
 		}
 		// Limit file size to 0.5 MB
-		if info.Size() > 512 * 1024 {
+		if info.Size() > 512*1024 {
 			return nil // Skip large files
 		}
 
@@ -1013,7 +1012,6 @@ func isBinaryFile(path string) bool {
 	}
 	return false
 }
-
 
 var (
 	wsWriteMutexes   = make(map[*websocket.Conn]*sync.Mutex)

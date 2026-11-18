@@ -2,6 +2,7 @@
 // +build darwin
 
 package main
+
 /*
 #cgo CFLAGS: -x objective-c
 #cgo LDFLAGS: -framework Cocoa
@@ -15,17 +16,20 @@ import (
 	"sync"
 	"syscall"
 )
+
 var (
 	urlHandleFunc func(*url.URL)
 	urlLock       sync.Mutex
 	urlRunLoop    = make(chan bool)
 )
+
 // setURLHandler assigns the function to be called when a URL is received.
 func setURLHandler(h func(*url.URL)) {
 	urlLock.Lock()
 	defer urlLock.Unlock()
 	urlHandleFunc = h
 }
+
 //export handle
 func handle(u *C.char) {
 	urlLock.Lock()
@@ -38,6 +42,7 @@ func handle(u *C.char) {
 		urlHandleFunc(uri)
 	}
 }
+
 // registerAndRunURLHandler registers the custom URL protocol handler with macOS
 // and then blocks indefinitely, waiting for events.
 func registerAndRunURLHandler() {

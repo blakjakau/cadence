@@ -59,12 +59,12 @@ type Workspace struct {
 	OpenFolders        []string               `json:"openFolders,omitempty"`
 	ActiveSidebarTab   interface{}            `json:"activeSidebarTab,omitempty"`
 	// New fields for editor tab persistence
-	ActiveEditorTabHandle string               `json:"activeEditorTabHandle,omitempty"`
-	ActiveEditorSide      string               `json:"activeEditorSide,omitempty"`
-	AgentConfigSide       string               `json:"agentConfigSide,omitempty"`
-	PlanTasksSide         string               `json:"planTasksSide,omitempty"`
-	WorkspaceSettingsSide string               `json:"workspaceSettingsSide,omitempty"`
-	TerminalSettingsSide  string               `json:"terminalSettingsSide,omitempty"`
+	ActiveEditorTabHandle string `json:"activeEditorTabHandle,omitempty"`
+	ActiveEditorSide      string `json:"activeEditorSide,omitempty"`
+	AgentConfigSide       string `json:"agentConfigSide,omitempty"`
+	PlanTasksSide         string `json:"planTasksSide,omitempty"`
+	WorkspaceSettingsSide string `json:"workspaceSettingsSide,omitempty"`
+	TerminalSettingsSide  string `json:"terminalSettingsSide,omitempty"`
 }
 
 var (
@@ -182,7 +182,7 @@ func appConfigHandler(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		
+
 		newConfig.Port = "" // Do not persist port to disk
 		configMutex.Lock()
 		appConfig = newConfig
@@ -587,7 +587,6 @@ func dbStatsHandler(w http.ResponseWriter, r *http.Request) {
 
 	http.Error(w, "Database not initialized", http.StatusServiceUnavailable)
 }
-
 
 type SyntaxCheckRequest struct {
 	Path    string `json:"path"`

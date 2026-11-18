@@ -48,13 +48,13 @@ func parseGoOutline(path string, content string) (string, []SymbolInfo, error) {
 			pos := fset.Position(node.Pos())
 			end := fset.Position(node.End())
 			length := end.Line - pos.Line + 1
-			
+
 			// Reconstruct signature loosely
 			recv := ""
 			if node.Recv != nil && len(node.Recv.List) > 0 {
 				recv = "(...) "
 			}
-			
+
 			sig := fmt.Sprintf("func %s%s(...)", recv, node.Name.Name)
 			outlineLines = append(outlineLines, sig)
 			symbols = append(symbols, SymbolInfo{
@@ -65,7 +65,7 @@ func parseGoOutline(path string, content string) (string, []SymbolInfo, error) {
 				Signature: sig,
 			})
 			return false // Don't descend into function body
-			
+
 		case *ast.GenDecl:
 			pos := fset.Position(node.Pos())
 			end := fset.Position(node.End())
@@ -98,7 +98,7 @@ func parseRegexOutline(path string, content string) (string, []SymbolInfo, error
 	isPython := strings.HasSuffix(path, ".py")
 
 	lines := strings.Split(content, "\n")
-	
+
 	// Regex patterns for JS/TS/Python
 	classRegex := regexp.MustCompile(`^\s*(?:export\s+)?(?:default\s+)?class\s+([A-Za-z0-9_]+)`)
 	funcRegex := regexp.MustCompile(`^\s*(?:export\s+)?(?:async\s+)?function\s+([A-Za-z0-9_]+)\s*\(`)
@@ -117,7 +117,7 @@ func parseRegexOutline(path string, content string) (string, []SymbolInfo, error
 
 		lineNum := i + 1
 		matched := false
-		
+
 		if matches := classRegex.FindStringSubmatch(line); len(matches) > 1 {
 			length := findSymbolLength(lines, i, isPython)
 			symbols = append(symbols, SymbolInfo{Name: matches[1], Type: "class", Line: lineNum, Length: length, Signature: trimLine})
@@ -213,7 +213,7 @@ func findSymbolLength(lines []string, startIdx int, isPython bool) int {
 						return i - startIdx + 1
 					}
 				} else if char == '/' && j+1 < len(line) && line[j+1] == '/' {
-					break 
+					break
 				}
 			} else {
 				if char == stringChar {

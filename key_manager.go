@@ -23,13 +23,13 @@ func manageAPIKey(forceGenerateAndPrint bool) {
 	if err != nil {
 		log.Fatalf("Error getting user config directory: %v", err)
 	}
-	
+
 	appConfigDir := filepath.Join(configDir, appName)
 	// Ensure the application's config directory exists
 	if err := os.MkdirAll(appConfigDir, 0700); err != nil {
 		log.Fatalf("Error creating application config directory %s: %v", appConfigDir, err)
 	}
-	
+
 	apiKeyPath := filepath.Join(appConfigDir, apiKeyFileName)
 
 	// Try to read existing key

@@ -39,7 +39,7 @@ const uiManager = {
 
 	// Init index
 	idx := InitWorkspaceIndex(tmpDir)
-	
+
 	// Wait briefly for background scan
 	time.Sleep(200 * time.Millisecond)
 

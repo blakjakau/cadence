@@ -265,11 +265,11 @@ func TestCadenceDB_FreshAndDeleted(t *testing.T) {
 }
 
 // TestCadenceDB_ArchiveCycleSpan verifies the atomic span move:
-//  - the raw messages are removed from the main session record
-//  - the span is appended to the per-session archive document
-//  - the operation is idempotent (a second call is a no-op)
-//  - the originating cycle_summary is marked archived
-//  - DeleteSession also removes the archive key
+//   - the raw messages are removed from the main session record
+//   - the span is appended to the per-session archive document
+//   - the operation is idempotent (a second call is a no-op)
+//   - the originating cycle_summary is marked archived
+//   - DeleteSession also removes the archive key
 func TestCadenceDB_ArchiveCycleSpan(t *testing.T) {
 	tempDir, err := ioutil.TempDir("", "cadence_db_archive_test_*")
 	if err != nil {
@@ -427,12 +427,12 @@ func TestCadenceDB_ArchiveCycleSpan(t *testing.T) {
 }
 
 // TestCadenceDB_CopySession verifies the atomic session fork:
-//  - the main record is copied with a new id and "<name> - fork"
-//  - the metadata record is created fresh (revision 1, parentId preserved)
-//  - the per-session archive is copied byte-for-byte
-//  - the source session is untouched
-//  - forking a session with no archive works (fork starts empty)
-//  - forking a missing source returns os.ErrNotExist
+//   - the main record is copied with a new id and "<name> - fork"
+//   - the metadata record is created fresh (revision 1, parentId preserved)
+//   - the per-session archive is copied byte-for-byte
+//   - the source session is untouched
+//   - forking a session with no archive works (fork starts empty)
+//   - forking a missing source returns os.ErrNotExist
 func TestCadenceDB_CopySession(t *testing.T) {
 	tempDir, err := ioutil.TempDir("", "cadence_db_copy_test_*")
 	if err != nil {
@@ -602,6 +602,3 @@ func TestCadenceDB_DevFilename(t *testing.T) {
 		t.Errorf("Expected default cadence.db.bak to NOT be created in dev mode, got err=%v", err)
 	}
 }
-
-
-
