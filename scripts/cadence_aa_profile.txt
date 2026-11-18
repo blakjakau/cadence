@@ -95,6 +95,11 @@ profile cadence_sbx_shell flags=(attach_disconnected, mediate_deleted) {
   allow file ix /opt/{**,},
   allow file ix /proc/{**,},
   allow file ix /etc/{**,},
+  # Project roots live under the user's home (@{HOME} = /home/*). The mount
+  # namespace exposes only the configured rw roots, so this grant is bounded
+  # to the actual project dirs. It lets the user run their own build scripts,
+  # test binaries, and tools from the project tree -- the primary use case.
+  allow file ix @{HOME}/{**,},
 
   deny @{HOME}/.ssh/** rwklx,
   deny @{HOME}/.gnupg/** rwklx,
@@ -134,7 +139,8 @@ profile cadence_sbx_net flags=(attach_disconnected, mediate_deleted) {
   # A networked shell is strictly more dangerous than an air-gapped one: an
   # exec'd binary here can reach out over the net, so the blanket exec grant
   # would let a tool dropped into a project root phone home. rwlkm (no ix) on
-  # the mount-namespace exposure, ix only on the standard tool dirs.
+  # the mount-namespace exposure, ix on the standard tool dirs AND the project
+  # tree (the mount ns bounds it to the configured rw roots).
   allow file rwlkm /{**,},
   allow file ix /usr/{**,},
   allow file ix /lib/{**,},
@@ -144,6 +150,11 @@ profile cadence_sbx_net flags=(attach_disconnected, mediate_deleted) {
   allow file ix /opt/{**,},
   allow file ix /proc/{**,},
   allow file ix /etc/{**,},
+  # Project roots live under the user's home (@{HOME} = /home/*). The mount
+  # namespace exposes only the configured rw roots, so this grant is bounded
+  # to the actual project dirs. It lets the user run their own build scripts,
+  # test binaries, and tools from the project tree -- the primary use case.
+  allow file ix @{HOME}/{**,},
 
   deny @{HOME}/.ssh/** rwklx,
   deny @{HOME}/.gnupg/** rwklx,

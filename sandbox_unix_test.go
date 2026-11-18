@@ -24,7 +24,15 @@ var (
 func buildServer(t *testing.T) string {
 	t.Helper()
 	buildServerOnce.Do(func() {
-		bin, err := os.MkdirTemp("", "cadence-sbx-srv-")
+		// Build the keeper re-exec binary under the user's home, NOT /tmp:
+		// the sandbox AppArmor profile grants exec (ix) on tool dirs +
+		// @{HOME} (=/home/*), so a keeper binary in /tmp would be exec-denied
+		// under the hardened profile and startSandboxedShell would fail.
+		base := os.TempDir()
+		if home, err := os.UserHomeDir(); err == nil {
+			base = home
+		}
+		bin, err := os.MkdirTemp(base, "cadence-sbx-srv-")
 		if err != nil {
 			t.Fatalf("mkdtemp: %v", err)
 		}

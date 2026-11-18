@@ -39,6 +39,9 @@ func findInstanceByOwner(owner string) *SandboxInstance {
 // releaseOwner is a no-op on non-Linux.
 func releaseOwner(owner string) {}
 
+// reapAllInstances is a no-op on non-Linux.
+func reapAllInstances() {}
+
 // sandboxStatus reports the sandbox as unsupported on non-Linux platforms.
 func sandboxStatus() *SandboxStatusResponse {
 	return &SandboxStatusResponse{

@@ -4,8 +4,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
+	"github.com/gorilla/websocket"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"os/exec"
@@ -14,7 +15,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-	"github.com/gorilla/websocket"
 )
 
 // --- Server State ---
@@ -27,8 +27,8 @@ var startTime time.Time
 // .git/config inside a mounted workspace, still wins — env vars fill the missing
 // global layer).
 var (
-	gitIdentityOnce sync.Once
-	gitIdentityName string
+	gitIdentityOnce  sync.Once
+	gitIdentityName  string
 	gitIdentityEmail string
 )
 
@@ -119,21 +119,21 @@ func applySandboxHomeEnv(cfg *SandboxConfig) {
 
 // A simple struct to handle JSON messages from the client
 type wsMessage struct {
-	Type    string `json:"type"`
-	Content string `json:"content,omitempty"`  // Used by client for "data"
-	Cols    int    `json:"cols,omitempty"`     // Used by client for "resize"
-	Rows    int    `json:"rows,omitempty"`     // Used by client for "resize"
+	Type     string `json:"type"`
+	Content  string `json:"content,omitempty"`  // Used by client for "data"
+	Cols     int    `json:"cols,omitempty"`     // Used by client for "resize"
+	Rows     int    `json:"rows,omitempty"`     // Used by client for "resize"
 	Hostname string `json:"hostname,omitempty"` // Used by server for "terminalInfo"
 	Cwd      string `json:"cwd,omitempty"`      // Used by server for "terminalInfo"
 
 	// Sandbox fields (server → client, "terminalInfo").
-	Sandbox       string   `json:"sandbox,omitempty"`       // "native"|"bwrap"|"off"|"unavailable"|"unsupported"
-	SandboxReason string   `json:"sandboxReason,omitempty"` // why unavailable (AppArmor, etc.)
-	SandboxID     string   `json:"sandboxID,omitempty"`     // shared instance id (sbx-xxxx)
-	SandboxOwners []string `json:"sandboxOwners,omitempty"` // other owners inside the same instance
-	SandboxShared bool     `json:"sandboxShared,omitempty"` // true when >1 owner shares the instance
-	SandboxRoots  []string `json:"sandboxRoots,omitempty"`  // the instance's rw root layout (for attach)
-	SandboxProfile string  `json:"sandboxProfile,omitempty"` // shell profile: cadence_sbx_shell | cadence_sbx_net
+	Sandbox        string   `json:"sandbox,omitempty"`        // "native"|"bwrap"|"off"|"unavailable"|"unsupported"
+	SandboxReason  string   `json:"sandboxReason,omitempty"`  // why unavailable (AppArmor, etc.)
+	SandboxID      string   `json:"sandboxID,omitempty"`      // shared instance id (sbx-xxxx)
+	SandboxOwners  []string `json:"sandboxOwners,omitempty"`  // other owners inside the same instance
+	SandboxShared  bool     `json:"sandboxShared,omitempty"`  // true when >1 owner shares the instance
+	SandboxRoots   []string `json:"sandboxRoots,omitempty"`   // the instance's rw root layout (for attach)
+	SandboxProfile string   `json:"sandboxProfile,omitempty"` // shell profile: cadence_sbx_shell | cadence_sbx_net
 }
 
 // Struct for the /up status response
@@ -338,7 +338,7 @@ func terminalServer(w http.ResponseWriter, r *http.Request) {
 			startDir = absPath
 		}
 	}
-	
+
 	// Check if startDir exists, fallback to home if not
 	if _, err := os.Stat(startDir); os.IsNotExist(err) {
 		log.Printf("WARNING: Directory %s does not exist, falling back to home.", startDir)
@@ -535,10 +535,10 @@ func terminalServer(w http.ResponseWriter, r *http.Request) {
 
 	// Send initial terminal info to the client
 	infoMsg := wsMessage{
-		Type:    "terminalInfo",
-		Hostname: hostname,
-		Cwd:     initialCwd,
-		Sandbox: sbxStatus,
+		Type:          "terminalInfo",
+		Hostname:      hostname,
+		Cwd:           initialCwd,
+		Sandbox:       sbxStatus,
 		SandboxReason: sbxReason,
 	}
 	if sbxHandle != nil {
@@ -593,5 +593,3 @@ func upcheckHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp)
 }
-
-

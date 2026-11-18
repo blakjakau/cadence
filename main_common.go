@@ -12,8 +12,10 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"os/signal"
 	"runtime"
 	"sync/atomic"
+	"syscall"
 	"path/filepath"
 	"strings"
 	"time"
@@ -57,6 +59,18 @@ func runCadenceServer(block bool) {
 		go startIdleShutdownManager(60 * time.Minute)
 	}
 	startTime = time.Now()
+
+	// Reap all sandbox keepers on SIGINT/SIGTERM (Ctrl-C, `kill <pid>`).
+	// Without this the keepers survive the main binary (pdeathsig is
+	// unreliable across reexec) and their on-disk dirs leak.
+	go func() {
+		sig := make(chan os.Signal, 1)
+		signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
+		<-sig
+		log.Println("Signal received; reaping sandbox instances before exit.")
+		reapAllInstances()
+		os.Exit(0)
+	}()
 
 	ensureUserBashRC() // Create ~/.config/cadence/.bashrc if missing so the config panel can open it
 
@@ -291,6 +305,7 @@ func startIdleShutdownManager(timeout time.Duration) {
 			idleDuration := time.Since(time.Unix(lastActivity, 0))
 			if idleDuration >= timeout {
 				log.Printf("Shutting down due to inactivity for over %v.", timeout)
+				reapAllInstances()
 				os.Exit(0)
 			}
 		}
@@ -323,7 +338,7 @@ func killHandler() (string, error) {
 		return "Kill command is disabled when running with --no-idle-shutdown.", fmt.Errorf("kill command disabled")
 	}
 	log.Println("Received /kill request. Shutting down application.")
-	go func() { time.Sleep(100 * time.Millisecond); os.Exit(0) }()
+	go func() { time.Sleep(100 * time.Millisecond); reapAllInstances(); os.Exit(0) }()
 	return "Cadence server is shutting down.", nil
 }
 
@@ -388,6 +403,7 @@ func stopHandler(w http.ResponseWriter, r *http.Request) {
 	go func() {
 		time.Sleep(250 * time.Millisecond)
 		log.Println("Exiting process.")
+		reapAllInstances()
 		os.Exit(0)
 	}()
 }

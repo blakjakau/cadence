@@ -115,27 +115,30 @@ type probeResult struct {
 // ---- raw-syscall child payload (precomputed in the PARENT; the clone child
 // ---- must not allocate, so everything is a string / pointer / slice header) ----
 var (
-	rawUIDMapStr      string
-	rawGIDMapStr      string
-	rawDenyStr        string   = "deny\n"
-	rawMountRoots     []string // rw roots
-	rawMountRO        []string // ro roots
-	rawNSMask         uintptr  // CLONE_* mask for unshare
-	rawKargv0         *byte
-	rawKargv          unsafe.Pointer
-	rawKenvv          unsafe.Pointer
-	rawStderrPath     string           // child redirects fd2 here so a failing keeper leaves a trace
-	rawNewRoot        string           // newroot dir (inside the socket dir) for pivot_root
-	rawOldRoot        string           // newroot/oldroot — host / is bind-mounted here
-	rawSocketDir      string           // the socket dir, bind-mounted at its real path in the new root
-	rawBinDir         string           // the keeper binary's PARENT dir (mkdir'd empty in newroot so the file bind has a destination)
-	rawBinPath        string           // the keeper binary's full path, bind-mounted (file bind) so the keeper can exec itself
-	rawBinDestPtr     uintptr          // precomputed ptr to the post-pivot binary-destination path (the child creates the placeholder file here)
-	rawBashrcSrcPtr   uintptr          // precomputed ptr to the post-pivot SOURCE path of the .bashrc remap (/oldroot<host src>); 0 = no remap
-	rawBashrcDestPtr  uintptr          // precomputed ptr to the post-pivot DESTINATION path (<home>/.bashrc)
-	rawMkdirPathsList []string         // precomputed mkdir -p paths (newroot targets)
-	rawTraceFd        int              // the child's stderr fd (trace file), for per-step markers
-	rawStepPtrs       []unsafe.Pointer // precomputed pointers to single step-bytes (parent allocates)
+	rawUIDMapStr       string
+	rawGIDMapStr       string
+	rawDenyStr         string   = "deny\n"
+	rawMountRoots      []string // rw roots
+	rawMountRO         []string // ro roots
+	rawNSMask          uintptr  // CLONE_* mask for unshare
+	rawKargv0          *byte
+	rawKargv           unsafe.Pointer
+	rawKenvv           unsafe.Pointer
+	rawStderrPath      string           // child redirects fd2 here so a failing keeper leaves a trace
+	rawNewRoot         string           // newroot dir (inside the socket dir) for pivot_root
+	rawOldRoot         string           // newroot/oldroot — host / is bind-mounted here
+	rawSocketDir       string           // the socket dir, bind-mounted at its real path in the new root
+	rawBinDir          string           // the keeper binary's PARENT dir (mkdir'd empty in newroot so the file bind has a destination)
+	rawBinPath         string           // the keeper binary's full path, bind-mounted (file bind) so the keeper can exec itself
+	rawBinDestPtr      uintptr          // precomputed ptr to the post-pivot binary-destination path (the child creates the placeholder file here)
+	rawBashrcSrcPtr    uintptr          // precomputed ptr to the post-pivot SOURCE path of the .bashrc remap (/oldroot<host src>); 0 = no remap
+	rawBashrcDestPtr   uintptr          // precomputed ptr to the post-pivot DESTINATION path (<home>/.bashrc)
+	rawResolverMount   bool             // true when the single-file DNS resolver bind is enabled (NET instances only)
+	rawResolverSrcPtr  uintptr          // precomputed ptr to the post-pivot SOURCE path of the DNS resolver file (/oldroot<host path>); 0 = not mounted
+	rawResolverDestPtr uintptr          // precomputed ptr to the post-pivot DESTINATION path of the DNS resolver file; 0 = not mounted
+	rawMkdirPathsList  []string         // precomputed mkdir -p paths (newroot targets)
+	rawTraceFd         int              // the child's stderr fd (trace file), for per-step markers
+	rawStepPtrs        []unsafe.Pointer // precomputed pointers to single step-bytes (parent allocates)
 )
 
 // ---- AppArmor profile-transition names (precomputed NUL-terminated) ----
@@ -569,6 +572,50 @@ func rawDetachOldRoot() int {
 	return detached
 }
 
+// resolveRealFile walks path through symlinks (parent-side only) and returns
+// the final on-host regular file it points at. Returns "" when the path does
+// not resolve to a regular file, so callers can skip the mount. Parent-side
+// because it allocates (os.Stat/readlink); the raw child must not.
+func resolveRealFile(path string) string {
+	var cur string
+	for cur = path; ; {
+		lst, err := os.Lstat(cur)
+		if err != nil {
+			return ""
+		}
+		if lst.Mode()&os.ModeSymlink != 0 {
+			target, err := os.Readlink(cur)
+			if err != nil {
+				return ""
+			}
+			// Resolve relative targets against the symlink's directory.
+			if !strings.HasPrefix(target, "/") {
+				target = filepath.Join(filepath.Dir(cur), target)
+			}
+			cur = filepath.Clean(target)
+			continue
+		}
+		if lst.Mode()&os.ModeType == 0 {
+			// A regular file: none of the os.FileMode type bits (dir, symlink,
+			// pipe, socket, device, char-device) are set. (The classic st_mode
+			// S_IFREG bit 0o100000 does not exist in os.FileMode — a regular
+			// file is simply the ABSENCE of a type bit.)
+			//
+			// Clean the FINAL path, not just intermediates. Without this, a
+			// symlink chain like /etc/resolv.conf -> ../run/systemd/resolve/...
+			// leaves "dotdot" segments (/etc/../run/...) in the result, which
+			// the parent-side single-file bind then uses verbatim as
+			// /oldroot+<this> for the bind SOURCE, and after pivot_root
+			// /oldroot is a bare dir whose ".." points back out of /oldroot,
+			// so the source would never reach the host file and the bind
+			// silently no-ops.
+			return filepath.Clean(cur)
+		}
+		// Not a symlink nor a regular file (dir, device, socket) -> not usable.
+		return ""
+	}
+}
+
 // expandMkdirAll returns the full set of absolute directory components that
 // mkdir -p would create for each path (parent-side only).
 func expandMkdirAll(paths []string) []string {
@@ -900,11 +947,11 @@ func spawnShellIn(inst *SandboxInstance, cwd string, extraEnv []string, method s
 	// the keeper, so the finest grain is the spawn itself. SensitivePathHit is
 	// a soft signal (AppArmor DENIED attribution), left empty here.
 	audit := &SandboxAuditEntry{
-		Command: inst.cfg.Shell,
-		Tool:    filepath.Base(inst.cfg.Shell),
-		Pid:     pid,
+		Command:   inst.cfg.Shell,
+		Tool:      filepath.Base(inst.cfg.Shell),
+		Pid:       pid,
 		Wallclock: time.Now(),
-		Net:     inst.cfg.Flags.NET,
+		Net:       inst.cfg.Flags.NET,
 	}
 	inst.recordAudit(*audit)
 
@@ -1160,6 +1207,36 @@ func spawnKeeper(cfg *SandboxConfig, id string) (int, string, error) {
 			mkdirTargets = append(mkdirTargets, rawNewRoot+home)
 		}
 	}
+	// 5f. DNS resolver visibility (NET instances only). The host's
+	//     /etc/resolv.conf is usually a symlink into /run
+	//     (e.g. -> ../run/systemd/resolve/stub-resolv.conf), but /run is
+	//     never mounted as a root passthrough, so the symlink dangles inside
+	//     the sandbox and glibc has no nameserver to read. When NET is on
+	//     we bind the single resolver FILE (its real on-host path) into the
+	//     new root at the same real path, so the symlink resolves. ONLY the
+	//     resolver file + its directory chain is exposed (the rest of /run,
+	//     user sockets, docker.sock, etc. stay hidden).
+	if cfg.Flags.NET {
+		resolverReal := resolveRealFile("/etc/resolv.conf")
+		if resolverReal != "" {
+			// Expand only the PARENT directory chain: expandMkdirAll turns every
+			// path component into a mkdir -p target, so if we passed the full
+			// resolver path it would also mkdir the final FILE as a directory
+			// (e.g. stub-resolv.conf -> dir), the post-pivot O_CREAT open would
+			// fail with EISDIR, and the file bind would silently no-op.
+			// The post-pivot placeholder file is created by the child itself
+			// (rawResolverDestPtr block) the same way the binary/bashrc
+			// placeholders are.
+			resolverDir := filepath.Dir(resolverReal)
+			if resolverDir != "/" && resolverDir != "." {
+				mkdirTargets = append(mkdirTargets, rawNewRoot+resolverDir)
+			}
+			rawResolverMount = true
+			rawResolverSrcPtr = strPtr("/oldroot" + resolverReal)
+			rawResolverDestPtr = strPtr(resolverReal)
+		}
+	}
+
 	rawMkdirPathsList = expandMkdirAll(mkdirTargets)
 	// Precompute the post-pivot binary-destination path pointer for the child.
 	// A file bind onto a non-existent path fails with ENOENT, so the child
@@ -1306,6 +1383,24 @@ func spawnKeeper(cfg *SandboxConfig, id string) (int, string, error) {
 			}
 			syscall.RawSyscall6(syscall.SYS_MOUNT, rawBashrcSrcPtr, rawBashrcDestPtr, 0, uintptr(syscall.MS_BIND|syscall.MS_RDONLY), 0, 0)
 		}
+		// 5f. DNS resolver bind (NET instances only): ro-bind the single resolver
+		//     file (/oldroot<src>) onto its real path in the new root so the
+		//     /etc/resolv.conf symlink (which points into /run) resolves to a
+		//     file with a nameserver. The dest's parent dir chain was pre-created
+		//     in newroot (rawMkdirPathsList); a file bind onto a non-existent
+		//     path fails with ENOENT, so create an empty placeholder at the
+		//     destination first, then ro-bind the real file onto it (source !=
+		//     destination path). Must run BEFORE the /oldroot detach (the source
+		//     is a /oldroot submount). Only active when rawResolverMount is true
+		//     (NET on); offline instances keep the resolver absent.
+		if rawResolverMount && rawResolverSrcPtr != 0 && rawResolverDestPtr != 0 {
+			if f, _, pe := syscall.RawSyscall6(syscall.SYS_OPEN, rawResolverDestPtr, 0x441 /*O_WRONLY|O_CREAT|O_APPEND*/, 0644, 0, 0, 0); pe == 0 {
+				syscall.RawSyscall(syscall.SYS_CLOSE, f, 0, 0)
+			} else {
+				traceInt(int(pe))
+			}
+			syscall.RawSyscall6(syscall.SYS_MOUNT, rawResolverSrcPtr, rawResolverDestPtr, 0, uintptr(syscall.MS_BIND|syscall.MS_RDONLY), 0, 0)
+		}
 		// 5d. Hide the host fs: detach EVERY /oldroot* mount (deepest-first),
 		//     not just the top of the stack. A single umount2("/oldroot") left
 		//     the pivot-relocated old root + all /oldroot/* submounts in place
@@ -1418,6 +1513,33 @@ func removeOwner(inst *SandboxInstance, owner string) {
 func releaseOwner(owner string) {
 	if inst := findInstanceByOwner(owner); inst != nil {
 		removeOwner(inst, owner)
+	}
+}
+
+// reapAllInstances tears down every live sandbox owned by this binary. Called
+// on process exit (SIGINT/SIGTERM and the clean-stop path) so no keeper or
+// bwrap child survives the main process. A single agent session can outlive
+// many coding sessions and otherwise accumulate orphaned sandboxes, so we
+// sweep the whole registry, not just the closing owner.
+//
+// We snapshot the instance ids under the manager lock, then reap each one
+// after releasing it — reapInstance takes the manager lock itself, so we must
+// not hold it across the call.
+func reapAllInstances() {
+	sandboxManager.mu.Lock()
+	ids := make([]string, 0, len(sandboxManager.instances))
+	for id := range sandboxManager.instances {
+		ids = append(ids, id)
+	}
+	sandboxManager.mu.Unlock()
+
+	for _, id := range ids {
+		sandboxManager.mu.Lock()
+		inst := sandboxManager.instances[id]
+		sandboxManager.mu.Unlock()
+		if inst != nil {
+			reapInstance(inst)
+		}
 	}
 }
 
@@ -1703,13 +1825,13 @@ func handleSpawn(conn net.Conn, cfg SandboxConfig) {
 		if gJoinCwd != "" {
 			syscall.RawSyscall6(syscall.SYS_CHDIR, strPtr(gJoinCwd), 0, 0, 0, 0, 0)
 		}
-			// Transition to the selected shell profile at exec (aa_change_onexec):
-			// the shell + its descendants run confined. The profile was chosen
-			// parent-side from the instance's NET flag (offline -> cadence_sbx_shell,
-			// networked -> cadence_sbx_net); ignored if not installed (stays
-			// unconfined, as before). The profile's self-stack rule keeps the
-			// shell's children confined even without this write.
-			rawSetExecProfile(gJoinProfilePtr, gJoinProfileLen)
+		// Transition to the selected shell profile at exec (aa_change_onexec):
+		// the shell + its descendants run confined. The profile was chosen
+		// parent-side from the instance's NET flag (offline -> cadence_sbx_shell,
+		// networked -> cadence_sbx_net); ignored if not installed (stays
+		// unconfined, as before). The profile's self-stack rule keeps the
+		// shell's children confined even without this write.
+		rawSetExecProfile(gJoinProfilePtr, gJoinProfileLen)
 		syscall.RawSyscall6(syscall.SYS_EXECVE,
 			uintptr(unsafe.Pointer(gJoinArgv0)),
 			uintptr(gJoinArgv),
