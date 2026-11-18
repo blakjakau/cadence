@@ -535,6 +535,13 @@ ui-tab-item[data-status-icon-type="image"]:not([active]) .status-icon {
     color: var(--color-bronze, #c8863a);
     white-space: nowrap;
 }
+/* Networked sandbox chip (cadence_sbx_net): a blue accent distinguishes
+   "has network" from the bronze air-gapped default at a glance. */
+.terminal-sandbox-badge.net,
+.terminal-session-tabs ui-tab-item .terminal-sandbox-badge.net {
+    background: var(--color-blue-soft, rgba(58, 134, 200, 0.18));
+    color: var(--color-blue, #3a86c8);
+}
 
 /* Terminal tabs inside a shared sandbox (lock chip present) get a bronze
    tint to match the run_command card coloring. */
@@ -621,6 +628,47 @@ ui-tabbar[slim].ai-session-tabs > ui-tab-item:has(.ai-sandbox-badge)[active] .ai
     background: var(--bg-secondary, #2a2a2a);
     color: var(--fg-primary, #eee);
     border: 1px solid var(--theme-dark, #555);
+}
+.sandbox-audit-panel {
+    margin-top: 12px;
+    padding-top: 10px;
+    border-top: 1px solid var(--border);
+}
+.sandbox-audit-instance {
+    margin-bottom: 8px;
+}
+.sandbox-audit-id {
+    display: block;
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: var(--text-color);
+    margin-bottom: 4px;
+}
+.sandbox-audit-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 8px;
+    padding: 2px 0;
+    font-size: 0.8rem;
+}
+.sandbox-audit-meta {
+    color: var(--text-color);
+}
+.sandbox-audit-time {
+    color: var(--text-color);
+    opacity: 0.7;
+}
+.sandbox-audit-hit {
+    color: var(--warning, #d9822b);
+    font-size: 0.75rem;
+}
+.sandbox-audit-note {
+    display: block;
+    color: var(--text-color);
+    opacity: 0.6;
+    font-size: 0.8rem;
+    padding: 2px 0;
 }
 
 .ai-session-tabs ui-tab-item,

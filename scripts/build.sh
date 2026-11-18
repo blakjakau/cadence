@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 # Anchor to the repo root so dist/, the build-osx script, and `go build .`
 # resolve correctly regardless of the caller's cwd.
@@ -8,7 +8,13 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.." || exit 1
 build_for_linux() {
   echo "build for ... linux amd64"
   mkdir -p dist
-  PKG_CONFIG_PATH="$HOME/.pkgconfig:${PKG_CONFIG_PATH}" GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o dist/cadence-linux-x64 .
+  # Prepend the project-local pkgconfig shim first: it bridges webkit2gtk-4.0 ->
+  # webkit2gtk-4.1 (webview_go hard-requires the 4.0 .pc name). This keeps the
+  # build working inside the sandbox, where $HOME is an ephemeral mount and the
+  # user's ~/.pkgconfig shim is not visible.
+  local pkg_path=""
+  if [[ -d "$(pwd)/.pkgconfig" ]]; then pkg_path="$(pwd)/.pkgconfig:"; fi
+  PKG_CONFIG_PATH="${pkg_path}${PKG_CONFIG_PATH}" GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o dist/cadence-linux-x64 .
 }
 
 build_for_mac() {

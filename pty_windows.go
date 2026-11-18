@@ -3,11 +3,11 @@
 package main
 
 import (
-	"io"
-	"os/exec"
-	"log"
-	"strings"
 	"github.com/UserExistsError/conpty"
+	"io"
+	"log"
+	"os/exec"
+	"strings"
 )
 
 // startPty returns an io.ReadWriteCloser and a process handle for the PTY

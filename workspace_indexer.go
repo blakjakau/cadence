@@ -24,10 +24,10 @@ type SearchResult struct {
 }
 
 type WorkspaceIndex struct {
-	mu             sync.RWMutex
-	WorkspaceDir   string
-	Files          map[string]*FileIndex `json:"files"`
-	IgnorePaths    []string              `json:"ignore_paths"`
+	mu           sync.RWMutex
+	WorkspaceDir string
+	Files        map[string]*FileIndex `json:"files"`
+	IgnorePaths  []string              `json:"ignore_paths"`
 }
 
 type IndexManager struct {
@@ -58,7 +58,7 @@ func InitWorkspaceIndex(root string) *IndexManager {
 // SetActiveRoots sets the active workspace folders, updates their ignore paths, and triggers a background rescan.
 func (im *IndexManager) SetActiveRoots(roots []string, ignorePaths []string) {
 	im.mu.Lock()
-	
+
 	// Create/load indexes
 	for _, root := range roots {
 		idx, exists := im.Indexes[root]
@@ -70,12 +70,12 @@ func (im *IndexManager) SetActiveRoots(roots []string, ignorePaths []string) {
 			idx.LoadFromDisk()
 			im.Indexes[root] = idx
 		}
-		
+
 		// Update ignore paths
 		idx.mu.Lock()
 		idx.IgnorePaths = ignorePaths
 		idx.mu.Unlock()
-		
+
 		// Kick off a background scan to rescan and index
 		go func(i *WorkspaceIndex) {
 			i.ScanWorkspace()
@@ -84,7 +84,7 @@ func (im *IndexManager) SetActiveRoots(roots []string, ignorePaths []string) {
 			}
 		}(idx)
 	}
-	
+
 	// Clean up inactive roots
 	for existingRoot := range im.Indexes {
 		active := false
@@ -99,7 +99,7 @@ func (im *IndexManager) SetActiveRoots(roots []string, ignorePaths []string) {
 		}
 	}
 	im.mu.Unlock()
-	
+
 	if im.OnStatusUpdate != nil {
 		im.OnStatusUpdate()
 	}
@@ -114,7 +114,7 @@ func (idx *WorkspaceIndex) IsPathIgnored(path string) bool {
 	if err != nil {
 		return false
 	}
-	
+
 	relPath = filepath.ToSlash(relPath)
 	parts := strings.Split(relPath, "/")
 
@@ -124,20 +124,20 @@ func (idx *WorkspaceIndex) IsPathIgnored(path string) bool {
 			continue
 		}
 		ignore = filepath.ToSlash(ignore)
-		
+
 		// Skip directories/files that match exactly or whose parent matches exactly
 		for _, part := range parts {
 			if strings.EqualFold(part, ignore) {
 				return true
 			}
 		}
-		
+
 		// Or check if the ignore pattern is a path prefix
 		if strings.HasPrefix(strings.ToLower(relPath), strings.ToLower(ignore)) {
 			return true
 		}
 	}
-	
+
 	return false
 }
 
@@ -189,7 +189,7 @@ func (im *IndexManager) getBestIndexForPathRLocked(path string) *WorkspaceIndex 
 func (im *IndexManager) GetOutline(path string) string {
 	im.mu.RLock()
 	defer im.mu.RUnlock()
-	
+
 	idx := im.getBestIndexForPathRLocked(path)
 	if idx != nil {
 		idx.mu.RLock()
@@ -205,7 +205,7 @@ func (im *IndexManager) GetOutline(path string) string {
 func (im *IndexManager) GetFileSymbols(path string) []SymbolInfo {
 	im.mu.RLock()
 	defer im.mu.RUnlock()
-	
+
 	idx := im.getBestIndexForPathRLocked(path)
 	if idx != nil {
 		idx.mu.RLock()
@@ -217,15 +217,14 @@ func (im *IndexManager) GetFileSymbols(path string) []SymbolInfo {
 	return nil
 }
 
-
 // SearchSymbols returns files containing a matching symbol name across all indexes
 func (im *IndexManager) SearchSymbols(query string) []SearchResult {
 	im.mu.RLock()
 	defer im.mu.RUnlock()
-	
+
 	query = strings.ToLower(query)
 	var results []SearchResult
-	
+
 	for _, idx := range im.Indexes {
 		idx.mu.RLock()
 		for path, fi := range idx.Files {
@@ -247,14 +246,12 @@ func (im *IndexManager) SearchSymbols(query string) []SearchResult {
 func (im *IndexManager) UpdateFile(path string, content string) {
 	im.mu.RLock()
 	defer im.mu.RUnlock()
-	
+
 	idx := im.getBestIndexForPathRLocked(path)
 	if idx != nil {
 		idx.UpdateFile(path, content)
 	}
 }
-
-
 
 func (idx *WorkspaceIndex) GetIndexFilePath() string {
 	return filepath.Join(idx.WorkspaceDir, ".cadence", "index.json")
@@ -420,7 +417,7 @@ func (idx *WorkspaceIndex) UpdateFile(path string, content string) {
 			Symbols:      symbols,
 		}
 		idx.mu.Unlock()
-		
+
 		// In a real app we might debounce SaveToDisk
 		idx.SaveToDisk()
 	}

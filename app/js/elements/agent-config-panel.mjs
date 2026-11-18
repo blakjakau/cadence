@@ -134,6 +134,7 @@ export class AgentConfigPanel extends Block {
 					if (key === "defaultAllowSubAgents") window.ui.aiManager.config.defaultAllowSubAgents = input.checked;
 					if (key === "defaultAllowRunCommand") window.ui.aiManager.config.defaultAllowRunCommand = input.checked;
 					if (key === "defaultSandboxCommands") window.ui.aiManager.config.defaultSandboxCommands = input.checked;
+					if (key === "defaultSandboxNet") window.ui.aiManager.config.defaultSandboxNet = input.checked;
 					if (key === "defaultAutoMilestones") window.ui.aiManager.config.defaultAutoMilestones = input.checked;
 					if (key === "modelLeadPruning") window.ui.aiManager.config.modelLeadPruning = input.checked;
 					window.ui.aiManager._updatePromptAreaPlaceholder();
@@ -228,6 +229,7 @@ export class AgentConfigPanel extends Block {
 			runCommandRow.wrapper.classList.add("has-cog");
 			runCommandRow.wrapper.appendChild(cog);
 		}
+		createToggleRow("default-sandbox-net", "Default Networked Sandboxes", "Start new sessions with the networked AppArmor profile (air-gapped by default).", "defaultSandboxNet");
 		createToggleRow("default-auto-milestones", "Default Auto-Milestones on 'done'", "Automatically freeze a checkpoint milestone when the agent finishes a cycle in new sessions.", "defaultAutoMilestones");
 		createToggleRow("default-auto-rollback-on-failures", "Default Auto-Rollback on Edit Failures", "Automatically roll back a file when consecutive edits fail.", "defaultAutoRollbackOnFailures");
 		createToggleRow("default-model-lead-pruning", "Default Model-Led Context Pruning", "Let the model proactively prune old context by calling the cull_history tool. New sessions inherit this unless overridden per-session.", "modelLeadPruning");

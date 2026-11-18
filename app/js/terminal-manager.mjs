@@ -1,5 +1,5 @@
 
-import { Button, Icon } from "./elements.mjs";
+import { Button, Icon, Block, Inline } from "./elements.mjs";
 import { loadScript, addStylesheet } from "./elements/utils.mjs";
 import conduitClient from "./conduit-client.mjs";
 import { TabBar } from "./elements/tabbar.mjs";
@@ -340,6 +340,10 @@ class TerminalManager {
 			if (folders.length > 0) {
 				url += `&sandbox_roots=${encodeURIComponent(folders.join(","))}`;
 			}
+			// Networked vs air-gapped profile (cadence_sbx_net vs cadence_sbx_shell).
+			if (sess?.sandboxNet) {
+				url += `&sandbox_net=1`;
+			}
 		} else if (sandboxMode === "attach" && sess?.sandboxAttachSession) {
 			url += `&sandbox=attach&session=${encodeURIComponent(sess.sandboxAttachSession)}&tab=${encodeURIComponent(sessionId)}`;
 		}
@@ -369,8 +373,10 @@ class TerminalManager {
 							session.sandboxId = msg.sandboxID || "";
 							session.sandboxOwners = Array.isArray(msg.sandboxOwners) ? msg.sandboxOwners : [];
 							session.sandboxStatus = msg.sandbox || "";
-							session.sandboxShared = msg.sandboxShared === true;
-							this._updateSandboxBadge(sessionId);
+						session.sandboxShared = msg.sandboxShared === true;
+						// Shell profile (air-gapped vs networked) drives the net chip.
+						session.sandboxProfile = msg.sandboxProfile || "";
+						this._updateSandboxBadge(sessionId);
 							this._updateTerminalTabName(sessionId);
 						}
 						return; // Handled
@@ -598,6 +604,72 @@ class TerminalManager {
 	}
 
 	/**
+	 * Renders a compact audit trail of live sandbox instances into the
+	 * sandbox-mode dialog's panel element. Each instance shows its recent
+	 * shell spawns (newest first, capped) with the shell tool, pid, net vs
+	 * air-gapped profile, and host wall time. The keeper cannot see per-command
+	 * argv (user input flows through the pty master), so the finest grain
+	 * available is the spawn itself. Sensitive-path hits are a soft signal
+	 * (best-effort AppArmor DENIED attribution) and are shown only when present.
+	 * @param {HTMLElement} panelEl - The panel element to render into.
+	 */
+	async _renderSandboxAudit(panelEl) {
+		if (!panelEl) return;
+		panelEl.empty();
+		let status;
+		try {
+			status = await conduitClient.wsGetSandboxStatus();
+		} catch (e) {
+			const note = new Inline("Sandbox audit unavailable: " + (e?.message || e));
+			note.classList.add("sandbox-audit-note");
+			panelEl.append(note);
+			return;
+		}
+		const instances = status?.instances || [];
+		if (instances.length === 0) {
+			const note = new Inline("No live sandboxes to audit.");
+			note.classList.add("sandbox-audit-note");
+			panelEl.append(note);
+			return;
+		}
+		for (const inst of instances) {
+			const block = new Block();
+			block.classList.add("sandbox-audit-instance");
+			const header = new Inline(inst.id);
+			header.classList.add("sandbox-audit-id");
+			block.append(header);
+			const audits = inst.audits || [];
+			if (audits.length === 0) {
+				const empty = new Inline("No shell spawns recorded.");
+				empty.classList.add("sandbox-audit-note");
+				block.append(empty);
+				panelEl.append(block);
+				continue;
+			}
+			for (const entry of audits) {
+				const row = new Block();
+				row.classList.add("sandbox-audit-row");
+				const meta = new Inline(
+					`${entry.tool || "?"} · pid ${entry.pid ?? "?"}` +
+					` · ${entry.net ? "networked" : "air-gapped"}`
+				);
+				meta.classList.add("sandbox-audit-meta");
+				row.append(meta);
+				const when = new Inline(entry.wallclock ? new Date(entry.wallclock).toLocaleString() : "");
+				when.classList.add("sandbox-audit-time");
+				row.append(when);
+				if (entry.sensitivePathHit) {
+					const hit = new Inline("denied: " + entry.sensitivePathHit);
+					hit.classList.add("sandbox-audit-hit");
+					row.append(hit);
+				}
+				block.append(row);
+			}
+			panelEl.append(block);
+		}
+	}
+
+	/**
 	 * Switches the active terminal session. Hides all other terminal containers and shows the selected one.
 	 * @param {string} sessionId - The ID of the terminal session to switch to.
 	 */
@@ -762,10 +834,15 @@ class TerminalManager {
 		const owners = Array.isArray(session.sandboxOwners) ? session.sandboxOwners : [];
 		const ownerList = owners.length > 0 ? owners.join(", ") : "you";
 		const shared = session.sandboxShared === true;
-		const lockIcon = document.createElement("ui-icon");
-		lockIcon.textContent = "lock";
-		badge.append(lockIcon);
-		badge.title = `Sandbox ${sbxId} (${status})${shared ? " — shared" : ""}\nCo-owners: ${ownerList}`;
+		// Profile chip: cloud = networked (cadence_sbx_net), lock = air-gapped
+		// (cadence_sbx_shell). The icon + .net color variant make net vs
+		// offline obvious at a glance on the tab.
+		const net = session.sandboxProfile === "cadence_sbx_net";
+		badge.classList.toggle("net", net);
+		const icon = document.createElement("ui-icon");
+		icon.textContent = net ? "cloud" : "lock";
+		badge.append(icon);
+		badge.title = `Sandbox ${sbxId} (${status})${net ? " — networked" : " — air-gapped"}${shared ? " — shared" : ""}\nCo-owners: ${ownerList}`;
 		session.tabItem.append(badge);
 
 		// The badge reflects live sandbox info; if this is the active tab,
@@ -798,7 +875,12 @@ class TerminalManager {
 				<label class="sandbox-mode-option"><input type="radio" name="sandbox-mode" value="sandboxed" ${session.sandboxMode === "sandboxed" ? "checked" : ""}> <span><strong>Sandboxed</strong> — shared Linux namespace bound to the workspace folders.</span></label>
 				<label class="sandbox-mode-option"><input type="radio" name="sandbox-mode" value="attach" ${session.sandboxMode === "attach" ? "checked" : ""}> <span><strong>Attach to agent sandbox</strong> — join a running agent session's shared sandbox.</span></label>
 			</div>
+			<div class="sandbox-net-option">
+				<label class="sandbox-mode-option"><input type="checkbox" id="sandbox-net-toggle" ${session.sandboxNet ? "checked" : ""}> <span><strong>Network access</strong> — run the shell in a networked namespace (<code>cadence_sbx_net</code>). Unchecked = air-gapped (<code>cadence_sbx_shell</code>).</span></label>
+			</div>
+			<div id="sandbox-audit-panel" class="sandbox-audit-panel"></div>
 		`;
+		this._renderSandboxAudit(modal.inner.querySelector("#sandbox-audit-panel"));
 		modal.actionBar.empty();
 
 		const attachSelect = document.createElement("select");
@@ -836,12 +918,22 @@ class TerminalManager {
 			attachSelect.style.display = "";
 		}
 
-		// Toggle the attach dropdown when the "attach" radio is selected
+		// Toggle the attach dropdown and the network option when the radio
+		// selection changes. The net toggle only applies to the "sandboxed"
+		// mode (the air-gapped vs networked profile choice); it is hidden for
+		// unsandboxed and attach (attach inherits the target's net flag).
+		const netOption = modal.inner.querySelector(".sandbox-net-option");
 		modal.inner.querySelectorAll('input[name="sandbox-mode"]').forEach(radio => {
 			radio.addEventListener("change", () => {
 				attachSelect.style.display = radio.value === "attach" && radio.checked ? "" : "none";
+				if (netOption) netOption.style.display = radio.checked && radio.value === "sandboxed" ? "" : "none";
 			});
 		});
+		// Reflect the initial radio selection for the net option's visibility.
+		if (netOption) {
+			const initial = modal.inner.querySelector('input[name="sandbox-mode"]:checked');
+			netOption.style.display = initial && initial.value === "sandboxed" ? "" : "none";
+		}
 
 		const okButton = new Button("Apply");
 		okButton.classList.add("themed");
@@ -851,6 +943,10 @@ class TerminalManager {
 			const selected = modal.inner.querySelector('input[name="sandbox-mode"]:checked');
 			const mode = selected ? selected.value : "unsandboxed";
 			session.sandboxMode = mode;
+			// The net toggle only matters for the sandboxed mode; clear it for
+			// unsandboxed/attach (attach inherits the target's net flag).
+			const netToggle = modal.inner.querySelector("#sandbox-net-toggle");
+			session.sandboxNet = mode === "sandboxed" && netToggle ? netToggle.checked : false;
 			if (mode === "attach") {
 				const target = attachSelect.value;
 				if (!target) {

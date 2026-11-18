@@ -16,13 +16,13 @@ import (
 )
 
 var (
-	bucketSessionsData   = []byte("sessions_data")
-	bucketSessionsMeta   = []byte("sessions_meta")
+	bucketSessionsData    = []byte("sessions_data")
+	bucketSessionsMeta    = []byte("sessions_meta")
 	bucketSessionArchives = []byte("session_archives")
 	bucketWorkspaces      = []byte("workspaces")
 	bucketAppConfig       = []byte("app_config")
-	keyAppConfig       = []byte("config")
-	keyMigrationMarker = []byte("migration_v1_done")
+	keyAppConfig          = []byte("config")
+	keyMigrationMarker    = []byte("migration_v1_done")
 )
 
 type SessionMetadataRecord struct {
@@ -915,5 +915,3 @@ func (c *CadenceDB) backupAndCompact() error {
 
 	return nil
 }
-
-

@@ -709,6 +709,12 @@ class AIManagerSessions {
 			window.modal.toast("Chat session archived to history.");
 		}
 
+		// Release this session's sticky sandbox owner on close (not just delete).
+		// Closing the last owner of a shared sandbox instance reaps the keeper,
+		// so long-lived or archived agent sessions don't hold orphan sandboxes.
+		// Re-opening from history re-creates a fresh sandbox on demand.
+		this._releaseSessionSandbox(sessionId);
+
 		this.allSessionMetadata = this.allSessionMetadata.filter(s => s.id !== sessionId);
 
 		if (!hasModelResponse && this.activeSessionId === sessionId) {

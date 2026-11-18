@@ -12,10 +12,12 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
-	"runtime"
-	"sync/atomic"
+	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"sync/atomic"
+	"syscall"
 	"time"
 )
 
@@ -26,19 +28,25 @@ func runCadenceServer(block bool) {
 	if installUserFlag {
 		msg, err := InstallUser()
 		log.Println(msg)
-		if err != nil { os.Exit(1) }
+		if err != nil {
+			os.Exit(1)
+		}
 		os.Exit(0)
 	}
 	if installServiceFlag {
 		msg, err := InstallService()
 		log.Println(msg)
-		if err != nil { os.Exit(1) }
+		if err != nil {
+			os.Exit(1)
+		}
 		os.Exit(0)
 	}
 	if uninstallFlag {
 		msg, err := Uninstall()
 		log.Println(msg)
-		if err != nil { os.Exit(1) }
+		if err != nil {
+			os.Exit(1)
+		}
 		os.Exit(0)
 	} else if len(flag.Args()) > 0 && flag.Args()[0] == "kill" {
 		log.Println("Shutting down Cadence via command line kill command.")
@@ -49,7 +57,11 @@ func runCadenceServer(block bool) {
 		fileAPIRoot = rootFlag
 	} else {
 		homeDir, err := os.UserHomeDir()
-		if err == nil { fileAPIRoot = homeDir } else { fileAPIRoot = "." }
+		if err == nil {
+			fileAPIRoot = homeDir
+		} else {
+			fileAPIRoot = "."
+		}
 	}
 	go fileWatcher.run()
 	updateLastActivity()
@@ -57,6 +69,18 @@ func runCadenceServer(block bool) {
 		go startIdleShutdownManager(60 * time.Minute)
 	}
 	startTime = time.Now()
+
+	// Reap all sandbox keepers on SIGINT/SIGTERM (Ctrl-C, `kill <pid>`).
+	// Without this the keepers survive the main binary (pdeathsig is
+	// unreliable across reexec) and their on-disk dirs leak.
+	go func() {
+		sig := make(chan os.Signal, 1)
+		signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
+		<-sig
+		log.Println("Signal received; reaping sandbox instances before exit.")
+		reapAllInstances()
+		os.Exit(0)
+	}()
 
 	ensureUserBashRC() // Create ~/.config/cadence/.bashrc if missing so the config panel can open it
 
@@ -216,18 +240,19 @@ func initLogging() {
 
 // Global variables remain accessible
 const version = "0.1.2"
+
 var port = "3022"
 var allowedOrigins = map[string]bool{
 	"https://cadence.jakbox.dev": true,
 	"https://cadence.jakbox.net": true,
-	"https://code.jakbox.dev": true,
-	"https://code.jakbox.net": true,
-	"http://localhost:8083":  true,
-	"http://localhost:3022":  true,
-	"http://localhost:3023":  true,
-	"http://localhost":       true,
-	"http://127.0.0.1:3022": true,
-	"http://127.0.0.1:3023": true,
+	"https://code.jakbox.dev":    true,
+	"https://code.jakbox.net":    true,
+	"http://localhost:8083":      true,
+	"http://localhost:3022":      true,
+	"http://localhost:3023":      true,
+	"http://localhost":           true,
+	"http://127.0.0.1:3022":      true,
+	"http://127.0.0.1:3023":      true,
 }
 var rootFlag string
 var serveFlag string
@@ -245,6 +270,7 @@ var requiredAPIKey string
 var isCompiledBuild bool
 var fileAPIRoot string
 var lastActivityTimestamp atomic.Int64
+
 // (Keep all your other helper functions like updateLastActivity, etc., here too)
 // --- Helper Functions ---
 func getIsCompiled() {
@@ -265,6 +291,7 @@ func activityMiddleware(next http.Handler) http.Handler {
 		next.ServeHTTP(w, r)
 	})
 }
+
 // corsMiddleware adds the necessary headers to handle CORS requests.
 func corsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -291,6 +318,7 @@ func startIdleShutdownManager(timeout time.Duration) {
 			idleDuration := time.Since(time.Unix(lastActivity, 0))
 			if idleDuration >= timeout {
 				log.Printf("Shutting down due to inactivity for over %v.", timeout)
+				reapAllInstances()
 				os.Exit(0)
 			}
 		}
@@ -323,7 +351,7 @@ func killHandler() (string, error) {
 		return "Kill command is disabled when running with --no-idle-shutdown.", fmt.Errorf("kill command disabled")
 	}
 	log.Println("Received /kill request. Shutting down application.")
-	go func() { time.Sleep(100 * time.Millisecond); os.Exit(0) }()
+	go func() { time.Sleep(100 * time.Millisecond); reapAllInstances(); os.Exit(0) }()
 	return "Cadence server is shutting down.", nil
 }
 
@@ -388,6 +416,7 @@ func stopHandler(w http.ResponseWriter, r *http.Request) {
 	go func() {
 		time.Sleep(250 * time.Millisecond)
 		log.Println("Exiting process.")
+		reapAllInstances()
 		os.Exit(0)
 	}()
 }

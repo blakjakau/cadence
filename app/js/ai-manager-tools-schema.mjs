@@ -431,7 +431,7 @@ export const tools = [
 	{
 		name: "run_command",
 		description:
-			"Run a shell command (default working directory is ALWAYS the project root). " +
+			"Run a shell command - working directory is ALWAYS the project root. " +
 			"This tool is for running commands that are not covered by the dedicated tools. " +
 			"Avoid use for edits, and exploration, prefer `edit_file` and `create_file`, which have automatic validation and rollback protections" +
 			"Avoid for general find tasks, use `search_files` which is highly optimized for the workspace",

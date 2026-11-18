@@ -54,6 +54,10 @@ import (
 // parent and read from globals (COW-shared across the clone).
 // ---------------------------------------------------------------------------
 
+// sandboxAuditCap bounds the per-instance audit ring (newest first). Keeps a
+// shared instance's audit trail from growing unbounded across many sessions.
+const sandboxAuditCap = 256
+
 // SandboxInstance is a live sandbox: a keeper coprocess + refcounted owners.
 type SandboxInstance struct {
 	id          string
@@ -66,6 +70,32 @@ type SandboxInstance struct {
 	// bwrapPids tracks the per-shell bwrap child pids (bwrap has no persistent
 	// keeper; each shell is its own bwrap process). Reaped with the instance.
 	bwrapPids map[int]bool
+	// auditMu guards auditRing (a parent-side ring; the raw child never touches it).
+	auditMu sync.Mutex
+	// auditRing is a bounded ring of shell-spawn records, newest first (the
+	// head is the newest; oldest entries are dropped when the cap is hit).
+	auditRing []SandboxAuditEntry
+}
+
+// recordAudit appends a shell-spawn entry to the instance's bounded ring
+// (newest first). Parent-side only: the raw child must never call this.
+func (inst *SandboxInstance) recordAudit(e SandboxAuditEntry) {
+	inst.auditMu.Lock()
+	defer inst.auditMu.Unlock()
+	inst.auditRing = append([]SandboxAuditEntry{e}, inst.auditRing...)
+	if len(inst.auditRing) > sandboxAuditCap {
+		inst.auditRing = inst.auditRing[:sandboxAuditCap]
+	}
+}
+
+// audits returns a copy of the instance's audit ring (newest first, capped).
+func (inst *SandboxInstance) audits() []SandboxAuditEntry {
+	inst.auditMu.Lock()
+	defer inst.auditMu.Unlock()
+	if len(inst.auditRing) == 0 {
+		return nil
+	}
+	return append([]SandboxAuditEntry(nil), inst.auditRing...)
 }
 
 // sandboxManager is the in-process registry keyed by layout fingerprint.
@@ -85,27 +115,30 @@ type probeResult struct {
 // ---- raw-syscall child payload (precomputed in the PARENT; the clone child
 // ---- must not allocate, so everything is a string / pointer / slice header) ----
 var (
-	rawUIDMapStr      string
-	rawGIDMapStr      string
-	rawDenyStr        string   = "deny\n"
-	rawMountRoots     []string // rw roots
-	rawMountRO        []string // ro roots
-	rawNSMask         uintptr  // CLONE_* mask for unshare
-	rawKargv0         *byte
-	rawKargv          unsafe.Pointer
-	rawKenvv          unsafe.Pointer
-	rawStderrPath     string           // child redirects fd2 here so a failing keeper leaves a trace
-	rawNewRoot        string           // newroot dir (inside the socket dir) for pivot_root
-	rawOldRoot        string           // newroot/oldroot — host / is bind-mounted here
-	rawSocketDir      string           // the socket dir, bind-mounted at its real path in the new root
-	rawBinDir         string           // the keeper binary's PARENT dir (mkdir'd empty in newroot so the file bind has a destination)
-	rawBinPath        string           // the keeper binary's full path, bind-mounted (file bind) so the keeper can exec itself
-	rawBinDestPtr     uintptr          // precomputed ptr to the post-pivot binary-destination path (the child creates the placeholder file here)
-	rawBashrcSrcPtr   uintptr          // precomputed ptr to the post-pivot SOURCE path of the .bashrc remap (/oldroot<host src>); 0 = no remap
-	rawBashrcDestPtr  uintptr          // precomputed ptr to the post-pivot DESTINATION path (<home>/.bashrc)
-	rawMkdirPathsList []string         // precomputed mkdir -p paths (newroot targets)
-	rawTraceFd        int              // the child's stderr fd (trace file), for per-step markers
-	rawStepPtrs       []unsafe.Pointer // precomputed pointers to single step-bytes (parent allocates)
+	rawUIDMapStr       string
+	rawGIDMapStr       string
+	rawDenyStr         string   = "deny\n"
+	rawMountRoots      []string // rw roots
+	rawMountRO         []string // ro roots
+	rawNSMask          uintptr  // CLONE_* mask for unshare
+	rawKargv0          *byte
+	rawKargv           unsafe.Pointer
+	rawKenvv           unsafe.Pointer
+	rawStderrPath      string           // child redirects fd2 here so a failing keeper leaves a trace
+	rawNewRoot         string           // newroot dir (inside the socket dir) for pivot_root
+	rawOldRoot         string           // newroot/oldroot — host / is bind-mounted here
+	rawSocketDir       string           // the socket dir, bind-mounted at its real path in the new root
+	rawBinDir          string           // the keeper binary's PARENT dir (mkdir'd empty in newroot so the file bind has a destination)
+	rawBinPath         string           // the keeper binary's full path, bind-mounted (file bind) so the keeper can exec itself
+	rawBinDestPtr      uintptr          // precomputed ptr to the post-pivot binary-destination path (the child creates the placeholder file here)
+	rawBashrcSrcPtr    uintptr          // precomputed ptr to the post-pivot SOURCE path of the .bashrc remap (/oldroot<host src>); 0 = no remap
+	rawBashrcDestPtr   uintptr          // precomputed ptr to the post-pivot DESTINATION path (<home>/.bashrc)
+	rawResolverMount   bool             // true when the single-file DNS resolver bind is enabled (NET instances only)
+	rawResolverSrcPtr  uintptr          // precomputed ptr to the post-pivot SOURCE path of the DNS resolver file (/oldroot<host path>); 0 = not mounted
+	rawResolverDestPtr uintptr          // precomputed ptr to the post-pivot DESTINATION path of the DNS resolver file; 0 = not mounted
+	rawMkdirPathsList  []string         // precomputed mkdir -p paths (newroot targets)
+	rawTraceFd         int              // the child's stderr fd (trace file), for per-step markers
+	rawStepPtrs        []unsafe.Pointer // precomputed pointers to single step-bytes (parent allocates)
 )
 
 // ---- AppArmor profile-transition names (precomputed NUL-terminated) ----
@@ -134,12 +167,15 @@ var (
 // "exec " prefix, built parent-side so the raw children never allocate.
 var (
 	keeperProfileName = "cadence_sbx_keeper" // the keeper + its join-children
-	shellProfileName  = "cadence_sbx_shell"  // the shell + its descendants
+	shellProfileName  = "cadence_sbx_shell"  // the offline shell + its descendants
+	netProfileName    = "cadence_sbx_net"    // the networked shell + its descendants
 
 	rawKeeperProfilePtr = rawCStringPtr("exec " + keeperProfileName)
 	rawKeeperProfileLen = len("exec " + keeperProfileName)
 	rawShellProfilePtr  = rawCStringPtr("exec " + shellProfileName)
 	rawShellProfileLen  = len("exec " + shellProfileName)
+	rawNetProfilePtr    = rawCStringPtr("exec " + netProfileName)
+	rawNetProfileLen    = len("exec " + netProfileName)
 	rawAttrExecPathPtr  = rawCStringPtr("/proc/self/attr/exec")
 	rawAttrExecPathLen  = len("/proc/self/attr/exec")
 )
@@ -200,6 +236,12 @@ var (
 	gJoinArgv0   *byte
 	gJoinArgv    unsafe.Pointer
 	gJoinEnvv    unsafe.Pointer
+	// The shell profile the join-child transitions to at exec, selected
+	// parent-side from cfg.Flags.NET (offline -> cadence_sbx_shell, net ->
+	// cadence_sbx_net). Precomputed pointers: the join-child never allocates,
+	// it only writes these to /proc/self/attr/exec and execs.
+	gJoinProfilePtr *byte
+	gJoinProfileLen int
 )
 
 // cString allocates a NUL-terminated copy of s (parent-side only).
@@ -530,6 +572,50 @@ func rawDetachOldRoot() int {
 	return detached
 }
 
+// resolveRealFile walks path through symlinks (parent-side only) and returns
+// the final on-host regular file it points at. Returns "" when the path does
+// not resolve to a regular file, so callers can skip the mount. Parent-side
+// because it allocates (os.Stat/readlink); the raw child must not.
+func resolveRealFile(path string) string {
+	var cur string
+	for cur = path; ; {
+		lst, err := os.Lstat(cur)
+		if err != nil {
+			return ""
+		}
+		if lst.Mode()&os.ModeSymlink != 0 {
+			target, err := os.Readlink(cur)
+			if err != nil {
+				return ""
+			}
+			// Resolve relative targets against the symlink's directory.
+			if !strings.HasPrefix(target, "/") {
+				target = filepath.Join(filepath.Dir(cur), target)
+			}
+			cur = filepath.Clean(target)
+			continue
+		}
+		if lst.Mode()&os.ModeType == 0 {
+			// A regular file: none of the os.FileMode type bits (dir, symlink,
+			// pipe, socket, device, char-device) are set. (The classic st_mode
+			// S_IFREG bit 0o100000 does not exist in os.FileMode — a regular
+			// file is simply the ABSENCE of a type bit.)
+			//
+			// Clean the FINAL path, not just intermediates. Without this, a
+			// symlink chain like /etc/resolv.conf -> ../run/systemd/resolve/...
+			// leaves "dotdot" segments (/etc/../run/...) in the result, which
+			// the parent-side single-file bind then uses verbatim as
+			// /oldroot+<this> for the bind SOURCE, and after pivot_root
+			// /oldroot is a bare dir whose ".." points back out of /oldroot,
+			// so the source would never reach the host file and the bind
+			// silently no-ops.
+			return filepath.Clean(cur)
+		}
+		// Not a symlink nor a regular file (dir, device, socket) -> not usable.
+		return ""
+	}
+}
+
 // expandMkdirAll returns the full set of absolute directory components that
 // mkdir -p would create for each path (parent-side only).
 func expandMkdirAll(paths []string) []string {
@@ -855,6 +941,20 @@ func spawnShellIn(inst *SandboxInstance, cwd string, extraEnv []string, method s
 		}
 	}
 
+	// Audit: record this shell spawn parent-side (the raw child must never
+	// touch the ring). The join-child argv[0] is cfg.Shell (the pty shell);
+	// user-typed commands flow through the pty master and are not visible to
+	// the keeper, so the finest grain is the spawn itself. SensitivePathHit is
+	// a soft signal (AppArmor DENIED attribution), left empty here.
+	audit := &SandboxAuditEntry{
+		Command:   inst.cfg.Shell,
+		Tool:      filepath.Base(inst.cfg.Shell),
+		Pid:       pid,
+		Wallclock: time.Now(),
+		Net:       inst.cfg.Flags.NET,
+	}
+	inst.recordAudit(*audit)
+
 	return &SandboxHandle{
 		Master: master,
 		Resize: func(cols, rows int) {
@@ -868,7 +968,21 @@ func spawnShellIn(inst *SandboxInstance, cwd string, extraEnv []string, method s
 		Pid:    pid,
 		Method: method,
 		Roots:  inst.cfg.Roots,
+		// Shell profile is a pure function of the instance's NET flag: networked
+		// shells run cadence_sbx_net, air-gapped ones cadence_sbx_shell.
+		ShellProfile: shellProfileForFlags(inst.cfg.Flags),
+		Audit:        audit,
 	}, nil
+}
+
+// shellProfileForFlags names the AppArmor shell profile for a flag layout:
+// networked -> cadence_sbx_net, air-gapped -> cadence_sbx_shell. A pure function
+// of the NET flag (no lookup map): the profile choice is NET ? net : shell.
+func shellProfileForFlags(flags SandboxFlags) string {
+	if flags.NET {
+		return netProfileName
+	}
+	return shellProfileName
 }
 
 // findInstanceByOwner returns the live instance that has owner as a co-owner
@@ -1093,6 +1207,36 @@ func spawnKeeper(cfg *SandboxConfig, id string) (int, string, error) {
 			mkdirTargets = append(mkdirTargets, rawNewRoot+home)
 		}
 	}
+	// 5f. DNS resolver visibility (NET instances only). The host's
+	//     /etc/resolv.conf is usually a symlink into /run
+	//     (e.g. -> ../run/systemd/resolve/stub-resolv.conf), but /run is
+	//     never mounted as a root passthrough, so the symlink dangles inside
+	//     the sandbox and glibc has no nameserver to read. When NET is on
+	//     we bind the single resolver FILE (its real on-host path) into the
+	//     new root at the same real path, so the symlink resolves. ONLY the
+	//     resolver file + its directory chain is exposed (the rest of /run,
+	//     user sockets, docker.sock, etc. stay hidden).
+	if cfg.Flags.NET {
+		resolverReal := resolveRealFile("/etc/resolv.conf")
+		if resolverReal != "" {
+			// Expand only the PARENT directory chain: expandMkdirAll turns every
+			// path component into a mkdir -p target, so if we passed the full
+			// resolver path it would also mkdir the final FILE as a directory
+			// (e.g. stub-resolv.conf -> dir), the post-pivot O_CREAT open would
+			// fail with EISDIR, and the file bind would silently no-op.
+			// The post-pivot placeholder file is created by the child itself
+			// (rawResolverDestPtr block) the same way the binary/bashrc
+			// placeholders are.
+			resolverDir := filepath.Dir(resolverReal)
+			if resolverDir != "/" && resolverDir != "." {
+				mkdirTargets = append(mkdirTargets, rawNewRoot+resolverDir)
+			}
+			rawResolverMount = true
+			rawResolverSrcPtr = strPtr("/oldroot" + resolverReal)
+			rawResolverDestPtr = strPtr(resolverReal)
+		}
+	}
+
 	rawMkdirPathsList = expandMkdirAll(mkdirTargets)
 	// Precompute the post-pivot binary-destination path pointer for the child.
 	// A file bind onto a non-existent path fails with ENOENT, so the child
@@ -1239,6 +1383,24 @@ func spawnKeeper(cfg *SandboxConfig, id string) (int, string, error) {
 			}
 			syscall.RawSyscall6(syscall.SYS_MOUNT, rawBashrcSrcPtr, rawBashrcDestPtr, 0, uintptr(syscall.MS_BIND|syscall.MS_RDONLY), 0, 0)
 		}
+		// 5f. DNS resolver bind (NET instances only): ro-bind the single resolver
+		//     file (/oldroot<src>) onto its real path in the new root so the
+		//     /etc/resolv.conf symlink (which points into /run) resolves to a
+		//     file with a nameserver. The dest's parent dir chain was pre-created
+		//     in newroot (rawMkdirPathsList); a file bind onto a non-existent
+		//     path fails with ENOENT, so create an empty placeholder at the
+		//     destination first, then ro-bind the real file onto it (source !=
+		//     destination path). Must run BEFORE the /oldroot detach (the source
+		//     is a /oldroot submount). Only active when rawResolverMount is true
+		//     (NET on); offline instances keep the resolver absent.
+		if rawResolverMount && rawResolverSrcPtr != 0 && rawResolverDestPtr != 0 {
+			if f, _, pe := syscall.RawSyscall6(syscall.SYS_OPEN, rawResolverDestPtr, 0x441 /*O_WRONLY|O_CREAT|O_APPEND*/, 0644, 0, 0, 0); pe == 0 {
+				syscall.RawSyscall(syscall.SYS_CLOSE, f, 0, 0)
+			} else {
+				traceInt(int(pe))
+			}
+			syscall.RawSyscall6(syscall.SYS_MOUNT, rawResolverSrcPtr, rawResolverDestPtr, 0, uintptr(syscall.MS_BIND|syscall.MS_RDONLY), 0, 0)
+		}
 		// 5d. Hide the host fs: detach EVERY /oldroot* mount (deepest-first),
 		//     not just the top of the stack. A single umount2("/oldroot") left
 		//     the pivot-relocated old root + all /oldroot/* submounts in place
@@ -1354,6 +1516,33 @@ func releaseOwner(owner string) {
 	}
 }
 
+// reapAllInstances tears down every live sandbox owned by this binary. Called
+// on process exit (SIGINT/SIGTERM and the clean-stop path) so no keeper or
+// bwrap child survives the main process. A single agent session can outlive
+// many coding sessions and otherwise accumulate orphaned sandboxes, so we
+// sweep the whole registry, not just the closing owner.
+//
+// We snapshot the instance ids under the manager lock, then reap each one
+// after releasing it — reapInstance takes the manager lock itself, so we must
+// not hold it across the call.
+func reapAllInstances() {
+	sandboxManager.mu.Lock()
+	ids := make([]string, 0, len(sandboxManager.instances))
+	for id := range sandboxManager.instances {
+		ids = append(ids, id)
+	}
+	sandboxManager.mu.Unlock()
+
+	for _, id := range ids {
+		sandboxManager.mu.Lock()
+		inst := sandboxManager.instances[id]
+		sandboxManager.mu.Unlock()
+		if inst != nil {
+			reapInstance(inst)
+		}
+	}
+}
+
 // sandboxStatus builds the /api/sandbox payload: the capability probe result
 // plus a snapshot of the live sandbox instances (for the UI to list attachable
 // agent sandboxes and show a capability indicator).
@@ -1366,8 +1555,17 @@ func sandboxStatus() *SandboxStatusResponse {
 		Instances: []SandboxInstanceInfo{},
 	}
 
+	// Gather the live instances under the manager lock, then read each
+	// instance's audit ring AFTER releasing the manager lock (the ring has its
+	// own mutex; never hold both at once).
+	var live []*SandboxInstance
 	sandboxManager.mu.Lock()
 	for _, inst := range sandboxManager.instances {
+		live = append(live, inst)
+	}
+	sandboxManager.mu.Unlock()
+
+	for _, inst := range live {
 		owners := make([]string, 0, len(inst.owners))
 		for o := range inst.owners {
 			owners = append(owners, o)
@@ -1378,10 +1576,10 @@ func sandboxStatus() *SandboxStatusResponse {
 			Roots:  inst.cfg.Roots,
 			Owners: owners,
 			Shared: len(inst.owners) > 1,
+			Audits: inst.audits(),
 		}
 		resp.Instances = append(resp.Instances, info)
 	}
-	sandboxManager.mu.Unlock()
 	return resp
 }
 
@@ -1598,6 +1796,14 @@ func handleSpawn(conn net.Conn, cfg SandboxConfig) {
 	gJoinArgv0, gJoinArgv, gJoinEnvv = buildExecveStructures(argv, req.Env)
 	gJoinSlaveFd = slaveFd
 	gJoinCwd = req.Cwd
+	// Select the shell profile the join-child will transition to at exec, from
+	// the instance's NET flag (air-gapped -> cadence_sbx_shell, networked ->
+	// cadence_sbx_net). Parent-side pointer selection; the child only writes.
+	if cfg.Flags.NET {
+		gJoinProfilePtr, gJoinProfileLen = rawNetProfilePtr, rawNetProfileLen
+	} else {
+		gJoinProfilePtr, gJoinProfileLen = rawShellProfilePtr, rawShellProfileLen
+	}
 
 	pid, err := rawFork()
 	if err != nil {
@@ -1619,11 +1825,13 @@ func handleSpawn(conn net.Conn, cfg SandboxConfig) {
 		if gJoinCwd != "" {
 			syscall.RawSyscall6(syscall.SYS_CHDIR, strPtr(gJoinCwd), 0, 0, 0, 0, 0)
 		}
-		// Transition to the cadence_sbx_shell profile at exec (aa_change_onexec):
-		// the shell + its descendants run confined. Ignored if the profile is
-		// not installed (stays unconfined, as before). The profile's self-stack
-		// rule keeps the shell's children confined even without this write.
-		rawSetExecProfile(rawShellProfilePtr, rawShellProfileLen)
+		// Transition to the selected shell profile at exec (aa_change_onexec):
+		// the shell + its descendants run confined. The profile was chosen
+		// parent-side from the instance's NET flag (offline -> cadence_sbx_shell,
+		// networked -> cadence_sbx_net); ignored if not installed (stays
+		// unconfined, as before). The profile's self-stack rule keeps the
+		// shell's children confined even without this write.
+		rawSetExecProfile(gJoinProfilePtr, gJoinProfileLen)
 		syscall.RawSyscall6(syscall.SYS_EXECVE,
 			uintptr(unsafe.Pointer(gJoinArgv0)),
 			uintptr(gJoinArgv),
