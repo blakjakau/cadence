@@ -183,6 +183,10 @@ export default class AI {
 		return false;
 	}
 
+	get supportsVision() {
+		return false;
+	}
+
 	setOption(name, value) {
 		if (this._settingsSchema[name]) {
 			this.config[name] = value;

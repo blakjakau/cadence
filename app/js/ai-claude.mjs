@@ -53,6 +53,10 @@ class Claude extends AI {
         return true;
     }
 
+    get supportsVision() {
+        return true;
+    }
+
     get supportsReasoning() {
         const model = (this.config.model || "").toLowerCase();
         return model.includes('thinking') || model.includes('reasoning') || model.includes('3-7');
@@ -188,6 +192,17 @@ class Claude extends AI {
                     tool_use_id: toolUseId,
                     content: contentStr
                 });
+            } else if (msg.images && msg.images.length > 0) {
+                // User message with images — emit text + image blocks
+                if (msg.content && msg.content.trim()) {
+                    this._appendClaudeContentBlock(claudeMessages, 'user', { type: 'text', text: msg.content.trim() });
+                }
+                for (const img of msg.images) {
+                    this._appendClaudeContentBlock(claudeMessages, 'user', {
+                        type: 'image',
+                        source: { type: 'base64', media_type: img.mimeType, data: img.data }
+                    });
+                }
             } else if (isModel) {
                 const contentBlocks = [];
                 if (msg.content && msg.content.trim()) {

@@ -1,6 +1,6 @@
 // ai-manager.mjs
 // Styles for this module are located in css/ai-manager.css
-import { Block, Button, Icon, TabBar, TabItem, FileBar, SkillPicker, RootPicker, ContentFill } from "./elements.mjs"
+import { Block, Button, Icon, TabBar, TabItem, FileBar, ImageBar, SkillPicker, RootPicker, ContentFill } from "./elements.mjs"
 import AIManagerHistory, { MAX_RECENT_MESSAGES_TO_PRESERVE } from "./ai-manager-history.mjs"
 import AIManagerMessageRenderer from "./ai-manager-message-renderer.mjs" // NEW: Settings manager
 import AIManagerSessions from "./ai-manager-sessions.mjs" // NEW: Sessions manager
@@ -52,6 +52,8 @@ class AIManager {
 		this.conversationArea = null;
 		this.chatContainer = null;
 		this.fileBar = null; // NEW: for file context chips
+		this.imageBar = null; // NEW: for image attachment thumbnails
+		this.pendingImages = []; // NEW: cached images awaiting send
 		this.submitButton = null;
 		// Initialize markdown-it with highlight.js for code highlighting
 		this.md = window.markdownit({ // hljs is available globally via <script> tag
@@ -1194,6 +1196,13 @@ isNativeReasoning,
 		const promptContainer = new Block()
 		promptContainer.classList.add("prompt-container")
 
+		this.imageBar = new ImageBar()
+		this.imageBar.addEventListener('image-remove-request', (e) => {
+			const imageId = e.detail.imageId;
+			this.pendingImages = this.pendingImages.filter(img => img.id !== imageId);
+			this.imageBar.remove(imageId);
+		});
+
 		this.promptArea = this._createPromptArea()
 
 		const buttonContainer = new Block()
@@ -1260,10 +1269,89 @@ isNativeReasoning,
 			buttonContainer.append(this.submitButton)
 		}
 
+		promptContainer.append(this.imageBar)
 		promptContainer.append(this.promptArea)
 		promptContainer.append(buttonContainer)
 
+		// Drag & drop image support
+		promptContainer.addEventListener('dragover', (e) => {
+			e.preventDefault();
+			e.stopPropagation();
+			promptContainer.classList.add('drag-over');
+		});
+		promptContainer.addEventListener('dragleave', (e) => {
+			e.preventDefault();
+			e.stopPropagation();
+			promptContainer.classList.remove('drag-over');
+		});
+		promptContainer.addEventListener('drop', (e) => {
+			e.preventDefault();
+			e.stopPropagation();
+			promptContainer.classList.remove('drag-over');
+			if (e.dataTransfer && e.dataTransfer.files.length > 0) {
+				this._handleImageFiles(e.dataTransfer.files);
+			}
+		});
+
+		// Clipboard paste image support
+		promptContainer.addEventListener('paste', (e) => {
+			const items = e.clipboardData?.items;
+			if (!items) return;
+			const imageFiles = [];
+			for (const item of items) {
+				if (item.type.startsWith('image/')) {
+					const file = item.getAsFile();
+					if (file) imageFiles.push(file);
+				}
+			}
+			if (imageFiles.length > 0) {
+				e.preventDefault();
+				this._handleImageFiles(imageFiles);
+			}
+		});
+
 		return promptContainer
+	}
+
+	_handleImageFiles(fileList) {
+		const MAX_IMAGES = 10;
+		const MAX_IMAGE_SIZE = 10 * 1024 * 1024; // 10 MB
+
+		const imageFiles = Array.from(fileList).filter(f => f.type.startsWith('image/'));
+		if (imageFiles.length === 0) return;
+
+		// Warn if active AI doesn't support vision
+		const activeAI = this.ai;
+		if (activeAI && !activeAI.supportsVision) {
+			window.modal?.toast?.('Current AI does not support vision. Images will be cached but not sent.');
+		}
+
+		for (const file of imageFiles) {
+			if (this.pendingImages.length >= MAX_IMAGES) {
+				window.modal?.toast?.(`Maximum ${MAX_IMAGES} images allowed.`);
+				break;
+			}
+			if (file.size > MAX_IMAGE_SIZE) {
+				window.modal?.toast?.(`"${file.name}" exceeds 10 MB limit.`);
+				continue;
+			}
+			const reader = new FileReader();
+			reader.onload = () => {
+				const dataUrl = reader.result;
+				const commaIdx = dataUrl.indexOf(',');
+				const base64Data = dataUrl.substring(commaIdx + 1);
+				const image = {
+					id: crypto.randomUUID(),
+					name: file.name || 'image',
+					data: base64Data,
+					mimeType: file.type,
+					dataUrl
+				};
+				this.pendingImages.push(image);
+				this.imageBar.add(image);
+			};
+			reader.readAsDataURL(file);
+		}
 	}
 
 	_createPromptArea() {
@@ -2019,14 +2107,23 @@ isNativeReasoning,
 			if (this.activeSessionId === sessionId) {
 				this.activeSession.promptQueue = session.promptQueue;
 				this.promptEditor.setValue(nextPrompt.content, -1);
+				// Restore queued images for the active session
+				if (nextPrompt.images && nextPrompt.images.length > 0) {
+					this.pendingImages = nextPrompt.images;
+					this.imageBar.clear();
+					for (const img of nextPrompt.images) {
+						img.dataUrl = `data:${img.mimeType};base64,${img.data}`;
+						this.imageBar.add(img);
+					}
+				}
 				this.generate();
 			} else {
-				this.generateBackground(sessionId, nextPrompt.content);
+				this.generateBackground(sessionId, nextPrompt.content, nextPrompt.images);
 			}
 		}
 	}
 
-	async generateBackground(sessionId, promptText) {
+	async generateBackground(sessionId, promptText, images) {
 		const session = await workspaceClient.getSession(sessionId);
 		if (!session) return;
 		
@@ -2054,15 +2151,18 @@ isNativeReasoning,
 			session.messages.push(contextMessage);
 		});
 
-		if (!processedPrompt) return;
+		if (!processedPrompt && !images?.length) return;
 		const userMessage = {
 			role: "user",
 			type: "user",
 			content: processedPrompt,
 			timestamp: Date.now(),
 			id: crypto.randomUUID(),
-			tokenCount: connection?.estimateTokens ? connection.estimateTokens(processedPrompt) : Math.ceil(processedPrompt.length / 3.2)
+			tokenCount: connection?.estimateTokens ? connection.estimateTokens(processedPrompt || "") : Math.ceil((processedPrompt || "").length / 3.2)
 		};
+		if (images && images.length > 0) {
+			userMessage.images = images;
+		}
 			session.messages.push(userMessage);
 			session.lastModified = Date.now();
 			const setRes = await workspaceClient.setSession(sessionId, session);
@@ -2996,7 +3096,7 @@ isNativeReasoning,
 	async generate() {
 		if (this._isProcessing) {
 			const promptText = this.promptEditor.getValue().trim();
-			if (!promptText) return;
+			if (!promptText && this.pendingImages.length === 0) return;
 
 			if (!this.activeSession.promptQueue) {
 				this.activeSession.promptQueue = [];
@@ -3004,6 +3104,7 @@ isNativeReasoning,
 			this.activeSession.promptQueue.push({
 				id: crypto.randomUUID(),
 				content: promptText,
+				images: this.pendingImages.length > 0 ? this.pendingImages.map(img => ({ id: img.id, name: img.name, data: img.data, mimeType: img.mimeType })) : undefined,
 				timestamp: Date.now()
 			});
 			this.activeSession.lastModified = Date.now();
@@ -3057,7 +3158,7 @@ isNativeReasoning,
 
 		const userPrompt = this.promptEditor.getValue().trim();
 
-		if (!userPrompt) {
+		if (!userPrompt && this.pendingImages.length === 0) {
 			this.setSessionProcessing(targetSessionId, false);
 			return;
 		}
@@ -3167,19 +3268,25 @@ isNativeReasoning,
 
 		let userMessage = null;
 		let userMessageElement = null; // To hold the DOM element of the user's prompt
-		if (processedPrompt) {
+		if (processedPrompt || this.pendingImages.length > 0) {
 			userMessage = {
 				role: "user",
 				type: "user",
 				content: processedPrompt,
 				timestamp: Date.now(),
 				id: crypto.randomUUID(),
-				tokenCount: targetAI?.estimateTokens ? targetAI.estimateTokens(processedPrompt) : Math.ceil(processedPrompt.length / 3.2)
+				tokenCount: targetAI?.estimateTokens ? targetAI.estimateTokens(processedPrompt || "") : Math.ceil((processedPrompt || "").length / 3.2)
 			};
+			if (this.pendingImages.length > 0) {
+				userMessage.images = this.pendingImages.map(img => ({ id: img.id, name: img.name, data: img.data, mimeType: img.mimeType }));
+			}
 			targetSession.messages.push(userMessage);
 			if (this.activeSessionId === targetSessionId) {
 				userMessageElement = this.historyManager.appendMessageElement(userMessage);
 			}
+			// Clear pending images now that they've been sent
+			this.pendingImages = [];
+			this.imageBar.clear();
 		} else {
 			// Scenario: Context items were added, but no user prompt was given.
 			// In this case, we don't call the AI, acknowledge the context addition, and abort.

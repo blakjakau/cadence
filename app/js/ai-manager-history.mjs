@@ -1257,6 +1257,25 @@ class AIManagerHistory {
 			wrapper.dataset.messageId = message.id;
 			wrapper.setAttribute("title", `Tokens: ${tokenCount}`);
 
+			// Render attached image thumbnails (before the text pill)
+			if (message.images && message.images.length > 0) {
+				const imagesBlock = new Block();
+				imagesBlock.classList.add("message-images");
+				for (const img of message.images) {
+					const imgEl = document.createElement("img");
+					imgEl.src = img.dataUrl || `data:${img.mimeType};base64,${img.data}`;
+					imgEl.alt = img.name || "image";
+					imgEl.className = "message-image-thumb";
+					imgEl.onclick = () => {
+						if (window.ui?.openImageTab) {
+							window.ui.openImageTab(img.dataUrl || `data:${img.mimeType};base64,${img.data}`, img.name || "image");
+						}
+					};
+					imagesBlock.append(imgEl);
+				}
+				wrapper.append(imagesBlock);
+			}
+
 			const messageBlock = new Block();
 			messageBlock.classList.add("prompt-pill");
 			// Guard against missing/non-string content (would otherwise render the literal
@@ -4565,7 +4584,7 @@ class AIManagerHistory {
 					};
 				}
 				return msg;
-			}).filter(msg => msg.content && msg.content.trim() !== "");
+			}).filter(msg => (msg.content && msg.content.trim() !== "") || (msg.images && msg.images.length > 0));
 		}
 
 		// NEW: Strip redundant full read_file outputs (keeping only the latest read for each file)
@@ -4633,7 +4652,7 @@ class AIManagerHistory {
 					};
 				}
 				return msg;
-			}).filter(msg => msg.content && msg.content.trim() !== "");
+			}).filter(msg => (msg.content && msg.content.trim() !== "") || (msg.images && msg.images.length > 0));
 		}
 
 		// Partition chat history into file contexts and dialogue history to preserve attachments
@@ -4947,6 +4966,17 @@ class AIManagerHistory {
 			}
 		});
 
+		// Only the most recent user message with images should carry them in the outgoing
+		// context. Older images were already "consumed" — the model responded to them, and
+		// re-sending multi-MB base64 blobs on every turn wastes context budget.
+		let lastImageMsgId = null;
+		for (let i = chatHistory.length - 1; i >= 0; i--) {
+			if (chatHistory[i].role === "user" && chatHistory[i].images && chatHistory[i].images.length > 0) {
+				lastImageMsgId = chatHistory[i].id;
+				break;
+			}
+		}
+
 		// Add remaining chat history and Full file contexts
 		chatHistory.forEach(msg => {
 			if (msg.type === "file_context") {
@@ -5008,11 +5038,12 @@ class AIManagerHistory {
 						.trim();
 				}
 
-				const contextItem = {
-					role: msg.role,
-					content: content,
-					...(typeof msg.tokenCount === 'number' ? { tokenCount: msg.tokenCount } : {})
-				};
+			const contextItem = {
+				role: msg.role,
+				content: content,
+				...(typeof msg.tokenCount === 'number' ? { tokenCount: msg.tokenCount } : {}),
+				...(msg.images && msg.images.length > 0 && msg.id === lastImageMsgId ? { images: msg.images } : {})
+			};
 				
 				const msgSig = msg.thoughtSignature || msg.thought_signature;
 				if (this.ai.supportsJSONTools && toolCalls && toolCalls.length > 0) {

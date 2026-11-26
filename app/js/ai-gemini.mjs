@@ -79,6 +79,10 @@ class Gemini extends AI {
         return true;
     }
 
+    get supportsVision() {
+        return true;
+    }
+
     get supportsReasoning() {
         const model = (this.config.model || "").toLowerCase();
         return model.includes("gemini") || model.includes("gemma-4")
@@ -520,10 +524,19 @@ class Gemini extends AI {
             }
 
             // Standard user or system message
-            if (contentStr.trim()) {
+            if (contentStr.trim() || (msg.images && msg.images.length > 0)) {
+                const parts = [];
+                if (contentStr.trim()) {
+                    parts.push({ text: contentStr.trim() });
+                }
+                if (msg.images) {
+                    for (const img of msg.images) {
+                        parts.push({ inlineData: { mimeType: img.mimeType, data: img.data } });
+                    }
+                }
                 rawTurns.push({
                     role: 'user',
-                    parts: [{ text: contentStr.trim() }]
+                    parts
                 });
             }
         }

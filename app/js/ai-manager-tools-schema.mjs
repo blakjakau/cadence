@@ -271,19 +271,19 @@ export const tools = [
 			required: ["objective", "size", "create_another"],
 		},
 	},
-	{
-		name: "query",
-		description:
-			"Ask the user a question and wait for a response. Use for clarifications or decisions " +
-			"you cannot determine from the codebase.",
-		parameters: {
-			type: "object",
-			properties: {
-				question: { type: "string", description: "The question to ask the user." },
-			},
-			required: ["question"],
-		},
-	},
+	// {
+	// 	name: "query",
+	// 	description:
+	// 		"Ask the user a question and wait for a response. Use for clarifications or decisions " +
+	// 		"you cannot determine from the codebase.",
+	// 	parameters: {
+	// 		type: "object",
+	// 		properties: {
+	// 			question: { type: "string", description: "The question to ask the user." },
+	// 		},
+	// 		required: ["question"],
+	// 	},
+	// },
 	{
 		name: "sub_agent_complete",
 		description: "Signal sub-agent completion and return a result/summary to the parent.",
