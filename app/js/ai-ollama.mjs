@@ -52,6 +52,10 @@ class Ollama extends AI {
         return true;
     }
 
+    get supportsVision() {
+        return true;
+    }
+
     get supportsReasoning() {
         if (this.serverSupportsReasoning !== undefined) {
             return this.serverSupportsReasoning;
@@ -381,7 +385,11 @@ class Ollama extends AI {
                 // Map our internal 'model' role to what Ollama expects ('assistant') for chat history.
                 // This little switcheroo keeps the rest of the app consistent while complying with the API.
                 const role = msg.role === 'model' ? 'assistant' : msg.role;
-                return { role: role, content: msg.content };
+                const base = { role: role, content: msg.content };
+                if (msg.images && msg.images.length > 0) {
+                    base.images = msg.images.map(img => img.data);
+                }
+                return base;
             });
 
             // Step 2: Combine consecutive 'user' messages into a single message.
@@ -392,6 +400,9 @@ class Ollama extends AI {
                 if (lastMessage && lastMessage.role === 'user' && msg.role === 'user') {
                     // Append content to the previous user message
                     lastMessage.content += '\n\n' + msg.content;
+                    if (msg.images && msg.images.length > 0) {
+                        lastMessage.images = (lastMessage.images || []).concat(msg.images);
+                    }
                 } else {
                     // Otherwise, just add the new message
                     messagesToSend.push(msg);

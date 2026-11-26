@@ -21,6 +21,7 @@ export { Panel } from './elements/panel.mjs';
 export { MediaView } from './elements/mediaview.mjs';
 export { ActionBar, actionBars } from './elements/actionbar.mjs';
 export { FileBar } from './elements/filebar.mjs';
+export { ImageBar } from './elements/imagebar.mjs';
 export { TabBar } from './elements/tabbar.mjs';
 export { FileList } from './elements/filelist.mjs';
 export { Menu } from './elements/menu.mjs';

@@ -2012,6 +2012,45 @@ const openDiffTab = (filePath, backupId, targetEditor = leftEdit) => {
 	tab.click()
 }
 
+/**
+ * Opens an in-memory image (a base64 data URL) in a media view panel,
+ * reusing a single "Image" tab so successive clicks swap the content.
+ * Used to inspect AI chat image attachments that live only in memory.
+ *
+ * @param {string} dataUrl - Full `data:mime;base64,...` URL of the image.
+ * @param {string} [name="image"] - Display name shown on the tab.
+ */
+const openImageTab = (dataUrl, name = "image") => {
+	const tabPath = "image_view";
+
+	{
+		let tab = leftTabs.tabs.find(t => t.config?.path === tabPath)
+		if (tab) {
+			// Swap the in-memory image and bring the tab forward.
+			tab.config.dataUrl = dataUrl
+			tab.config.name = name
+			tab.label = name
+			tab.click()
+			return
+		}
+	}
+
+	const tab = leftTabs.add({
+		name: name,
+		path: tabPath,
+		mode: { mode: "media" },
+		session: null,
+		side: "left",
+		handle: "",
+		folder: "",
+		fileModified: false,
+		defaultStatusIcon: "image",
+		dataUrl: dataUrl,
+	})
+	tab.classList.add("preview-tab")
+	if (!restoreInProgress) tab.click()
+}
+
 ui.renderPlanTasksView = renderPlanTasksView
 ui.openPlanAndTaskList = openPlanAndTaskList
 ui.openAgentConfig = openAgentConfig
@@ -2020,6 +2059,7 @@ ui.openTerminalSettings = openTerminalSettings
 ui.openEditorSettings = openEditorSettings
 ui.openDiffTab = openDiffTab
 ui.openHistoryPreviewTab = openHistoryPreviewTab
+ui.openImageTab = openImageTab
 
 const openFileHandle = async (handle, knownPath = null, targetEditor = currentEditor) => {
 	let path = typeof handle === "string" ? handle : handle.path || knownPath
@@ -2746,12 +2786,18 @@ const updateEditorUI = async (targetEditor, targetMediaView, tab) => {
 	} else if (tab.config.mode.mode === "media") {
 		targetMediaView.style.display = "block"
 
-		let data = tab.config.rawData
-		if (!data) {
-			const fileData = await conduitClient.wsRead(tab.config.path)
-			data = fileData.data
+		let imageUrl
+		if (tab.config.dataUrl) {
+			// Ephemeral in-memory image (e.g. an AI chat attachment) — no disk read.
+			imageUrl = tab.config.dataUrl
+		} else {
+			let data = tab.config.rawData
+			if (!data) {
+				const fileData = await conduitClient.wsRead(tab.config.path)
+				data = fileData.data
+			}
+			imageUrl = `data:image/${tab.config.path.split(".").pop()};base64,${data}`
 		}
-		const imageUrl = `data:image/${tab.config.path.split(".").pop()};base64,${data}`
 		targetMediaView.setImage(imageUrl)
 	} else {
 		targetEditor.container.style.display = "block"

@@ -89,6 +89,10 @@ class LlamaCpp extends AI {
         return true;
     }
 
+    get supportsVision() {
+        return true;
+    }
+
     get supportsReasoning() {
         if (this.serverSupportsReasoning !== undefined) {
             return this.serverSupportsReasoning;
@@ -317,6 +321,19 @@ class LlamaCpp extends AI {
                         formattedMessages.push({ role: "user", content: sanitizeSurrogates(part) });
                     }
                 }
+            } else if (msg.images && msg.images.length > 0) {
+                // OpenAI-compatible multimodal content
+                const content = [];
+                if (msg.content && msg.content.trim()) {
+                    content.push({ type: "text", text: sanitizeSurrogates(msg.content) });
+                }
+                for (const img of msg.images) {
+                    content.push({
+                        type: "image_url",
+                        image_url: { url: `data:${img.mimeType};base64,${img.data}` }
+                    });
+                }
+                formattedMessages.push({ role: "user", content });
             } else {
                 formattedMessages.push({ role: "user", content: sanitizeSurrogates(msg.content) });
             }
