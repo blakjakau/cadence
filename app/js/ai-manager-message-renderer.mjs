@@ -1165,28 +1165,43 @@ export default class AIManagerMessageRenderer {
                 </details>
             `;
         } else if (toolName === "create_file" || toolName === "edit_file") {
-            let newContent = "";
-            if (toolName === "create_file") {
-                newContent = args.content || "";
-            } else if (Array.isArray(args.edits) && args.edits.length > 0) {
-                const lastEdit = args.edits[args.edits.length - 1];
-                newContent = lastEdit?.replace || "";
-            } else {
-                newContent = args.replace || "";
-            }
-            if ("string" == typeof newContent && newContent.length > 0) {
-                const allLines = newContent.split('\n');
-                const last5Lines = allLines.slice(-5);
-                const previewText = last5Lines.join('\n');
+            if (toolResultDetail) {
+                // Call completed: surface the validation/result message instead of the
+                // code preview so the user sees whether the edit was checked/verified.
                 expanderHtml = `
                     <details class="tool-call-preview-expander" open ontoggle="this.dataset.userToggled = 'true'">
                         <summary class="tool-call-preview-summary">
                             <ui-icon>expand_more</ui-icon>
-                            <span>Preview (last ${last5Lines.length} lines)</span>
+                            <span>Result</span>
                         </summary>
-                        <pre class="tool-call-preview-code"><code>${this._escapeHtml(previewText)}</code></pre>
+                        <pre class="tool-call-preview-code"><code>${this._escapeHtml(toolResultDetail)}</code></pre>
                     </details>
                 `;
+            } else {
+                // Still in flight: show a code preview of the change being made.
+                let newContent = "";
+                if (toolName === "create_file") {
+                    newContent = args.content || "";
+                } else if (Array.isArray(args.edits) && args.edits.length > 0) {
+                    const lastEdit = args.edits[args.edits.length - 1];
+                    newContent = lastEdit?.replace || "";
+                } else {
+                    newContent = args.replace || "";
+                }
+                if ("string" == typeof newContent && newContent.length > 0) {
+                    const allLines = newContent.split('\n');
+                    const last5Lines = allLines.slice(-5);
+                    const previewText = last5Lines.join('\n');
+                    expanderHtml = `
+                        <details class="tool-call-preview-expander" open ontoggle="this.dataset.userToggled = 'true'">
+                            <summary class="tool-call-preview-summary">
+                                <ui-icon>expand_more</ui-icon>
+                                <span>Preview (last ${last5Lines.length} lines)</span>
+                            </summary>
+                            <pre class="tool-call-preview-code"><code>${this._escapeHtml(previewText)}</code></pre>
+                        </details>
+                    `;
+                }
             }
         }
 

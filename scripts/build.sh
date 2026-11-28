@@ -4,6 +4,17 @@
 # resolve correctly regardless of the caller's cwd.
 cd "$(dirname "${BASH_SOURCE[0]}")/.." || exit 1
 
+# Build tags to embed only the tree-sitter grammars we actually use.
+# Without these, the `grammars` package embeds all 206 (~15 MB).
+# With the subset tags we drop to ~2 MB (saves ~13 MB per binary).
+GRAMMAR_TAGS="grammar_subset \
+  grammar_subset_javascript grammar_subset_typescript grammar_subset_tsx \
+  grammar_subset_go grammar_subset_python grammar_subset_rust \
+  grammar_subset_c grammar_subset_cpp grammar_subset_c_sharp \
+  grammar_subset_ruby grammar_subset_json grammar_subset_yaml \
+  grammar_subset_html grammar_subset_css grammar_subset_sql \
+  grammar_subset_markdown grammar_subset_markdown_inline"
+
 # Define build functions for clarity
 build_for_linux() {
   echo "build for ... linux amd64"
@@ -14,7 +25,7 @@ build_for_linux() {
   # user's ~/.pkgconfig shim is not visible.
   local pkg_path=""
   if [[ -d "$(pwd)/.pkgconfig" ]]; then pkg_path="$(pwd)/.pkgconfig:"; fi
-  PKG_CONFIG_PATH="${pkg_path}${PKG_CONFIG_PATH}" GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o dist/cadence-linux-x64 .
+  PKG_CONFIG_PATH="${pkg_path}${PKG_CONFIG_PATH}" GOOS=linux GOARCH=amd64 go build -tags "$GRAMMAR_TAGS" -ldflags="-s -w" -o dist/cadence-linux-x64 .
 }
 
 build_for_mac() {
@@ -30,7 +41,7 @@ build_for_mac() {
 build_for_windows() {
   echo "build for ... windows amd64"
   # The "-H windowsgui" flag builds the executable as a GUI application, preventing the console window from appearing.
-  GOOS=windows GOARCH=amd64 CGO_ENABLED=1 go build -ldflags="-s -w -H windowsgui" -o dist/cadence-windows-x64.exe .;
+  GOOS=windows GOARCH=amd64 CGO_ENABLED=1 go build -tags "$GRAMMAR_TAGS" -ldflags="-s -w -H windowsgui" -o dist/cadence-windows-x64.exe .;
 }
 
 # Initialize flags

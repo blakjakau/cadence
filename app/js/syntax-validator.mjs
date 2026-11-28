@@ -77,7 +77,10 @@ export const syntaxValidator = {
 
 	/**
 	 * Validates content syntax via backend API (/api/check-syntax).
-	 * Sends buffer in-memory without saving to disk.
+	 * The backend uses a pure-Go tree-sitter runtime and is authoritative for
+	 * all supported languages (JS/TS, Go, Python, Rust, C/C++, C#, Ruby,
+	 * JSON, YAML, HTML, CSS, SQL, Markdown). Sends buffer in-memory without
+	 * saving to disk.
 	 * @param {string} filePath - Path or filename
 	 * @param {string} content - Unsaved file content string
 	 * @returns {Promise<{valid: boolean, error?: string, nodeAvailable?: boolean, source?: string}>}
@@ -89,7 +92,8 @@ export const syntaxValidator = {
 				valid: !!result.valid,
 				error: result.error || undefined,
 				nodeAvailable: result.nodeAvailable !== false,
-				source: "backend/node"
+				supported: result.supported === true,
+				source: "backend/tree-sitter"
 			};
 		} catch (err) {
 			// If backend request fails (e.g. offline/network), do not block save
@@ -98,26 +102,29 @@ export const syntaxValidator = {
 	},
 
 	/**
-	 * Comprehensive syntax validation combining client-side Prettier & backend Node -c API.
+	 * Comprehensive syntax validation combining a client-side Prettier fast
+	 * path with the authoritative backend tree-sitter check.
 	 * Runs without modifying or writing the file to disk.
 	 * @param {string} filePath - Path or filename
 	 * @param {string} content - Unsaved file content string
 	 * @returns {Promise<{valid: boolean, error?: string, source?: string}>}
 	 */
 	async validate(filePath, content) {
-		// First check via client Prettier/JSON parser
+		// First check via client Prettier/JSON parser (fast path for JS/JSON/HTML/CSS)
 		const clientResult = this.validateClient(filePath, content);
 		if (!clientResult.valid) {
 			return clientResult;
 		}
 
-		// Second check via backend Node -c endpoint (if applicable)
+		// Second check via backend tree-sitter endpoint (authoritative, multi-language)
 		const backendResult = await this.validateBackend(filePath, content);
 		if (!backendResult.valid) {
 			return backendResult;
 		}
 
-		return { valid: true };
+		// Valid. Carry the backend's "supported" flag so callers can tell
+		// whether the language was actually checked or passed cleanly.
+		return { valid: true, supported: backendResult.supported === true, source: backendResult.source };
 	}
 };
 

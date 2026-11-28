@@ -9,7 +9,6 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -597,6 +596,7 @@ type SyntaxCheckResponse struct {
 	Valid         bool   `json:"valid"`
 	Error         string `json:"error,omitempty"`
 	NodeAvailable bool   `json:"nodeAvailable"`
+	Supported     bool   `json:"supported"`
 }
 
 func checkSyntaxHandler(w http.ResponseWriter, r *http.Request) {
@@ -616,81 +616,13 @@ func checkSyntaxHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	nodePath, err := exec.LookPath("node")
-	if err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(SyntaxCheckResponse{
-			Valid:         true,
-			NodeAvailable: false,
-		})
-		return
-	}
+	valid, errMsg := parseSyntax(req.Path, req.Content)
 
-	ext := strings.ToLower(filepath.Ext(req.Path))
-	if ext == ".json" {
-		w.Header().Set("Content-Type", "application/json")
-		if !json.Valid([]byte(req.Content)) {
-			// Find detailed error using json.Unmarshal
-			var dummy interface{}
-			jsonErr := json.Unmarshal([]byte(req.Content), &dummy)
-			errMsg := "Invalid JSON syntax"
-			if jsonErr != nil {
-				errMsg = jsonErr.Error()
-			}
-			json.NewEncoder(w).Encode(SyntaxCheckResponse{
-				Valid:         false,
-				Error:         errMsg,
-				NodeAvailable: true,
-			})
-			return
-		}
-		json.NewEncoder(w).Encode(SyntaxCheckResponse{
-			Valid:         true,
-			NodeAvailable: true,
-		})
-		return
-	}
-
-	if ext != ".js" && ext != ".mjs" && ext != ".cjs" {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(SyntaxCheckResponse{
-			Valid:         true,
-			NodeAvailable: true,
-		})
-		return
-	}
-
-	args := []string{"--check"}
-	if ext == ".cjs" {
-		args = append(args, "--input-type=commonjs")
-	} else if ext == ".js" || ext == ".mjs" {
-		args = append(args, "--input-type=module")
-	}
-
-	cmd := exec.Command(nodePath, args...)
-	cmd.Stdin = strings.NewReader(req.Content)
-
-	var stderr strings.Builder
-	cmd.Stderr = &stderr
-
-	runErr := cmd.Run()
 	w.Header().Set("Content-Type", "application/json")
-
-	if runErr != nil {
-		errMsg := strings.TrimSpace(stderr.String())
-		if errMsg == "" {
-			errMsg = runErr.Error()
-		}
-		json.NewEncoder(w).Encode(SyntaxCheckResponse{
-			Valid:         false,
-			Error:         errMsg,
-			NodeAvailable: true,
-		})
-		return
-	}
-
 	json.NewEncoder(w).Encode(SyntaxCheckResponse{
-		Valid:         true,
+		Valid:         valid,
+		Error:         errMsg,
 		NodeAvailable: true,
+		Supported:     supportedFor(req.Path),
 	})
 }

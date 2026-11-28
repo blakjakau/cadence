@@ -1847,10 +1847,11 @@ Snippet: ${r.content || r.snippet || ""}`;
             if (syntaxCheck.valid) {
                 delete this.fileFailureCounts[resolvedPath];
                 const editCountMsg = editList.length > 1 ? ` (${editList.length} edits applied)` : "";
+                const syntaxNote = syntaxCheck.supported ? "Syntax checked and verified." : "Syntax not verified, unsupported language.";
                 if (isForgivenessMode) {
-                    return `Successfully edited and validated ${path}${editCountMsg}.`;
+                    return `Successfully edited ${path}${editCountMsg}. ${syntaxNote}`;
                 } else {
-                    return `Successfully edited ${path}${editCountMsg} in memory (Permission Mode). The tab has switched to the side-by-side Diff view for your review. Click 'Apply Changes' at the top to save to disk or 'Discard' / rollback anytime.`;
+                    return `Successfully edited ${path}${editCountMsg} in memory (Permission Mode). The tab has switched to the side-by-side Diff view for your review. Click 'Apply Changes' at the top to save to disk or 'Discard' / rollback anytime. ${syntaxNote}`;
                 }
             } else {
                 this.fileFailureCounts[resolvedPath] = (this.fileFailureCounts[resolvedPath] || 0) + 1;
@@ -2480,7 +2481,8 @@ Snippet: ${r.content || r.snippet || ""}`;
                 }
                 
                 if (syntaxCheck.valid) {
-                    return `Successfully created and validated ${path}.`;
+                    const syntaxNote = syntaxCheck.supported ? "Syntax checked and verified." : "Syntax not verified, unsupported language.";
+                    return `Successfully created ${path}. ${syntaxNote}`;
                 } else {
                     return `Successfully created ${path}.\n⚠️ Notice: File currently has syntax errors (${syntaxCheck.error}). Ensure subsequent edits resolve this before completing the task.`;
                 }

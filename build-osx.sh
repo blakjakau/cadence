@@ -11,6 +11,17 @@ LOCAL_REPO_DIR="/home/jason/repo/dev.jakbox.cadence"
 	# The root directory of your project on your Linux machine
 LOCAL_DIST_DIR="$LOCAL_REPO_DIR/dist" # The directory on Linux where signed files will be placed
 
+# Build tags to embed only the tree-sitter grammars we actually use.
+# Without these, the `grammars` package embeds all 206 (~15 MB).
+# With the subset tags we drop to ~2 MB (saves ~13 MB per binary).
+GRAMMAR_TAGS="grammar_subset \
+  grammar_subset_javascript grammar_subset_typescript grammar_subset_tsx \
+  grammar_subset_go grammar_subset_python grammar_subset_rust \
+  grammar_subset_c grammar_subset_cpp grammar_subset_c_sharp \
+  grammar_subset_ruby grammar_subset_json grammar_subset_yaml \
+  grammar_subset_html grammar_subset_css grammar_subset_sql \
+  grammar_subset_markdown grammar_subset_markdown_inline"
+
 # --- Mac-Specific Variables (Fill these in) ---
 # include the credentials for build and signing on the remote mac
 if [ ! -f "./.osx-build-credentials" ]; then
@@ -81,9 +92,9 @@ ssh "$REMOTE_USER@$REMOTE_HOST" << EOF
 
     # --- Build the macOS binaries natively ---
     echo "Building for macOS amd64..."
-    GOOS=darwin GOARCH=amd64 go build -ldflags="-s -w" -o cadence-macos-x64 .
+    GOOS=darwin GOARCH=amd64 go build -tags "$GRAMMAR_TAGS" -ldflags="-s -w" -o cadence-macos-x64 .
     echo "Building for macOS arm64..."
-    GOOS=darwin GOARCH=arm64 go build -ldflags="-s -w" -o cadence-macos-arm64 .
+    GOOS=darwin GOARCH=arm64 go build -tags "$GRAMMAR_TAGS" -ldflags="-s -w" -o cadence-macos-arm64 .
     echo "Native builds complete."
   else
     echo "--- Skipping Go build steps on remote. ---"
