@@ -1,6 +1,7 @@
 @import "editor.css";
 @import "diff-view.css";
 @import "markdown-view.css";
+@import "html-preview.css";
 @import "session-artifacts.css";
 
 :root {

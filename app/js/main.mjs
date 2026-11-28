@@ -2061,9 +2061,17 @@ ui.openDiffTab = openDiffTab
 ui.openHistoryPreviewTab = openHistoryPreviewTab
 ui.openImageTab = openImageTab
 
-const openFileHandle = async (handle, knownPath = null, targetEditor = currentEditor) => {
+const openFileHandle = async (handle, knownPath = null, targetEditor = currentEditor, opts = {}) => {
 	let path = typeof handle === "string" ? handle : handle.path || knownPath
 	let name = typeof handle === "string" ? path.split("/").pop() : handle.name
+
+	// When a file is opened from a preview panel (opts.preview), the resulting
+	// tab should be shown in its preview view (HTML/Markdown) rather than the
+	// raw code editor, matching how the source panel is itself being viewed.
+	const _isPreviewableName = (n) => {
+		const l = (n || "").toLowerCase()
+		return l.endsWith(".html") || l.endsWith(".htm") || l.endsWith(".md") || l.endsWith(".markdown")
+	}
 
 	// don't add a new tab if the file is already open in a tab
 	{
@@ -2080,9 +2088,16 @@ const openFileHandle = async (handle, knownPath = null, targetEditor = currentEd
 		};
 
 		let tab = findOpenTab(leftTabs)
-		if (tab) return tab.click()
-		tab = findOpenTab(rightTabs)
-		if (tab) return tab.click()
+		if (!tab) tab = findOpenTab(rightTabs)
+		if (tab) {
+			// Opening from a preview panel: if the already-open tab is a
+			// previewable type, switch it to the preview view so it matches how
+			// the source panel is being shown.
+			if (opts.preview && _isPreviewableName(tab.config?.name)) {
+				tab.config.viewMode = "preview"
+			}
+			return tab.click()
+		}
 	}
 
 	let fileMode = { mode: "" }
@@ -2191,8 +2206,12 @@ const openFileHandle = async (handle, knownPath = null, targetEditor = currentEd
 
 	// Markdown files open in the rendered preview view by default; the panel's
 	// "Edit" button (or Alt+P) switches back to the raw text editor.
+	// When opened from a preview panel (opts.preview), HTML files also open in
+	// their preview view so the new tab matches how the source is shown.
 	const lowerName = name.toLowerCase()
 	const isMarkdown = lowerName.endsWith(".md") || lowerName.endsWith(".markdown")
+	const isHtml = lowerName.endsWith(".html") || lowerName.endsWith(".htm")
+	const usePreview = isMarkdown || (opts.preview && isHtml)
 
 	let projectFolder = typeof handle === "string" ? "" : handle.container;
 	if (!projectFolder && typeof path === "string") {
@@ -2221,7 +2240,8 @@ const openFileHandle = async (handle, knownPath = null, targetEditor = currentEd
 		modTime: fileData ? fileData.modTime : undefined,
 		size: fileData ? fileData.size : undefined,
 		// .md files default to the rendered markdown preview (see updateEditorUI).
-		viewMode: isMarkdown ? "preview" : undefined,
+		// HTML files opened from a preview panel also default to preview mode.
+		viewMode: usePreview ? "preview" : undefined,
 	})
 	setupSessionChangeListener(newSession, tab)
 	if(!restoreInProgress) tab.click()
@@ -2265,10 +2285,21 @@ const _setPreviewVisible = (visible) => {
 	if (_previewItem) _previewItem.style.display = visible ? "" : "none"
 	if (_previewSplit) _previewSplit.style.display = visible ? "" : "none"
 }
+const _htmlPreviewItem = document.getElementById("file_context_html_preview")
+const _htmlPreviewSplit = document.getElementById("file_context_html_preview_split")
+const _setHtmlPreviewVisible = (visible) => {
+	if (_htmlPreviewItem) _htmlPreviewItem.style.display = visible ? "" : "none"
+	if (_htmlPreviewSplit) _htmlPreviewSplit.style.display = visible ? "" : "none"
+}
 // True when the path is a markdown file (.md / .markdown, any case).
 const _isMarkdownPath = (p) => {
 	const n = (p || "").toLowerCase()
 	return n.endsWith(".md") || n.endsWith(".markdown")
+}
+// True when the path is an HTML file (.html / .htm, any case).
+const _isHtmlPath = (p) => {
+	const n = (p || "").toLowerCase()
+	return n.endsWith(".html") || n.endsWith(".htm")
 }
 
 // Reveal a file/folder in the sidebar file list: show the sidebar, switch to
@@ -2403,6 +2434,33 @@ fileMenu.click = folderMenu.click = topfolderMenu.click = async (action) => {
 			// file is not open yet (filelist context), open it first — openFileHandle
 			// reuses an existing tab when one matches. Then set viewMode and re-click
 			// the tab so updateEditorUI re-runs against the new viewMode.
+			{
+				const normPath = (p) => p ? p.replace(/\\/g, '/') : '';
+				const targetPath = normPath(filePath);
+				const findTab = () => {
+					for (const tabBar of [leftTabs, rightTabs]) {
+						for (const tab of tabBar.tabs) {
+							const n = normPath(tab.config?.path);
+							if (n && (n === targetPath || n.endsWith('/' + targetPath) || targetPath.endsWith('/' + n))) return tab;
+						}
+					}
+					return null;
+				};
+				let tab = findTab();
+				if (!tab) {
+					await openFileHandle(filePath, filePath);
+					tab = findTab();
+					if (!tab) break;
+				}
+				tab.config.viewMode = "preview";
+				tab.click();
+			}
+			break
+		case "html-preview":
+			// Switch the file's editor tab to the HTML preview view (sandboxed
+			// iframe). Mirrors "md-preview": open the file first if it is not
+			// already open, then set viewMode and re-click the tab so
+			// updateEditorUI re-runs against the new viewMode.
 			{
 				const normPath = (p) => p ? p.replace(/\\/g, '/') : '';
 				const targetPath = normPath(filePath);
@@ -2641,6 +2699,8 @@ const handleFileContextMenu = (e) => {
 		_setRevealVisible(menu === fileMenu)
 		// "Preview" is offered for markdown files from the editor tab bar.
 		_setPreviewVisible(menu === fileMenu && !isDir && _isMarkdownPath(ownPath))
+		// "Preview" is also offered for HTML files (sandboxed iframe preview).
+		_setHtmlPreviewVisible(menu === fileMenu && !isDir && _isHtmlPath(ownPath))
 		return menu.showAt(e)
 	}
 
@@ -2652,6 +2712,7 @@ const handleFileContextMenu = (e) => {
 	// switch it to preview mode (the click handler opens it if not yet open).
 	const listItemPath = fileItem.item.path || fileItem.item.name
 	_setPreviewVisible(fileItem?.item?.isDir === false && _isMarkdownPath(listItemPath))
+	_setHtmlPreviewVisible(fileItem?.item?.isDir === false && _isHtmlPath(listItemPath))
 	if (workspace.folders.includes(fileItem.item.path || fileItem.item)) {
 		menu = topfolderMenu
 	} else {
@@ -2719,6 +2780,7 @@ const updateEditorUI = async (targetEditor, targetMediaView, tab) => {
 		if (holder.editorSettingsView) holder.editorSettingsView.style.display = "none"
 		if (holder.diffView) holder.diffView.style.display = "none"
 		if (holder.previewView) holder.previewView.style.display = "none"
+		if (holder.htmlPreviewView) holder.htmlPreviewView.style.display = "none"
 		targetEditor.container.style.display = "none"
 		targetMediaView.style.display = "none"
 	}
@@ -2750,6 +2812,24 @@ const updateEditorUI = async (targetEditor, targetMediaView, tab) => {
 			tab.click()
 		}
 		holder.previewView.update(tab)
+		return;
+	}
+
+	// HTML preview mode: render the page in a sandboxed iframe for .html/.htm
+	// files. Toggled from the header "Preview" button, the file context menu,
+	// or ALT+P (see `toggle-md-preview`).
+	const isHtmlPreviewable = (tab) => {
+		const n = (tab.config.name || "").toLowerCase()
+		return n.endsWith(".html") || n.endsWith(".htm")
+	}
+	if (tab.config.viewMode === "preview" && isHtmlPreviewable(tab) && holder.htmlPreviewView) {
+		holder.htmlPreviewView.style.display = "block"
+		// Allow the panel to click back into the editor.
+		holder.htmlPreviewView.onEdit = () => {
+			tab.config.viewMode = "edit"
+			tab.click()
+		}
+		holder.htmlPreviewView.update(tab)
 		return;
 	}
 
@@ -3196,11 +3276,13 @@ const keyBinds = [
 		exec: () => {
 			const activeTab = currentTabs?.activeTab;
 			if (!activeTab || !activeTab.config) return;
-			// Only meaningful for markdown files with a live session. The read-only
-			// "History preview" tab (ALT+H) is always shown rendered, never raw.
-			const name = (activeTab.config.name || "").toLowerCase();
-			const isMd = name.endsWith(".md") || name.endsWith(".markdown");
-			if (!isMd || !activeTab.config.session) return;
+		// Meaningful for markdown files (rendered preview) and HTML files
+		// (sandboxed iframe preview), both with a live session. The read-only
+		// "History preview" tab (ALT+H) is always shown rendered, never raw.
+		const name = (activeTab.config.name || "").toLowerCase();
+		const isMd = name.endsWith(".md") || name.endsWith(".markdown");
+		const isHtml = name.endsWith(".html") || name.endsWith(".htm");
+		if ((!isMd && !isHtml) || !activeTab.config.session) return;
 			const isPreview = activeTab.config.viewMode === "preview";
 			activeTab.config.viewMode = isPreview ? "edit" : "preview";
 			activeTab.click();

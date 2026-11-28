@@ -6,6 +6,7 @@ import { SessionArtifactsPanel } from './session-artifacts-panel.mjs';
 import { AgentConfigPanel } from './agent-config-panel.mjs';
 import { DiffViewPanel } from './diff-view-panel.mjs';
 import { MarkdownPreviewPanel } from './markdown-preview-panel.mjs';
+import { HtmlPreviewPanel } from './html-preview-panel.mjs';
 import { SettingsPanel } from './settings-panel.mjs';
 
 export class EditorHolder extends Panel {
@@ -25,6 +26,9 @@ export class EditorHolder extends Panel {
 
         this.previewView = new MarkdownPreviewPanel();
         this.previewView.style.display = "none";
+
+        this.htmlPreviewView = new HtmlPreviewPanel();
+        this.htmlPreviewView.style.display = "none";
         
         this.workspaceSettingsView = new SettingsPanel();
         this.workspaceSettingsView.style.display = "none";
@@ -44,6 +48,7 @@ export class EditorHolder extends Panel {
         this.appendChild(this.agentConfigView);
         this.appendChild(this.diffView);
         this.appendChild(this.previewView);
+        this.appendChild(this.htmlPreviewView);
         this.appendChild(this.workspaceSettingsView);
         this.appendChild(this.terminalSettingsView);
         this.appendChild(this.editorSettingsView);
@@ -193,6 +198,7 @@ export class EditorHolder extends Panel {
             if (this.agentConfigView) this.agentConfigView.style.display = 'none';
             if (this.diffView) this.diffView.style.display = 'none';
             if (this.previewView) this.previewView.style.display = 'none';
+            if (this.htmlPreviewView) this.htmlPreviewView.style.display = 'none';
         } else {
             const activeTab = this._tabs.activeTab;
             // if (activeTab && activeTab.config && activeTab.config.mode === "media") {
@@ -550,7 +556,21 @@ export class EditorHolder extends Panel {
         }
         
         this.editorHeaderRight.appendChild(rightContainer);
-        
+
+        // Offer a "Preview" button for HTML files so the user can render the
+        // page in a sandboxed iframe (mirrors the markdown preview toggle).
+        const fileName = (tab.config.name || "").toLowerCase();
+        if (fileName.endsWith(".html") || fileName.endsWith(".htm")) {
+            const previewBtn = document.createElement("button");
+            previewBtn.className = "primary";
+            previewBtn.innerHTML = `<ui-icon style="font-size: 13px;">visibility</ui-icon> Preview`;
+            previewBtn.onclick = () => {
+                tab.config.viewMode = "preview";
+                tab.click();
+            };
+            this.editorHeaderRight.appendChild(previewBtn);
+        }
+
         this._adjustEditorTop();
     }
 }
