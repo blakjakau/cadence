@@ -103,6 +103,16 @@ class AgentTools {
         return allFolders;
     }
 
+    _getPrimaryCwd(sourceId = null) {
+        const session = this._resolveSession(sourceId);
+        const primaryRoot = session?.primaryRoot;
+        if (!primaryRoot || typeof primaryRoot !== 'string') return null;
+        // Only valid if the primary root is also pinned
+        const pinnedRoots = session?.pinnedRoots || [];
+        if (!pinnedRoots.some(p => p === primaryRoot)) return null;
+        return primaryRoot;
+    }
+
     _resolveAndValidatePath(targetPath, sourceId = null) {
         if (typeof targetPath !== 'string') {
             throw new Error("Path must be a string");
@@ -2593,10 +2603,15 @@ Snippet: ${r.content || r.snippet || ""}`;
             }
         }
         if (!targetCwd) {
-            const folders = this._getEffectiveWorkspaceFolders(targetSessionId);
-            if (folders.length > 0) {
-                const item = folders[0];
-                targetCwd = typeof item === 'string' ? item : (item?.path || item?.name || "");
+            const primaryCwd = this._getPrimaryCwd(targetSessionId);
+            if (primaryCwd) {
+                targetCwd = primaryCwd;
+            } else {
+                const folders = this._getEffectiveWorkspaceFolders(targetSessionId);
+                if (folders.length > 0) {
+                    const item = folders[0];
+                    targetCwd = typeof item === 'string' ? item : (item?.path || item?.name || "");
+                }
             }
         }
 
@@ -2687,7 +2702,10 @@ Snippet: ${r.content || r.snippet || ""}`;
             }
             const effectiveFolders = this._getEffectiveWorkspaceFolders(targetSessionId);
             if (!targetDir) {
-                if (effectiveFolders.length > 0) {
+                const primaryCwd = this._getPrimaryCwd(targetSessionId);
+                if (primaryCwd) {
+                    targetDir = primaryCwd;
+                } else if (effectiveFolders.length > 0) {
                     const item = effectiveFolders[0];
                     targetDir = typeof item === 'string' ? item : (item?.path || item?.name || "");
                 }

@@ -1175,6 +1175,34 @@ ui-root-item {
     color: var(--theme) !important;
 }
 
+.root-primary-button.hidden {
+    display: none !important;
+}
+
+.root-primary-button {
+    padding: 4px !important;
+    min-width: 28px !important;
+    min-height: 28px !important;
+    width: 28px !important;
+    height: 28px !important;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    flex-shrink: 0;
+    background: transparent !important;
+    border: none !important;
+    color: var(--text-secondary) !important;
+    transition: color 0.2s;
+}
+
+.root-primary-button:hover {
+    color: var(--color-warning, #f0ad4e) !important;
+}
+
+.root-primary-button.primary {
+    color: var(--color-warning, #f0ad4e) !important;
+}
+
 .root-item-info {
     display: flex;
     flex-direction: column;
