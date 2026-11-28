@@ -1,0 +1,85 @@
+/* --- ui-html-preview-panel (HtmlPreviewPanel) --- */
+/* Mirrors ui-markdown-preview-panel, but the body is a sandboxed iframe. */
+ui-html-preview-panel {
+    display: flex;
+    flex-direction: column;
+    position: absolute;
+    top: var(--tabHeight);
+    left: 0;
+    right: 4px;
+    bottom: 0;
+    overflow: hidden;
+    background: var(--bg-primary);
+    z-index: 2;
+    pointer-events: auto !important;
+}
+
+ui-html-preview-panel .html-preview-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 16px;
+    background: var(--theme);
+    border-bottom: 1px solid var(--border-primary);
+    height: var(--menuHeight);
+    min-height: var(--menuHeight);
+    box-sizing: border-box;
+    flex: none;
+}
+
+ui-html-preview-panel .html-preview-header-left {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-primary);
+    overflow: hidden;
+    min-width: 0;
+}
+
+ui-html-preview-panel .html-preview-header-left ui-icon {
+    font-size: 16px;
+    flex: none;
+}
+
+ui-html-preview-panel .html-preview-header-title {
+    text-overflow: ellipsis;
+    overflow: hidden;
+    white-space: nowrap;
+}
+
+ui-html-preview-panel .html-preview-header ui-button {
+    flex: none;
+    background: var(--bg-tertiary, rgba(0, 0, 0, 0.66));
+    color: var(--text-primary);
+    border: 1px solid var(--border-primary);
+    min-height: 23px;
+    height: 23px;
+    font-size: 11px;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-weight: 600;
+    margin-left: 8px;
+}
+
+ui-html-preview-panel .html-preview-header ui-button:hover {
+    background: rgba(0, 0, 0, 0.33);
+}
+
+/* The rendered page. `min-height: 0` lets the flex child shrink below its
+   content height so the iframe fills the panel exactly (a column flex item's
+   default min-height is `auto`, which would otherwise keep it as tall as its
+   intrinsic content and clip against the root's `overflow: hidden`). */
+ui-html-preview-panel .html-preview-frame {
+    flex: 1;
+    min-height: 0;
+    border: 0;
+    width: 100%;
+    background: #fff;
+    height: calc( 100% - 35px );
+}
+

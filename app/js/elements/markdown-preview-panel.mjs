@@ -188,8 +188,10 @@ export class MarkdownPreviewPanel extends Block {
 
         // Open the target in a new tab (or focus the existing tab if one is
         // already open for this path). `openFileHandle` handles both cases.
+        // opts.preview: the target tab should open in its preview view
+        // (HTML/Markdown) to match how this panel is being shown.
         if (window.ui?.openFileHandle) {
-            window.ui.openFileHandle(resolved, resolved, window.ui.currentEditor);
+            window.ui.openFileHandle(resolved, resolved, window.ui.currentEditor, { preview: true });
         }
     }
 

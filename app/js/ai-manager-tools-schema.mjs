@@ -431,7 +431,7 @@ export const tools = [
 	{
 		name: "run_command",
 		description:
-			"Run a shell command - working directory is ALWAYS the project root. " +
+			"Run a shell command - working directory is ALWAYS the first project root. " +
 			"This tool is for running commands that are not covered by the dedicated tools. " +
 			"Avoid use for edits, and exploration, prefer `edit_file` and `create_file`, which have automatic validation and rollback protections" +
 			"Avoid for general find tasks, use `search_files` which is highly optimized for the workspace",
@@ -441,7 +441,7 @@ export const tools = [
 				command: { type: "string", description: "The shell command to run." },
 				cwd: {
 					type: "string",
-					description: "Working directory (if not project root) relative to project root",
+					description: "set current working directory",
 				},
 				timeoutMs: { type: "number", description: "Timeout in ms before terminating (default: 60000)." },
 			},

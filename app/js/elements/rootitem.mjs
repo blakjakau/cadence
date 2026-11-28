@@ -4,11 +4,27 @@ import { Button } from './button.mjs';
 import { Icon } from './icon.mjs';
 
 export class RootItem extends Block {
-    constructor(config, isPinned = false) {
+    constructor(config, isPinned = false, isPrimary = false) {
         super();
         this.config = config; // { name, path }
         this.isPinned = isPinned;
+        this.isPrimary = isPrimary;
         this.className = 'root-item';
+
+        // --- Primary star button (left side, icon-only, shown only when pinned) ---
+        this.primaryButton = new Button("");
+        this.primaryButton.className = 'root-primary-button';
+        this.primaryButton.setIcon(isPrimary ? 'star' : 'star_border');
+        if (isPrimary) this.primaryButton.classList.add('primary');
+        if (!isPinned) this.primaryButton.classList.add('hidden');
+        this.primaryButton.onclick = (e) => {
+            e.stopPropagation();
+            this.dispatchEvent(new CustomEvent('root-set-primary', {
+                bubbles: true,
+                composed: true,
+                detail: { path: config.path, name: config.name, primary: !this.isPrimary }
+            }));
+        };
 
         // --- Pin button (left side, icon-only) ---
         this.pinButton = new Button("");
@@ -46,11 +62,14 @@ export class RootItem extends Block {
         // --- Row container ---
         this.row = new Block();
         this.row.classList.add('root-item-container');
-        this.row.append(this.pinButton, folderIcon, info);
+        this.row.append(this.primaryButton, this.pinButton, folderIcon, info);
         this.append(this.row);
 
         this.row.onclick = (e) => {
             if (e.target === this.pinButton || this.pinButton.contains(e.target)) {
+                return;
+            }
+            if (e.target === this.primaryButton || this.primaryButton.contains(e.target)) {
                 return;
             }
             // Clicking the row toggles the pin state
@@ -71,6 +90,14 @@ export class RootItem extends Block {
         this.pinButton.setIcon(isPinned ? 'keep' : 'keep_off');
         this.pinButton.classList.toggle('pinned', isPinned);
         this.classList.toggle('pinned', isPinned);
+        // Hide primary button when unpinned
+        this.primaryButton.classList.toggle('hidden', !isPinned);
+    }
+
+    updatePrimaryState(isPrimary) {
+        this.isPrimary = isPrimary;
+        this.primaryButton.setIcon(isPrimary ? 'star' : 'star_border');
+        this.primaryButton.classList.toggle('primary', isPrimary);
     }
 }
 

@@ -218,7 +218,8 @@ class AIManager {
 				hasCompletedAllTasks,
 				planningMode: targetPlanningMode,
 isNativeReasoning,
-			workspaceFolders: effectiveFolders,
+				workspaceFolders: effectiveFolders,
+			primaryRoot: targetSession?.primaryRoot || '',
 			enableModelLeadPruning: targetSession?.enableModelLeadPruning ?? (this.config.modelLeadPruning === true)
 		});
 		} else {

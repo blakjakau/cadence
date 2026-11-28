@@ -56,11 +56,14 @@ export class RootPicker extends Block {
 
         const session = this.aiManager.activeSession;
         const pinnedRoots = session?.pinnedRoots || [];
+        const primaryRoot = session?.primaryRoot || '';
 
         for (const root of filtered) {
             const isPinned = pinnedRoots.some(p => p === root.path || p === root.name);
-            const item = new RootItem(root, isPinned);
+            const isPrimary = isPinned && primaryRoot === root.path;
+            const item = new RootItem(root, isPinned, isPrimary);
             item.on('root-pin-toggle', (e) => this.handlePinToggle(e.detail));
+            item.on('root-set-primary', (e) => this.handleSetPrimary(e.detail));
             this.listContainer.append(item);
         }
     }
@@ -77,6 +80,10 @@ export class RootPicker extends Block {
             }
         } else {
             session.pinnedRoots = session.pinnedRoots.filter(p => p !== path && p !== name);
+            // Clear primaryRoot if the unpinned root was the primary
+            if (session.primaryRoot && (session.primaryRoot === path || session.primaryRoot === name)) {
+                session.primaryRoot = '';
+            }
         }
 
         await workspaceClient.setSession(session.id, session);
@@ -86,6 +93,16 @@ export class RootPicker extends Block {
         if (this.aiManager.historyManager) {
             this.aiManager.historyManager.populateFileBar();
         }
+    }
+
+    async handleSetPrimary({ path, name, primary }) {
+        if (!this.aiManager.activeSession) return;
+
+        const session = this.aiManager.activeSession;
+        session.primaryRoot = primary ? path : '';
+
+        await workspaceClient.setSession(session.id, session);
+        this.filterRoots(); // Refresh list to show new primary state
     }
 }
 

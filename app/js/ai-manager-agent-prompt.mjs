@@ -182,25 +182,39 @@ ${hasTasks?"- Call \`complete_task\` with the task name as you finish each task.
     }
 
     const workspaceFolders = features.workspaceFolders || (typeof window !== 'undefined' && window.workspace?.folders) || [];
+    const primaryRoot = (typeof features.primaryRoot === 'string') ? features.primaryRoot : '';
+    const _rootName = (f) => f.split(/[\\/]/).filter(Boolean).pop() || f;
+    const _isPrimary = (f) => {
+        if (!primaryRoot) return false;
+        const normF = f.replace(/\\/g, '/').replace(/\/+$/, '');
+        const normP = primaryRoot.replace(/\\/g, '/').replace(/\/+$/, '');
+        return normF === normP || normF.endsWith('/' + normP) || _rootName(normF) === _rootName(normP);
+    };
     let workspaceSection = "";
     if (workspaceFolders.length > 1) {
         const folderEntries = workspaceFolders.map((f, i) => {
-            const name = f.split(/[\\/]/).filter(Boolean).pop() || f;
-            return `${i + 1}. **\`${name}\`**: \`${f}\``;
+            const name = _rootName(f);
+            const marker = _isPrimary(f) ? ' (default)' : '';
+            return `${i + 1}. **\`${name}\`${marker}**: \`${f}\``;
         }).join('\n');
+        const primaryEntry = workspaceFolders.find(_isPrimary);
+        const primaryNote = primaryEntry
+            ? `\nThe default root is \`${primaryEntry}\`. \`run_command\` runs there by default; pass \`cwd\` to target a different root.`
+            : "";
         workspaceSection = `
 # Workspace Roots
 This workspace contains ${workspaceFolders.length} open root folders:
 ${folderEntries}
-When referencing or modifying files in secondary roots, prefix the path with the root folder name (e.g. \`${workspaceFolders[1].split(/[\\/]/).filter(Boolean).pop()}/path/to/file\`) or use its full absolute path.
-To execute terminal commands in a secondary root with \`run_command\`, pass the root folder name or path in the \`cwd\` parameter (e.g. \`cwd: "${workspaceFolders[1].split(/[\\/]/).filter(Boolean).pop()}"\`).
+When referencing or modifying files in secondary roots, prefix the path with the root folder name (e.g. \`${_rootName(workspaceFolders[1])}/path/to/file\`) or use its full absolute path.
+To execute terminal commands in a secondary root with \`run_command\`, pass the root folder name or path in the \`cwd\` parameter (e.g. \`cwd: "${_rootName(workspaceFolders[1])}"\`).${primaryNote}
 `;
     } else if (workspaceFolders.length === 1) {
         const f = workspaceFolders[0];
-        const name = f.split(/[\\/]/).filter(Boolean).pop() || f;
+        const name = _rootName(f);
+            const marker = _isPrimary(f) ? ' (default)' : '';
         workspaceSection = `
 # Workspace Root
-- Root folder: \`${name}\` (\`${f}\`)
+- Root folder: \`${name}\`${marker} (\`${f}\`)
 `;
     }
 
